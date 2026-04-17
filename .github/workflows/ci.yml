@@ -94,10 +94,48 @@ jobs:
           "$bin" agent -duration 1ms -interval 1ms
           "$bin" paper -symbol V.US -side buy
 
+  # PostgreSQL integration (Linux only; see internal/db WBOT_PG_DSN).
+  db-integration:
+    name: db-integration
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: wbot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache: true
+
+      - name: Verify module graph
+        run: |
+          go mod tidy
+          git diff --exit-code
+
+      - name: internal/db against Postgres
+        env:
+          WBOT_PG_DSN: postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable
+        run: go test ./internal/db/... -count=1 -race
+
   # Deterministic Markdown summary only (shell). No LLM APIs.
   ci-summary:
     name: ci-summary
-    needs: [test]
+    needs: [test, db-integration]
     if: success()
     runs-on: ubuntu-latest
     steps:
@@ -110,7 +148,7 @@ jobs:
           {
             echo "## CI report"
             echo ""
-            echo "Generated in-workflow by shell only (**no LLM**). The merge gate is the \`test\` job (go test, vet, gofmt, race, staticcheck, binary smoke)."
+            echo "Generated in-workflow by shell only (**no LLM**). The merge gate is the \`test\` job (go test, vet, gofmt, race, staticcheck, binary smoke) plus \`db-integration\` (Postgres + \`internal/db\`)."
             echo ""
             echo "| Item | Value |"
             echo "| --- | --- |"
@@ -122,5 +160,6 @@ jobs:
             echo ""
             echo "### Jobs"
             echo "- \`test\`: matrix **ubuntu-latest** + **macos-latest** — see job logs above."
+            echo "- \`db-integration\`: **ubuntu-latest** + Postgres 16 — \`internal/db\` migrations."
             echo "- \`governance\`: pull requests only — \`Driven-By\` field check."
           } >> "$GITHUB_STEP_SUMMARY"
