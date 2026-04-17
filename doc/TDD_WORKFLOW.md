@@ -14,4 +14,4 @@
 - `go vet ./...`
 - `go test -race ./... -count=1`（建议）
 
-关联：[[PLAN_V0]] [[WORKFLOW_GITHUB_DRIVEN]] [[GITHUB_SETUP]] [[README]]
+关联：[[WORKFLOW]] [[PLAN_V0]] [[WORKFLOW_GITHUB_DRIVEN]] [[GITHUB_SETUP]] [[README]]
