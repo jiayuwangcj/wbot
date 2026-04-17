@@ -19,6 +19,6 @@ v0 只做自动化基线，不做业务功能。
 
 ## Follow-ups
 
-- v1 进入通信与模拟盘能力建设
+- 功能主线以 [[ROADMAP]] 为准：当前优先 **数据拉取与落地**，其次回测，再深化执行/模拟盘
 
 关联：[[PLAN_V0]] [[WORKFLOW_GITHUB_DRIVEN]] [[TDD_WORKFLOW]]
