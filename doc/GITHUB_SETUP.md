@@ -12,4 +12,6 @@
 - 仅允许 `Squash and merge`
 - 禁止直接 push 到 `main`
 
-关联：[[WORKFLOW_GITHUB_DRIVEN]] [[PLAN_V0]] [[README]]
+说明：CI 工作流 `ci` 在 **`test` 同名 job** 内含 `go test`、`go vet`、Linux 上的 `gofmt` / `-race` / `staticcheck`，以及 PR 上的 `governance`（`Driven-By`）。分支保护里的必需 check 名称仍为 `ci / test` 与 `ci / governance`。可在 Actions 里 **Run workflow** 手动触发（`workflow_dispatch`）。
+
+关联：[[WORKFLOW_GITHUB_DRIVEN]] [[PLAN_V0]] [[AUTO_ADVANCE]] [[README]]

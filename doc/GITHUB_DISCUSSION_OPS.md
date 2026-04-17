@@ -1,6 +1,12 @@
 # GITHUB_DISCUSSION_OPS
 
-在本机用 GitHub API 维护 Discussions。
+在本机维护 GitHub Discussions（以及用 REST/GraphQL 做脚本化操作）。
+
+## Cursor 里优先用 GitHub MCP
+
+若 Cursor 已配置 **GitHub MCP**（见 [[GITHUB_MCP]]），**创建 / 列出 / 更新讨论与 Issue** 由 Agent 经 MCP 完成更省事；本节 `curl`/GraphQL 适用于 **无 MCP** 的终端脚本或 CI。
+
+## 仅用 API 时（curl）
 
 前置：
 
@@ -62,4 +68,4 @@ jq -n \
 
 GitHub 目前通常需要在网页里手动 **Pin**（若后续 GraphQL 暴露 pin API，再收敛到自动化）。
 
-关联：[[pinned_discussion]] [[pinned_discussion_body]] [[WORKFLOW_GITHUB_DRIVEN]]
+关联：[[GITHUB_MCP]] [[pinned_discussion]] [[pinned_discussion_body]] [[WORKFLOW_GITHUB_DRIVEN]]
