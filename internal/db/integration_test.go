@@ -36,4 +36,13 @@ WHERE table_schema = current_schema() AND table_name = 'ingestion_runs'`).Scan(&
 	if n != 1 {
 		t.Fatalf("ingestion_runs missing: count=%d", n)
 	}
+	err = database.QueryRow(`
+SELECT COUNT(*) FROM information_schema.tables
+WHERE table_schema = current_schema() AND table_name = 'bars'`).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("bars missing: count=%d", n)
+	}
 }

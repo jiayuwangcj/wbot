@@ -24,4 +24,4 @@
 
 ## Next
 
-- 定义行情/历史 bar 表结构与导入路径；或对接单一数据源 mock。
+- 见 `doc/tasks/2026-04-18-data-pipeline-bars-mock.md`（bars + mock 已落地）；后续可做 CLI/调度或数据源抽象。

@@ -127,10 +127,10 @@ jobs:
           go mod tidy
           git diff --exit-code
 
-      - name: internal/db against Postgres
+      - name: Postgres migrations + ingest integration
         env:
           WBOT_PG_DSN: postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable
-        run: go test ./internal/db/... -count=1 -race
+        run: go test ./internal/db/... ./internal/ingest/... -count=1 -race
 
   # Deterministic Markdown summary only (shell). No LLM APIs.
   ci-summary:
@@ -160,6 +160,6 @@ jobs:
             echo ""
             echo "### Jobs"
             echo "- \`test\`: matrix **ubuntu-latest** + **macos-latest** — see job logs above."
-            echo "- \`db-integration\`: **ubuntu-latest** + Postgres 16 — \`internal/db\` migrations."
+            echo "- \`db-integration\`: **ubuntu-latest** + Postgres 16 — \`internal/db\` migrations + \`internal/ingest\`."
             echo "- \`governance\`: pull requests only — \`Driven-By\` field check."
           } >> "$GITHUB_STEP_SUMMARY"
