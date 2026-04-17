@@ -25,5 +25,4 @@
 
 ## Next
 
-- 进入「模拟盘执行骨架」最小类型与测试（或 GitHub Feature Issue + Driven-By URL）。
-- 仍需 GitHub 侧 Feature Issue + `Driven-By` URL 时，用 [[GITHUB_MCP]] 或网页发帖并回填 `doc/tasks/2026-04-17-v1-first-feature.md` Links。
+- 模拟盘骨架已落至 `internal/paper`；可选 GitHub Feature Issue + `Driven-By` URL（[[GITHUB_MCP]]）。
