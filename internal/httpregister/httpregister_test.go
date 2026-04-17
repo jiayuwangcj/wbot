@@ -2,9 +2,11 @@ package httpregister
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 	"time"
 
@@ -100,6 +102,65 @@ func TestRegisterHTTPS(t *testing.T) {
 	}
 	if !newID {
 		t.Fatalf("want new=true")
+	}
+}
+
+func TestHandlerListAgents(t *testing.T) {
+	m := master.NewMemory()
+	_ = m.Register("z9")
+	_ = m.Register("a1")
+	srv := httptest.NewServer(Handler(m))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + agentsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var got AgentsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(got.Agents)
+	if len(got.Agents) != 2 || got.Agents[0] != "a1" || got.Agents[1] != "z9" {
+		t.Fatalf("agents = %v, want [a1 z9]", got.Agents)
+	}
+}
+
+func TestClientListAgents(t *testing.T) {
+	m := master.NewMemory()
+	srv := httptest.NewServer(Handler(m))
+	defer srv.Close()
+	ctx := context.Background()
+	c := Client{BaseURL: srv.URL}
+	if _, err := c.Register(ctx, "c1"); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := c.ListAgents(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != "c1" {
+		t.Fatalf("ListAgents = %v, want [c1]", ids)
+	}
+}
+
+func TestRemoteFacadeAgents(t *testing.T) {
+	m := master.NewMemory()
+	srv := httptest.NewServer(Handler(m))
+	defer srv.Close()
+	ctx := context.Background()
+	c := Client{BaseURL: srv.URL}
+	if _, err := c.Register(ctx, "rf1"); err != nil {
+		t.Fatal(err)
+	}
+	rf := RemoteFacade{Client: &c, Ctx: ctx}
+	got := rf.Agents()
+	if len(got) != 1 || got[0] != "rf1" {
+		t.Fatalf("Agents = %v, want [rf1]", got)
 	}
 }
 

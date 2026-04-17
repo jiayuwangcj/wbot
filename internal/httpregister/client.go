@@ -107,6 +107,40 @@ func (c *Client) registerOnce(ctx context.Context, id string) (bool, error) {
 	return out.New, nil
 }
 
+// ListAgents GETs /v1/agents and returns registered agent IDs (order is unspecified).
+func (c *Client) ListAgents(ctx context.Context) ([]string, error) {
+	base := strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	if base == "" {
+		return nil, fmt.Errorf("%w: empty BaseURL", errNoRetry)
+	}
+	u := base + agentsPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errNoRetry, err)
+	}
+	client := c.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(b))}
+	}
+	var out AgentsResponse
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("%w: %v", errNoRetry, err)
+	}
+	return out.Agents, nil
+}
+
 func retryableRegister(ctx context.Context, err error) bool {
 	if err == nil || ctx.Err() != nil {
 		return false

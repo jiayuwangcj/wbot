@@ -28,7 +28,18 @@ func (r *RemoteFacade) Register(agentID string) bool {
 	return newID
 }
 
-// Agents implements master.Facade. Not exposed by the HTTP register API in this slice.
+// Agents implements master.Facade via GET /v1/agents when Client is configured.
 func (r *RemoteFacade) Agents() []string {
-	return nil
+	ctx := r.Ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r.Client == nil {
+		return nil
+	}
+	ids, err := r.Client.ListAgents(ctx)
+	if err != nil {
+		return nil
+	}
+	return ids
 }
