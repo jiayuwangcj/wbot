@@ -93,3 +93,34 @@ jobs:
           "$bin" master -duration 1ms 2>/dev/null
           "$bin" agent -duration 1ms -interval 1ms
           "$bin" paper -symbol V.US -side buy
+
+  # Deterministic Markdown summary only (shell). No LLM APIs.
+  ci-summary:
+    name: ci-summary
+    needs: [test]
+    if: success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write CI report to GitHub Step Summary
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          short_sha="${GITHUB_SHA::7}"
+          {
+            echo "## CI report"
+            echo ""
+            echo "Generated in-workflow by shell only (**no LLM**). The merge gate is the \`test\` job (go test, vet, gofmt, race, staticcheck, binary smoke)."
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Repository | \`${{ github.repository }}\` |"
+            echo "| Event | \`${{ github.event_name }}\` |"
+            echo "| Ref | \`${{ github.ref_name }}\` |"
+            echo "| SHA | [\`${short_sha}\`](https://github.com/${{ github.repository }}/commit/${GITHUB_SHA}) |"
+            echo "| Workflow run | [Open logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+            echo ""
+            echo "### Jobs"
+            echo "- \`test\`: matrix **ubuntu-latest** + **macos-latest** — see job logs above."
+            echo "- \`governance\`: pull requests only — \`Driven-By\` field check."
+          } >> "$GITHUB_STEP_SUMMARY"

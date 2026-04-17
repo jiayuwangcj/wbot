@@ -8,4 +8,6 @@
 
 在 Cursor 中已启用 **GitHub MCP** 时，Agent 应优先用 MCP 创建/同步线上 Issue 与 Discussion，再把 URL 回填 `doc/tasks/`（见 [[GITHUB_MCP]]）。无 MCP 时可用 `GITHUB_TOKEN` + REST API 或网页创建 Issue/评论。
 
+**Agent 在 GitHub 上发出的评论**须以 **`[robot]`** 开头，见 [[SOURCE_TO_FEATURE]]。
+
 关联：[[AUTO_ADVANCE]] [[GITHUB_MCP]] [[WORKFLOW_GITHUB_DRIVEN]] [[README]]

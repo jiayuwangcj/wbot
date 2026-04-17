@@ -14,7 +14,7 @@
 
 ## Links
 
-- Driven-By / trigger: `<url>`
+- Driven-By / trigger（Issue 评论优先；若自 Discussion 派生，可附 Discussion URL）: `<url>`
 - PR / branch: `<url or name>`
 
 ## State

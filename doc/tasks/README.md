@@ -2,6 +2,8 @@
 
 主对话**每次向 Subagent 发布可执行子任务**时，同步在此目录新增一条记录，便于上下文丢失后恢复。
 
+在 **[[AUTO_ADVANCE]] 根任务循环**里，本目录属于 **「落盘」**：取任务时优先读此处 `status`（`running` / `queued`）；每小步结束更新 `updated`、State、`last step`、`Next`，使下一小步不依赖聊天上下文。
+
 ## 命名
 
 `YYYY-MM-DD-<short-slug>.md`（slug 用小写连字符，见 [[_template]]）

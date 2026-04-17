@@ -4,7 +4,7 @@
 
 ## Cursor 里优先用 GitHub MCP
 
-若 Cursor 已配置 **GitHub MCP**（见 [[GITHUB_MCP]]），**创建 / 列出 / 更新讨论与 Issue** 由 Agent 经 MCP 完成更省事；本节 `curl`/GraphQL 适用于 **无 MCP** 的终端脚本或 CI。
+若 Cursor 已配置 **GitHub MCP**（见 [[GITHUB_MCP]]），**创建 / 列出 / 更新讨论与 Issue** 由 Agent 经 MCP 完成更省事；本节 `curl`/GraphQL 适用于 **无 MCP** 的终端脚本或 CI。Agent 发出的 GitHub **评论**须带 **`[robot]`** 前缀，见 [[SOURCE_TO_FEATURE]]。
 
 ## 仅用 API 时（curl）
 
@@ -67,5 +67,7 @@ jq -n \
 ## Pin
 
 GitHub 目前通常需要在网页里手动 **Pin**（若后续 GraphQL 暴露 pin API，再收敛到自动化）。
+
+讨论的内容如何形成结论并落入仓库、以及与「已阅」的关系：[[SOURCE_TO_FEATURE]]
 
 关联：[[GITHUB_MCP]] [[pinned_discussion]] [[pinned_discussion_body]] [[WORKFLOW_GITHUB_DRIVEN]]

@@ -5,15 +5,40 @@ alwaysApply: true
 
 # Supervisor + Subagent（主循环只做监督）
 
+## 根任务循环（固定顺序）
+
+主会话按此顺序重复，直到用户喊停、CI 失败待修、或计划里**没有**下一条可做项：
+
+1. **取任务**：按下方「计划优先级」选出**一条**可执行最小步。
+2. **执行**：实质性实现优先交给 **Subagent**（串行；主会话不堆长实现链）。
+3. **验证**：本地跑 `scripts/verify.sh`（或与 `ci.yml` test job 等价）；推送后以 **GitHub Actions 绿色**为远程闭环（失败则修到绿再继续）。
+4. **落盘**：更新对应 `doc/tasks/*.md`（`updated`、State、`last step`、`Next`）；向 Subagent 派单时应已有该条任务文件，见同文件「任务记录」。
+5. **收口与下一入口**：用户答复保持短；下一小步只从 **`Next` 字段**、计划优先级或**用户新指令**进入（不依赖对话长上下文）。
+
+无可做项时的扫描顺序：**① tasks `running`/`queued` → ② 已落账的 GitHub 工作项 → ③ PLAN_V0 未满足项 → ④ ROADMAP / 长期目标的下一可拆步 → ⑤ `doc/README.md` 导航的开放链路**（与下方「任务来源」「计划优先级」一致）。
+
+## 任务来源（Issue、Discussion、长期目标）
+
+说明「计划**从哪里长出来**」；**取用顺序**见下节「计划优先级」（与上表不同：顺序解决「先做哪一条」，本节约束「哪一种来源才有资格进入计划」）。
+
+- **`doc/tasks/`**：显式队列与会话恢复；适合 Subagent 派单与 `Next` 接力；最优先被取用（①）。
+- **GitHub Issue**：默认可追溯工单（`bug` / `feature`、锚点评论、PR 的 **Driven-By**）。进入计划须已**分诊**，且正文含「目标 / 验收 / 计划」、或链回 `doc/tasks/`、`doc/proposals/`，并取**下一条未闭环**的最小步。
+- **GitHub Discussion**：协作设计与共识。**不等同**于 Issue：仅当帖内或置顶回复已**分诊结案**（例如采纳某方案、`triage/accepted`、指回仓库路径，或已**派生 Issue** 承接实现）时，才与 Issue **同级**进入计划优先级之 ②。未收敛、无清晰下一小步的讨论**不**自动当作取任务来源。
+- **长期目标**：`doc/ROADMAP.md` 的阶段表、`doc/proposals/` 中的较大设计，以及 `pinned_discussion` / roadmap issue 等链出的方向性内容；描述「做到哪一阶段」，**不**直接等于一个可合并小步。须先**拆解**为 Issue 或 `doc/tasks/` 条目，再按 ④⑤ 进入循环；拆完的具体活在多数情况下仍用 **Issue** 或 **tasks** 承载。
+
+- **来源如何变成可执行项**：Issue 与 Discussion 经分诊、落库、关闭 duplicate 的约定，见 `doc/SOURCE_TO_FEATURE.md`（消化路径图）；Agent 只在「已落账」后按本节与「计划优先级」取任务。
+
 ## 默认策略
 
 - **无指定目标时**：若用户未给出可执行目标（例如仅「开始工作」「.」或未指向具体 issue/任务），主会话**不得空转结束**；应按下面**计划优先级**取出**下一条可执行的最小步**，驱动执行并闭环（仍遵守 Subagent、任务记录、串行、小步迭代）。本条是对「必须有目标才动」的补充：**目标来自仓库计划**，而非用户当轮口述。
-- **计划优先级（由高到低）**：① `doc/tasks/` 中 `status` 为 `running` / `queued` 的最新记录（先推进在进行任务）；② **GitHub Issue / Discussion** 里已分诊、且需求已**整理进仓库可追溯载体**的条目（正文「目标 / 验收 / 计划」块，或摘录/链回到 `doc/tasks/`、`doc/proposals/` 并在帖子中回指路径），取**下一条未闭环**者；③ `doc/PLAN_V0.md` 中验收尚未满足的项；④ `doc/ROADMAP.md` 相对当前阶段的**下一条里程碑**（须先拆成可独立合入的最小步）；⑤ 若以上皆无可做项，再查阅 `doc/README.md` 导航指向的开放链路（协作帖 / roadmap issue 等），仍拆成最小步。**仍受 GitHub 留言驱动约束**：无 Driven-By 时只做仓库内不争议的小步（文档、测试、CI 自洽），需要合入权限或产品拍板的项须在任务里标明 `blocked` 并写清缺什么。
+- **计划优先级（由高到低）**：① `doc/tasks/` 中 `status` 为 `running` / `queued` 的记录（先推进在办）；② **已落账的 GitHub**：满足上文「任务来源」条件的 **Issue**，以及**已分诊结案**、可追溯至仓库的 **Discussion**（或由其派生的 Issue），取**下一条未闭环**者——**同一档内**若既有明确 Issue 又有仅 Discussion，优先实现路径清晰的 **Issue** 及其 `Driven-By` 链；③ `doc/PLAN_V0.md` 中验收尚未满足的项；④ **`doc/ROADMAP.md`** 相对当前阶段的**下一条里程碑**，及 **`doc/proposals/`** 中已决议、尚未落地条目里拆出的**下一最小步**（须可独立合入，通常先落到 Issue 或 `doc/tasks` 再执行）；⑤ 若以上皆无可做项，再查阅 `doc/README.md` 导航指向的开放链路（协作帖、roadmap issue 等），仍拆成最小步。**仍受 GitHub 留言驱动约束**：无 Driven-By 时只做仓库内不争议的小步（文档、测试、CI 自洽），需要合入权限或产品拍板的项须在任务里标明 `blocked` 并写清缺什么。
 - **任何实质性任务**：优先用 **Subagent（Task 工具）** 执行；主会话只做**目标、验收、监督、合并意图**，不在主会话里堆长实现链。
 - **GitHub Issue / Discussion**：若当前 Cursor 会话可使用 **GitHub MCP**，创建/查询/同步 Issue 与 Discussion **优先走 MCP**，并与 `doc/issues/` 草稿、`doc/tasks/` **Links** 对齐；勿默认「必须安装 `gh` 才能完成发帖」。
+- **机器人留言前缀**：凡由 Agent / 自动化在本仓库 **GitHub** 上发布的**评论**（Issue 评论、Discussion 回复、Pull Request 上的评论等），正文须以 **`[robot]`** 开头，便于与人工留言区分。
 - **输入要干净**：给 Subagent 的提示里写清目标、约束、相关路径、禁止事项；不要塞无关历史。
 - **任务记录（恢复用）**：主对话**每次发布 Subagent 任务时**，同步在 `doc/tasks/` **新建** `YYYY-MM-DD-<slug>.md`，按 `doc/tasks/_template.md` 填写 Goal / Constraints / Links / State / Next；任务推进或结束时**更新同一文件**的 `updated` 与 State。纯闲聊、无子任务时可不写。
 - **小步迭代**：一次只推进一小块（可独立 review / CI 的一小步）；避免「一大坨一次性改完」。
+- **可测范围**：每个合入切片必须附带 **可被 `scripts/verify.sh` 与同仓库 CI 复现的验收**（`go test`、vet、及既有二进制 smoke 等）；**不以**模型叙述代替测试门禁。GitHub Actions 中由 **纯脚本** 写入的 Summary（`ci-summary`）**不**经 LLM 生成，见 `doc/FEATURE_SCOPE.md`、`doc/CI_REPORT.md`。
 
 ## 小步收尾与上下文清理（每步必做）
 
