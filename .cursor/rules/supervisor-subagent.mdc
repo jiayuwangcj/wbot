@@ -9,6 +9,7 @@ alwaysApply: true
 
 - **任何实质性任务**：优先用 **Subagent（Task 工具）** 执行；主会话只做**目标、验收、监督、合并意图**，不在主会话里堆长实现链。
 - **输入要干净**：给 Subagent 的提示里写清目标、约束、相关路径、禁止事项；不要塞无关历史。
+- **任务记录（恢复用）**：主对话**每次发布 Subagent 任务时**，同步在 `doc/tasks/` **新建** `YYYY-MM-DD-<slug>.md`，按 `doc/tasks/_template.md` 填写 Goal / Constraints / Links / State / Next；任务推进或结束时**更新同一文件**的 `updated` 与 State。纯闲聊、无子任务时可不写。
 - **小步迭代**：一次只推进一小块（可独立 review / CI 的一小步）；避免「一大坨一次性改完」。
 
 ## 监督节奏

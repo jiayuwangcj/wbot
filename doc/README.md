@@ -5,6 +5,7 @@ Cursor 侧监督策略（Subagent、串行、5 分钟自检）见仓库根目录
 入口与导航：
 
 - [[WORKFLOW]]
+- [[tasks/README]]
 - [[WORKFLOW_GITHUB_DRIVEN]]
 - [[pinned_discussion]]
 - [[GITHUB_DISCUSSION_OPS]]

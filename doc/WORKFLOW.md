@@ -46,6 +46,7 @@
 
 ## 与现有机制的关系
 
+- **子任务可恢复**：主对话派发 Subagent 时同步写 `doc/tasks/` 记录，见 [[tasks/README]]
 - **留言驱动**：[[WORKFLOW_GITHUB_DRIVEN]]
 - **测试纪律**：[[TDD_WORKFLOW]]
 - **路线图**：[[ROADMAP]] 与仓库内 roadmap issue
