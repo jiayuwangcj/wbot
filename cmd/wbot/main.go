@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -56,7 +57,7 @@ func runAgent(prog string, argv []string) int {
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
 	id := fs.String("id", "cli-agent", "agent identity registered with the master")
-	masterURL := fs.String("master-url", "", "if set, register via HTTP at this base URL (e.g. http://127.0.0.1:8080); default is in-process master.Memory")
+	masterURL := fs.String("master-url", "", "if set, register via HTTP(S) at this base URL (e.g. http://127.0.0.1:8080 or https://...); default is in-process master.Memory")
 	interval := fs.Duration("interval", 20*time.Millisecond, "heartbeat interval")
 	duration := fs.Duration("duration", 200*time.Millisecond, "run wall-clock time; 0 means until SIGINT")
 
@@ -116,12 +117,14 @@ func runMaster(prog string, argv []string) int {
 	var showHelp bool
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
-	listen := fs.String("listen", "127.0.0.1:0", "HTTP listen address (POST /v1/register)")
+	listen := fs.String("listen", "127.0.0.1:0", "TCP listen address (POST /v1/register)")
+	tlsCert := fs.String("tls-cert", "", "path to PEM certificate (set with -tls-key for HTTPS)")
+	tlsKey := fs.String("tls-key", "", "path to PEM private key (set with -tls-cert for HTTPS)")
 	duration := fs.Duration("duration", 0, "run wall-clock; 0 means until SIGINT")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s master [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves agent registration over HTTP (in-memory registry).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves agent registration over HTTP or HTTPS (in-memory registry).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -135,15 +138,37 @@ func runMaster(prog string, argv []string) int {
 		return 0
 	}
 
+	if (*tlsCert != "") != (*tlsKey != "") {
+		fmt.Fprintf(os.Stderr, "master: -tls-cert and -tls-key must both be set or both empty\n")
+		return 2
+	}
+
 	mem := master.NewMemory()
 	srv := &http.Server{Handler: httpregister.Handler(mem)}
 
-	ln, err := net.Listen("tcp", *listen)
+	var ln net.Listener
+	var err error
+	scheme := "http"
+	if *tlsCert != "" {
+		cert, errLoad := tls.LoadX509KeyPair(*tlsCert, *tlsKey)
+		if errLoad != nil {
+			fmt.Fprintf(os.Stderr, "master: tls: %v\n", errLoad)
+			return 1
+		}
+		tlsCfg := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		ln, err = tls.Listen("tcp", *listen, tlsCfg)
+		scheme = "https"
+	} else {
+		ln, err = net.Listen("tcp", *listen)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "master: listen: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "master: listening on http://%s\n", ln.Addr().String())
+	fmt.Fprintf(os.Stderr, "master: listening on %s://%s\n", scheme, ln.Addr().String())
 
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {

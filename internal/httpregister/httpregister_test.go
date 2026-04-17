@@ -86,6 +86,23 @@ func TestRegisterNoRetryOn400(t *testing.T) {
 	}
 }
 
+func TestRegisterHTTPS(t *testing.T) {
+	m := master.NewMemory()
+	srv := httptest.NewTLSServer(Handler(m))
+	defer srv.Close()
+
+	ctx := context.Background()
+	c := Client{BaseURL: srv.URL, HTTP: srv.Client()}
+
+	newID, err := c.Register(ctx, "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newID {
+		t.Fatalf("want new=true")
+	}
+}
+
 func TestHandlerWrongPath(t *testing.T) {
 	m := master.NewMemory()
 	srv := httptest.NewServer(Handler(m))
