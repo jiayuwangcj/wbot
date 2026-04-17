@@ -2,7 +2,7 @@
 
 - **id**: `2026-04-17-http-register-transport`
 - **created**: `2026-04-17`
-- **updated**: `2026-04-17`（实现完成）
+- **updated**: `2026-04-17`（CLI：master HTTP + agent `-master-url`）
 
 ## Goal
 
@@ -21,8 +21,8 @@
 ## State
 
 - **status**: `done`
-- **last step**：新增 `internal/httpregister`：`Handler(master.Facade)` 提供 `POST /v1/register`（JSON `{"id"}`）；`Client.Register`；`httptest` 集成测试；`verify.sh` / race / staticcheck 通过。
+- **last step**：`wbot master -listen` 提供 HTTP 登记；`wbot agent -master-url` 经 `httpregister.RemoteFacade` 走 `poll.Run`；`TestAgentMasterURL`；`verify.sh` / CI smoke 含 `master -duration 1ms`。
 
 ## Next
 
-- 可选：`wbot master` 起 HTTP + `wbot agent -master-url`；再接 TLS。
+- 可选：TLS；或把 HTTP client 更深接入 `Heartbeat` 路径的观测与重试。
