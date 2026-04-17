@@ -21,8 +21,8 @@
 ## State
 
 - **status**: `done`
-- **last step**：新增 `paper.Engine`、`Submit` → 生成 ID、即时 `OrderFilled`；单测覆盖无效 symbol、填充、递增 ID。
+- **last step**：新增 `paper.Engine`、`Submit` → 生成 ID、即时 `OrderFilled`；`wbot paper` 子命令 + CI/`scripts/verify.sh` smoke；单测覆盖无效 symbol、填充、递增 ID。
 
 ## Next
 
-- 可选：CLI `paper` 子命令 demo；或将 `Submit` 拆为 New → Fill 两阶段以更贴近真实撮合。
+- 可选：将 `Submit` 拆为 New → Working → Fill 两阶段以更贴近真实撮合。

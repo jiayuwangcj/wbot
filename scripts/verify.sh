@@ -13,4 +13,5 @@ go build -o "$bin" ./cmd/wbot
 
 "$bin" -version >/dev/null
 "$bin" agent -duration 1ms -interval 1ms
+"$bin" paper -symbol V.US -side buy >/dev/null
 echo "verify: ok"

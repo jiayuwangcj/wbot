@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/agent"
+	"github.com/jiayu/wbot/internal/domain"
 	"github.com/jiayu/wbot/internal/master"
+	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
 )
 
@@ -37,6 +39,8 @@ func run(argv []string) int {
 	case "master":
 		fmt.Println("master: in-process registry only in this slice; see `wbot agent` for poll.Run smoke")
 		return 0
+	case "paper":
+		return runPaper(argv[0], argv[2:])
 	default:
 		usage(argv)
 		return 2
@@ -91,6 +95,51 @@ func runAgent(prog string, argv []string) int {
 	return 0
 }
 
+func runPaper(prog string, argv []string) int {
+	fs := flag.NewFlagSet("paper", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
+	side := fs.String("side", "buy", "buy or sell")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s paper [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "One-shot simulated submit via internal/paper (no network).\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	var s domain.Side
+	switch *side {
+	case "buy", "BUY", "b", "B":
+		s = domain.SideBuy
+	case "sell", "SELL", "s", "S":
+		s = domain.SideSell
+	default:
+		fmt.Fprintf(os.Stderr, "paper: unknown side %q (want buy or sell)\n", *side)
+		return 2
+	}
+
+	e := paper.NewEngine()
+	got, err := e.Submit(domain.Order{Symbol: domain.Symbol(*symbol), Side: s})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "paper: %v\n", err)
+		return 1
+	}
+	fmt.Printf("%s side=%s status=%d id=%s\n", got.Symbol, *side, got.Status, got.ID)
+	return 0
+}
+
 func usage(argv []string) {
 	prog := "wbot"
 	if len(argv) > 0 && argv[0] != "" {
@@ -99,5 +148,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               In-process poll.Run smoke (try -h)\n  master              Note about in-process master.Memory\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               In-process poll.Run smoke (try -h)\n  master              Note about in-process master.Memory\n  paper               One-shot paper.Engine submit (try -h)\n")
 }

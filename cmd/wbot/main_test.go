@@ -17,6 +17,8 @@ func TestRun(t *testing.T) {
 		{"agent poll smoke", []string{"wbot", "agent", "-duration", "1ms", "-interval", "1ms"}, 0},
 		{"agent help", []string{"wbot", "agent", "-h"}, 0},
 		{"master note", []string{"wbot", "master"}, 0},
+		{"paper submit", []string{"wbot", "paper", "-symbol", "T.US", "-side", "sell"}, 0},
+		{"paper bad side", []string{"wbot", "paper", "-side", "maybe"}, 2},
 		{"agent bad flag", []string{"wbot", "agent", "-notaflag"}, 2},
 		{"unknown", []string{"wbot", "nope"}, 2},
 	}

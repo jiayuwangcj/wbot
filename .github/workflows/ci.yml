@@ -91,3 +91,4 @@ jobs:
           go build -o "$bin" ./cmd/wbot
           "$bin" -version
           "$bin" agent -duration 1ms -interval 1ms
+          "$bin" paper -symbol V.US -side buy
