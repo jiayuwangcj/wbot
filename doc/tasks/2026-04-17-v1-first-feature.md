@@ -2,7 +2,7 @@
 
 - **id**: `2026-04-17-v1-first-feature`
 - **created**: `2026-04-17`
-- **updated**: `2026-04-17`
+- **updated**: `2026-04-17`（GitHub-driven 锚点 Issue #8）
 
 ## Goal
 
@@ -17,8 +17,8 @@
 ## Links
 
 - 计划草稿（正文复制源）：[`doc/issues/draft-2026-04-17-v1-first-slice.md`](../issues/draft-2026-04-17-v1-first-slice.md)
-- Driven-By / trigger: <!-- 发帖后补留言 URL -->
-- PR / branch: <!-- Subagent 或后续 PR -->
+- Driven-By / trigger: `https://github.com/jiayuwangcj/wbot/issues/8#issuecomment-4268661869`（[#8](https://github.com/jiayuwangcj/wbot/issues/8) 锚点评论，GitHub API 创建）
+- PR / branch: `main` 直推；后续 PR 用 **Driven-By:** 同上或更具体 Issue 评论
 
 ## State
 
@@ -27,8 +27,7 @@
 
 ## Next
 
-- 用 **GitHub MCP**（或网页/`gh`）新建 Feature Issue，正文可依 `doc/issues/draft-2026-04-17-v1-first-slice.md`；留一条触发评论，把**留言 URL**填回 **Links** → `Driven-By / trigger`。
-- 开 PR 时描述含 `Driven-By: <该 URL>`。
+- 新 PR：描述中含 `Driven-By: https://github.com/jiayuwangcj/wbot/issues/8#issuecomment-4268661869`（或拆新 Feature / Plan Issue 后改用**新评论** URL）；CI governance 将检查 **Driven-By** 字段。
 
 ## 停机记录（本回合）
 

@@ -6,7 +6,8 @@
 
 ## Trigger comment
 
-<!-- 在任意 Issue / Discussion / PR 下发表一条可引用评论，将评论 URL 贴在此处替换本行 -->
+- **仓库级 GitHub-driven 锚点**（通用 `Driven-By`）：<https://github.com/jiayuwangcj/wbot/issues/8#issuecomment-4268661869>（Feature Issue [#8](https://github.com/jiayuwangcj/wbot/issues/8)）
+- 若本切片单独开 Issue：在同一 Issue 下留**锚点评论**后，把该评论 URL 填回此处并作为 PR 的 `Driven-By:`。
 
 ## Goal（对齐 [[ROADMAP]] v1 的第一块）
 
