@@ -5,6 +5,11 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -19,7 +24,7 @@ jobs:
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          echo "$PR_BODY" | rg -q "Driven-By|Source:"
+          printf '%s' "$PR_BODY" | grep -qE "Driven-By|Source:"
 
   test:
     name: test
@@ -45,6 +50,19 @@ jobs:
           go mod tidy
           git diff --exit-code
 
+      - name: Check gofmt
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          files=$(git ls-files '*.go')
+          if [ -n "$files" ]; then
+            bad=$(gofmt -l $files)
+            if [ -n "$bad" ]; then
+              echo "gofmt needed on:"
+              echo "$bad"
+              exit 1
+            fi
+          fi
+
       - name: Run tests
         run: go test ./... -count=1
 
@@ -54,3 +72,22 @@ jobs:
       - name: Run race tests (linux only)
         if: matrix.os == 'ubuntu-latest'
         run: go test -race ./... -count=1
+
+      - name: Install staticcheck
+        if: matrix.os == 'ubuntu-latest'
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Run staticcheck (linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          export PATH="${PATH}:$(go env GOPATH)/bin"
+          staticcheck ./...
+
+      - name: Verify binary and CLI smoke
+        run: |
+          set -euo pipefail
+          bin="$(mktemp)"
+          trap 'rm -f "$bin"' EXIT
+          go build -o "$bin" ./cmd/wbot
+          "$bin" -version
+          "$bin" agent -duration 1ms -interval 1ms
