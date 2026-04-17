@@ -3,6 +3,8 @@
 入口与导航：
 
 - [[WORKFLOW_GITHUB_DRIVEN]]
+- [[pinned_discussion]]
+- [[GITHUB_DISCUSSION_OPS]]
 - [[ROADMAP]]
 - [[PLAN_V0]]
 - [[TDD_WORKFLOW]]

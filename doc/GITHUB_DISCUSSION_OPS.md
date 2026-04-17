@@ -1,0 +1,65 @@
+# GITHUB_DISCUSSION_OPS
+
+在本机用 GitHub API 维护 Discussions。
+
+前置：
+
+```bash
+export GITHUB_TOKEN='YOUR_PAT'
+```
+
+备注：部分 token 对 `DELETE /repos/.../discussions/{n}` 会返回 **404**，此时用 GraphQL `deleteDiscussion` 更稳。
+
+## 列出讨论
+
+```bash
+curl -sS -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  "https://api.github.com/repos/jiayuwangcj/wbot/discussions?per_page=20"
+```
+
+## 删除讨论（GraphQL）
+
+把 `DISCUSSION_ID` 换成讨论的 `node_id`（可从 list discussions JSON 里读）：
+
+```bash
+DISCUSSION_ID='D_kwDOSFGb3M4AlxMJ'
+
+curl -sS -X POST \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  -H "Content-Type: application/json" \
+  https://api.github.com/graphql \
+  -d "$(jq -n --arg id "$DISCUSSION_ID" '{query:"mutation($id:ID!){ deleteDiscussion(input:{id:$id}){ clientMutationId }}", variables:{id:$id}}')"
+```
+
+## 新建讨论（GraphQL）
+
+需要：
+
+- `repositoryId`：仓库 `node_id`（形如 `R_...`，可在仓库 API JSON 里读）
+- `categoryId`：分类 `node_id`（形如 `DIC_...`，可从任意讨论 JSON 里读）
+
+正文建议直接引用文件：`doc/pinned_discussion_body.md`
+
+```bash
+REPOSITORY_ID='R_kgDOSFGb3A'
+CATEGORY_ID='DIC_kwDOSFGb3M4C7EU5'
+
+jq -n \
+  --arg repo "$REPOSITORY_ID" \
+  --arg cat "$CATEGORY_ID" \
+  --arg title "wbot 协作入口：GitHub 留言驱动" \
+  --arg body "$(cat doc/pinned_discussion_body.md)" \
+  '{query:"mutation($repositoryId:ID!, $categoryId:ID!, $title:String!, $body:String!){ createDiscussion(input:{repositoryId:$repositoryId, categoryId:$categoryId, title:$title, body:$body}){ discussion{ number url } } }", variables:{repositoryId:$repo, categoryId:$cat, title:$title, body:$body}}' \
+| curl -sS -X POST \
+  -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+  -H "Content-Type: application/json" \
+  https://api.github.com/graphql \
+  -d @-
+```
+
+## Pin
+
+GitHub 目前通常需要在网页里手动 **Pin**（若后续 GraphQL 暴露 pin API，再收敛到自动化）。
+
+关联：[[pinned_discussion]] [[pinned_discussion_body]] [[WORKFLOW_GITHUB_DRIVEN]]
