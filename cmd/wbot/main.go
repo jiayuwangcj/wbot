@@ -91,8 +91,12 @@ func runAgent(prog string, argv []string) int {
 	var m master.Facade
 	if strings.TrimSpace(*masterURL) != "" {
 		m = &httpregister.RemoteFacade{
-			Client: &httpregister.Client{BaseURL: *masterURL},
-			Ctx:    ctx,
+			Client: &httpregister.Client{
+				BaseURL:      *masterURL,
+				RetryMax:     2,
+				RetryBackoff: 50 * time.Millisecond,
+			},
+			Ctx: ctx,
 		}
 	} else {
 		m = master.NewMemory()
