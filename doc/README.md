@@ -1,5 +1,7 @@
 # Doc Index
 
+Cursor 侧监督策略（Subagent、串行、5 分钟自检）见仓库根目录 `.cursor/rules/supervisor-subagent.mdc`。
+
 入口与导航：
 
 - [[WORKFLOW]]
