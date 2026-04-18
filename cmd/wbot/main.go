@@ -23,7 +23,8 @@ import (
 	"github.com/jiayu/wbot/internal/poll"
 )
 
-const version = "0.0.0-dev"
+// Set at link time: go build -ldflags "-X main.version=v1.2.3"
+var version = "0.0.0-dev"
 
 func main() {
 	os.Exit(run(os.Args))
