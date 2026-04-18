@@ -1,0 +1,14 @@
+---
+description: After push — if GitHub Actions fails, fetch detail with scripts/ci_failure_detail.sh
+alwaysApply: true
+---
+
+# CI 失败时必须用的脚本
+
+- **触发**：已向远程 **`push`**（或等同触发 Actions）且 **`ci` workflow 未绿**，或需要核对某次 run 的 **failed job / step**。
+- **动作**：在仓库根目录运行 **`scripts/ci_failure_detail.sh`**（REST API，**不依赖** `gh` CLI）。
+  - 默认：当前分支（**`--branch`**，默认 `main`）上 **`.github/workflows/ci.yml`** 的**最新 push run**。
+  - 指定一次失败：**`--run RUN_ID`**（run 页 URL 中的数字 id）。
+  - 拉取失败 job 的日志压缩包：**`--download-logs DIR`**，并设置 **`GITHUB_TOKEN`** 或 **`GH_TOKEN`**。
+- **顺序**：本地仍先跑 **`scripts/verify.sh`**；远程红时**先用本脚本看清哪一步挂**，再改代码与再推送；推送后**再查一次** Actions 或再跑本脚本直到绿。
+- **文档**：`doc/CI_REPORT.md`。

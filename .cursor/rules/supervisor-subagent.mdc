@@ -11,7 +11,7 @@ alwaysApply: true
 
 1. **取任务**：按下方「计划优先级」选出**一条**可执行最小步。
 2. **执行**：实质性实现优先交给 **Subagent**（串行；主会话不堆长实现链）。
-3. **验证**：本地跑 `scripts/verify.sh`（或与 `ci.yml` test job 等价）；推送后以 **GitHub Actions 绿色**为远程闭环（失败则修到绿再继续）。
+3. **验证**：本地跑 `scripts/verify.sh`（或与 `ci.yml` test job 等价）；推送后以 **GitHub Actions 绿色**为远程闭环（失败则修到绿再继续）。远程 **CI 未绿**时，调查失败原因须先用 **`scripts/ci_failure_detail.sh`** 拉取 failed job / step（见 `.cursor/rules/ci-failure-detail.mdc`）。
 4. **落盘**：更新对应 `doc/tasks/*.md`（`updated`、State、`last step`、`Next`）；向 Subagent 派单时应已有该条任务文件，见同文件「任务记录」。
 5. **收口与下一入口**：用户答复保持短；下一小步只从 **`Next` 字段**、计划优先级或**用户新指令**进入（不依赖对话长上下文）。
 
