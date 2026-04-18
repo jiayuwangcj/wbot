@@ -130,7 +130,8 @@ jobs:
       - name: Postgres migrations + ingest integration
         env:
           WBOT_PG_DSN: postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable
-        run: go test ./internal/db/... ./internal/ingest/... -count=1 -race
+        # Serialize packages: both call MigrateUp against one DB; parallel packages can race on schema_migrations / DDL.
+        run: go test ./internal/db/... ./internal/ingest/... -count=1 -race -p 1
 
   # Deterministic Markdown summary only (shell). No LLM APIs.
   ci-summary:
