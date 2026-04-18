@@ -11,4 +11,6 @@
 
 功能切片须 **可被同一套 CI 验证**（见 [[FEATURE_SCOPE]]）；Summary 只是 run 元信息与指向日志的入口，**不替代** `go test` 等门禁。
 
+排查失败 job / step（命令行）：仓库内 **`scripts/ci_failure_detail.sh`**（读取 GitHub Actions API；可选设置 `GITHUB_TOKEN` 或 `GH_TOKEN`）。
+
 关联：[[GITHUB_SETUP]] [[WORKFLOW]] [[README]]
