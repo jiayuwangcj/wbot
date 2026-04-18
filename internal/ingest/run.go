@@ -53,7 +53,8 @@ RETURNING id`, runSource).Scan(&runID)
 
 	const insertBar = `
 INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (symbol, timeframe, ts) DO NOTHING`
 	for _, b := range bars {
 		_, err = tx.ExecContext(ctx, insertBar,
 			string(symbol), timeframe, b.Ts, b.Open, b.High, b.Low, b.Close, b.Volume)

@@ -276,10 +276,12 @@ func runIngestMock(prog string, argv []string) int {
 	source := fs.String("source", "cli-mock", "ingestion source label")
 	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
 	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest mock [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Runs a sample ingestion (mock bars) into PostgreSQL.\n\n")
+		fmt.Fprintf(os.Stderr, "Runs a sample ingestion (mock bars) into PostgreSQL.\n")
+		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -315,12 +317,22 @@ func runIngestMock(prog string, argv []string) int {
 	}
 
 	sym := domain.Symbol(*symbol)
-	ctx := context.Background()
-	if err := ingest.RunMockIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe)); err != nil {
+	ctx, cancel := ingestRepeatCtx(*every)
+	defer cancel()
+	err = ingest.RunEvery(ctx, *every, func(ctx context.Context) error {
+		if err := ingest.RunMockIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe)); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "ingest mock: ok (source=%s symbol=%s timeframe=%s)\n", strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe))
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 0
+		}
 		fmt.Fprintf(os.Stderr, "ingest mock: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "ingest mock: ok (source=%s symbol=%s timeframe=%s)\n", strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe))
 	return 0
 }
 
@@ -334,10 +346,12 @@ func runIngestFile(prog string, argv []string) int {
 	source := fs.String("source", "cli-file", "ingestion source label")
 	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
 	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest file [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Loads OHLCV bars from a JSON file and writes one ingestion run.\n")
+		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT).\n")
 		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
@@ -380,15 +394,32 @@ func runIngestFile(prog string, argv []string) int {
 	}
 
 	sym := domain.Symbol(*symbol)
-	ctx := context.Background()
 	src := ingest.FileSource{Path: fp}
-	if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), src); err != nil {
+	ctx, cancel := ingestRepeatCtx(*every)
+	defer cancel()
+	err = ingest.RunEvery(ctx, *every, func(ctx context.Context) error {
+		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), src); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "ingest file: ok (source=%s symbol=%s timeframe=%s file=%s)\n",
+			strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), fp)
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 0
+		}
 		fmt.Fprintf(os.Stderr, "ingest file: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "ingest file: ok (source=%s symbol=%s timeframe=%s file=%s)\n",
-		strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), fp)
 	return 0
+}
+
+func ingestRepeatCtx(every time.Duration) (context.Context, context.CancelFunc) {
+	if every <= 0 {
+		return context.Background(), func() {}
+	}
+	return signal.NotifyContext(context.Background(), os.Interrupt)
 }
 
 func usageIngest(prog string) {

@@ -53,6 +53,19 @@ SELECT status FROM ingestion_runs WHERE source = $1 ORDER BY id DESC LIMIT 1`, s
 	if st != "succeeded" {
 		t.Fatalf("run status: got %q want succeeded", st)
 	}
+
+	// Second run with identical bars must not fail (ON CONFLICT DO NOTHING).
+	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+		t.Fatal(err)
+	}
+	err = database.QueryRow(`
+SELECT COUNT(*) FROM bars WHERE symbol = $1 AND timeframe = $2`, string(symbol), tf).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 3 {
+		t.Fatalf("bars count after repeat: got %d want 3", n)
+	}
 }
 
 func TestRunFileIngestionIntegration(t *testing.T) {

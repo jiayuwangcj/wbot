@@ -42,6 +42,7 @@ func TestRun(t *testing.T) {
 		{"ingest no sub", []string{"wbot", "ingest"}, 2},
 		{"ingest help", []string{"wbot", "ingest", "-h"}, 0},
 		{"ingest mock no dsn", []string{"wbot", "ingest", "mock"}, 2},
+		{"ingest mock no dsn with every", []string{"wbot", "ingest", "mock", "-every", "1ms"}, 2},
 		{"ingest bad sub", []string{"wbot", "ingest", "nope"}, 2},
 		{"ingest mock help", []string{"wbot", "ingest", "mock", "-h"}, 0},
 		{"ingest file no dsn", []string{"wbot", "ingest", "file", "-file", "/dev/null"}, 2},

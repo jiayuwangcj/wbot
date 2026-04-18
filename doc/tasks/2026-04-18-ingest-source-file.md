@@ -2,7 +2,7 @@
 
 - **id**: `2026-04-18-ingest-source-file`
 - **created**: `2026-04-18`
-- **updated**: `2026-04-18`
+- **updated**: `2026-04-18`（HTTP url 源跟进）
 
 ## Goal
 
@@ -21,8 +21,8 @@
 ## State
 
 - **status**: `done`
-- **last step**: `RunIngestion` + `Source`；`FileSource`（JSON）；`wbot ingest file`；单元测与 `TestRunFileIngestionIntegration`。
+- **last step**: `HTTPSource` + `wbot ingest url`（JSON 与 file 同格式）；`http_test` + `TestRunHTTPIngestionIntegration`。
 
 ## Next
 
-- HTTP(S) mock 源；或调度触发 ingest。
+- 调度：`-every` 已见 `doc/tasks/2026-04-18-ingest-every-schedule.md`；后续可接 Provider 或外部 cron。
