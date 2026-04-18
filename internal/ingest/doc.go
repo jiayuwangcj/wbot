@@ -1,2 +1,2 @@
-// Package ingest implements data ingestion helpers (mock sources and DB writes).
+// Package ingest implements data ingestion helpers (configurable sources and DB writes).
 package ingest

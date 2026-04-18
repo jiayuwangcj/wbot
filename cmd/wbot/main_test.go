@@ -39,6 +39,14 @@ func TestRun(t *testing.T) {
 		{"paper bad side", []string{"wbot", "paper", "-side", "maybe"}, 2},
 		{"agent bad flag", []string{"wbot", "agent", "-notaflag"}, 2},
 		{"unknown", []string{"wbot", "nope"}, 2},
+		{"ingest no sub", []string{"wbot", "ingest"}, 2},
+		{"ingest help", []string{"wbot", "ingest", "-h"}, 0},
+		{"ingest mock no dsn", []string{"wbot", "ingest", "mock"}, 2},
+		{"ingest bad sub", []string{"wbot", "ingest", "nope"}, 2},
+		{"ingest mock help", []string{"wbot", "ingest", "mock", "-h"}, 0},
+		{"ingest file no dsn", []string{"wbot", "ingest", "file", "-file", "/dev/null"}, 2},
+		{"ingest file help", []string{"wbot", "ingest", "file", "-h"}, 0},
+		{"ingest file no path", []string{"wbot", "ingest", "file"}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

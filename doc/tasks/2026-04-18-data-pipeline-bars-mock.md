@@ -25,4 +25,4 @@
 
 ## Next
 
-- 可选：`wbot` 子命令或定时任务触发 ingest；或引入数据源接口与第二个实现（文件/HTTP mock）。
+- 见 `doc/tasks/2026-04-18-wbot-ingest-cli.md`（`wbot ingest mock` 已落地）；后续：数据源抽象、调度或非 mock 拉取。

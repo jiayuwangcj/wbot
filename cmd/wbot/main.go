@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/agent"
+	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
 	"github.com/jiayu/wbot/internal/httpregister"
+	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/master"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
@@ -45,6 +47,8 @@ func run(argv []string) int {
 		return runMaster(argv[0], argv[2:])
 	case "paper":
 		return runPaper(argv[0], argv[2:])
+	case "ingest":
+		return runIngest(argv[0], argv[2:])
 	default:
 		usage(argv)
 		return 2
@@ -243,6 +247,155 @@ func runPaper(prog string, argv []string) int {
 	return 0
 }
 
+func runIngest(prog string, argv []string) int {
+	if len(argv) < 1 {
+		usageIngest(prog)
+		return 2
+	}
+	switch argv[0] {
+	case "-h", "-help", "--help", "help":
+		usageIngest(prog)
+		return 0
+	case "mock":
+		return runIngestMock(prog, argv[1:])
+	case "file":
+		return runIngestFile(prog, argv[1:])
+	default:
+		usageIngest(prog)
+		return 2
+	}
+}
+
+func runIngestMock(prog string, argv []string) int {
+	fs := flag.NewFlagSet("ingest mock", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	source := fs.String("source", "cli-mock", "ingestion source label")
+	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
+	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s ingest mock [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Runs a sample ingestion (mock bars) into PostgreSQL.\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "ingest mock: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest mock: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest mock: migrate: %v\n", err)
+		return 1
+	}
+
+	sym := domain.Symbol(*symbol)
+	ctx := context.Background()
+	if err := ingest.RunMockIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe)); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest mock: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "ingest mock: ok (source=%s symbol=%s timeframe=%s)\n", strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe))
+	return 0
+}
+
+func runIngestFile(prog string, argv []string) int {
+	fs := flag.NewFlagSet("ingest file", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	path := fs.String("file", "", "path to JSON array of bars (required; see -h)")
+	source := fs.String("source", "cli-file", "ingestion source label")
+	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
+	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s ingest file [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Loads OHLCV bars from a JSON file and writes one ingestion run.\n")
+		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	fp := strings.TrimSpace(*path)
+	if fp == "" {
+		fmt.Fprintf(os.Stderr, "ingest file: -file is required\n")
+		return 2
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "ingest file: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest file: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest file: migrate: %v\n", err)
+		return 1
+	}
+
+	sym := domain.Symbol(*symbol)
+	ctx := context.Background()
+	src := ingest.FileSource{Path: fp}
+	if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), src); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest file: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "ingest file: ok (source=%s symbol=%s timeframe=%s file=%s)\n",
+		strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), fp)
+	return 0
+}
+
+func usageIngest(prog string) {
+	fmt.Fprintf(os.Stderr, "Usage: %s ingest <subcommand>\n\n", prog)
+	fmt.Fprintf(os.Stderr, "Subcommands:\n  mock   Insert a mock ingestion run and sample OHLCV bars (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  file   Load bars from a JSON file (-h for flags)\n")
+}
+
 func usage(argv []string) {
 	prog := "wbot"
 	if len(argv) > 0 && argv[0] != "" {
@@ -251,5 +404,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n")
 }
