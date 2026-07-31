@@ -40,6 +40,12 @@ tools: Read, Grep, Glob, Bash
 - 是否有静默 skip（如无 DSN 就 skip 的测试，需确认对应 CI job 提供了 DSN）；smoke 是否覆盖新命令（verify.sh / ci.yml 的 binary smoke 行）
 - 结论：功能 = 代码 + 测试 + CI 可执行性三者齐备才算「完成」；缺任何一环列入发现（通常 P1）
 
+### 5.6 日志与可观测（logging & observability）
+- **服务端/长驻功能的任意功能需有分级日志**：error / warn / info（/ debug 视实现阶段）多等级；仅 stderr 无等级的输出列为差距（P2/排期）
+- **模块关键字**：日志/输出按功能带模块前缀（如 `ingest mock:`、`httpapi:`、`backtest:`），可 grep 定位功能归属；关键字命名一致
+- 关键路径（启动、成功、失败、重试、完成）有可达日志；不打印敏感信息（token/密钥）
+- 验收评审：确认关键功能真的跑到了对应代码——以执行证据（输出/日志/行为）为准，非静态推断
+
 ### 5. API 调用方视角（consumer readiness）
 - **判定是否达到「可使用阶段」**：验收是否全部满足、文档是否齐、有无阻塞使用的缺口
 - 若未达到：站在**调用方**（外部程序/脚本/前端/其他包）角度列出缺口——契约不明确、错误语义含糊、缺示例、参数/响应不符合消费习惯、认证/边界未定义等
@@ -49,7 +55,7 @@ tools: Read, Grep, Glob, Bash
 
 1. 读任务记录（`doc/tasks/` 对应文件）确认 Goal/验收；**若无对应任务记录**（纯文档/配置类改动常见），标注「未找到任务记录」，依 PR 描述/commit message 推导 Goal 并照常产出
 2. 读改动 diff（`git diff` / PR diff）与相关代码、契约文档（doc/API.md、doc/BACKTEST.md、doc/DATA_PIPELINE.md）
-3. 必要时跑验证（`go test`、`scripts/verify.sh`、CLI 冒烟）——只读执行，不改代码
+3. 必要时跑验证（`go test`、`scripts/verify.sh`、CLI 冒烟）——只读执行，不改代码；**并对关键功能执行验证**：跑一次真实路径（命令/测试），用输出、日志或行为作证据，确认真的执行到了对应代码（不静态猜），在报告标注「已验证执行」
 4. 按五角色逐一产出发现，最后汇总
 
 ## 输出格式（结构化报告）
