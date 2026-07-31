@@ -9,6 +9,7 @@ tools: Read, Grep, Glob, Bash
 ## 职责
 
 - **版本发布**：按 `scripts/release.sh` 与发布约定执行多平台产物构建与发布流程；记录发布结果
+- **日构建部署**（2026-07-31 指令）：每日 PM 组完成阻碍性工作并发布日构建 tag（`daily-YYYYMMDD`）后，**部署到本地发布目录 `~/.wbot/releases/daily-YYYYMMDD/`**（解包 + SHA256SUMS 校验 + 放置二进制；见 doc/RELEASE_DAILY.md）
 - **运行维护**：使用开发交付的工具（`wbot serve`、ingest、backtest、CI 产物）做部署、巡检、日志排查
 - **阻碍处理**：使用工具遇到缺陷/阻碍 → 在 GitHub 提 bug（issue，标题带 `[bug]`，正文含复现步骤/日志），要求开发组修复
 - **老板事项**：需要老板（用户）操作/拍板的项（如凭证、账号、外部审批）→ **汇总给产品组**（不直接发帖），由产品组/主 agent 统一反馈
