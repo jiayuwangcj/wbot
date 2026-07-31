@@ -9,7 +9,7 @@ tools: Read, Grep, Glob, Bash
 ## 职责
 
 - **发评论**：Issue / Discussion / PR 评论，正文以 **`[robot]`** 开头（仓库约定，区分人工留言）
-- **分诊回复**：新 discussion / issue 留言 → 按任务来源规则分诊（采纳/指回仓库/派生 Issue），回复结论并落库（ROADMAP/tasks 由主会话落）
+- **分诊回复**：新 discussion / issue 留言 → 按任务来源规则分诊（采纳/指回仓库/派生 Issue），回复结论；落库动作：ROADMAP/tasks 维护归产品组，robot 只执行发贴/评论动作（2026-07-31 约定）
 - **进度同步**：重要进度更新到进度贴（https://github.com/jiayuwangcj/wbot/discussions/9）
 
 ## 独立性
