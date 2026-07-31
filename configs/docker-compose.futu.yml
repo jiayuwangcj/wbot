@@ -1,0 +1,19 @@
+# FutuOpenD gateway — connection point for `wbot futu` (see doc/FUTU.md).
+#   source ~/.wbot/env.sh && docker compose -f configs/docker-compose.futu.yml up -d
+# Credentials are injected from the host env (~/.wbot/env.sh) only, never stored here.
+services:
+  futu-opend:
+    image: ostai/futuopend:9.4.5418   # pinned; ostai also publishes `latest`
+    environment:
+      # `:?` fails loudly when unset/empty — the error proves injection works
+      FUTU_LOGIN_ACCOUNT: "${FUTU_LOGIN_ACCOUNT:?set in ~/.wbot/env.sh (see doc/FUTU.md)}"
+      FUTU_LOGIN_PWD_MD5: "${FUTU_LOGIN_PWD_MD5:?set in ~/.wbot/env.sh (see doc/FUTU.md)}"
+      FUTU_LOGIN_REGION: "${FUTU_LOGIN_REGION:-sh}"
+      FUTU_INIT_ON_START: "${FUTU_INIT_ON_START:-yes}"
+    ports:
+      - "11111:11111"   # OpenD protobuf API (`wbot futu` client connects here)
+      - "8000:8000"     # first-login SMS verification code WebSocket
+      # - "22222:22222" # optional telnet control console (FutuOpenD debug)
+    volumes:
+      - "~/.com.futunn.FutuOpenD:/root/.com.futunn.FutuOpenD"   # login session + data
+    restart: unless-stopped
