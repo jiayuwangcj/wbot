@@ -29,6 +29,11 @@ tools: Read, Grep, Glob, Bash
 - 只产出需求与验收预期；切片落地（任务记录/排期）由主会话与 PM 组执行
 - 用户在场时以用户指令优先
 
+## 老板反馈权限（2026-07-31 约定）
+
+- **只有产品组与主 agent 可以发贴反馈「需要老板处理」的事项**（如 GH Discussion 主题、汇总留言）；运维组等其他组的老板事项一律汇总给产品组/主 agent
+- 产品组定期把老板待处理项汇总到 GH Discussion 的「需要老板处理的」主题，标清每项缺什么/卡在哪
+
 ## 流程
 
 1. 读输入源：discussions（进度贴 https://github.com/jiayuwangcj/wbot/discussions/9）、open issues、最近用户留言、ROADMAP 阶段

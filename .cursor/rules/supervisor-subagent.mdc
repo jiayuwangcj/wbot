@@ -5,16 +5,17 @@ alwaysApply: true
 
 # Supervisor + Subagent（主循环只做监督）
 
-## 根任务循环（固定顺序）
+## 根任务循环（固定顺序，多组并行）
 
-主会话按此顺序重复，直到用户喊停、CI 失败待修、或计划里**没有**下一条可做项：
+主会话与各组合力重复，直到用户喊停、CI 失败待修、或计划里**没有**下一条可做项：
 
-0. **查 GitHub 更新**（每轮第一步）：`gh issue list --state open` + Discussion 按更新时间倒序（graphql `discussions(orderBy: {field: UPDATED_AT, direction: DESC})`）；新帖/新留言先按「任务来源」分诊结案，再取任务；gh 不可用时跳过并注明。
-1. **取任务**：按下方「计划优先级」选出**一条**可执行最小步。
-2. **执行**：实质性实现优先交给 **Subagent**（串行；主会话不堆长实现链）。
-3. **验证**：本地跑 `scripts/verify.sh`（或与 `ci.yml` test job 等价）；推送后以 **GitHub Actions 绿色**为远程闭环（失败则修到绿再继续）。远程 **CI 未绿**时，调查失败原因须先用 **`scripts/ci_failure_detail.sh`** 拉取 failed job / step（见 `.cursor/rules/ci-failure-detail.mdc`）。
-4. **落盘**：更新对应 `doc/tasks/*.md`（`updated`、State、`last step`、`Next`）；向 Subagent 派单时应已有该条任务文件，见同文件「任务记录」。
-5. **收口与下一入口**：用户答复保持短；下一小步只从 **`Next` 字段**、计划优先级或**用户新指令**进入（不依赖对话长上下文）。
+0. **查 GitHub 更新**（每轮第一步，可由 PM 组 manager 代跑）：`gh issue list --state open` + Discussion 按更新时间倒序（graphql `discussions(orderBy: {field: UPDATED_AT, direction: DESC})`）；新帖/新留言先按「任务来源」分诊结案（robot 发分诊回复），再取任务；gh 不可用时跳过并注明。
+1. **取任务与派单（PM 组 manager）**：按下方「计划优先级」选出可执行最小步；新建/更新任务记录（doc/tasks）并向**编码组（coder）**派单。多个可并行任务 → 多个 coder 在不同 worktree 并行。
+2. **执行（编码组 coder）**：实现 + 自测 + 独立分支提交；主会话不堆实现链。
+3. **验证与评审**：verify（verify.sh / CI）由 PM 组跟踪；每个 PR 由**评审组（reviewer）**独立评审（见 `.claude/agents/dev/reviewer.md`）；CI 未绿时用 `scripts/ci_failure_detail.sh` 调查。
+4. **落盘（主会话/PM 组）**：更新对应 `doc/tasks/*.md`（`updated`、State、`last step`、`Next`）。
+5. **合入决策（主会话）**：收评审报告后决定合入/退回/有条件（0 approval 自行评审模式）；merge 逐 PR 串行。
+6. **收口与下一入口**：用户答复保持短；下一小步只从 **`Next` 字段**、计划优先级或**用户新指令**进入（不依赖对话长上下文）。
 
 无可做项时的扫描顺序：**① tasks `running`/`queued` → ② 已落账的 GitHub 工作项 → ③ PLAN_V0 未满足项 → ④ ROADMAP / 长期目标的下一可拆步 → ⑤ `doc/README.md` 导航的开放链路**（与下方「任务来源」「计划优先级」一致）。
 
@@ -62,10 +63,15 @@ alwaysApply: true
 - 以约 **每 5 分钟** 为周期自检：当前子任务是否偏离、是否该收束、下一步最小步是什么。
 - 主循环**不代替** Subagent 写代码，只**判断是否继续、是否回滚、是否拆分**。
 
-## 算力与并行（暂时）
+## 并行协议（2026-07-31 放开并行）
 
-- **不并行**：在资源有限阶段，**不要同时起多个 Subagent / 并行 Task**；队列入队，**串行**执行。
-- 以后若放开并行，再单独改本规则。
+组织与分工见 [[ORGS]]（产品组/开发组/PM 组）。**各角色互相可以并行**：
+
+- **并行单元 = git worktree**：每个进行中任务一个独立 worktree（`.claude/worktrees/<task-slug>`）+ 独立分支；编码 subagent 只在自己的 worktree 工作，互不覆盖
+- 主会话管理 worktree 生命周期与冲突协调；可同时存在多个进行中任务的 worktree（多个 coder 并行）
+- **串行点**：合入（CI + reviewer 评审 + merge 逐 PR）；任务规划时避免多个并行任务重叠同一文件
+- **责任移交**：取任务/派单/verify 跟踪 → PM 组（`pm/manager.md`）；需求衍生 → 产品组（`product/owner.md`）；GitHub 协作 → PM 组（`pm/github-robot.md`，可与编码并行）
+- **主会话首要责任**：保持开发并行继续、暴露运行系统性逻辑问题、合入决策、用户接口
 
 ## 与仓库流程的关系
 
