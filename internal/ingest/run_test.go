@@ -25,8 +25,7 @@ func TestRunIngestion_validation(t *testing.T) {
 	}
 }
 
-// noConnDriver is a driver that never connects; used only to build a non-nil
-// *sql.DB so validation checks past the nil-db guard can be exercised.
+// noConnDriver never connects; it exists so stubDB can bypass the nil-db guard.
 type noConnDriver struct{}
 
 func (noConnDriver) Open(string) (driver.Conn, error) {

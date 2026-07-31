@@ -2,9 +2,7 @@ package backtest
 
 import "fmt"
 
-// CheckMaxDrawdown returns an error when res.MaxDrawdown exceeds limit.
-// limit must be in (0, 1]; the CLI layer only calls this when limit > 0,
-// but the range is re-checked defensively here.
+// CheckMaxDrawdown errors when res.MaxDrawdown exceeds limit; limit must be in (0, 1].
 func CheckMaxDrawdown(res *Result, limit float64) error {
 	if limit <= 0 || limit > 1 {
 		return fmt.Errorf("backtest: invalid max drawdown limit %v", limit)

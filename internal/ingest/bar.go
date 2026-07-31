@@ -19,14 +19,12 @@ type Bar struct {
 	Volume int64
 }
 
-// Source yields OHLCV bars for the given symbol and timeframe. Zero from/to
-// mean unbounded; otherwise bars are restricted to the closed interval [from, to].
+// Source yields OHLCV bars in the closed interval [from, to]; zero from/to are unbounded.
 type Source interface {
 	Bars(ctx context.Context, symbol domain.Symbol, timeframe string, from, to time.Time) ([]Bar, error)
 }
 
-// filterRange keeps bars inside the closed interval [from, to]. Zero from/to
-// impose no bound; the result may be empty when no bar falls in range.
+// filterRange keeps bars in the closed interval [from, to]; zero from/to are unbounded.
 func filterRange(bars []Bar, from, to time.Time) []Bar {
 	out := make([]Bar, 0, len(bars))
 	for _, b := range bars {
@@ -41,10 +39,7 @@ func filterRange(bars []Bar, from, to time.Time) []Bar {
 	return out
 }
 
-// ValidateBars checks basic OHLCV sanity and strictly increasing timestamps.
-// It returns an error naming the index and reason of the first offending bar,
-// e.g. "ingest: validate bars: bar 2: high 1 < low 2". An empty slice is
-// rejected here too, as a double safeguard for callers that already check it.
+// ValidateBars checks OHLCV sanity and strictly increasing ts; errors name the first offending bar.
 func ValidateBars(bars []Bar) error {
 	if len(bars) == 0 {
 		return errors.New("ingest: validate bars: empty bar slice")

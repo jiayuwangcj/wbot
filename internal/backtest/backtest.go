@@ -18,19 +18,10 @@ type Result struct {
 	Bars        int
 }
 
-// buyTol is the float tolerance allowed when validating trade sizes: BuyHold's
-// all-in size is cash/close, and cash-close*size may be off by one ulp.
+// buyTol tolerates one-ulp float error in BuyHold's all-in size (cash/close).
 const buyTol = 1e-9
 
-// Run replays bars in ascending ts order (checked by ingest.ValidateBars),
-// calling the strategy once per bar and settling trades at the bar's close.
-// feePerTrade is a fixed per-trade fee charged on every buy and sell settle
-// (deducted from cash on buys, subtracted from the proceeds on sells);
-// ActionHold settles without a fee. Equity is recorded after every bar;
-// Result.Equity is the final equity, TotalReturn is the relative gain over
-// initialCash, and MaxDrawdown is the largest peak-to-trough drop of the
-// equity curve ((peak-trough)/peak, 0 when the peak is not positive).
-// Over-buy and over-sell are rejected.
+// Run replays bars ascending, calling the strategy once per bar and settling trades at the close.
 func Run(ctx context.Context, bars []ingest.Bar, initialCash float64, feePerTrade float64, s Strategy) (*Result, error) {
 	if len(bars) == 0 {
 		return nil, errors.New("backtest: empty bars")
@@ -104,9 +95,7 @@ type barRecord struct {
 	Volume int64   `json:"volume"`
 }
 
-// ParseBars parses a JSON array of bars in the same format as `ingest bars -json`.
-// It only decodes JSON and timestamps; OHLCV sanity and ordering are checked
-// by Run via ingest.ValidateBars.
+// ParseBars parses a JSON array of bars in `ingest bars -json` format; Run checks sanity/order.
 func ParseBars(data []byte) ([]ingest.Bar, error) {
 	var recs []barRecord
 	if err := json.Unmarshal(data, &recs); err != nil {

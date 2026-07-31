@@ -69,9 +69,7 @@ func TestRunBuyHold(t *testing.T) {
 }
 
 func TestRunFee(t *testing.T) {
-	// Buy-hold with fee=1: one buy of 100 shares at close 100 (cash 10000),
-	// fee 1 deducted at settle -> cash -1, final equity = -1 + 100*121 = 12099.
-	// Hold settles charge no fee, so it costs nothing even at fee=1.
+	// Buy-hold with fee=1: buy 100 at close 100 -> cash -1, final equity 12099 (hold pays no fee).
 	bars := mkBars(100, 110, 121)
 	res, err := Run(context.Background(), bars, 10000, 1, &BuyHoldStrategy{})
 	if err != nil {
@@ -94,8 +92,7 @@ func TestRunFee(t *testing.T) {
 }
 
 func TestRunMaxDrawdown(t *testing.T) {
-	// V-shaped closes 100 -> 50 -> 100 -> 90: equity curve
-	// 10000 -> 5000 -> 10000 -> 9000, drawdown (10000-5000)/10000 = 0.5.
+	// V-shaped closes 100/50/100/90: equity 10000->5000->10000->9000, drawdown 0.5.
 	bars := mkBars(100, 50, 100, 90)
 	res, err := Run(context.Background(), bars, 10000, 0, &BuyHoldStrategy{})
 	if err != nil {
