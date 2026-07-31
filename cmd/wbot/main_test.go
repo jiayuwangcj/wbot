@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -21,7 +22,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jiayu/wbot/internal/httpapi"
 	"github.com/jiayu/wbot/internal/httpregister"
+	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/master"
 )
 
@@ -286,4 +289,129 @@ func freeTCPPort(t *testing.T) int {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// serveFakeStore is a no-data httpapi.Store for serve-mux tests (no DB needed).
+type serveFakeStore struct{}
+
+func (serveFakeStore) QueryBars(context.Context, string, string, time.Time, time.Time, int) ([]ingest.Bar, error) {
+	return nil, nil
+}
+
+func (serveFakeStore) RecentRuns(context.Context, int) ([]ingest.RunStatus, error) {
+	return nil, nil
+}
+
+func (serveFakeStore) RunStatusCounts(context.Context) (ingest.RunCounts, error) {
+	return ingest.RunCounts{}, nil
+}
+
+func (serveFakeStore) BarCoverage(context.Context) ([]ingest.BarCoverage, error) {
+	return nil, nil
+}
+
+func (serveFakeStore) Ping(context.Context) error {
+	return nil
+}
+
+func serveMuxForTest() http.Handler {
+	meta := httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:8080"}
+	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{})
+}
+
+func serveGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	return rec
+}
+
+func TestServeMuxRootRedirectsToUI(t *testing.T) {
+	rec := serveGet(t, serveMuxForTest(), "/")
+	if rec.Code != http.StatusMovedPermanently {
+		t.Fatalf("status = %d; want 301 (body %s)", rec.Code, rec.Body)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/ui/" {
+		t.Fatalf("Location = %q; want /ui/", loc)
+	}
+}
+
+func TestServeMuxRootMethodNotRedirected(t *testing.T) {
+	rec := httptest.NewRecorder()
+	serveMuxForTest().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestServeMuxUIServesPages(t *testing.T) {
+	top := serveMuxForTest()
+	rec := serveGet(t, top, "/ui/")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/ui/: status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("/ui/: content-type = %q; want text/html", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "<title>wbot · Data</title>") {
+		t.Fatalf("/ui/ missing title: %s", rec.Body)
+	}
+	rec = serveGet(t, top, "/ui/admin.html")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<title>wbot · Admin</title>") {
+		t.Fatalf("/ui/admin.html: status = %d body = %s", rec.Code, rec.Body)
+	}
+}
+
+func TestServeMuxUIServesAssets(t *testing.T) {
+	top := serveMuxForTest()
+	tests := []struct {
+		path string
+		ct   string
+	}{
+		{"/ui/style.css", "text/css"},
+		{"/ui/app.js", "text/javascript"},
+	}
+	for _, tt := range tests {
+		rec := serveGet(t, top, tt.path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d; want 200 (body %s)", tt.path, rec.Code, rec.Body)
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, tt.ct) {
+			t.Fatalf("%s: content-type = %q; want %s prefix", tt.path, ct, tt.ct)
+		}
+	}
+	rec := serveGet(t, top, "/ui/nope.txt")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("/ui/nope.txt: status = %d; want 404 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestServeMuxAPIRegression(t *testing.T) {
+	top := serveMuxForTest()
+	tests := []struct {
+		path string
+		want int
+	}{
+		{"/v1/bars", http.StatusBadRequest}, // missing symbol/timeframe
+		{"/v1/runs", http.StatusOK},
+		{"/v1/health", http.StatusOK},
+		{"/v1/nope", http.StatusNotFound},
+	}
+	for _, tt := range tests {
+		rec := serveGet(t, top, tt.path)
+		if rec.Code != tt.want {
+			t.Fatalf("%s: status = %d; want %d (body %s)", tt.path, rec.Code, tt.want, rec.Body)
+		}
+	}
+	rec := serveGet(t, top, "/v1/nope")
+	var errBody map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] == "" {
+		t.Fatalf("/v1/nope body %q; want JSON error", rec.Body)
+	}
+}
+
+func TestServeHelpMentionsWebUI(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "/ui/") {
+		t.Fatalf("serve help missing /ui/: %q", out)
+	}
 }
