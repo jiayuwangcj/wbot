@@ -106,6 +106,16 @@ func TestRunRequiresDSN(t *testing.T) {
 }
 
 func TestServeHelpMentionsAdminEndpoints(t *testing.T) {
+	out := serveHelpOutput(t)
+	for _, want := range []string{"/v1/admin/status", "/v1/admin/cluster"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("serve help missing %s: %q", want, out)
+		}
+	}
+}
+
+func serveHelpOutput(t *testing.T) string {
+	t.Helper()
 	old := os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -122,11 +132,7 @@ func TestServeHelpMentionsAdminEndpoints(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run() = %d; want 0", code)
 	}
-	for _, want := range []string{"/v1/admin/status", "/v1/admin/cluster"} {
-		if !strings.Contains(string(out), want) {
-			t.Fatalf("serve help missing %s: %q", want, out)
-		}
-	}
+	return string(out)
 }
 
 // TestServeReportsActualListenAddr: with -listen 127.0.0.1:0 serve must report the
@@ -198,6 +204,18 @@ func TestServeReportsActualListenAddr(t *testing.T) {
 	}
 	if got["listen_addr"] != addr {
 		t.Fatalf("listen_addr = %v; want %q", got["listen_addr"], addr)
+	}
+}
+
+func TestServeHelpMentionsAdminStatus(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/admin/status") {
+		t.Fatalf("serve help missing /v1/admin/status: %q", out)
+	}
+}
+
+func TestServeHelpMentionsAdminConfig(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/admin/config") {
+		t.Fatalf("serve help missing /v1/admin/config: %q", out)
 	}
 }
 

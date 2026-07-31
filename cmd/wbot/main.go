@@ -16,6 +16,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/agent"
 	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/config"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
 	"github.com/jiayu/wbot/internal/httpapi"
@@ -221,8 +222,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API: GET /v1/bars, GET /v1/runs, GET /v1/health,\n")
-		fmt.Fprintf(os.Stderr, "  GET /v1/admin/status, GET /v1/admin/cluster.\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the API: GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config.\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -271,8 +271,15 @@ func runServe(prog string, argv []string) int {
 	store := httpapi.NewDBStore(database)
 	top := http.NewServeMux()
 	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, httpapi.PingerFunc(database.PingContext)))
-	// Exact pattern wins over the /v1/admin/ subtree, so cluster keeps its own handler mux.
+	// Exact pattern wins over the /v1/admin/ subtree, so cluster/config keep their own handler muxes.
 	top.Handle("/v1/admin/cluster", httpapi.ClusterHandler(meta, store))
+	if cstore, err := config.OpenDefault(); err != nil {
+		fmt.Fprintf(os.Stderr, "httpapi: admin: config: %v\n", err)
+	} else {
+		cfg := httpapi.ConfigHandler(cstore)
+		top.Handle("/v1/admin/config", cfg)
+		top.Handle("/v1/admin/config/", cfg)
+	}
 	top.Handle("/", httpapi.Handler(store))
 	srv := &http.Server{Handler: top}
 
