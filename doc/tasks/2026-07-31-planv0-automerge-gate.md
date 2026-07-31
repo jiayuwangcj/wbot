@@ -20,10 +20,11 @@
 ## State
 
 - **status**: `done`
-- **last step**: 用 `gh api`（用户已认证 token）设置：
-  - 分支保护 `PUT /branches/main/protection`：`enforce_admins=true`、必需 checks `ci / test`、`ci / db-integration`、`ci / governance`（strict）、`required_approving_review_count=1`、禁止 force push/删除。
-  - 仓库设置 `PATCH /repos/wbot`：`allow_auto_merge=true`。
-  - 验证：`GET /branches/main/protection` 确认 contexts/approvals/enforce_admins 生效。
+- **last step**（含后续变更，2026-07-31）:
+  - 初始：分支保护 `PUT /branches/main/protection`——`enforce_admins=true`、必需 checks（初设 `ci / test` 等带 workflow 前缀，**后修正为 job 名** `test`/`db-integration`/`governance`，strict）、`required_approving_review_count=1`、禁 force push/删除；仓库 `PATCH` `allow_auto_merge=true`。
+  - **变更 A（用户授权自行评审）**：approval 1 → 0。先试 `required_approving_review_count=0`（GitHub 语义异常，PR 仍 BLOCKED），最终 `required_pull_request_reviews=null`（无 review 要求）。
+  - **变更 B（context 修正）**：必需 checks 从 `ci / <job>` 改为 `<job>` 名（check run 名不带 workflow 前缀；`ci / test` 写法导致 PR 永远 BLOCKED，PR #11 即因此卡住，修正后 auto-merge 立即合入）。
+  - 复核（2026-07-31，gh 认证修复后 GET）：`enforce_admins=true`、contexts `[test, db-integration, governance]`、strict、`reviews=null`、force_pushes=false；分支保护层 `allow_auto_merge=null`（仓库级已开，PR #11 auto-merge 实际生效验证）。
   - 备注：merge 方法字段（squash-only）API 返回 null（token 读取权限限制），为推荐项非验收必需，留待有权限时设置。
 
 ## Next

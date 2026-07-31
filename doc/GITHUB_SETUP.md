@@ -1,11 +1,11 @@
 # GitHub Setup for Auto-Merge
 
-`main` 分支建议开启：
+`main` 分支保护（**已启用**，2026-07-31）：
 
-- PR 才能合入
-- 至少 1 个 approval
-- 必需 checks：`ci / test`、`ci / db-integration`、`ci / governance`（数据管道落地后建议把 **db-integration** 一并设为必需）
-- 开启 `Allow auto-merge`
+- PR 才能合入（直接 push 被拒，`GH006`）
+- **0 approval（单用户仓库）**：PR 全绿后由 **reviewer subagent**（`.claude/agents/reviewer.md`）多角色评审，通过即合（用户已授权自行评审，2026-07-31）
+- 必需 checks：`test`、`db-integration`、`governance`（strict；context 用 job 名，不带 workflow 前缀）
+- `Allow auto-merge` 已开启（`gh api` PATCH 仓库设置）
 
 推荐：
 
