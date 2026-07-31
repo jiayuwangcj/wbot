@@ -5,6 +5,8 @@
 ## 状态
 
 - [[PLAN_V0]] 已完成：自动化与治理基线
+- v1 已完成：数据管道（拉取/落地 PostgreSQL/校验/查询/导出/调度韧性），见 `doc/tasks/2026-04-18-*`、`2026-07-31-ingest-*`（产品组 2026-07-31 整理归档，issue #1/#2 已关）
+- v2 主体已完成：回测运行器、约束、费用占位、DSN 输入；多 symbol 时间对齐设计 `blocked`（待拍板，见 `doc/tasks/2026-07-31-backtest-multisymbol-design.md`）
 
 ## 工作优先级（路线）
 
