@@ -30,9 +30,9 @@
 
 ## State
 
-- **status**: `running`
-- **last step**: 2026-07-31 dispatcher 派单；worktree `.claude/worktrees/miniapp-health`（分支 `feat/miniapp-health`）已建。
+- **status**: `done`
+- **last step**: PR #24 合入（main，2026-07-31）；评审 P2 项由 PR #27 修复（serve 帮助文本 + 失败日志）。验收 6 条全部满足（CI 全绿 + reviewer approve）。
 
 ## Next
 
-- coder 实现 → verify → PR → CI 绿 → reviewer 评审 → 主会话合入 → 本记录 `done` + target 切片③ 标记完成。
+- 无。target 切片③ 已标记 ✅。
