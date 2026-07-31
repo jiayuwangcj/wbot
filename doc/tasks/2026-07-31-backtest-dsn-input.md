@@ -27,4 +27,4 @@
 
 ## Next
 
-- 已无（任务完成）；由主会话 commit + push → CI 闭环。
+- 已完成：commit `60ae95e` push 后 run `30621162775` CI **绿**，闭环。后续：手续费占位、多 symbol 时间对齐、小程序前端（blocked）、券商持仓（blocked）。

@@ -351,12 +351,14 @@ func runBacktest(prog string, argv []string) int {
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
+	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
 	strategy := fs.String("strategy", "hold", "strategy to run: hold or buy-hold")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file (-file) or directly from the\n")
 		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
+		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-timeframe/-from/-to/-limit apply to -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "Each JSON element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
 		fs.SetOutput(os.Stderr)
@@ -440,7 +442,7 @@ func runBacktest(prog string, argv []string) int {
 		}
 	}
 
-	res, err := backtest.Run(context.Background(), bars, *cash, s)
+	res, err := backtest.Run(context.Background(), bars, *cash, *fee, s)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 		return 1

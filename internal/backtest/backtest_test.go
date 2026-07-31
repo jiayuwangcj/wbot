@@ -40,7 +40,7 @@ func (s stubStrategy) OnBar(_ context.Context, _ ingest.Bar, _ *State) (Action, 
 
 func TestRunHold(t *testing.T) {
 	bars := mkBars(100, 110, 90, 105)
-	res, err := Run(context.Background(), bars, 10000, HoldStrategy{})
+	res, err := Run(context.Background(), bars, 10000, 0, HoldStrategy{})
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestRunHold(t *testing.T) {
 
 func TestRunBuyHold(t *testing.T) {
 	bars := mkBars(100, 110, 121)
-	res, err := Run(context.Background(), bars, 10000, &BuyHoldStrategy{})
+	res, err := Run(context.Background(), bars, 10000, 0, &BuyHoldStrategy{})
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -68,11 +68,36 @@ func TestRunBuyHold(t *testing.T) {
 	}
 }
 
+func TestRunFee(t *testing.T) {
+	// Buy-hold with fee=1: one buy of 100 shares at close 100 (cash 10000),
+	// fee 1 deducted at settle -> cash -1, final equity = -1 + 100*121 = 12099.
+	// Hold settles charge no fee, so it costs nothing even at fee=1.
+	bars := mkBars(100, 110, 121)
+	res, err := Run(context.Background(), bars, 10000, 1, &BuyHoldStrategy{})
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if math.Abs(res.Equity-12099) > 1e-9 {
+		t.Fatalf("Run().Equity = %v; want ~12099", res.Equity)
+	}
+	if res.Bars != 3 {
+		t.Fatalf("Run() = %+v; want Bars 3", res)
+	}
+
+	resHold, err := Run(context.Background(), bars, 10000, 1, HoldStrategy{})
+	if err != nil {
+		t.Fatalf("Run() hold error: %v", err)
+	}
+	if resHold.Equity != 10000 || resHold.TotalReturn != 0 {
+		t.Fatalf("Run() hold = %+v; want Equity 10000, TotalReturn 0 (hold settles charge no fee)", resHold)
+	}
+}
+
 func TestRunMaxDrawdown(t *testing.T) {
 	// V-shaped closes 100 -> 50 -> 100 -> 90: equity curve
 	// 10000 -> 5000 -> 10000 -> 9000, drawdown (10000-5000)/10000 = 0.5.
 	bars := mkBars(100, 50, 100, 90)
-	res, err := Run(context.Background(), bars, 10000, &BuyHoldStrategy{})
+	res, err := Run(context.Background(), bars, 10000, 0, &BuyHoldStrategy{})
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
@@ -90,18 +115,20 @@ func TestRunValidation(t *testing.T) {
 		name    string
 		bars    []ingest.Bar
 		cash    float64
+		fee     float64
 		s       Strategy
 		wantErr string
 	}{
-		{"empty bars", nil, 10000, HoldStrategy{}, "backtest: empty bars"},
-		{"zero cash", mkBars(100), 0, HoldStrategy{}, "initial cash must be > 0"},
-		{"negative cash", mkBars(100), -1, HoldStrategy{}, "initial cash must be > 0"},
-		{"nil strategy", mkBars(100), 10000, nil, "backtest: nil strategy"},
-		{"invalid bars passthrough", badBars, 10000, HoldStrategy{}, "ingest: validate bars"},
+		{"empty bars", nil, 10000, 0, HoldStrategy{}, "backtest: empty bars"},
+		{"zero cash", mkBars(100), 0, 0, HoldStrategy{}, "initial cash must be > 0"},
+		{"negative cash", mkBars(100), -1, 0, HoldStrategy{}, "initial cash must be > 0"},
+		{"negative fee", mkBars(100), 10000, -1, HoldStrategy{}, "backtest: negative fee"},
+		{"nil strategy", mkBars(100), 10000, 0, nil, "backtest: nil strategy"},
+		{"invalid bars passthrough", badBars, 10000, 0, HoldStrategy{}, "ingest: validate bars"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Run(context.Background(), tt.bars, tt.cash, tt.s)
+			_, err := Run(context.Background(), tt.bars, tt.cash, tt.fee, tt.s)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Run() error = %v; want containing %q", err, tt.wantErr)
 			}
@@ -122,7 +149,7 @@ func TestRunTradeValidation(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Run(context.Background(), mkBars(100), 10000, tt.s)
+			_, err := Run(context.Background(), mkBars(100), 10000, 0, tt.s)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("Run() error = %v; want containing %q", err, tt.wantErr)
 			}
@@ -132,7 +159,7 @@ func TestRunTradeValidation(t *testing.T) {
 
 func TestRunStrategyError(t *testing.T) {
 	want := errors.New("boom")
-	_, err := Run(context.Background(), mkBars(100), 10000, stubStrategy{err: want})
+	_, err := Run(context.Background(), mkBars(100), 10000, 0, stubStrategy{err: want})
 	if err == nil || !errors.Is(err, want) {
 		t.Fatalf("Run() error = %v; want wrapping %v", err, want)
 	}
@@ -141,7 +168,7 @@ func TestRunStrategyError(t *testing.T) {
 func TestRunContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := Run(ctx, mkBars(100, 110), 10000, HoldStrategy{})
+	_, err := Run(ctx, mkBars(100, 110), 10000, 0, HoldStrategy{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() error = %v; want context.Canceled", err)
 	}

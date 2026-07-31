@@ -24,16 +24,22 @@ const buyTol = 1e-9
 
 // Run replays bars in ascending ts order (checked by ingest.ValidateBars),
 // calling the strategy once per bar and settling trades at the bar's close.
-// Equity is recorded after every bar; Result.Equity is the final equity,
-// TotalReturn is the relative gain over initialCash, and MaxDrawdown is the
-// largest peak-to-trough drop of the equity curve ((peak-trough)/peak, 0 when
-// the peak is not positive). Over-buy and over-sell are rejected.
-func Run(ctx context.Context, bars []ingest.Bar, initialCash float64, s Strategy) (*Result, error) {
+// feePerTrade is a fixed per-trade fee charged on every buy and sell settle
+// (deducted from cash on buys, subtracted from the proceeds on sells);
+// ActionHold settles without a fee. Equity is recorded after every bar;
+// Result.Equity is the final equity, TotalReturn is the relative gain over
+// initialCash, and MaxDrawdown is the largest peak-to-trough drop of the
+// equity curve ((peak-trough)/peak, 0 when the peak is not positive).
+// Over-buy and over-sell are rejected.
+func Run(ctx context.Context, bars []ingest.Bar, initialCash float64, feePerTrade float64, s Strategy) (*Result, error) {
 	if len(bars) == 0 {
 		return nil, errors.New("backtest: empty bars")
 	}
 	if initialCash <= 0 {
 		return nil, errors.New("backtest: initial cash must be > 0")
+	}
+	if feePerTrade < 0 {
+		return nil, errors.New("backtest: negative fee")
 	}
 	if s == nil {
 		return nil, errors.New("backtest: nil strategy")
@@ -59,13 +65,13 @@ func Run(ctx context.Context, bars []ingest.Bar, initialCash float64, s Strategy
 			if size < 0 || size*b.Close > st.Cash+buyTol {
 				return nil, fmt.Errorf("backtest: bar %d: buy %v shares at close %v exceeds cash %v", i, size, b.Close, st.Cash)
 			}
-			st.Cash -= size * b.Close
+			st.Cash -= size*b.Close + feePerTrade
 			st.Position += size
 		case ActionSell:
 			if size < 0 || size > st.Position+buyTol {
 				return nil, fmt.Errorf("backtest: bar %d: sell %v shares exceeds position %v", i, size, st.Position)
 			}
-			st.Cash += size * b.Close
+			st.Cash += size*b.Close - feePerTrade
 			st.Position -= size
 		default:
 			return nil, fmt.Errorf("backtest: bar %d: unknown action %d", i, act)
