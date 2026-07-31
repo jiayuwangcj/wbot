@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -162,6 +163,7 @@ func Handler(store Store) http.Handler {
 			return
 		}
 		if err := store.Ping(r.Context()); err != nil {
+			fmt.Fprintf(os.Stderr, "httpapi: health ping failed: %v\n", err)
 			writeError(w, http.StatusServiceUnavailable, "database unavailable")
 			return
 		}
