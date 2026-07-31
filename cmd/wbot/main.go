@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -605,10 +606,12 @@ func runIngestBars(prog string, argv []string) int {
 	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	limit := fs.Int("limit", 100, "maximum number of bars to show")
+	jsonOut := fs.Bool("json", false, "print bars as a JSON array (same format as `ingest file`)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest bars [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Shows ingested OHLCV bars for a symbol/timeframe (read-only).\n\n")
+		fmt.Fprintf(os.Stderr, "Shows ingested OHLCV bars for a symbol/timeframe (read-only).\n")
+		fmt.Fprintf(os.Stderr, "With -json, output can round-trip into `ingest file -file` for diffing.\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -658,6 +661,27 @@ func runIngestBars(prog string, argv []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ingest bars: %v\n", err)
 		return 1
+	}
+	if *jsonOut {
+		type barJSON struct {
+			Ts     string  `json:"ts"`
+			Open   float64 `json:"open"`
+			High   float64 `json:"high"`
+			Low    float64 `json:"low"`
+			Close  float64 `json:"close"`
+			Volume int64   `json:"volume"`
+		}
+		out := make([]barJSON, 0, len(bars))
+		for _, b := range bars {
+			out = append(out, barJSON{b.Ts.Format(time.RFC3339), b.Open, b.High, b.Low, b.Close, b.Volume})
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(out); err != nil {
+			fmt.Fprintf(os.Stderr, "ingest bars: json: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	for _, b := range bars {
 		fmt.Printf("%s %v %v %v %v %d\n", b.Ts.Format(time.RFC3339), b.Open, b.High, b.Low, b.Close, b.Volume)

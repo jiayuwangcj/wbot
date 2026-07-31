@@ -58,6 +58,7 @@ func TestRun(t *testing.T) {
 		{"ingest bars help", []string{"wbot", "ingest", "bars", "-h"}, 0},
 		{"ingest bars no dsn", []string{"wbot", "ingest", "bars"}, 2},
 		{"ingest bars bad from", []string{"wbot", "ingest", "bars", "-from", "not-a-time"}, 2},
+		{"ingest bars json no dsn", []string{"wbot", "ingest", "bars", "-json"}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

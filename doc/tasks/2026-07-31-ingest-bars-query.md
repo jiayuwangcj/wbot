@@ -27,4 +27,4 @@
 
 ## Next
 
-- `internal/ingest/` 新增查询函数（如 `QueryBars(ctx, db, symbol, timeframe string, from, to time.Time, limit int) ([]Bar, error)`）：SQL `SELECT ts, open, high, low, close, volume FROM bars WHERE symbol=$1 AND timeframe=$2 [AND ts>=$3] [AND ts<=$4] ORDER BY ts ASC LIMIT $5`（动态条件切片拼参数）；校验：symbol/timeframe 空、from>to（均非零）、limit<=0。`cmd/wbot/main.go` 加 `case "bars"` + `runIngestBars`（`-dsn`/`-symbol` 默认 DEMO.US/`-timeframe` 1d/`-from`/`-to`/`-limit` 默认 100；无 dsn → 2；stdout 每行 `ts open high low close volume` RFC3339）；usage 加 bars 行。测试：校验单测（limit/from>to/空 symbol，参考 `status_test.go` 模式）、`main_test.go` 加 `ingest bars help → 0`/`bars no dsn → 2`/`bars bad from → 2`、集成测 `TestQueryBarsIntegration`（mock 后查 3 条、范围过滤、limit）。`scripts/verify.sh` 绿 → commit + push → CI 绿闭环。
+- 已完成：commit `07b9381` push 后 run `30618802539` CI **绿**，闭环。后续候选：`ingest bars -json` 导出（与 file 源互逆可 diff，v1「导出比对」收尾）、Provider 抽象（待用户拍板是否发 GitHub）。
