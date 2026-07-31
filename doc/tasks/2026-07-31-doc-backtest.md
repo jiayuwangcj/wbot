@@ -25,4 +25,4 @@
 
 ## Next
 
-- commit + push + CI 绿即闭环。后续：多 symbol 时间对齐（需设计拆解，写草稿）。
+- 已完成：commit `dfb7c90` push 后 run `30621816501` CI **绿**，闭环。后续：多 symbol 时间对齐（已落 `doc/tasks/2026-07-31-backtest-multisymbol-design.md`，blocked 等拍板）。
