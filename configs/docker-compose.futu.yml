@@ -11,8 +11,9 @@ services:
       FUTU_LOGIN_REGION: "${FUTU_LOGIN_REGION:-sh}"
       FUTU_INIT_ON_START: "${FUTU_INIT_ON_START:-yes}"
     ports:
-      - "11111:11111"   # OpenD protobuf API (`wbot futu` client connects here)
-      - "8000:8000"     # first-login SMS verification code WebSocket
+      # Loopback only: OpenD API/WS have no auth; expose via proxy for remote access.
+      - "127.0.0.1:11111:11111"   # OpenD protobuf API (`wbot futu` client connects here)
+      - "127.0.0.1:8000:8000"     # first-login SMS verification code WebSocket
       # - "22222:22222" # optional telnet control console (FutuOpenD debug)
     volumes:
       - "~/.com.futunn.FutuOpenD:/root/.com.futunn.FutuOpenD"   # login session + data
