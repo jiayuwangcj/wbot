@@ -51,6 +51,8 @@ func TestRun(t *testing.T) {
 		{"ingest url help", []string{"wbot", "ingest", "url", "-h"}, 0},
 		{"ingest url no dsn", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json"}, 2},
 		{"ingest url no url", []string{"wbot", "ingest", "url"}, 2},
+		{"ingest status help", []string{"wbot", "ingest", "status", "-h"}, 0},
+		{"ingest status no dsn", []string{"wbot", "ingest", "status"}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

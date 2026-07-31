@@ -120,3 +120,48 @@ SELECT status FROM ingestion_runs WHERE source = $1 ORDER BY id DESC LIMIT 1`, s
 		t.Fatalf("run status: got %q want succeeded", st)
 	}
 }
+
+func TestRecentRunsIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	source := "status-test"
+	symbol := domain.Symbol("STATUS.US")
+	tf := "1d"
+	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+		t.Fatal(err)
+	}
+
+	runs, err := RecentRuns(ctx, database, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) == 0 {
+		t.Fatal("RecentRuns: got 0 runs")
+	}
+	latest := runs[0]
+	if latest.Source != source {
+		t.Fatalf("latest run source: got %q want %q", latest.Source, source)
+	}
+	if latest.Status != "succeeded" {
+		t.Fatalf("latest run status: got %q want succeeded", latest.Status)
+	}
+	if latest.FinishedAt == nil {
+		t.Fatal("latest run FinishedAt: got nil, want finished timestamp")
+	}
+
+	if _, err := RecentRuns(ctx, database, 0); err == nil {
+		t.Fatal("RecentRuns with limit 0: expected error")
+	}
+}

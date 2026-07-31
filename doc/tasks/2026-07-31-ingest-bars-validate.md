@@ -27,4 +27,4 @@
 
 ## Next
 
-- `internal/ingest/bar.go` 新增校验（如 `ValidateBars(bars []Bar) error`）：空数组拒绝（run.go 已有 no bars 检查可合并或保留）；每条 bar 校验 OHLC 关系与 ts 非零；相邻 bar ts 严格递增；错误含索引与原因。`run.go` 的 `RunIngestion` 在取 bars 后、开事务前调用。单元测（新 `bar_test.go` 或校验测试文件）覆盖：合法序列通过；high < low、high < open/close、low > open/close、重复 ts、乱序 ts、空数组各拒绝。`scripts/verify.sh` 绿 → commit + push → CI 绿闭环。
+- 已完成：commit `79f9157` push 后 run `30615661043` CI **绿**，闭环。后续可接数据源 Provider 抽象、`ingest` 状态查询（可观测性）、时间范围参数、外部 cron 文档化。

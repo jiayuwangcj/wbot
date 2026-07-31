@@ -263,6 +263,8 @@ func runIngest(prog string, argv []string) int {
 		return runIngestFile(prog, argv[1:])
 	case "url":
 		return runIngestURL(prog, argv[1:])
+	case "status":
+		return runIngestStatus(prog, argv[1:])
 	default:
 		usageIngest(prog)
 		return 2
@@ -502,6 +504,66 @@ func runIngestURL(prog string, argv []string) int {
 	return 0
 }
 
+func runIngestStatus(prog string, argv []string) int {
+	fs := flag.NewFlagSet("ingest status", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	limit := fs.Int("limit", 10, "number of most recent runs to show")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s ingest status [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Lists the most recent ingestion runs (read-only).\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "ingest status: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest status: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest status: migrate: %v\n", err)
+		return 1
+	}
+
+	runs, err := ingest.RecentRuns(context.Background(), database, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest status: %v\n", err)
+		return 1
+	}
+	for _, r := range runs {
+		finished := "-"
+		if r.FinishedAt != nil {
+			finished = r.FinishedAt.Format(time.RFC3339)
+		}
+		fmt.Printf("%d %s %s %s %s\n", r.ID, r.Source, r.Status, r.StartedAt.Format(time.RFC3339), finished)
+	}
+	return 0
+}
+
 func ingestRepeatCtx(every time.Duration) (context.Context, context.CancelFunc) {
 	if every <= 0 {
 		return context.Background(), func() {}
@@ -514,6 +576,7 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "Subcommands:\n  mock   Insert a mock ingestion run and sample OHLCV bars (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  file   Load bars from a JSON file (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  url    Load bars from a JSON URL (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  status Show recent ingestion runs (-h for flags)\n")
 }
 
 func usage(argv []string) {
