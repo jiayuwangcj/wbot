@@ -150,3 +150,64 @@ func TestAppJSQueriesDataAPI(t *testing.T) {
 		}
 	}
 }
+
+func TestAdminPageSections(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`<section id="status"`,
+		`<section id="cluster"`,
+		`<section id="config"`,
+		`id="status-error"`,
+		`id="cluster-error"`,
+		`id="config-error"`,
+		`id="config-table"`,
+		`id="cluster-cards"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin.html missing %q", want)
+		}
+	}
+}
+
+func TestAdminPageReadOnly(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "<form") {
+		t.Fatal("admin.html contains a form; admin page must be read-only")
+	}
+}
+
+func TestAppJSQueriesAdminAPI(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{`"/v1/admin/status`, `"/v1/admin/cluster`, `"/v1/admin/config`} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+func TestConfigMetadataOnly(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{"c.key", "c.group", "c.set", "c.updated_at"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing config metadata access %q", want)
+		}
+	}
+	if strings.Contains(js, "c.value") {
+		t.Fatal("app.js renders config values (PRIVACY red line)")
+	}
+}
