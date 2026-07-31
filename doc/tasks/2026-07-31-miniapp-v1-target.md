@@ -31,7 +31,7 @@
 
 - 老板反馈主题：[discussions/21「需要老板处理的」](https://github.com/jiayuwangcj/wbot/discussions/21)
 - 需求源：[discussions/10](https://github.com/jiayuwangcj/wbot/discussions/10)
-- [[ROADMAP]] v3（Go API + embedded React，后台管理前端可复用此路线）、v4（微信小程序优先级已提高）
+- [[ROADMAP]] v4（Go API + go:embed Web UI，后台管理前端可复用此路线；微信小程序优先级已提高）
 - [[PRIVACY]]（微信 token 放 `~/.wbot/`，配置值永不入库）
 
 ## State
