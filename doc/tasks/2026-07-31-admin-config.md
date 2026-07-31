@@ -38,7 +38,7 @@
 
 ## State
 
-- **status**: `queued`
+- **status**: `done`
 - **last step**: dispatcher 建记录（2026-07-31 off-peak 排单；⑥-A 已合入，fix/admin-status-p2 评审中不影响本任务）
 
 ## Next

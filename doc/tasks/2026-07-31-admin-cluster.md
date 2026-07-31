@@ -42,7 +42,7 @@
 
 ## State
 
-- **status**: `queued`
+- **status**: `done`
 - **last step**: dispatcher 建记录（2026-07-31 off-peak 排单；⑥-A 已合入满足依赖条件）
 
 ## Next
