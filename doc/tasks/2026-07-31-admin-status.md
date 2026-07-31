@@ -28,9 +28,9 @@
 
 ## State
 
-- **status**: `running`（实现完成，待 CI/评审/合入）
-- **last step**: coder 完成并 push commit `7e5bb88`（`feat/httpapi: add GET /v1/admin/status runtime status endpoint`）至 `origin/feat/admin-status`。改动：`internal/httpapi/admin.go`（新增，`AdminHandler(meta ProcessMeta, pinger Pinger)`，Pinger 小接口 + PingerFunc 适配，未改 httpapi.go 的 Store 接口）、`admin_test.go`（httptest：字段齐全/db ok/down 两态/405/404/3s 超时断言/组合路由）、`admin_integration_test.go`（真 PG 断言 db.ok==true，无 DSN skip）、`cmd/wbot/main.go`（runServe 注入 ProcessMeta、顶层 mux 挂 /v1/admin/）、`main_test.go`（serve -h 输出含 /v1/admin/status）、`doc/API.md`（新章节 + PRIVACY 说明）。本地验证（coder 报告）：`go test ./... -count=1` 13 包绿、`go vet ./...` 干净、`scripts/verify.sh` → `verify: ok`、PRIVACY 扫描零命中；集成测本地无 PG 未跑（留 CI db-integration）。dispatcher 已核验：commit 已 push、diff 6 文件 354+/2-、无越界文件。
+- **status**: `done`（PR #33 已合入 origin/main）
+- **last step**: PR #33（feat/admin-status → main）CI 绿、reviewer 评审通过后由主会话合入 origin/main（merge commit `92ef989`）；`doc/API.md` 已含 GET /v1/admin/status 章节。评审遗留 2 项排期前注意事项已转 ⑥-C（见 `doc/tasks/2026-07-31-admin-cluster.md`）：① Pinger 与 Store.Ping 收敛复用（⑥-C 时决定）；② listen_addr 建议注入实际绑定地址 `ln.Addr()` 而非配置值（现 main.go `ListenAddr: *listen`，`-listen 127.0.0.1:0` 会误报）。评审 P2 修复已在 `fix/admin-status-p2`（PR #34 评审中：ping 超时强制 + pctx 断言 ok:false，admin.go/admin_test.go 各 1 文件，未动 main.go）。
 
 ## Next
 
-主会话：开 PR（feat/admin-status → main，Driven-By 锚点）→ CI（test + db-integration）绿 → reviewer 独立评审（PRIVACY 扫描必查、待拍板项 #3 DB down 语义复核 200+ok:false、Pinger/health 合入兼容）→ 合入 → 本记录置 done、落盘。之后按 draft 建议派 ⑥-C 与 ⑥-B 并行（新端点继续入 admin.go 各段注册）。
+落盘完成。⑥-B（`doc/tasks/2026-07-31-admin-config.md`）与 ⑥-C（`doc/tasks/2026-07-31-admin-cluster.md`）已由 dispatcher 排单（queued，可并行）：各自独立 worktree（admin-config → feat/admin-config；admin-cluster → feat/admin-cluster，base origin/main），端点各入新文件、main.go 顶层 mux 追加注册降低冲突；合入串行由主会话协调。PR #34（fix/admin-status-p2）评审通过后合入，⑥-C 编码时注意不得与其在 admin.go 上冲突（P2 改的是 ping 分支）。
