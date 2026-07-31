@@ -85,4 +85,21 @@ func TestHandlerIntegration(t *testing.T) {
 	if !found {
 		t.Fatalf("runs missing source %q (got %d runs)", source, len(runs))
 	}
+
+	// GET /v1/health: the real pool must answer the ping.
+	resp, err = http.Get(srv.URL + "/v1/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status = %d; want 200", resp.StatusCode)
+	}
+	var health healthJSON
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		t.Fatal(err)
+	}
+	if health.Status != "ok" {
+		t.Fatalf("health status field = %q; want ok", health.Status)
+	}
 }
