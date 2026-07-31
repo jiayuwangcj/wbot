@@ -22,6 +22,7 @@ type Result struct {
 const buyTol = 1e-9
 
 // Run replays bars ascending, calling the strategy once per bar and settling trades at the close.
+// details: doc/BACKTEST.md
 func Run(ctx context.Context, bars []ingest.Bar, initialCash float64, feePerTrade float64, s Strategy) (*Result, error) {
 	if len(bars) == 0 {
 		return nil, errors.New("backtest: empty bars")

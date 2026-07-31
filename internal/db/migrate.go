@@ -31,8 +31,7 @@ func migrationApplied(db *sql.DB, name string) (bool, error) {
 	return true, nil
 }
 
-// MigrateUp applies embedded migrations in lexical filename order. Each file runs
-// in a transaction and is recorded in schema_migrations after success.
+// MigrateUp applies embedded migrations in lexical order, skipping recorded ones (idempotent).
 func MigrateUp(db *sql.DB) error {
 	if err := ensureMigrationTable(db); err != nil {
 		return err

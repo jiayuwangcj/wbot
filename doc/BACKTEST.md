@@ -28,7 +28,7 @@ wbot backtest \
 
 - **输入校验**：空 bars、`cash<=0`、`fee<0`、超买/超卖、非法 `-max-drawdown` 值均报错拒绝。
 - **结算**：按每根 bar 的 close 价成交；buy/sell/hold 三态；`Strategy` 接口可扩展自定义策略（`internal/backtest/strategy.go`）。
-- **指标**：最终 equity、总收益 `(equity-cash)/cash`、最大回撤（equity 曲线峰值到谷值最大跌幅）。
+- **指标**：最终 equity、总收益 `(equity-cash)/cash`、最大回撤（equity 曲线峰值到谷值最大跌幅；equity 峰非正时 max_drawdown 为 0）。
 - **约束**：`CheckMaxDrawdown`（`internal/backtest/constraint.go`）纯函数判定，CLI 超限 exit 1，便于脚本化门禁（如 CI 里「回撤不得超 X%」）。
 
 ## 示例（本地全流程）

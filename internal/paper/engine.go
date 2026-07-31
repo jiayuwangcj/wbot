@@ -22,8 +22,7 @@ func NewEngine() *Engine {
 	return &Engine{}
 }
 
-// Submit ingests an order intent and returns a filled snapshot with a generated OrderID.
-// Invalid symbols are rejected with ErrInvalidSymbol.
+// Submit fills the order and returns the snapshot with a generated OrderID.
 func (e *Engine) Submit(o domain.Order) (domain.Order, error) {
 	if !o.Symbol.Valid() {
 		return domain.Order{}, ErrInvalidSymbol
