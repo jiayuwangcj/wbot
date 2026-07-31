@@ -10,8 +10,7 @@ import (
 	"github.com/jiayu/wbot/internal/domain"
 )
 
-// RunIngestion inserts one ingestion run, writes bars from src in the same
-// transaction, then marks the run succeeded. Zero from/to are unbounded.
+// RunIngestion records a run, writes src bars in one transaction, then marks it succeeded.
 func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol domain.Symbol, timeframe string, from, to time.Time, src Source) error {
 	if db == nil {
 		return errors.New("ingest: nil db")
@@ -39,8 +38,7 @@ func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol doma
 	if len(bars) == 0 {
 		return errors.New("ingest: no bars from source")
 	}
-	// ValidateBars also rejects empty slices; the check above is kept as a
-	// clearer early return for callers that bypass validation.
+	// Early return with a clearer error than ValidateBars' empty-slice rejection.
 	if err := ValidateBars(bars); err != nil {
 		return err // already prefixed with "ingest:"
 	}

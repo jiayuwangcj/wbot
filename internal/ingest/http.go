@@ -11,15 +11,12 @@ import (
 	"github.com/jiayu/wbot/internal/domain"
 )
 
-// HTTPSource fetches a JSON array of bars from URL over HTTP. Symbol and
-// timeframe are not filtered from the payload; they label rows when
-// RunIngestion writes to bars. Payload format matches FileSource.
+// HTTPSource fetches a JSON array of bars from URL; symbol/timeframe are not filtered.
 type HTTPSource struct {
 	URL string
 }
 
-// Bars fetches and parses the payload, then keeps only bars inside the closed
-// interval [from, to]; zero from/to are unbounded.
+// Bars fetches/parses the payload, keeping bars in [from, to]; zero from/to are unbounded.
 func (h HTTPSource) Bars(ctx context.Context, _ domain.Symbol, _ string, from, to time.Time) ([]Bar, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()

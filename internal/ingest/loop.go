@@ -5,9 +5,7 @@ import (
 	"time"
 )
 
-// RunEvery invokes fn once when interval <= 0. Otherwise it runs fn, then waits
-// interval, repeating until ctx is cancelled. The first invocation is immediate
-// (no initial sleep).
+// RunEvery repeats fn every interval until ctx is cancelled; interval <= 0 runs fn once.
 func RunEvery(ctx context.Context, interval time.Duration, fn func(context.Context) error) error {
 	if interval <= 0 {
 		return fn(ctx)
@@ -24,9 +22,7 @@ func RunEvery(ctx context.Context, interval time.Duration, fn func(context.Conte
 	}
 }
 
-// RunEveryResilient invokes fn once when interval <= 0, like RunEvery. Otherwise
-// it runs fn repeatedly, waiting interval between rounds, until ctx is
-// cancelled; a failing fn is reported to onErr and the loop continues.
+// RunEveryResilient is RunEvery plus onErr: a failing fn is reported and the loop continues.
 func RunEveryResilient(ctx context.Context, interval time.Duration, fn func(context.Context) error, onErr func(error)) error {
 	if interval <= 0 {
 		return fn(ctx)

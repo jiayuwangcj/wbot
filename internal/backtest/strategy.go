@@ -15,9 +15,7 @@ const (
 	ActionSell
 )
 
-// Strategy decides what to do on each bar. OnBar is called serially, once per
-// bar, before the runner settles the trade at the bar's close. size is the
-// number of shares and is ignored for ActionHold.
+// Strategy decides one bar's trade; OnBar runs serially before the runner settles at the close.
 type Strategy interface {
 	OnBar(ctx context.Context, bar ingest.Bar, st *State) (Action, float64, error)
 }
@@ -30,8 +28,7 @@ func (HoldStrategy) OnBar(_ context.Context, _ ingest.Bar, _ *State) (Action, fl
 	return ActionHold, 0, nil
 }
 
-// BuyHoldStrategy buys all-in at the close of the first bar it sees, then
-// holds. Internal state makes it single-run: reuse requires a fresh instance.
+// BuyHoldStrategy buys all-in at the first bar's close, then holds; not reusable between runs.
 type BuyHoldStrategy struct {
 	bought bool
 }

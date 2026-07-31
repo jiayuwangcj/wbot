@@ -9,9 +9,7 @@ import (
 	"time"
 )
 
-// QueryBars returns ingested bars for a symbol/timeframe, ordered by ts
-// ascending. Zero from/to are unbounded; otherwise only bars inside the
-// closed interval [from, to] are returned. limit caps the row count.
+// QueryBars returns a symbol/timeframe's bars in [from, to] (zero from/to unbounded), ts ascending.
 func QueryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string, from, to time.Time, limit int) ([]Bar, error) {
 	if db == nil {
 		return nil, errors.New("ingest: query bars: nil db")
@@ -29,10 +27,7 @@ func QueryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string,
 		return nil, errors.New("ingest: query bars: invalid limit")
 	}
 
-	// Build the WHERE clause dynamically: a zero from/to adds no condition,
-	// so only the set bounds appear. conds and args stay in lockstep; each
-	// condition's placeholder number is the current arg count (symbol and
-	// timeframe are always $1/$2).
+	// Placeholders are numbered by the running arg count so conds and args stay in lockstep.
 	conds := []string{"symbol = $1", "timeframe = $2"}
 	args := []any{symbol, timeframe}
 	if !from.IsZero() {

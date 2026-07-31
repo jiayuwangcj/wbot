@@ -11,8 +11,7 @@ import (
 	"github.com/jiayu/wbot/internal/domain"
 )
 
-// FileSource reads a JSON array of bars from Path. Symbol and timeframe are not
-// filtered from the file; they label rows when RunIngestion writes to bars.
+// FileSource reads a JSON array of bars from Path; symbol/timeframe are not filtered.
 type FileSource struct {
 	Path string
 }
@@ -26,8 +25,7 @@ type fileBarRecord struct {
 	Volume int64   `json:"volume"`
 }
 
-// Bars reads and parses the file, then keeps only bars inside the closed
-// interval [from, to]; zero from/to are unbounded.
+// Bars reads/parses the file, keeping bars in [from, to]; zero from/to are unbounded.
 func (f FileSource) Bars(ctx context.Context, _ domain.Symbol, _ string, from, to time.Time) ([]Bar, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
@@ -46,8 +44,7 @@ func (f FileSource) Bars(ctx context.Context, _ domain.Symbol, _ string, from, t
 	return filterRange(bars, from, to), nil
 }
 
-// parseBarRecords parses a JSON array of fileBarRecord into Bars. label names
-// the source in error messages (e.g. "file source", "http source").
+// parseBarRecords parses a JSON array of fileBarRecord into Bars; label appears in errors.
 func parseBarRecords(data []byte, label string) ([]Bar, error) {
 	var recs []fileBarRecord
 	if err := json.Unmarshal(data, &recs); err != nil {
