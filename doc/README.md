@@ -16,6 +16,7 @@
 - [[pinned_discussion]]
 - [[GITHUB_DISCUSSION_OPS]]
 - [[ROADMAP]]
+- [[DATA_PIPELINE]]（数据管道 v1：命令/行为/调度方式）
 - [[PLAN_V0]]
 - [[TDD_WORKFLOW]]
 - [[GITHUB_SETUP]]

@@ -35,4 +35,4 @@
 
 ## Next
 
-- 待主会话 commit + push 后 CI 闭环（跑过 db-integration 时集成测覆盖 `RunIngestion` 新签名）。后续候选：数据源 Provider 抽象、外部 cron 文档化。
+- 已完成：commit `df85670` push 后 run `30618129779` CI **绿**，闭环。后续候选：数据源 Provider 抽象、外部 cron 文档化。
