@@ -150,8 +150,8 @@ function renderCluster(c) {
   setText("cluster-pipeline-running", comps.pipeline.counts.running);
   setText("cluster-pipeline-succeeded", comps.pipeline.counts.succeeded);
   setText("cluster-pipeline-failed", comps.pipeline.counts.failed);
-  renderTable("cluster-pipeline-runs", comps.pipeline.recent_runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "running" : r.finished_at]));
-  renderTable("cluster-coverage", comps.data_plane.bars_coverage.map((b) => [b.symbol, b.timeframe, b.count, b.min_ts, b.max_ts]));
+  renderTable("cluster-pipeline-runs-table", comps.pipeline.recent_runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "running" : r.finished_at]));
+  renderTable("cluster-coverage-table", comps.data_plane.bars_coverage.map((b) => [b.symbol, b.timeframe, b.count, b.min_ts, b.max_ts]));
   document.getElementById("cluster-cards").hidden = false;
 }
 

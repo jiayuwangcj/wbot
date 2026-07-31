@@ -52,19 +52,19 @@
         <h3>Pipeline</h3>
         <p class="notice">Running <span id="cluster-pipeline-running"></span> · Succeeded <span id="cluster-pipeline-succeeded"></span> · Failed <span id="cluster-pipeline-failed"></span></p>
         <div class="table-scroll">
-          <table id="cluster-pipeline-runs" hidden>
+          <table id="cluster-pipeline-runs-table" hidden>
             <thead>
               <tr><th>ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th></tr>
             </thead>
             <tbody></tbody>
           </table>
         </div>
-        <p id="cluster-pipeline-empty" class="notice" hidden>No recent runs.</p>
+        <p id="cluster-pipeline-runs-empty" class="notice" hidden>No recent runs.</p>
       </div>
       <div class="card">
         <h3>Data plane</h3>
         <div class="table-scroll">
-          <table id="cluster-coverage" hidden>
+          <table id="cluster-coverage-table" hidden>
             <thead>
               <tr><th>Symbol</th><th>Timeframe</th><th>Count</th><th>Min ts</th><th>Max ts</th></tr>
             </thead>

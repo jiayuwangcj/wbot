@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -166,9 +167,30 @@ func TestAdminPageSections(t *testing.T) {
 		`id="config-error"`,
 		`id="config-table"`,
 		`id="cluster-cards"`,
+		`id="cluster-pipeline-runs-table"`,
+		`id="cluster-pipeline-runs-empty"`,
+		`id="cluster-coverage-table"`,
+		`id="cluster-coverage-empty"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin.html missing %q", want)
+		}
+	}
+}
+
+func TestTableEmptyConvention(t *testing.T) {
+	tableRe := regexp.MustCompile(`id="([a-z0-9-]+-table)"`)
+	for _, path := range []string{"web/index.html", "web/admin.html"} {
+		data, err := fs.ReadFile(webFiles, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		html := string(data)
+		for _, m := range tableRe.FindAllStringSubmatch(html, -1) {
+			emptyID := strings.Replace(m[1], "-table", "-empty", 1)
+			if !strings.Contains(html, `id="`+emptyID+`"`) {
+				t.Fatalf("%s: table %q has no matching empty element %q", path, m[1], emptyID)
+			}
 		}
 	}
 }
