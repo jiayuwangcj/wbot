@@ -8,6 +8,7 @@
 - [[FEATURE_SCOPE]]（功能切片规模 · 验收必须可测 · 与 CI 的关系）
 - [[SOURCE_TO_FEATURE]]（Issue/Discussion → 文档与功能的消化路径）
 - [[AUTO_ADVANCE]]（根循环摘要 + 与 CI / 停机的说明）
+- [[CRON_CONTINUE]]（外部 cron 守护续跑：cron-claude-continue.sh 用法与 /loop 关系）
 - [[CI_REPORT]]（Actions Summary：无 LLM 的确定性报告）
 - [`doc/issues/`](issues/)（Issue/Discussion 待发草稿）
 - [[tasks/README]]
