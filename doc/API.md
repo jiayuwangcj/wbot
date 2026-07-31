@@ -47,6 +47,7 @@ Query 参数：
 ]
 ```
 
+<<<<<<< HEAD
 ## GET /v1/admin/status
 
 进程 + DB 运行状态（后台管理数据面；无查询参数）。
@@ -77,6 +78,21 @@ Query 参数：
 DB 不可用时仍返回 `200`，`db.ok` 为 `false`（信息端点；健康语义归 /v1/health 的 503）。
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
+## GET /v1/health
+
+健康检查（微信小程序前置探测）：对数据库执行 ping（≤3s 超时），只读、无参数。
+
+响应 `200`（数据库可达）：
+
+```json
+{"status": "ok"}
+```
+
+响应 `503`（数据库不可达）：
+
+```json
+{"error": "database unavailable"}
+```
 
 ## 错误
 
@@ -86,6 +102,7 @@ PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIV
 | --- | --- |
 | 缺必填参数 / 参数非法（坏时间、limit<=0） | 400 |
 | 存储查询失败 | 500 |
+| DB ping 失败 | 503 |
 | 未知路径 | 404 |
 | 非 GET | 405 |
 
