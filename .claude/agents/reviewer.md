@@ -41,7 +41,7 @@ tools: Read, Grep, Glob, Bash
 
 ## 评审流程
 
-1. 读任务记录（`doc/tasks/` 对应文件）确认 Goal/验收
+1. 读任务记录（`doc/tasks/` 对应文件）确认 Goal/验收；**若无对应任务记录**（纯文档/配置类改动常见），标注「未找到任务记录」，依 PR 描述/commit message 推导 Goal 并照常产出
 2. 读改动 diff（`git diff` / PR diff）与相关代码、契约文档（doc/API.md、doc/BACKTEST.md、doc/DATA_PIPELINE.md）
 3. 必要时跑验证（`go test`、`scripts/verify.sh`、CLI 冒烟）——只读执行，不改代码
 4. 按五角色逐一产出发现，最后汇总
