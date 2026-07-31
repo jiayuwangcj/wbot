@@ -5,7 +5,7 @@
 范围：
 
 - 最小 Go 工程可测（`go test` / `go vet`）
-- GitHub CI（Linux + macOS）
+- GitHub CI（Linux/Ubuntu）
 - TDD 标准流程文档化
 - proposal 机制初始化
 
