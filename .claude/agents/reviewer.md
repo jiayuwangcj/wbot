@@ -40,6 +40,11 @@ tools: Read, Grep, Glob, Bash
 - 是否有静默 skip（如无 DSN 就 skip 的测试，需确认对应 CI job 提供了 DSN）；smoke 是否覆盖新命令（verify.sh / ci.yml 的 binary smoke 行）
 - 结论：功能 = 代码 + 测试 + CI 可执行性三者齐备才算「完成」；缺任何一环列入发现（通常 P1）
 
+### 5.7 PR 提交粒度（commit granularity）
+- PR 内容若有**明确的逻辑分类**（如同时含功能 A + 功能 B + 文档/配置），要求**按逻辑拆分模块分别提交**（独立 PR），不合并提交
+- 若一次提交的功能逻辑不可划分、但**能拆细**（如大改动可分阶段），也要求**分步提交**（先基础后依赖，逐步 CI 验证）
+- 评审发现混合逻辑/超大单步 → 列 P1（有条件合入：拆后再合），并给出拆分建议
+
 ### 5.6 日志与可观测（logging & observability）
 - **服务端/长驻功能的任意功能需有分级日志**：error / warn / info（/ debug 视实现阶段）多等级；仅 stderr 无等级的输出列为差距（P2/排期）
 - **模块关键字**：日志/输出按功能带模块前缀（如 `ingest mock:`、`httpapi:`、`backtest:`），可 grep 定位功能归属；关键字命名一致
