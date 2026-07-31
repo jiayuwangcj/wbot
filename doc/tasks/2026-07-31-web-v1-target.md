@@ -24,8 +24,8 @@
 | --- | --- | --- |
 | ① 后端数据 API（/v1/bars、/v1/runs、/v1/health、/v1/admin/*） | ✅ 已完成（a26436c、#24、#33、#36、#37） | 无 |
 | ② API 契约文档（doc/API.md） | ✅ 已完成 | ① |
-| ⑧ PC 端 Web（前端，第一步）：页面框架 + 数据展示（bars/runs）+ 后台管理页面 | 可做（go:embed Web UI，ROADMAP v4 路线；不依赖微信工具链） | ① |
-| ⑨ 移动版本 Web 框架预留（响应式布局/断点，PC 页面可复用） | 可做（随 ⑧ 布局层预留，不单独阻塞） | ⑧ |
+| ⑧ PC 端 Web（前端，第一步）：页面框架 + 数据展示（bars/runs）+ 后台管理页面 | ✅ 已完成（PR #45/#49/#50，/ui/ 上线） | ① |
+| ⑨ 移动版本 Web 框架预留（响应式布局/断点，PC 页面可复用） | ✅ 已完成（viewport/断点/auto-fit 已预埋） | ⑧ |
 | ⑩ 券商 paper 接入：Schwab PaperMoney / IBKR Paper | **挂起**（降级候选；富途优先） | ① |
 | ⑪ 富途接入：OpenD 容器部署（docker-compose 配置）+ Go proto 客户端（参考/直接使用 qtopie/gofutuapi） | **可做**（OpenD 容器本地部署；行情数据接入；需富途账号登录 OpenD——老板协助时列 discussions/21） | ① |
 | ④ 微信小程序前端 | ❌ **废弃**（微信将下架含股票小程序，2026-07-31 老板指令） | — |
@@ -42,8 +42,8 @@
 ## State
 
 - **status**: `running`
-- **last step**: 2026-07-31 老板指令：放弃小程序转 Web（PC 优先 + 移动预留）；**富途优先接入**（OpenD 容器 + docker-compose + Go proto 客户端/qtopie/gofutuapi）；后台管理 ⑥⑦ 保留（已并入 ① 完成/⑧ 前端）。
+- **last step**: 2026-08-01 切片⑧⑨ 完成（Web 前端 ①-③ 合入 #45/#49/#50，/ui/ 上线）；切片⑪-a（OpenD compose）合入 #48。
 
 ## Next
 
-- 切片 ⑧（PC Web 前端）：由 PM 组排单（go:embed 静态页 + bars/runs/admin 页面，可测）；切片 ⑪（富途 OpenD 容器 + Go 客户端）排单（docker-compose 配置 + 参考 qtopie/gofutuapi）；⑨ 随 ⑧ 布局预留；⑩ Schwab/IBKR 降级挂起。
+- 切片 ⑪-b（富途 Go 客户端）：等老板富途账号/密码（discussions/21）+ go.mod 升级决策；⑪-c 数据管道依赖 ⑪-b 实测；⑩ Schwab/IBKR 降级挂起；本地联调巡检（operator：本地 PG + serve + /ui/ 页面验证）。
