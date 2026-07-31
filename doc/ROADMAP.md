@@ -29,8 +29,8 @@
 | --- | --- |
 | v1 | **数据管道**：行情/历史数据拉取、**落 PostgreSQL**（迁移 + 校验）；可选仅开发用的导出目录做比对；数据源与券商侧**抽象**，单元测试可 mock，集成测再接真实凭证 |
 | v2 | **回测骨架**：消费落地数据的回测运行器、时间对齐、可测的绩效/约束；仍不依赖 LLM |
-| v3 | **执行路径**：订单与模拟盘/券商接口的深化，与 v1 数据域对齐；券商候选：Futu / IBKR / Schwab（凭证齐备后接入，见 [discussions/10](https://github.com/jiayuwangcj/wbot/discussions/10)）；标准化日志（如 zerolog）随本阶段按需收紧 |
-| v4 | **控制面与产品化**：Go API、`go:embed` Web UI、Telegram/Discord 通知；Web UI 候选形态：微信小程序（见 [discussions/10](https://github.com/jiayuwangcj/wbot/discussions/10)）；master/agent 运维化按需并入 |
+| v3 | **执行路径**：订单与模拟盘/券商接口的深化，与 v1 数据域对齐；券商候选：Futu / IBKR / Schwab（凭证齐备后接入，见 [discussions/10](https://github.com/jiayuwangcj/wbot/discussions/10)）；**持仓数据读取接口**（微信小程序前置依赖；缺券商凭证，blocked）；标准化日志（如 zerolog）随本阶段按需收紧 |
+| v4 | **控制面与产品化**：Go API（**已提前实施**，微信小程序前置依赖，见 [discussions/9](https://github.com/jiayuwangcj/wbot/discussions/9) 分诊）、`go:embed` Web UI、Telegram/Discord 通知；Web UI 优先形态：**微信小程序**（优先级已提高，依赖 Go API 先行、券商持仓数据后行，见 [discussions/10](https://github.com/jiayuwangcj/wbot/discussions/10)）；master/agent 运维化按需并入 |
 | v5 | **决策与覆盖**：可配置 LLM 决策角色、港股/美股现货与期权等全覆盖 |
 
 关联：[[WORKFLOW_GITHUB_DRIVEN]] [[README]] [[0001-automation-baseline]]
