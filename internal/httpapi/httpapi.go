@@ -1,4 +1,4 @@
-// Package httpapi serves the WeChat miniapp's read-only data API: GET /v1/bars, GET /v1/runs.
+// Package httpapi serves the WeChat miniapp's read-only data API: /v1/bars, /v1/runs, /v1/health.
 package httpapi
 
 import (
@@ -15,14 +15,16 @@ import (
 )
 
 const (
-	barsPath = "/v1/bars"
-	runsPath = "/v1/runs"
+	barsPath   = "/v1/bars"
+	runsPath   = "/v1/runs"
+	healthPath = "/v1/health"
 )
 
 // Store is the read-only data surface the API serves.
 type Store interface {
 	QueryBars(ctx context.Context, symbol string, timeframe string, from, to time.Time, limit int) ([]ingest.Bar, error)
 	RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error)
+	Ping(ctx context.Context) error
 }
 
 // NewDBStore returns a Store backed by PostgreSQL via internal/ingest queries.
@@ -40,6 +42,12 @@ func (s dbStore) QueryBars(ctx context.Context, symbol string, timeframe string,
 
 func (s dbStore) RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error) {
 	return ingest.RecentRuns(ctx, s.db, limit)
+}
+
+func (s dbStore) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	return s.db.PingContext(ctx)
 }
 
 // barJSON mirrors the `ingest bars -json` output shape (ts RFC3339).
@@ -60,7 +68,12 @@ type runJSON struct {
 	FinishedAt *string `json:"finished_at"` // null while the run is still running
 }
 
-// Handler returns an http.Handler serving GET /v1/bars and GET /v1/runs.
+// healthJSON is the GET /v1/health success body.
+type healthJSON struct {
+	Status string `json:"status"`
+}
+
+// Handler returns an http.Handler serving GET /v1/bars, /v1/runs, and /v1/health.
 func Handler(store Store) http.Handler {
 	mux := http.NewServeMux()
 
@@ -141,6 +154,19 @@ func Handler(store Store) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
+	})
+
+	mux.HandleFunc(healthPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		if err := store.Ping(r.Context()); err != nil {
+			writeError(w, http.StatusServiceUnavailable, "database unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(healthJSON{Status: "ok"})
 	})
 
 	// Any other path: JSON 404.
