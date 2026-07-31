@@ -19,9 +19,26 @@ type Bar struct {
 	Volume int64
 }
 
-// Source yields OHLCV bars for the given symbol and timeframe.
+// Source yields OHLCV bars for the given symbol and timeframe. Zero from/to
+// mean unbounded; otherwise bars are restricted to the closed interval [from, to].
 type Source interface {
-	Bars(ctx context.Context, symbol domain.Symbol, timeframe string) ([]Bar, error)
+	Bars(ctx context.Context, symbol domain.Symbol, timeframe string, from, to time.Time) ([]Bar, error)
+}
+
+// filterRange keeps bars inside the closed interval [from, to]. Zero from/to
+// impose no bound; the result may be empty when no bar falls in range.
+func filterRange(bars []Bar, from, to time.Time) []Bar {
+	out := make([]Bar, 0, len(bars))
+	for _, b := range bars {
+		if !from.IsZero() && b.Ts.Before(from) {
+			continue
+		}
+		if !to.IsZero() && b.Ts.After(to) {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
 }
 
 // ValidateBars checks basic OHLCV sanity and strictly increasing timestamps.

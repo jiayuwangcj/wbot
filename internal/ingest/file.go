@@ -26,7 +26,9 @@ type fileBarRecord struct {
 	Volume int64   `json:"volume"`
 }
 
-func (f FileSource) Bars(ctx context.Context, _ domain.Symbol, _ string) ([]Bar, error) {
+// Bars reads and parses the file, then keeps only bars inside the closed
+// interval [from, to]; zero from/to are unbounded.
+func (f FileSource) Bars(ctx context.Context, _ domain.Symbol, _ string, from, to time.Time) ([]Bar, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -37,7 +39,11 @@ func (f FileSource) Bars(ctx context.Context, _ domain.Symbol, _ string) ([]Bar,
 	if err != nil {
 		return nil, fmt.Errorf("ingest: file source read: %w", err)
 	}
-	return parseBarRecords(data, "file source")
+	bars, err := parseBarRecords(data, "file source")
+	if err != nil {
+		return nil, err
+	}
+	return filterRange(bars, from, to), nil
 }
 
 // parseBarRecords parses a JSON array of fileBarRecord into Bars. label names

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/jiayu/wbot/internal/domain"
 )
@@ -17,7 +18,9 @@ type HTTPSource struct {
 	URL string
 }
 
-func (h HTTPSource) Bars(ctx context.Context, _ domain.Symbol, _ string) ([]Bar, error) {
+// Bars fetches and parses the payload, then keeps only bars inside the closed
+// interval [from, to]; zero from/to are unbounded.
+func (h HTTPSource) Bars(ctx context.Context, _ domain.Symbol, _ string, from, to time.Time) ([]Bar, error) {
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
@@ -40,5 +43,9 @@ func (h HTTPSource) Bars(ctx context.Context, _ domain.Symbol, _ string) ([]Bar,
 	if err != nil {
 		return nil, fmt.Errorf("ingest: http source read: %w", err)
 	}
-	return parseBarRecords(data, "http source")
+	bars, err := parseBarRecords(data, "http source")
+	if err != nil {
+		return nil, err
+	}
+	return filterRange(bars, from, to), nil
 }

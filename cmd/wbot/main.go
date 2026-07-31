@@ -352,13 +352,16 @@ func runIngestFile(prog string, argv []string) int {
 	source := fs.String("source", "cli-file", "ingestion source label")
 	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
 	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
+	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest file [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Loads OHLCV bars from a JSON file and writes one ingestion run.\n")
 		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT).\n")
-		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
+		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n")
+		fmt.Fprintf(os.Stderr, "With -from/-to, only bars inside the closed range [from, to] are kept (RFC3339; empty = unbounded).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -375,6 +378,17 @@ func runIngestFile(prog string, argv []string) int {
 	fp := strings.TrimSpace(*path)
 	if fp == "" {
 		fmt.Fprintf(os.Stderr, "ingest file: -file is required\n")
+		return 2
+	}
+
+	fromT, err := parseRangeTime("-from", strings.TrimSpace(*from))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest file: %v\n", err)
+		return 2
+	}
+	toT, err := parseRangeTime("-to", strings.TrimSpace(*to))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest file: %v\n", err)
 		return 2
 	}
 
@@ -404,7 +418,7 @@ func runIngestFile(prog string, argv []string) int {
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
 	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
-		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), src); err != nil {
+		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), fromT, toT, src); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "ingest file: ok (source=%s symbol=%s timeframe=%s file=%s)\n",
@@ -433,13 +447,16 @@ func runIngestURL(prog string, argv []string) int {
 	source := fs.String("source", "cli-url", "ingestion source label")
 	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
 	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
+	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest url [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Loads OHLCV bars from a JSON URL and writes one ingestion run.\n")
 		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT).\n")
-		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
+		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n")
+		fmt.Fprintf(os.Stderr, "With -from/-to, only bars inside the closed range [from, to] are kept (RFC3339; empty = unbounded).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -456,6 +473,17 @@ func runIngestURL(prog string, argv []string) int {
 	u := strings.TrimSpace(*url)
 	if u == "" {
 		fmt.Fprintf(os.Stderr, "ingest url: -url is required\n")
+		return 2
+	}
+
+	fromT, err := parseRangeTime("-from", strings.TrimSpace(*from))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest url: %v\n", err)
+		return 2
+	}
+	toT, err := parseRangeTime("-to", strings.TrimSpace(*to))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest url: %v\n", err)
 		return 2
 	}
 
@@ -485,7 +513,7 @@ func runIngestURL(prog string, argv []string) int {
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
 	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
-		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), src); err != nil {
+		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), fromT, toT, src); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "ingest url: ok (source=%s symbol=%s timeframe=%s url=%s)\n",
@@ -562,6 +590,18 @@ func runIngestStatus(prog string, argv []string) int {
 		fmt.Printf("%d %s %s %s %s\n", r.ID, r.Source, r.Status, r.StartedAt.Format(time.RFC3339), finished)
 	}
 	return 0
+}
+
+// parseRangeTime parses a -from/-to flag value. Empty means unbounded (zero time).
+func parseRangeTime(flagName, s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%s: invalid RFC3339 time %q", flagName, s)
+	}
+	return t, nil
 }
 
 func ingestRepeatCtx(every time.Duration) (context.Context, context.CancelFunc) {

@@ -10,7 +10,9 @@ import (
 
 type mockSource struct{}
 
-func (mockSource) Bars(_ context.Context, _ domain.Symbol, _ string) ([]Bar, error) {
+// mockSource is a fixed demo feed. from/to are ignored: it always yields the
+// full sample set (demo source, no historical range).
+func (mockSource) Bars(_ context.Context, _ domain.Symbol, _ string, _, _ time.Time) ([]Bar, error) {
 	base := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	return []Bar{
 		{base, 100, 101, 99.5, 100.5, 1000},
@@ -21,6 +23,7 @@ func (mockSource) Bars(_ context.Context, _ domain.Symbol, _ string) ([]Bar, err
 
 // RunMockIngestion inserts one ingestion run, a few sample OHLCV bars, then marks
 // the run finished. Intended for pipeline wiring tests; not a real market feed.
+// The range is unbounded (zero from/to).
 func RunMockIngestion(ctx context.Context, db *sql.DB, source string, symbol domain.Symbol, timeframe string) error {
-	return RunIngestion(ctx, db, source, symbol, timeframe, mockSource{})
+	return RunIngestion(ctx, db, source, symbol, timeframe, time.Time{}, time.Time{}, mockSource{})
 }

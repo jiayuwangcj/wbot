@@ -5,13 +5,14 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jiayu/wbot/internal/domain"
 )
 
 // RunIngestion inserts one ingestion run, writes bars from src in the same
-// transaction, then marks the run succeeded.
-func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol domain.Symbol, timeframe string, src Source) error {
+// transaction, then marks the run succeeded. Zero from/to are unbounded.
+func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol domain.Symbol, timeframe string, from, to time.Time, src Source) error {
 	if db == nil {
 		return errors.New("ingest: nil db")
 	}
@@ -27,8 +28,11 @@ func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol doma
 	if runSource == "" {
 		return errors.New("ingest: empty source")
 	}
+	if !from.IsZero() && !to.IsZero() && from.After(to) {
+		return errors.New("ingest: from after to")
+	}
 
-	bars, err := src.Bars(ctx, symbol, timeframe)
+	bars, err := src.Bars(ctx, symbol, timeframe, from, to)
 	if err != nil {
 		return fmt.Errorf("ingest: source: %w", err)
 	}

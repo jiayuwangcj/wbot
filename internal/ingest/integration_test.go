@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
@@ -96,7 +97,7 @@ func TestRunFileIngestionIntegration(t *testing.T) {
 	source := "file-ingest-test"
 	symbol := domain.Symbol("FILE.US")
 	tf := "1d"
-	if err := RunIngestion(ctx, database, source, symbol, tf, FileSource{Path: path}); err != nil {
+	if err := RunIngestion(ctx, database, source, symbol, tf, time.Time{}, time.Time{}, FileSource{Path: path}); err != nil {
 		t.Fatal(err)
 	}
 
