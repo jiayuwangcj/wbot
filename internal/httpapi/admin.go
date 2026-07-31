@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -15,6 +16,7 @@ const (
 
 // Pinger is the DB liveness surface the admin status endpoint needs.
 // Matches the Store.Ping signature introduced with GET /v1/health.
+// Implementations must respect ctx and return promptly once it is done.
 type Pinger interface {
 	Ping(ctx context.Context) error
 }
@@ -68,10 +70,14 @@ func AdminHandler(meta ProcessMeta, pinger Pinger) http.Handler {
 		defer cancel()
 		start := time.Now()
 		err := pinger.Ping(pctx)
-		if err != nil {
-			out.DB = dbStatusJSON{OK: false}
-		} else {
+		if err == nil && pctx.Err() == nil {
 			out.DB.LatencyMS = time.Since(start).Seconds() * 1000
+		} else {
+			out.DB = dbStatusJSON{OK: false}
+			if err == nil {
+				err = pctx.Err()
+			}
+			fmt.Fprintf(os.Stderr, "httpapi: admin: db ping failed: %v\n", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
