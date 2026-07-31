@@ -16,6 +16,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/agent"
 	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/config"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
 	"github.com/jiayu/wbot/internal/httpapi"
@@ -221,7 +222,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API: GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status.\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the API: GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET/PUT /v1/admin/config.\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -261,6 +262,14 @@ func runServe(prog string, argv []string) int {
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: *listen}
 	top := http.NewServeMux()
 	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, httpapi.PingerFunc(database.PingContext)))
+	store, err := config.OpenDefault()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "httpapi: admin: config: %v\n", err)
+	} else {
+		cfg := httpapi.ConfigHandler(store)
+		top.Handle("/v1/admin/config", cfg)
+		top.Handle("/v1/admin/config/", cfg)
+	}
 	top.Handle("/", httpapi.Handler(httpapi.NewDBStore(database)))
 	srv := &http.Server{Handler: top}
 
