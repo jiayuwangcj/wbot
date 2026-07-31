@@ -353,12 +353,14 @@ func runBacktest(prog string, argv []string) int {
 	cash := fs.Float64("cash", 10000, "initial cash")
 	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
 	strategy := fs.String("strategy", "hold", "strategy to run: hold or buy-hold")
+	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file (-file) or directly from the\n")
 		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
+		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-timeframe/-from/-to/-limit apply to -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "Each JSON element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
 		fs.SetOutput(os.Stderr)
@@ -382,6 +384,10 @@ func runBacktest(prog string, argv []string) int {
 	toT, err := parseRangeTime("-to", strings.TrimSpace(*to))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 2
+	}
+	if *maxDrawdown < 0 || *maxDrawdown > 1 {
+		fmt.Fprintf(os.Stderr, "backtest: -max-drawdown must be in [0, 1]\n")
 		return 2
 	}
 
@@ -448,6 +454,12 @@ func runBacktest(prog string, argv []string) int {
 		return 1
 	}
 	fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
+	if *maxDrawdown > 0 {
+		if err := backtest.CheckMaxDrawdown(res, *maxDrawdown); err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+	}
 	return 0
 }
 

@@ -65,6 +65,8 @@ func TestRun(t *testing.T) {
 		{"backtest both inputs", []string{"wbot", "backtest", "-file", "/dev/null", "-dsn", "postgres://x"}, 2},
 		{"backtest dsn no value", []string{"wbot", "backtest", "-dsn"}, 2},
 		{"backtest bad strategy", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "nope"}, 2},
+		{"backtest bad maxdrawdown high", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "1.5"}, 2},
+		{"backtest bad maxdrawdown neg", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "-0.1"}, 2},
 		{"serve help", []string{"wbot", "serve", "-h"}, 0},
 		{"serve no dsn", []string{"wbot", "serve"}, 2},
 	}

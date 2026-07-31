@@ -27,4 +27,4 @@
 
 ## Next
 
-- `internal/backtest/backtest.go`：`Run` 加 `feePerTrade float64` 参数（fee<0 → 报错 `backtest: negative fee`）；每笔 buy/sell 成交时 cash 扣 fee（买卖都扣，Sell 成交扣 fee 从收到的现金里减）；买入校验 `cash >= size*close + fee`（带 1e-9 容差）。`Run` 调用点更新（CLI 两处 + 测试）。`cmd/wbot/main.go` `runBacktest` 加 `-fee`（默认 0）。测试：fee>0 时 BuyHold 最终 equity 比无费少（精确核对一个用例：3 根 bar 100/110/121 buy-hold，fee=1 → 买入扣 1，卖出不发生，final_equity = 12100 - 1 = 12099？——注意 BuyHold 只在首 bar 买、从不卖，所以只扣一笔买入费；断言精确值）；fee 为负报错；fee=0 行为与既有用例一致（不改既有断言）。`scripts/verify.sh` 绿 → commit + push → CI 绿闭环。
+- 已完成：commit `4b2cbf1` push 后 run `30621447321` CI **绿**，闭环。后续：多 symbol 时间对齐、更多指标、约束检查（v2 草稿「可测的绩效/约束」）；小程序前端与券商持仓仍 blocked。
