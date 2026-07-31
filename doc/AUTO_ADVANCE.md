@@ -12,19 +12,25 @@
 
 ```mermaid
 flowchart LR
-  T[取任务\n计划优先级] --> E[执行\nSubagent 优先]
-  E --> V[验证\nverify.sh → CI]
-  V --> L[落盘\ndoc/tasks]
-  L --> N[下一入口\nNext / 优先级 / 用户]
-  N --> T
+  G[查 GitHub\nPM组/robot] --> M[取任务+派单\nPM组 manager]
+  M --> C1[编码 coder\nworktree A]
+  M --> C2[编码 coder\nworktree B]
+  C1 --> R[验证+评审\nverify → reviewer]
+  C2 --> R
+  R --> S[合入决策\n主会话 串行 merge]
+  S --> N[下一入口\nNext / 优先级 / 用户]
+  N --> G
 ```
 
-0. **查 GitHub 更新**（每轮/每会话第一步）：`gh issue list --state open` + Discussion 按更新时间倒序（`gh api graphql` discussions `orderBy: UPDATED_AT DESC`）；发现**新帖/新留言**先按「任务来源」分诊（结案、派生 Issue、或指回仓库），再进入取任务；gh 未认证时跳过并在任务记录注明。
-1. **取任务**：按下一节「计划来源与优先级」选出**一条**最小可合入步；若队列空，按优先级向上扫描（tasks → 已落账 Issue / 已分诊 Discussion → PLAN_V0 → ROADMAP 与 proposals 的可拆步 → README 外链），直到找到可做项或确认无事可做。
-2. **执行**：代码改动优先由 **Subagent** 完成；主会话只做目标、验收、监督、合并意图；**不并行**多个 Subagent。
-3. **验证**：每步结束前本地 `scripts/verify.sh`（与 `.github/workflows/ci.yml` 中 test **等价**）；有远程则 **push**，以 **CI 绿**为该步远程验收；失败则修到绿再继续。
-4. **落盘**：推进或结束任务时更新 `doc/tasks/*.md`；每次向 Subagent **新发**子任务时应 **新建**一条任务记录（见 [[tasks/README]]）。
-5. **下一入口**：闭环后心智复位；下一小步只读 **`Next` 字段**、再跑一遍计划优先级、或等**用户新指令**——不默认延续已解决的对话链。
+组织与分工见 [[ORGS]]（产品组/开发组/PM 组，2026-07-31 起）。
+
+0. **查 GitHub 更新**（每轮/每会话第一步，可由 PM 组代跑）：`gh issue list --state open` + Discussion 按更新时间倒序（`gh api graphql` discussions `orderBy: UPDATED_AT DESC`）；发现**新帖/新留言**先按「任务来源」分诊（robot 发分诊回复；结案、派生 Issue、或指回仓库），再进入取任务；gh 未认证时跳过并在任务记录注明。
+1. **取任务与派单（PM 组 manager）**：按下一节「计划来源与优先级」选出**一条**最小可合入步（队列空则向上扫描直到可做项或确认无事可做）；新建/更新任务记录并向**编码组 coder** 派单；多个可并行任务 → 多个 coder 在不同 worktree。
+2. **执行（编码组 coder）**：实现 + 自测 + 独立分支提交；主会话不堆实现链。
+3. **验证与评审（PM 组跟踪 + 评审组 reviewer）**：本地 `scripts/verify.sh`（与 `ci.yml` test **等价**）；push 后以 **CI 绿**为远程验收；每个 PR 由 reviewer 独立评审（多角色，见 `.claude/agents/dev/reviewer.md`）；失败则修到绿再继续。
+4. **落盘（主会话/PM 组）**：推进或结束任务时更新 `doc/tasks/*.md`；新发子任务时**新建**任务记录（见 [[tasks/README]]）。
+5. **合入决策（主会话）**：收评审报告后决定合入/退回/有条件；merge 逐 PR 串行。
+6. **下一入口**：闭环后心智复位；下一小步只读 **`Next` 字段**、再跑一遍计划优先级、或等**用户新指令**——不默认延续已解决的对话链。
 
 **等人 vs 继续**：推送后可暂停与人交互；若 workflow **已结束**而用户长时间无指令，Agent 应回到 CI 结果与计划优先级**继续下一小步**，不以干等会话为唯一终点（与 `.mdc` 中「超时后继续迭代」一致）。
 
