@@ -2,6 +2,19 @@
 
 由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
+## Web UI
+
+`wbot serve` 同时提供嵌入式静态 Web UI（go:embed 构建进二进制，离线可用，零外部资源引用；见 [[ROADMAP]] v4）。
+
+| 路径 | 行为 |
+| --- | --- |
+| `GET /` | 301 → `/ui/`（精确根匹配 `GET /{$}`；行为变化：原为 JSON 404） |
+| `GET /ui/` | 数据页 `index.html`（bars/runs 查询骨架） |
+| `GET /ui/admin.html` | 管理页占位（status/cluster/config 只读，slice 8-3） |
+| `GET /ui/*` | 其余静态资源（`style.css`、`app.js`；不存在 → 404） |
+
+UI 页面不请求、不渲染任何配置值（PRIVACY 红线，见 [[PRIVACY]]）。API 路径（`/v1/*`）不受 `/ui/` 影响；其余未知路径仍为 JSON 404。
+
 ## GET /v1/runs
 
 最近 ingestion runs（`ingestion_runs` 表）。
