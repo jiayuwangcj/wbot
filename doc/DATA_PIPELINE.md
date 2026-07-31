@@ -20,6 +20,15 @@
 - **失败容忍**：`-every` 模式下单轮失败打日志继续，不终止整个调度；单次模式（无 `-every`）失败即退出非零。
 - **事务**：一次拉取 = 一条 `ingestion_runs`（running → succeeded/failed）+ 全部 bars，同一事务。
 
+## 本地开发 PG
+
+```bash
+docker compose -f configs/docker-compose.yml up -d   # postgres:16-alpine（与 CI 同配置）
+export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable'
+```
+
+集成测（`internal/db`、`internal/ingest`）在未设 `WBOT_PG_DSN` 时自动 skip；设了则跑真实迁移与落库。
+
 ## 调度方式选择
 
 | 方式 | 适用 |
