@@ -70,6 +70,7 @@
 .claude/worktrees/       # 并行任务 worktree（git worktree add）
 doc/tasks/               # 任务记录（每任务一条，并行任务的记录互不依赖）
 doc/issues/              # 需求切片草稿（owner 产出）
+tools/                   # 可复用工具脚本（python/shell，新写脚本统一入此；scripts/ 保留 CI/发布链路脚本）
 doc/ORGS.md              # 本文档
 ```
 
