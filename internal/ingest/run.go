@@ -35,6 +35,11 @@ func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol doma
 	if len(bars) == 0 {
 		return errors.New("ingest: no bars from source")
 	}
+	// ValidateBars also rejects empty slices; the check above is kept as a
+	// clearer early return for callers that bypass validation.
+	if err := ValidateBars(bars); err != nil {
+		return err // already prefixed with "ingest:"
+	}
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {

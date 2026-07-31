@@ -27,4 +27,4 @@
 
 ## Next
 
-- `internal/ingest/loop.go` 新增失败容忍调度（如 `RunEveryResilient(ctx, interval, fn, onErr)`）：interval<=0 时 `fn` 失败直接返回错误（与单次一致）；interval>0 时 `fn` 失败 → `onErr(err)` → 等间隔继续，ctx 取消退出。`loop_test.go` 覆盖：失败 N 次后成功、持续失败直到 ctx 取消、onErr 收到每次错误、单次模式失败仍返回。`cmd/wbot/main.go` 三个子命令改用它，失败打印 `ingest <sub>: <err>` 到 stderr 并继续。`scripts/verify.sh` 绿 → commit + push → CI 绿闭环。
+- 已完成：commit `5b9b9cb` push 后 run `30615435030` CI **绿**，闭环。后续可接数据源 Provider 抽象、bars 完整性校验、或外部 cron 文档化。
