@@ -15,4 +15,5 @@ go build -o "$bin" ./cmd/wbot
 "$bin" master -duration 1ms 2>/dev/null
 "$bin" agent -duration 1ms -interval 1ms
 "$bin" paper -symbol V.US -side buy >/dev/null
+"$bin" serve -h >/dev/null 2>&1
 echo "verify: ok"

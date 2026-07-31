@@ -17,6 +17,7 @@ import (
 	"github.com/jiayu/wbot/internal/agent"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
+	"github.com/jiayu/wbot/internal/httpapi"
 	"github.com/jiayu/wbot/internal/httpregister"
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/master"
@@ -51,6 +52,8 @@ func run(argv []string) int {
 		return runPaper(argv[0], argv[2:])
 	case "ingest":
 		return runIngest(argv[0], argv[2:])
+	case "serve":
+		return runServe(argv[0], argv[2:])
 	default:
 		usage(argv)
 		return 2
@@ -199,6 +202,89 @@ func runMaster(prog string, argv []string) int {
 	defer shutdownCancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "master: shutdown: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func runServe(prog string, argv []string) int {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	listen := fs.String("listen", "127.0.0.1:8080", "HTTP listen address")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	duration := fs.Duration("duration", 0, "run wall-clock; 0 means until SIGINT")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API: GET /v1/bars, GET /v1/runs.\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "serve: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: migrate: %v\n", err)
+		return 1
+	}
+
+	srv := &http.Server{Handler: httpapi.Handler(httpapi.NewDBStore(database))}
+
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve: listen: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "httpapi: listening on http://%s\n", ln.Addr().String())
+
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintf(os.Stderr, "serve: serve: %v\n", err)
+		}
+	}()
+
+	var (
+		runCtx    context.Context
+		runCancel context.CancelFunc
+	)
+	if *duration > 0 {
+		runCtx, runCancel = context.WithTimeout(context.Background(), *duration)
+	} else {
+		runCtx, runCancel = signal.NotifyContext(context.Background(), os.Interrupt)
+	}
+	defer runCancel()
+
+	<-runCtx.Done()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: shutdown: %v\n", err)
 		return 1
 	}
 	return 0
@@ -725,5 +811,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  serve               Read-only HTTP data API (try -h)\n")
 }
