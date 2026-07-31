@@ -1,17 +1,21 @@
 package main
 
 import (
+	"bufio"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,7 +85,7 @@ func TestRun(t *testing.T) {
 	}
 }
 
-func TestServeHelpMentionsAdminStatus(t *testing.T) {
+func TestServeHelpMentionsAdminEndpoints(t *testing.T) {
 	old := os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -98,8 +102,81 @@ func TestServeHelpMentionsAdminStatus(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run() = %d; want 0", code)
 	}
-	if !strings.Contains(string(out), "/v1/admin/status") {
-		t.Fatalf("serve help missing /v1/admin/status: %q", out)
+	for _, want := range []string{"/v1/admin/status", "/v1/admin/cluster"} {
+		if !strings.Contains(string(out), want) {
+			t.Fatalf("serve help missing %s: %q", want, out)
+		}
+	}
+}
+
+// TestServeReportsActualListenAddr: with -listen 127.0.0.1:0 serve must report the
+// bound port (ln.Addr), not the flag value; runs serve as a child process so a live
+// /v1/admin/status can be queried (skipped without WBOT_PG_DSN).
+func TestServeReportsActualListenAddr(t *testing.T) {
+	if os.Getenv("WBOT_SERVE_HELPER") == "1" {
+		os.Exit(run([]string{"wbot", "serve", "-listen", "127.0.0.1:0"}))
+	}
+	if os.Getenv("WBOT_PG_DSN") == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestServeReportsActualListenAddr$")
+	cmd.Env = append(os.Environ(), "WBOT_SERVE_HELPER=1")
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	}()
+
+	lines := make(chan string, 64)
+	go func() {
+		sc := bufio.NewScanner(stderr)
+		for sc.Scan() {
+			lines <- sc.Text()
+		}
+		close(lines)
+	}()
+
+	const prefix = "httpapi: listening on http://"
+	var addr string
+	var log []string
+	for addr == "" {
+		select {
+		case line, ok := <-lines:
+			if !ok {
+				t.Fatalf("serve helper exited before listening (output: %s)", strings.Join(log, " | "))
+			}
+			log = append(log, line)
+			if strings.HasPrefix(line, prefix) {
+				addr = strings.TrimPrefix(line, prefix)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("serve helper did not print listen addr (output: %s)", strings.Join(log, " | "))
+		}
+	}
+	if addr == "127.0.0.1:0" {
+		t.Fatal("reported the -listen flag value; want the actual bound address")
+	}
+
+	resp, err := http.Get("http://" + addr + "/v1/admin/status")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d; want 200", resp.StatusCode)
+	}
+	var got map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["listen_addr"] != addr {
+		t.Fatalf("listen_addr = %v; want %q", got["listen_addr"], addr)
 	}
 }
 

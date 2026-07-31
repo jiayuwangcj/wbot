@@ -15,9 +15,11 @@ import (
 
 // fakeStore is a scriptable Store for unit tests.
 type fakeStore struct {
-	bars []ingest.Bar
-	runs []ingest.RunStatus
-	err  error
+	bars     []ingest.Bar
+	runs     []ingest.RunStatus
+	counts   ingest.RunCounts
+	coverage []ingest.BarCoverage
+	err      error
 
 	gotSymbol   string
 	gotTimefram string
@@ -40,6 +42,20 @@ func (f *fakeStore) RecentRuns(_ context.Context, limit int) ([]ingest.RunStatus
 		return nil, f.err
 	}
 	return f.runs, nil
+}
+
+func (f *fakeStore) RunStatusCounts(context.Context) (ingest.RunCounts, error) {
+	if f.err != nil {
+		return ingest.RunCounts{}, f.err
+	}
+	return f.counts, nil
+}
+
+func (f *fakeStore) BarCoverage(context.Context) ([]ingest.BarCoverage, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.coverage, nil
 }
 
 func (f *fakeStore) Ping(context.Context) error {

@@ -221,7 +221,8 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API: GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status.\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API: GET /v1/bars, GET /v1/runs, GET /v1/health,\n")
+		fmt.Fprintf(os.Stderr, "  GET /v1/admin/status, GET /v1/admin/cluster.\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -258,18 +259,22 @@ func runServe(prog string, argv []string) int {
 		return 1
 	}
 
-	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: *listen}
-	top := http.NewServeMux()
-	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, httpapi.PingerFunc(database.PingContext)))
-	top.Handle("/", httpapi.Handler(httpapi.NewDBStore(database)))
-	srv := &http.Server{Handler: top}
-
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serve: listen: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(os.Stderr, "httpapi: listening on http://%s\n", ln.Addr().String())
+
+	// meta must carry the bound address: with -listen 127.0.0.1:0 the port exists only after Listen.
+	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
+	store := httpapi.NewDBStore(database)
+	top := http.NewServeMux()
+	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, httpapi.PingerFunc(database.PingContext)))
+	// Exact pattern wins over the /v1/admin/ subtree, so cluster keeps its own handler mux.
+	top.Handle("/v1/admin/cluster", httpapi.ClusterHandler(meta, store))
+	top.Handle("/", httpapi.Handler(store))
+	srv := &http.Server{Handler: top}
 
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
