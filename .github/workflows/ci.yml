@@ -8,13 +8,54 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
+  # Skip detection for docs-only PR changes. WARNING: do NOT use GitHub's
+  # native "[skip ci]" markers in commit messages — they cancel the whole
+  # workflow, so required checks (test/db-integration/governance) never get
+  # a check run and the PR hangs unmergeable. Automatic path detection only.
+  # Skipped jobs still report success via step-level conditions so the
+  # required checks never hang.
+  check-skip:
+    name: check-skip
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.detect.outputs.skip }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect skip (PR changes in docs/org whitelist only)
+        id: detect
+        run: |
+          set -euo pipefail
+          skip=false
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            changed="$(git diff --name-only "$base"...HEAD || true)"
+            only_docs=true
+            for f in $changed; do
+              case "$f" in
+                doc/*|.claude/agents/*|.claude/rules/*) ;;
+                */*) only_docs=false ;;  # any nested non-whitelisted path
+                *.md) ;;                 # root-level markdown only
+                *) only_docs=false ;;
+              esac
+            done
+            if [ -n "$changed" ] && [ "$only_docs" = "true" ]; then
+              skip=true
+            fi
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "skip=$skip"
+
   governance:
     name: governance
     if: github.event_name == 'pull_request'
@@ -28,24 +69,34 @@ jobs:
 
   test:
     name: test
+    needs: check-skip
+    if: always()  # check-skip failure fails open to full CI
     runs-on: ubuntu-24.04
 
     steps:
+      - name: Skip (docs-only)
+        if: needs.check-skip.outputs.skip == 'true'
+        run: echo "CI skipped (docs-only change)"
+
       - name: Checkout
+        if: needs.check-skip.outputs.skip != 'true'
         uses: actions/checkout@v4
 
       - name: Setup Go
+        if: needs.check-skip.outputs.skip != 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.22.x"
           cache: true
 
       - name: Verify module graph
+        if: needs.check-skip.outputs.skip != 'true'
         run: |
           go mod tidy
           git diff --exit-code
 
       - name: Check gofmt
+        if: needs.check-skip.outputs.skip != 'true'
         run: |
           files=$(git ls-files '*.go')
           if [ -n "$files" ]; then
@@ -58,23 +109,29 @@ jobs:
           fi
 
       - name: Run tests
+        if: needs.check-skip.outputs.skip != 'true'
         run: go test ./... -count=1
 
       - name: Run vet
+        if: needs.check-skip.outputs.skip != 'true'
         run: go vet ./...
 
       - name: Run race tests
+        if: needs.check-skip.outputs.skip != 'true'
         run: go test -race ./... -count=1
 
       - name: Install staticcheck
+        if: needs.check-skip.outputs.skip != 'true'
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
 
       - name: Run staticcheck
+        if: needs.check-skip.outputs.skip != 'true'
         run: |
           export PATH="${PATH}:$(go env GOPATH)/bin"
           staticcheck ./...
 
       - name: Verify binary and CLI smoke
+        if: needs.check-skip.outputs.skip != 'true'
         run: |
           set -euo pipefail
           bin="$(mktemp)"
@@ -90,6 +147,8 @@ jobs:
   # PostgreSQL integration (Linux only; see internal/db WBOT_PG_DSN).
   db-integration:
     name: db-integration
+    needs: check-skip
+    if: always()  # check-skip failure fails open to full CI
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -106,21 +165,29 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
+      - name: Skip (docs-only)
+        if: needs.check-skip.outputs.skip == 'true'
+        run: echo "CI skipped (docs-only change)"
+
       - name: Checkout
+        if: needs.check-skip.outputs.skip != 'true'
         uses: actions/checkout@v4
 
       - name: Setup Go
+        if: needs.check-skip.outputs.skip != 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "1.22.x"
           cache: true
 
       - name: Verify module graph
+        if: needs.check-skip.outputs.skip != 'true'
         run: |
           go mod tidy
           git diff --exit-code
 
       - name: Postgres migrations + ingest integration
+        if: needs.check-skip.outputs.skip != 'true'
         env:
           WBOT_PG_DSN: postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable
         # Serialize packages: all call MigrateUp against one DB; parallel packages can race on schema_migrations / DDL.
@@ -129,13 +196,14 @@ jobs:
   # Deterministic Markdown summary only (shell). No LLM APIs.
   ci-summary:
     name: ci-summary
-    needs: [test, db-integration]
+    needs: [check-skip, test, db-integration]
     if: success()
     runs-on: ubuntu-24.04
     steps:
       - name: Write CI report to GitHub Step Summary
         env:
           GITHUB_SHA: ${{ github.sha }}
+          SKIP: ${{ needs.check-skip.outputs.skip }}
         run: |
           set -euo pipefail
           short_sha="${GITHUB_SHA::7}"
@@ -151,6 +219,7 @@ jobs:
             echo "| Ref | \`${{ github.ref_name }}\` |"
             echo "| SHA | [\`${short_sha}\`](https://github.com/${{ github.repository }}/commit/${GITHUB_SHA}) |"
             echo "| Workflow run | [Open logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |"
+            echo "| CI skipped | \`$SKIP\` (docs-only change) |"
             echo ""
             echo "### Jobs"
             echo "- \`test\`: **ubuntu-24.04 (LTS)** — go test, vet, gofmt, race, staticcheck, binary smoke."
