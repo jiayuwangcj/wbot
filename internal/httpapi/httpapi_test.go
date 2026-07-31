@@ -42,6 +42,10 @@ func (f *fakeStore) RecentRuns(_ context.Context, limit int) ([]ingest.RunStatus
 	return f.runs, nil
 }
 
+func (f *fakeStore) Ping(context.Context) error {
+	return f.err
+}
+
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -223,6 +227,43 @@ func TestUnknownPath(t *testing.T) {
 
 func TestMethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/bars", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	Handler(&fakeStore{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d; want 405 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestHealthOK(t *testing.T) {
+	rec := get(t, Handler(&fakeStore{}), "/v1/health")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q; want application/json", ct)
+	}
+	var got healthJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
+	}
+	if got.Status != "ok" {
+		t.Fatalf("status field = %q; want ok (body %s)", got.Status, rec.Body)
+	}
+}
+
+func TestHealthPingError(t *testing.T) {
+	rec := get(t, Handler(&fakeStore{err: errors.New("db down")}), "/v1/health")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d; want 503 (body %s)", rec.Code, rec.Body)
+	}
+	var errBody map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody["error"] == "" {
+		t.Fatalf("body %q; want JSON error", rec.Body)
+	}
+}
+
+func TestHealthMethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/health", strings.NewReader("{}"))
 	rec := httptest.NewRecorder()
 	Handler(&fakeStore{}).ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
