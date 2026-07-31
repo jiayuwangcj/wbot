@@ -221,7 +221,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API: GET /v1/bars, GET /v1/runs.\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API: GET /v1/bars, GET /v1/runs, and the admin status endpoint GET /v1/admin/status.\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -234,6 +234,8 @@ func runServe(prog string, argv []string) int {
 		fs.Usage()
 		return 0
 	}
+
+	startedAt := time.Now()
 
 	d := strings.TrimSpace(*dsn)
 	if d == "" {
@@ -256,7 +258,11 @@ func runServe(prog string, argv []string) int {
 		return 1
 	}
 
-	srv := &http.Server{Handler: httpapi.Handler(httpapi.NewDBStore(database))}
+	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: *listen}
+	top := http.NewServeMux()
+	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, httpapi.PingerFunc(database.PingContext)))
+	top.Handle("/", httpapi.Handler(httpapi.NewDBStore(database)))
+	srv := &http.Server{Handler: top}
 
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {

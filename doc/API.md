@@ -47,6 +47,37 @@ Query 参数：
 ]
 ```
 
+## GET /v1/admin/status
+
+进程 + DB 运行状态（后台管理数据面；无查询参数）。
+
+响应 `200`：
+
+```json
+{
+  "version": "0.0.0-dev",
+  "pid": 12345,
+  "started_at": "2026-07-31T08:00:00Z",
+  "uptime_seconds": 12.5,
+  "listen_addr": "127.0.0.1:8080",
+  "db": {"ok": true, "latency_ms": 1.2}
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `version` | 构建时 `-ldflags` 注入的版本号 |
+| `pid` | 进程 PID |
+| `started_at` | serve 进程启动时间（RFC3339） |
+| `uptime_seconds` | 自启动以来的秒数 |
+| `listen_addr` | `serve -listen` 启动参数 |
+| `db.ok` | DB Ping 结果（≤3s 超时） |
+| `db.latency_ms` | ping 耗时（毫秒；DB 不可用时省略） |
+
+DB 不可用时仍返回 `200`，`db.ok` 为 `false`（信息端点；健康语义归 /v1/health 的 503）。
+
+PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
+
 ## 错误
 
 统一 `{"error": "..."}` JSON：
