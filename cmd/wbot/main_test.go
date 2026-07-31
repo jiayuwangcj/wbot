@@ -7,11 +7,13 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +78,28 @@ func TestRun(t *testing.T) {
 				t.Fatalf("run() = %d; want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestServeHelpMentionsAdminStatus(t *testing.T) {
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = old }()
+	code := run([]string{"wbot", "serve", "-h"})
+	w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("run() = %d; want 0", code)
+	}
+	if !strings.Contains(string(out), "/v1/admin/status") {
+		t.Fatalf("serve help missing /v1/admin/status: %q", out)
 	}
 }
 
