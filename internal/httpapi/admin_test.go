@@ -102,6 +102,31 @@ func TestAdminStatusDBDown(t *testing.T) {
 	}
 }
 
+// TestAdminStatusPingIgnoresCtx: a pinger that ignores ctx and outlives the
+// timeout must still report ok:false with latency omitted (review P2, PR #33).
+func TestAdminStatusPingIgnoresCtx(t *testing.T) {
+	meta := testMeta()
+	p := &fakePinger{delay: pingTimeout + 500*time.Millisecond}
+	rec := get(t, AdminHandler(meta, p), "/v1/admin/status")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
+	}
+	db, ok := got["db"].(map[string]any)
+	if !ok || db["ok"] != false {
+		t.Fatalf("db = %v; want ok:false when ping ignores ctx", got["db"])
+	}
+	if _, ok := db["latency_ms"]; ok {
+		t.Fatalf("db = %v; want latency_ms omitted when timed out", got["db"])
+	}
+	if got["version"] != meta.Version {
+		t.Fatalf("version = %v; want %s on timeout path", got["version"], meta.Version)
+	}
+}
+
 func TestAdminStatusMethodNotAllowed(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/admin/status", nil)
 	rec := httptest.NewRecorder()
