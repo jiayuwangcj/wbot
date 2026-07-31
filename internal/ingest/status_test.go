@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func TestRunStatusCounts_validation(t *testing.T) {
+	ctx := context.Background()
+	if _, err := RunStatusCounts(ctx, nil); err == nil {
+		t.Fatal("expected error for nil db")
+	}
+}
+
 func TestRecentRuns_validation(t *testing.T) {
 	ctx := context.Background()
 	for _, limit := range []int{0, -1} {

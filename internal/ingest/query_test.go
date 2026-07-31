@@ -7,6 +7,13 @@ import (
 	"time"
 )
 
+func TestQueryBarCoverage_validation(t *testing.T) {
+	ctx := context.Background()
+	if _, err := QueryBarCoverage(ctx, nil); err == nil {
+		t.Fatal("expected error for nil db")
+	}
+}
+
 func TestQueryBars_validation(t *testing.T) {
 	ctx := context.Background()
 	from := time.Date(2024, 6, 3, 0, 0, 0, 0, time.UTC)

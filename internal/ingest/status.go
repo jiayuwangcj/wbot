@@ -17,6 +17,46 @@ type RunStatus struct {
 	FinishedAt *time.Time // nil while the run is still running
 }
 
+// RunCounts is the running/succeeded/failed tally over all ingestion runs.
+type RunCounts struct {
+	Running   int64
+	Succeeded int64
+	Failed    int64
+}
+
+// RunStatusCounts counts ingestion runs per status; unknown statuses are ignored.
+func RunStatusCounts(ctx context.Context, db *sql.DB) (RunCounts, error) {
+	if db == nil {
+		return RunCounts{}, errors.New("ingest: status: nil db")
+	}
+	rows, err := db.QueryContext(ctx, `SELECT status, COUNT(*) FROM ingestion_runs GROUP BY status`)
+	if err != nil {
+		return RunCounts{}, fmt.Errorf("ingest: status: counts: query: %w", err)
+	}
+	defer rows.Close()
+
+	var c RunCounts
+	for rows.Next() {
+		var status string
+		var n int64
+		if err := rows.Scan(&status, &n); err != nil {
+			return RunCounts{}, fmt.Errorf("ingest: status: counts: scan: %w", err)
+		}
+		switch status {
+		case "running":
+			c.Running = n
+		case "succeeded":
+			c.Succeeded = n
+		case "failed":
+			c.Failed = n
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return RunCounts{}, fmt.Errorf("ingest: status: counts: rows: %w", err)
+	}
+	return c, nil
+}
+
 // RecentRuns returns the most recent ingestion runs, newest first.
 func RecentRuns(ctx context.Context, db *sql.DB, limit int) ([]RunStatus, error) {
 	if limit <= 0 {
