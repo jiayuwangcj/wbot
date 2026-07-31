@@ -36,3 +36,9 @@ tools: Read, Grep, Glob, Bash, Write, Edit
 - 遵守用户级规则（~/.claude/rules/）：vibe-coding 八荣八耻（查档求证/对齐需求/复用存量/完备测例/分步迭代）、self-documenting-code（注释 ≤1 行）
 - 小步迭代：一次一个切片，不批量乱改
 - 报告真实：没跑过的说没跑过
+
+## 脚本规范（tools/ 目录，2026-07-31 用户指令）
+
+- **新写的 python / shell 等脚本统一放入 `tools/` 目录**（考虑复用性：可复用的工具脚本不放 scripts/ 一次性产物；scripts/ 保留 CI/发布链路既有脚本）
+- 脚本仍须满足代码规范：**code-as-explain**（代码自解释，少注释）、注释 ≤1 行、文档双链体现潜规则（doc/*.md 相互 [[双链]] 引用，约定入文档不入代码）
+- 脚本可测性：能加测试的脚本随工具加测试（或验证命令）；被 CI/发布引用的脚本保证 verify/CI 可达
