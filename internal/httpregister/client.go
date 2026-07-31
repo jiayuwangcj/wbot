@@ -14,8 +14,7 @@ import (
 
 // Client posts registration requests to a master HTTP endpoint.
 type Client struct {
-	// BaseURL is the scheme+host (and optional port), e.g. "http://127.0.0.1:8080".
-	// Trailing slashes are trimmed.
+	// BaseURL is the scheme+host[:port], e.g. "http://127.0.0.1:8080"; trailing slashes are trimmed.
 	BaseURL string
 	// HTTP is used when non-nil; otherwise http.DefaultClient.
 	HTTP *http.Client
@@ -40,9 +39,7 @@ func (e *HTTPError) Error() string {
 
 var errNoRetry = errors.New("httpregister: not retryable")
 
-// Register POSTs {"id": id} to BaseURL/v1/register and returns whether the ID
-// was newly recorded. Context deadlines apply to each attempt; transient
-// failures are retried when RetryMax > 0.
+// Register POSTs an agent ID; returns whether it is new; retries transient errors per RetryMax.
 func (c *Client) Register(ctx context.Context, id string) (bool, error) {
 	var lastErr error
 	for attempt := 0; ; attempt++ {

@@ -1,7 +1,4 @@
-// Package httpapi serves the read-only data API consumed by the WeChat
-// miniapp: GET /v1/bars (ingested OHLCV) and GET /v1/runs (ingestion runs).
-// The Store interface keeps the package unit-testable without PostgreSQL;
-// NewDBStore wires it to internal/ingest queries.
+// Package httpapi serves the WeChat miniapp's read-only data API: GET /v1/bars, GET /v1/runs.
 package httpapi
 
 import (

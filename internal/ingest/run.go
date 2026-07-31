@@ -11,6 +11,7 @@ import (
 )
 
 // RunIngestion records a run, writes src bars in one transaction, then marks it succeeded.
+// details: doc/DATA_PIPELINE.md
 func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol domain.Symbol, timeframe string, from, to time.Time, src Source) error {
 	if db == nil {
 		return errors.New("ingest: nil db")
