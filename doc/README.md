@@ -13,7 +13,8 @@
 - [[tasks/README]]
 - [[GITHUB_MCP]]
 - [[WORKFLOW_GITHUB_DRIVEN]]
-- [[ORGS]]（组织架构与并行协议：产品组/开发组/PM 组、角色分工、worktree 并行）
+- [[ORGS]]（组织架构与并行协议：产品组/开发组/PM 组/运维组、角色分工、worktree 并行）
+- [[PRIVACY]]（敏感配置与密钥安全：`~/.wbot/` 存放、不入库、评审必查）
 - [[pinned_discussion]]
 - [[GITHUB_DISCUSSION_OPS]]
 - [[ROADMAP]]

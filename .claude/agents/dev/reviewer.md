@@ -53,6 +53,11 @@ tools: Read, Grep, Glob, Bash
 - 若一次提交的功能逻辑不可划分、但**能拆细**（如大改动可分阶段），也要求**分步提交**（先基础后依赖，逐步 CI 验证）
 - 评审发现混合逻辑/超大单步 → 列 P1（有条件合入：拆后再合），并给出拆分建议
 
+### 5.8 密钥与资产安全（secrets & assets security）
+- **diff 扫描密钥/资产配置类泄漏**：token、私钥、口令、含口令 DSN、云/券商/微信凭证、资产配置**值**（形态：`sk-`、`token`、`password`、`secret`、`BEGIN ... PRIVATE KEY` 等）；发现 → **P0 阻断合入**，并提示清理与轮换
+- 敏感配置存放：只允许 `~/.wbot/`（home 级，见 `doc/PRIVACY.md`）；仓库内只允许环境变量**名**与测试假值
+- 新引入敏感文件/目录须有 `.gitignore` 覆盖或走 `~/.wbot` 约定；测试 fixture 必须假值
+
 ### 5.6 日志与可观测（logging & observability）
 - **服务端/长驻功能的任意功能需有分级日志**：error / warn / info（/ debug 视实现阶段）多等级；仅 stderr 无等级的输出列为差距（P2/排期）
 - **模块关键字**：日志/输出按功能带模块前缀（如 `ingest mock:`、`httpapi:`、`backtest:`），可 grep 定位功能归属；关键字命名一致
