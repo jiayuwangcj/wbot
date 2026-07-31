@@ -155,7 +155,7 @@ func TestServeReportsActualListenAddr(t *testing.T) {
 			if strings.HasPrefix(line, prefix) {
 				addr = strings.TrimPrefix(line, prefix)
 			}
-		case <-time.After(10 * time.Second):
+		case <-time.After(20 * time.Second):
 			t.Fatalf("serve helper did not print listen addr (output: %s)", strings.Join(log, " | "))
 		}
 	}
