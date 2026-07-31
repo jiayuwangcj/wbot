@@ -13,7 +13,7 @@
 - [[tasks/README]]
 - [[GITHUB_MCP]]
 - [[WORKFLOW_GITHUB_DRIVEN]]
-- 评审规范：`.claude/agents/reviewer.md`（多角色评审 subagent：健壮性/容灾/API 兼容/产品体验/调用方视角）
+- [[ORGS]]（组织架构与并行协议：产品组/开发组/PM 组、角色分工、worktree 并行）
 - [[pinned_discussion]]
 - [[GITHUB_DISCUSSION_OPS]]
 - [[ROADMAP]]
