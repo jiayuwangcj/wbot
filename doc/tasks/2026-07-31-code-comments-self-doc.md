@@ -22,9 +22,9 @@
 
 ## State
 
-- **status**: `running`
-- **last step**: 盘点完成（21 文件含 2+ 行注释块）；批 1 派单中。
+- **status**: `done`
+- **last step**: 批 1（#14）与批 2（#16）均合入 main（2026-07-31）。
 
 ## Next
 
-- 批 1 完成 → verify → PR → reviewer 评审 → merge → 批 2。
+- 无（已完成）。后续新增代码按 self-documenting-code rule 执行。

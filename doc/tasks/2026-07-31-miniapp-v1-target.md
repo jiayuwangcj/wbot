@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | ① 后端数据 API（/v1/bars、/v1/runs） | ✅ 已完成（a26436c） | 无 |
 | ② API 契约文档（doc/API.md） | ✅ 已完成（b9fbe67） | ① |
-| ③ 小程序所需后端增强（如健康检查） | 可做（可测，不依赖微信工具链） | ① |
+| ③ 小程序所需后端增强（如健康检查） | 🔨 进行中（`2026-07-31-miniapp-health`，分支 `feat/miniapp-health`） | ① |
 | ④ 小程序前端骨架/页面 | **挂起**——缺微信开发者工具与小程序账号（[discussions/21](https://github.com/jiayuwangcj/wbot/discussions/21) 待老板处理） | ①+③、账号/工具 |
 | ⑤ 券商持仓显示 | **挂起**——缺 Schwab/IBKR 凭证（discussions/21） | ③+④、凭证 |
 
