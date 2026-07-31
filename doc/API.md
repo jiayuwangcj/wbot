@@ -70,7 +70,7 @@ Query 参数：
 | `pid` | 进程 PID |
 | `started_at` | serve 进程启动时间（RFC3339） |
 | `uptime_seconds` | 自启动以来的秒数 |
-| `listen_addr` | `serve -listen` 启动参数 |
+| `listen_addr` | 实际绑定地址（`ln.Addr()`；`-listen 127.0.0.1:0` 时报告实际端口） |
 | `db.ok` | DB Ping 结果（≤3s 超时） |
 | `db.latency_ms` | ping 耗时（毫秒；DB 不可用时省略） |
 
@@ -78,6 +78,9 @@ DB 不可用时仍返回 `200`，`db.ok` 为 `false`（信息端点；健康语�
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
 
+## GET /v1/admin/cluster
+
+集群状态组件视图。**单进程语义**：wbot 为单进程 CLI，无真实集群；端点命名 `cluster` 仅为对齐需求方原话，`components` 是本进程四个组件的状态聚合（进程 / DB / 数据管道 / 数据面），不扩展 master/agent 注册。无查询参数。
 ## GET /v1/admin/config
 
 配置 key 清单与设置状态（后台管理数据面；无查询参数）。**永不返回配置值**——PRIVACY 红线（见 doc/PRIVACY.md）：值只进 `~/.wbot/wbot.conf`（0600、tmp+rename 原子写），本端点只回 key 元数据。
@@ -107,6 +110,46 @@ key 白名单：`credentials.wechat.{appid,secret,token}`、`credentials.schwab.
 响应 `200`：
 
 ```json
+{
+  "components": {
+    "process": {
+      "version": "0.0.0-dev",
+      "pid": 12345,
+      "started_at": "2026-07-31T08:00:00Z",
+      "uptime_seconds": 12.5,
+      "listen_addr": "127.0.0.1:8080"
+    },
+    "db": {"ok": true, "latency_ms": 1.2},
+    "pipeline": {
+      "counts": {"running": 1, "succeeded": 9, "failed": 0},
+      "recent_runs": [
+        {"id": 10, "source": "cli-mock", "status": "succeeded",
+         "started_at": "2026-07-31T08:00:00Z", "finished_at": "2026-07-31T08:00:01Z"}
+      ]
+    },
+    "data_plane": {
+      "bars_coverage": [
+        {"symbol": "DEMO.US", "timeframe": "1d", "count": 3,
+         "min_ts": "2024-06-01T00:00:00Z", "max_ts": "2024-06-03T00:00:00Z"}
+      ]
+    }
+  }
+}
+```
+
+| 组件 | 字段 | 说明 |
+| --- | --- | --- |
+| `process` | version / pid / started_at / uptime_seconds / listen_addr | 同 /v1/admin/status 进程字段 |
+| `db` | ok / latency_ms | Ping 结果；down → `ok:false`，仍返回 200（同 /v1/admin/status 语义） |
+| `pipeline.counts` | running / succeeded / failed | `ingestion_runs` 全表按状态计数 |
+| `pipeline.recent_runs` | 最近 5 条 | 形状同 /v1/runs；`finished_at` 为 `null` 表示仍在运行 |
+| `data_plane.bars_coverage` | symbol / timeframe / count / min_ts / max_ts | `bars` 表各 symbol×timeframe 组合的条数与 ts 区间 |
+
+DB 不可用时（ping 失败）：仍返回 `200`，`db.ok` 为 `false`，且**不执行** pipeline/data_plane 查询——`counts` 全 0、`recent_runs` 与 `bars_coverage` 为空数组（降级语义同 /v1/admin/status；进程字段照常返回）。
+
+ping 通过但存储查询失败时返回 `500`（`{"error": "internal error"}`）。
+
+PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
 {"key": "credentials.wechat.appid", "set": true}
 ```
 
@@ -156,6 +199,7 @@ wbot ingest mock
 wbot serve &
 curl -s 'http://127.0.0.1:8080/v1/runs'
 curl -s 'http://127.0.0.1:8080/v1/bars?symbol=DEMO.US&timeframe=1d'
+curl -s 'http://127.0.0.1:8080/v1/admin/cluster'
 ```
 
 关联：[[DATA_PIPELINE]] [[ROADMAP]]（v4 Go API，微信小程序前置依赖）

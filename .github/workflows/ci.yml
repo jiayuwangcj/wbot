@@ -191,7 +191,7 @@ jobs:
         env:
           WBOT_PG_DSN: postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable
         # Serialize packages: all call MigrateUp against one DB; parallel packages can race on schema_migrations / DDL.
-        run: go test ./internal/db/... ./internal/ingest/... ./internal/httpapi/... -count=1 -race -p 1
+        run: go test ./internal/db/... ./internal/ingest/... ./internal/httpapi/... ./cmd/wbot/ -count=1 -race -p 1
 
   # Deterministic Markdown summary only (shell). No LLM APIs.
   ci-summary:
@@ -223,6 +223,6 @@ jobs:
             echo ""
             echo "### Jobs"
             echo "- \`test\`: **ubuntu-24.04 (LTS)** — go test, vet, gofmt, race, staticcheck, binary smoke."
-            echo "- \`db-integration\`: **ubuntu-24.04 (LTS)** + Postgres 16 — \`internal/db\` migrations + \`internal/ingest\` + \`internal/httpapi\`."
+            echo "- \`db-integration\`: **ubuntu-24.04 (LTS)** + Postgres 16 — \`internal/db\` migrations + \`internal/ingest\` + \`internal/httpapi\` + \`cmd/wbot\` serve."
             echo "- \`governance\`: pull requests only — \`Driven-By\` field check."
           } >> "$GITHUB_STEP_SUMMARY"
