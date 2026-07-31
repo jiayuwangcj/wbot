@@ -47,7 +47,6 @@ Query 参数：
 ]
 ```
 
-<<<<<<< HEAD
 ## GET /v1/admin/status
 
 进程 + DB 运行状态（后台管理数据面；无查询参数）。

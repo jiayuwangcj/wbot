@@ -221,7 +221,6 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-<<<<<<< HEAD
 		fmt.Fprintf(os.Stderr, "Serves the read-only data API: GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status.\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
