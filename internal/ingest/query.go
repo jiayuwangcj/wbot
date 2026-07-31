@@ -9,6 +9,42 @@ import (
 	"time"
 )
 
+// BarCoverage is one symbol×timeframe combination present in the bars table.
+type BarCoverage struct {
+	Symbol    string
+	Timeframe string
+	Count     int64
+	MinTs     time.Time
+	MaxTs     time.Time
+}
+
+// QueryBarCoverage tallies bars per symbol×timeframe with min/max ts, ordered by symbol, timeframe.
+func QueryBarCoverage(ctx context.Context, db *sql.DB) ([]BarCoverage, error) {
+	if db == nil {
+		return nil, errors.New("ingest: bars coverage: nil db")
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT symbol, timeframe, COUNT(*), MIN(ts), MAX(ts) FROM bars
+GROUP BY symbol, timeframe ORDER BY symbol, timeframe`)
+	if err != nil {
+		return nil, fmt.Errorf("ingest: bars coverage: query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []BarCoverage
+	for rows.Next() {
+		var c BarCoverage
+		if err := rows.Scan(&c.Symbol, &c.Timeframe, &c.Count, &c.MinTs, &c.MaxTs); err != nil {
+			return nil, fmt.Errorf("ingest: bars coverage: scan: %w", err)
+		}
+		out = append(out, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ingest: bars coverage: rows: %w", err)
+	}
+	return out, nil
+}
+
 // QueryBars returns a symbol/timeframe's bars in [from, to] (zero from/to unbounded), ts ascending.
 func QueryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string, from, to time.Time, limit int) ([]Bar, error) {
 	if db == nil {

@@ -167,6 +167,84 @@ func TestRecentRunsIntegration(t *testing.T) {
 	}
 }
 
+func TestRunStatusCountsIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	source := "counts-test"
+	symbol := domain.Symbol("COUNTS.US")
+	tf := "1d"
+	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+		t.Fatal(err)
+	}
+
+	counts, err := RunStatusCounts(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Succeeded < 1 {
+		t.Fatalf("counts: got %+v; want succeeded >= 1", counts)
+	}
+	if counts.Running < 0 || counts.Failed < 0 {
+		t.Fatalf("counts: got %+v; want non-negative", counts)
+	}
+}
+
+func TestQueryBarCoverageIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	source := "coverage-test"
+	symbol := domain.Symbol("COVERAGE.US")
+	tf := "1d"
+	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+		t.Fatal(err)
+	}
+
+	coverage, err := QueryBarCoverage(ctx, database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *BarCoverage
+	for i := range coverage {
+		if coverage[i].Symbol == string(symbol) && coverage[i].Timeframe == tf {
+			found = &coverage[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("coverage missing %s %s (got %+v)", symbol, tf, coverage)
+	}
+	if found.Count != 3 {
+		t.Fatalf("coverage count: got %d want 3", found.Count)
+	}
+	if !found.MinTs.Before(found.MaxTs) {
+		t.Fatalf("coverage ts: got %v..%v; want min before max", found.MinTs, found.MaxTs)
+	}
+}
+
 func TestQueryBarsIntegration(t *testing.T) {
 	dsn := os.Getenv("WBOT_PG_DSN")
 	if dsn == "" {

@@ -25,6 +25,8 @@ const (
 type Store interface {
 	QueryBars(ctx context.Context, symbol string, timeframe string, from, to time.Time, limit int) ([]ingest.Bar, error)
 	RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error)
+	RunStatusCounts(ctx context.Context) (ingest.RunCounts, error)
+	BarCoverage(ctx context.Context) ([]ingest.BarCoverage, error)
 	Ping(ctx context.Context) error
 }
 
@@ -43,6 +45,14 @@ func (s dbStore) QueryBars(ctx context.Context, symbol string, timeframe string,
 
 func (s dbStore) RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error) {
 	return ingest.RecentRuns(ctx, s.db, limit)
+}
+
+func (s dbStore) RunStatusCounts(ctx context.Context) (ingest.RunCounts, error) {
+	return ingest.RunStatusCounts(ctx, s.db)
+}
+
+func (s dbStore) BarCoverage(ctx context.Context) ([]ingest.BarCoverage, error) {
+	return ingest.QueryBarCoverage(ctx, s.db)
 }
 
 func (s dbStore) Ping(ctx context.Context) error {
@@ -67,6 +77,20 @@ type runJSON struct {
 	Status     string  `json:"status"`
 	StartedAt  string  `json:"started_at"`
 	FinishedAt *string `json:"finished_at"` // null while the run is still running
+}
+
+// toRunJSON renders runs as the API shape (RFC3339; nil FinishedAt becomes null).
+func toRunJSON(runs []ingest.RunStatus) []runJSON {
+	out := make([]runJSON, 0, len(runs))
+	for _, r := range runs {
+		run := runJSON{ID: r.ID, Source: r.Source, Status: r.Status, StartedAt: r.StartedAt.Format(time.RFC3339)}
+		if r.FinishedAt != nil {
+			finished := r.FinishedAt.Format(time.RFC3339)
+			run.FinishedAt = &finished
+		}
+		out = append(out, run)
+	}
+	return out
 }
 
 // healthJSON is the GET /v1/health success body.
@@ -144,15 +168,7 @@ func Handler(store Store) http.Handler {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		out := make([]runJSON, 0, len(runs))
-		for _, r := range runs {
-			run := runJSON{ID: r.ID, Source: r.Source, Status: r.Status, StartedAt: r.StartedAt.Format(time.RFC3339)}
-			if r.FinishedAt != nil {
-				finished := r.FinishedAt.Format(time.RFC3339)
-				run.FinishedAt = &finished
-			}
-			out = append(out, run)
-		}
+		out := toRunJSON(runs)
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
 	})
