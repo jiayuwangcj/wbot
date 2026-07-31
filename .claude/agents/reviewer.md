@@ -34,6 +34,12 @@ tools: Read, Grep, Glob, Bash
 - 输出可读性：CLI 输出格式、帮助文本、错误信息是否可操作（告诉用户「怎么修」而非只报错）
 - 是否符合预期：对照任务记录 Goal/验收逐条核对
 
+### 5.5 CI 测试覆盖（CI reachability）
+- **新加的功能是否被 CI 实际测到**：验收路径是否被 `scripts/verify.sh` 与 ci.yml（test job / db-integration job）真实执行——不是「写了测试」而是「CI 会跑这些测试」
+- 测试是否真实断言行为（非只测退出码/help）；集成测是否在 db-integration job 的包列表里
+- 是否有静默 skip（如无 DSN 就 skip 的测试，需确认对应 CI job 提供了 DSN）；smoke 是否覆盖新命令（verify.sh / ci.yml 的 binary smoke 行）
+- 结论：功能 = 代码 + 测试 + CI 可执行性三者齐备才算「完成」；缺任何一环列入发现（通常 P1）
+
 ### 5. API 调用方视角（consumer readiness）
 - **判定是否达到「可使用阶段」**：验收是否全部满足、文档是否齐、有无阻塞使用的缺口
 - 若未达到：站在**调用方**（外部程序/脚本/前端/其他包）角度列出缺口——契约不明确、错误语义含糊、缺示例、参数/响应不符合消费习惯、认证/边界未定义等
