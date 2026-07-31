@@ -25,6 +25,7 @@ import (
 	"github.com/jiayu/wbot/internal/master"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
+	"github.com/jiayu/wbot/internal/webui"
 )
 
 // Set at link time: go build -ldflags "-X main.version=v1.2.3"
@@ -222,7 +223,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the API: GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config.\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config) and the embedded Web UI (GET / redirects to /ui/).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -269,18 +270,7 @@ func runServe(prog string, argv []string) int {
 	// meta must carry the bound address: with -listen 127.0.0.1:0 the port exists only after Listen.
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
 	store := httpapi.NewDBStore(database)
-	top := http.NewServeMux()
-	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, httpapi.PingerFunc(database.PingContext)))
-	// Exact pattern wins over the /v1/admin/ subtree, so cluster/config keep their own handler muxes.
-	top.Handle("/v1/admin/cluster", httpapi.ClusterHandler(meta, store))
-	if cstore, err := config.OpenDefault(); err != nil {
-		fmt.Fprintf(os.Stderr, "httpapi: admin: config: %v\n", err)
-	} else {
-		cfg := httpapi.ConfigHandler(cstore)
-		top.Handle("/v1/admin/config", cfg)
-		top.Handle("/v1/admin/config/", cfg)
-	}
-	top.Handle("/", httpapi.Handler(store))
+	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store)
 	srv := &http.Server{Handler: top}
 
 	go func() {
@@ -919,6 +909,26 @@ func runIngestBars(prog string, argv []string) int {
 		fmt.Printf("%s %v %v %v %v %d\n", b.Ts.Format(time.RFC3339), b.Open, b.High, b.Low, b.Close, b.Volume)
 	}
 	return 0
+}
+
+// serveMux assembles serve's top-level routes: admin API, data API, embedded Web UI.
+func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store) *http.ServeMux {
+	top := http.NewServeMux()
+	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, pinger))
+	// Exact pattern wins over the /v1/admin/ subtree, so cluster/config keep their own handler muxes.
+	top.Handle("/v1/admin/cluster", httpapi.ClusterHandler(meta, store))
+	if cstore, err := config.OpenDefault(); err != nil {
+		fmt.Fprintf(os.Stderr, "httpapi: admin: config: %v\n", err)
+	} else {
+		cfg := httpapi.ConfigHandler(cstore)
+		top.Handle("/v1/admin/config", cfg)
+		top.Handle("/v1/admin/config/", cfg)
+	}
+	// Longest pattern wins: GET /{$} beats the / catch-all; other methods still reach the API's JSON 404.
+	top.Handle("GET /{$}", http.RedirectHandler("/ui/", http.StatusMovedPermanently))
+	top.Handle("/ui/", http.StripPrefix("/ui/", webui.FileServer()))
+	top.Handle("/", httpapi.Handler(store))
+	return top
 }
 
 // parseRangeTime parses a -from/-to flag value. Empty means unbounded (zero time).
