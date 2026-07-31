@@ -25,4 +25,4 @@ v1 数据管道收尾文档：新增 `doc/DATA_PIPELINE.md`（命令一览、行
 
 ## Next
 
-- commit + push + CI 绿即闭环。后续候选：数据源 Provider 抽象（需设计，建议拆解为讨论或 Issue 后再做）。
+- 已完成：commit `c8dcfc0` push 后 run `30618268922` CI **绿**，闭环。后续候选：数据源 Provider 抽象（需设计，已开始写 `doc/issues/` 草稿）。
