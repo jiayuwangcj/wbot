@@ -59,6 +59,9 @@ func TestRun(t *testing.T) {
 		{"ingest bars no dsn", []string{"wbot", "ingest", "bars"}, 2},
 		{"ingest bars bad from", []string{"wbot", "ingest", "bars", "-from", "not-a-time"}, 2},
 		{"ingest bars json no dsn", []string{"wbot", "ingest", "bars", "-json"}, 2},
+		{"backtest help", []string{"wbot", "backtest", "-h"}, 0},
+		{"backtest no file", []string{"wbot", "backtest"}, 2},
+		{"backtest bad strategy", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "nope"}, 2},
 		{"serve help", []string{"wbot", "serve", "-h"}, 0},
 		{"serve no dsn", []string{"wbot", "serve"}, 2},
 	}

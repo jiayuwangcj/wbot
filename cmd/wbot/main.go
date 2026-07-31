@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/agent"
+	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
 	"github.com/jiayu/wbot/internal/httpapi"
@@ -52,6 +53,8 @@ func run(argv []string) int {
 		return runPaper(argv[0], argv[2:])
 	case "ingest":
 		return runIngest(argv[0], argv[2:])
+	case "backtest":
+		return runBacktest(argv[0], argv[2:])
 	case "serve":
 		return runServe(argv[0], argv[2:])
 	default:
@@ -332,6 +335,68 @@ func runPaper(prog string, argv []string) int {
 		return 1
 	}
 	fmt.Printf("%s side=%s status=%d id=%s\n", got.Symbol, *side, got.Status, got.ID)
+	return 0
+}
+
+func runBacktest(prog string, argv []string) int {
+	fs := flag.NewFlagSet("backtest", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	file := fs.String("file", "", "path to JSON array of bars (required; same format as `ingest bars -json`)")
+	cash := fs.Float64("cash", 10000, "initial cash")
+	strategy := fs.String("strategy", "hold", "strategy to run: hold or buy-hold")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file and prints one summary line.\n")
+		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	fp := strings.TrimSpace(*file)
+	if fp == "" {
+		fmt.Fprintf(os.Stderr, "backtest: -file is required\n")
+		return 2
+	}
+
+	var s backtest.Strategy
+	switch strings.TrimSpace(*strategy) {
+	case "hold":
+		s = backtest.HoldStrategy{}
+	case "buy-hold":
+		s = &backtest.BuyHoldStrategy{}
+	default:
+		fmt.Fprintf(os.Stderr, "backtest: unknown strategy %q (want hold or buy-hold)\n", *strategy)
+		return 2
+	}
+
+	data, err := os.ReadFile(fp)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: read %s: %v\n", fp, err)
+		return 1
+	}
+	bars, err := backtest.ParseBars(data)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 1
+	}
+	res, err := backtest.Run(context.Background(), bars, *cash, s)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 1
+	}
+	fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
 	return 0
 }
 
@@ -811,5 +876,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  serve               Read-only HTTP data API (try -h)\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  serve               Read-only HTTP data API (try -h)\n")
 }

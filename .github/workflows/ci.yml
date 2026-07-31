@@ -85,6 +85,7 @@ jobs:
           "$bin" agent -duration 1ms -interval 1ms
           "$bin" paper -symbol V.US -side buy
           "$bin" serve -h >/dev/null 2>&1
+          "$bin" backtest -h >/dev/null 2>&1
 
   # PostgreSQL integration (Linux only; see internal/db WBOT_PG_DSN).
   db-integration:

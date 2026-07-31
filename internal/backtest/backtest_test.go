@@ -1,0 +1,216 @@
+package backtest
+
+import (
+	"context"
+	"errors"
+	"math"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jiayu/wbot/internal/ingest"
+)
+
+// mkBars builds valid bars with equal OHLC and daily timestamps from closes.
+func mkBars(closes ...float64) []ingest.Bar {
+	bars := make([]ingest.Bar, 0, len(closes))
+	for i, c := range closes {
+		bars = append(bars, ingest.Bar{
+			Ts:     time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC),
+			Open:   c,
+			High:   c,
+			Low:    c,
+			Close:  c,
+			Volume: 100,
+		})
+	}
+	return bars
+}
+
+// stubStrategy returns fixed action/size/err for every bar.
+type stubStrategy struct {
+	action Action
+	size   float64
+	err    error
+}
+
+func (s stubStrategy) OnBar(_ context.Context, _ ingest.Bar, _ *State) (Action, float64, error) {
+	return s.action, s.size, s.err
+}
+
+func TestRunHold(t *testing.T) {
+	bars := mkBars(100, 110, 90, 105)
+	res, err := Run(context.Background(), bars, 10000, HoldStrategy{})
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if res.Equity != 10000 || res.TotalReturn != 0 || res.MaxDrawdown != 0 || res.Bars != 4 {
+		t.Fatalf("Run() = %+v; want Equity 10000, TotalReturn 0, MaxDrawdown 0, Bars 4", res)
+	}
+}
+
+func TestRunBuyHold(t *testing.T) {
+	bars := mkBars(100, 110, 121)
+	res, err := Run(context.Background(), bars, 10000, &BuyHoldStrategy{})
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	// All-in 100 shares at close 100, cash ~0: final equity = 100 * 121.
+	if math.Abs(res.Equity-12100) > 1e-9 {
+		t.Fatalf("Run().Equity = %v; want ~12100", res.Equity)
+	}
+	// TotalReturn = close_last/close_first - 1 = 0.21.
+	if math.Abs(res.TotalReturn-0.21) > 1e-9 {
+		t.Fatalf("Run().TotalReturn = %v; want ~0.21", res.TotalReturn)
+	}
+	if res.MaxDrawdown != 0 || res.Bars != 3 {
+		t.Fatalf("Run() = %+v; want MaxDrawdown 0, Bars 3", res)
+	}
+}
+
+func TestRunMaxDrawdown(t *testing.T) {
+	// V-shaped closes 100 -> 50 -> 100 -> 90: equity curve
+	// 10000 -> 5000 -> 10000 -> 9000, drawdown (10000-5000)/10000 = 0.5.
+	bars := mkBars(100, 50, 100, 90)
+	res, err := Run(context.Background(), bars, 10000, &BuyHoldStrategy{})
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if math.Abs(res.MaxDrawdown-0.5) > 1e-9 {
+		t.Fatalf("Run().MaxDrawdown = %v; want ~0.5", res.MaxDrawdown)
+	}
+	if math.Abs(res.Equity-9000) > 1e-9 || math.Abs(res.TotalReturn+0.1) > 1e-9 {
+		t.Fatalf("Run() = %+v; want Equity ~9000, TotalReturn ~-0.1", res)
+	}
+}
+
+func TestRunValidation(t *testing.T) {
+	badBars := []ingest.Bar{{Ts: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Open: 1, High: 1, Low: 2, Close: 1}}
+	tests := []struct {
+		name    string
+		bars    []ingest.Bar
+		cash    float64
+		s       Strategy
+		wantErr string
+	}{
+		{"empty bars", nil, 10000, HoldStrategy{}, "backtest: empty bars"},
+		{"zero cash", mkBars(100), 0, HoldStrategy{}, "initial cash must be > 0"},
+		{"negative cash", mkBars(100), -1, HoldStrategy{}, "initial cash must be > 0"},
+		{"nil strategy", mkBars(100), 10000, nil, "backtest: nil strategy"},
+		{"invalid bars passthrough", badBars, 10000, HoldStrategy{}, "ingest: validate bars"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Run(context.Background(), tt.bars, tt.cash, tt.s)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Run() error = %v; want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRunTradeValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		s       Strategy
+		wantErr string
+	}{
+		{"over-buy", stubStrategy{action: ActionBuy, size: 200}, "exceeds cash"},
+		{"negative buy size", stubStrategy{action: ActionBuy, size: -1}, "exceeds cash"},
+		{"over-sell", stubStrategy{action: ActionSell, size: 50}, "exceeds position"},
+		{"unknown action", stubStrategy{action: Action(99)}, "unknown action"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Run(context.Background(), mkBars(100), 10000, tt.s)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Run() error = %v; want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestRunStrategyError(t *testing.T) {
+	want := errors.New("boom")
+	_, err := Run(context.Background(), mkBars(100), 10000, stubStrategy{err: want})
+	if err == nil || !errors.Is(err, want) {
+		t.Fatalf("Run() error = %v; want wrapping %v", err, want)
+	}
+}
+
+func TestRunContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := Run(ctx, mkBars(100, 110), 10000, HoldStrategy{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v; want context.Canceled", err)
+	}
+}
+
+func TestBuyHoldStrategy(t *testing.T) {
+	st := &State{Cash: 10000}
+	bar := ingest.Bar{Close: 100}
+	s := &BuyHoldStrategy{}
+
+	act, size, err := s.OnBar(context.Background(), bar, st)
+	if err != nil {
+		t.Fatalf("first OnBar() error: %v", err)
+	}
+	if act != ActionBuy || size != 100 {
+		t.Fatalf("first OnBar() = (%v, %v); want (ActionBuy, 100)", act, size)
+	}
+	// All-in: cost equals the available cash.
+	if math.Abs(size*bar.Close-st.Cash) > 1e-9 {
+		t.Fatalf("buy size %v at close %v does not exhaust cash %v", size, bar.Close, st.Cash)
+	}
+
+	act2, size2, err := s.OnBar(context.Background(), bar, st)
+	if err != nil {
+		t.Fatalf("second OnBar() error: %v", err)
+	}
+	if act2 != ActionHold || size2 != 0 {
+		t.Fatalf("second OnBar() = (%v, %v); want (ActionHold, 0)", act2, size2)
+	}
+}
+
+func TestParseBars(t *testing.T) {
+	data := []byte(`[
+		{"ts":"2024-01-01T00:00:00Z","open":100,"high":102,"low":99,"close":101,"volume":10},
+		{"ts":"2024-01-02T01:00:00+01:00","open":101,"high":105,"low":100,"close":104,"volume":20}
+	]`)
+	bars, err := ParseBars(data)
+	if err != nil {
+		t.Fatalf("ParseBars() error: %v", err)
+	}
+	if len(bars) != 2 {
+		t.Fatalf("ParseBars() len = %d; want 2", len(bars))
+	}
+	b0, b1 := bars[0], bars[1]
+	if !b0.Ts.Equal(time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)) || b0.Close != 101 || b0.Volume != 10 {
+		t.Fatalf("ParseBars()[0] = %+v", b0)
+	}
+	// Offset timestamps are normalized to UTC.
+	if !b1.Ts.Equal(time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)) || b1.Open != 101 {
+		t.Fatalf("ParseBars()[1] = %+v", b1)
+	}
+}
+
+func TestParseBarsErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    string
+		wantErr string
+	}{
+		{"bad json", `[{"ts":`, "json"},
+		{"bad ts", `[{"ts":"2024-01-01"}]`, "ts"},
+		{"empty ts", `[{"ts":""}]`, "ts"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseBars([]byte(tt.data))
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ParseBars() error = %v; want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
