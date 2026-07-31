@@ -81,7 +81,8 @@ func TestRun(t *testing.T) {
 	}
 }
 
-func TestServeHelpMentionsAdminStatus(t *testing.T) {
+func serveHelpOutput(t *testing.T) string {
+	t.Helper()
 	old := os.Stderr
 	r, w, err := os.Pipe()
 	if err != nil {
@@ -98,8 +99,18 @@ func TestServeHelpMentionsAdminStatus(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("run() = %d; want 0", code)
 	}
-	if !strings.Contains(string(out), "/v1/admin/status") {
+	return string(out)
+}
+
+func TestServeHelpMentionsAdminStatus(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/admin/status") {
 		t.Fatalf("serve help missing /v1/admin/status: %q", out)
+	}
+}
+
+func TestServeHelpMentionsAdminConfig(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/admin/config") {
+		t.Fatalf("serve help missing /v1/admin/config: %q", out)
 	}
 }
 

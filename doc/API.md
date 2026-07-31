@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。当前只读，面向微信小程序/Web 前端对齐。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## GET /v1/runs
 
@@ -77,6 +77,48 @@ Query 参数：
 DB 不可用时仍返回 `200`，`db.ok` 为 `false`（信息端点；健康语义归 /v1/health 的 503）。
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
+
+## GET /v1/admin/config
+
+配置 key 清单与设置状态（后台管理数据面；无查询参数）。**永不返回配置值**——PRIVACY 红线（见 doc/PRIVACY.md）：值只进 `~/.wbot/wbot.conf`（0600、tmp+rename 原子写），本端点只回 key 元数据。
+
+响应 `200`（key 按白名单顺序）：
+
+```json
+[
+  {"key": "credentials.wechat.appid", "group": "credentials.wechat", "set": false, "updated_at": null},
+  {"key": "system.listen", "group": "system", "set": true, "updated_at": "2026-07-31T08:00:00Z"}
+]
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `key` | 白名单 key（点分命名，共 9 个） |
+| `group` | 分组（如 `credentials.wechat`） |
+| `set` | 是否已写入 `~/.wbot/wbot.conf` |
+| `updated_at` | 最近写入时间（RFC3339；未设置时为 `null`） |
+
+key 白名单：`credentials.wechat.{appid,secret,token}`、`credentials.schwab.{api_key,account}`、`credentials.ibkr.{gateway_host,gateway_port,account}`、`system.{listen}`。
+
+## PUT /v1/admin/config/{key}
+
+写入/覆盖单个配置值；body `{"value": "..."}`。校验：key 必须为白名单内（否则 404）、值非空且 ≤4096 字符（否则 400）。持久化到 `~/.wbot/wbot.conf`（0600、tmp+rename 原子写）。**响应不含值**（PRIVACY 红线）。
+
+响应 `200`：
+
+```json
+{"key": "credentials.wechat.appid", "set": true}
+```
+
+| 状态码 | 场景 |
+| --- | --- |
+| 200 | 写入成功 |
+| 400 | 空值 / 值超长 / body 非 JSON |
+| 404 | 白名单外 key |
+| 405 | 方法不允许（非 GET/PUT） |
+
+PRIVACY：API 永不返回配置值——GET 只回 key 元数据、PUT 响应不含 value；值仅存于 `~/.wbot/wbot.conf`（见 doc/PRIVACY.md）。
+
 ## GET /v1/health
 
 健康检查（微信小程序前置探测）：对数据库执行 ping（≤3s 超时），只读、无参数。
@@ -99,11 +141,11 @@ PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIV
 
 | 场景 | 状态码 |
 | --- | --- |
-| 缺必填参数 / 参数非法（坏时间、limit<=0） | 400 |
+| 缺必填参数 / 参数非法（坏时间、limit<=0、空/超长配置值、body 非 JSON） | 400 |
 | 存储查询失败 | 500 |
 | DB ping 失败 | 503 |
-| 未知路径 | 404 |
-| 非 GET | 405 |
+| 未知路径 / 白名单外 config key | 404 |
+| 方法不允许（非 GET/PUT） | 405 |
 
 ## 本地验证
 
