@@ -24,4 +24,4 @@ CI 门禁标准统一为 **Ubuntu**（与当前开发环境一致），从 test 
 
 ## Next
 
-- 已完成：commit `4cfb4ee` push 后 run `30614075769` CI **绿**（test + db-integration）；pin LTS 的 commit 推送后同样以 CI 绿闭环。
+- 已完成：commit `4cfb4ee`（ubuntu-only）run `30614075769` **绿**；commit `c2d6618`（pin LTS）run `30614192478` **绿**，闭环。

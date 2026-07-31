@@ -321,12 +321,14 @@ func runIngestMock(prog string, argv []string) int {
 	sym := domain.Symbol(*symbol)
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
-	err = ingest.RunEvery(ctx, *every, func(ctx context.Context) error {
+	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
 		if err := ingest.RunMockIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe)); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "ingest mock: ok (source=%s symbol=%s timeframe=%s)\n", strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe))
 		return nil
+	}, func(err error) {
+		fmt.Fprintf(os.Stderr, "ingest mock: %v\n", err)
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -399,13 +401,15 @@ func runIngestFile(prog string, argv []string) int {
 	src := ingest.FileSource{Path: fp}
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
-	err = ingest.RunEvery(ctx, *every, func(ctx context.Context) error {
+	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
 		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), src); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "ingest file: ok (source=%s symbol=%s timeframe=%s file=%s)\n",
 			strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), fp)
 		return nil
+	}, func(err error) {
+		fmt.Fprintf(os.Stderr, "ingest file: %v\n", err)
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -478,13 +482,15 @@ func runIngestURL(prog string, argv []string) int {
 	src := ingest.HTTPSource{URL: u}
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
-	err = ingest.RunEvery(ctx, *every, func(ctx context.Context) error {
+	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
 		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), src); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "ingest url: ok (source=%s symbol=%s timeframe=%s url=%s)\n",
 			strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), u)
 		return nil
+	}, func(err error) {
+		fmt.Fprintf(os.Stderr, "ingest url: %v\n", err)
 	})
 	if err != nil {
 		if errors.Is(err, context.Canceled) {

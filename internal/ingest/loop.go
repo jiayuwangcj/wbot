@@ -23,3 +23,22 @@ func RunEvery(ctx context.Context, interval time.Duration, fn func(context.Conte
 		}
 	}
 }
+
+// RunEveryResilient invokes fn once when interval <= 0, like RunEvery. Otherwise
+// it runs fn repeatedly, waiting interval between rounds, until ctx is
+// cancelled; a failing fn is reported to onErr and the loop continues.
+func RunEveryResilient(ctx context.Context, interval time.Duration, fn func(context.Context) error, onErr func(error)) error {
+	if interval <= 0 {
+		return fn(ctx)
+	}
+	for {
+		if err := fn(ctx); err != nil {
+			onErr(err)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
+	}
+}
