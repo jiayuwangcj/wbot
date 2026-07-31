@@ -265,6 +265,8 @@ func runIngest(prog string, argv []string) int {
 		return runIngestURL(prog, argv[1:])
 	case "status":
 		return runIngestStatus(prog, argv[1:])
+	case "bars":
+		return runIngestBars(prog, argv[1:])
 	default:
 		usageIngest(prog)
 		return 2
@@ -592,6 +594,77 @@ func runIngestStatus(prog string, argv []string) int {
 	return 0
 }
 
+func runIngestBars(prog string, argv []string) int {
+	fs := flag.NewFlagSet("ingest bars", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
+	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
+	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
+	limit := fs.Int("limit", 100, "maximum number of bars to show")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s ingest bars [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Shows ingested OHLCV bars for a symbol/timeframe (read-only).\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	fromT, err := parseRangeTime("-from", strings.TrimSpace(*from))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest bars: %v\n", err)
+		return 2
+	}
+	toT, err := parseRangeTime("-to", strings.TrimSpace(*to))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest bars: %v\n", err)
+		return 2
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "ingest bars: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest bars: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest bars: migrate: %v\n", err)
+		return 1
+	}
+
+	bars, err := ingest.QueryBars(context.Background(), database, strings.TrimSpace(*symbol), strings.TrimSpace(*timeframe), fromT, toT, *limit)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest bars: %v\n", err)
+		return 1
+	}
+	for _, b := range bars {
+		fmt.Printf("%s %v %v %v %v %d\n", b.Ts.Format(time.RFC3339), b.Open, b.High, b.Low, b.Close, b.Volume)
+	}
+	return 0
+}
+
 // parseRangeTime parses a -from/-to flag value. Empty means unbounded (zero time).
 func parseRangeTime(flagName, s string) (time.Time, error) {
 	if s == "" {
@@ -617,6 +690,7 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "  file   Load bars from a JSON file (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  url    Load bars from a JSON URL (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  status Show recent ingestion runs (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  bars   Show ingested bars for a symbol/timeframe (-h for flags)\n")
 }
 
 func usage(argv []string) {

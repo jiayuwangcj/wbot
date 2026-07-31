@@ -166,3 +166,63 @@ func TestRecentRunsIntegration(t *testing.T) {
 		t.Fatal("RecentRuns with limit 0: expected error")
 	}
 }
+
+func TestQueryBarsIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	source := "bars-query-test"
+	symbol := domain.Symbol("QUERY.US")
+	tf := "1d"
+	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Full range: all 3 bars, ts ascending.
+	bars, err := QueryBars(ctx, database, string(symbol), tf, time.Time{}, time.Time{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 3 {
+		t.Fatalf("full query: got %d bars want 3", len(bars))
+	}
+	for i := 1; i < len(bars); i++ {
+		if !bars[i].Ts.After(bars[i-1].Ts) {
+			t.Fatalf("bar %d ts %v not after previous %v", i, bars[i].Ts, bars[i-1].Ts)
+		}
+	}
+
+	// Closed range [middle ts, last ts]: 2 bars, both endpoints included.
+	from := bars[1].Ts
+	to := bars[2].Ts
+	got, err := QueryBars(ctx, database, string(symbol), tf, from, to, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("range query: got %d bars want 2", len(got))
+	}
+	if !got[0].Ts.Equal(from) || !got[len(got)-1].Ts.Equal(to) {
+		t.Fatalf("range query: endpoints got %v..%v want %v..%v", got[0].Ts, got[len(got)-1].Ts, from, to)
+	}
+
+	// limit=1: only the first bar.
+	got, err = QueryBars(ctx, database, string(symbol), tf, time.Time{}, time.Time{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("limit query: got %d bars want 1", len(got))
+	}
+}
