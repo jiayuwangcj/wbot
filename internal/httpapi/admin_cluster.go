@@ -71,6 +71,32 @@ type barCoverageJSON struct {
 	MaxTs     string `json:"max_ts"`
 }
 
+// fillPipelineAndDataPlane loads the DB-backed components; call only after a successful ping.
+func fillPipelineAndDataPlane(ctx context.Context, c *componentsJSON, store ClusterStore) error {
+	runs, err := store.RecentRuns(ctx, recentRunsLimit)
+	if err != nil {
+		return fmt.Errorf("recent runs: %w", err)
+	}
+	counts, err := store.RunStatusCounts(ctx)
+	if err != nil {
+		return fmt.Errorf("run counts: %w", err)
+	}
+	coverage, err := store.BarCoverage(ctx)
+	if err != nil {
+		return fmt.Errorf("bars coverage: %w", err)
+	}
+	c.Pipeline.Counts = runCountsJSON{Running: counts.Running, Succeeded: counts.Succeeded, Failed: counts.Failed}
+	c.Pipeline.RecentRuns = toRunJSON(runs)
+	c.DataPlane.BarsCoverage = make([]barCoverageJSON, 0, len(coverage))
+	for _, cov := range coverage {
+		c.DataPlane.BarsCoverage = append(c.DataPlane.BarsCoverage, barCoverageJSON{
+			Symbol: cov.Symbol, Timeframe: cov.Timeframe, Count: cov.Count,
+			MinTs: cov.MinTs.Format(time.RFC3339), MaxTs: cov.MaxTs.Format(time.RFC3339),
+		})
+	}
+	return nil
+}
+
 // ClusterHandler returns an http.Handler serving GET /v1/admin/cluster: a single-process
 // component view (process/db/pipeline/data plane); wbot runs no real cluster to report.
 func ClusterHandler(meta ProcessMeta, store ClusterStore) http.Handler {
@@ -90,44 +116,26 @@ func ClusterHandler(meta ProcessMeta, store ClusterStore) http.Handler {
 				ListenAddr:    meta.ListenAddr,
 			},
 			DB: dbStatusJSON{OK: true},
+			// Empty lists by default: on DB down they stay empty (⑥-A degraded semantics).
+			Pipeline:  pipelineJSON{Counts: runCountsJSON{}, RecentRuns: []runJSON{}},
+			DataPlane: dataPlaneJSON{BarsCoverage: []barCoverageJSON{}},
 		}}
 		pctx, cancel := context.WithTimeout(r.Context(), pingTimeout)
 		defer cancel()
 		start := time.Now()
 		if err := store.Ping(pctx); err == nil && pctx.Err() == nil {
 			out.Components.DB.LatencyMS = time.Since(start).Seconds() * 1000
+			if err := fillPipelineAndDataPlane(r.Context(), &out.Components, store); err != nil {
+				fmt.Fprintf(os.Stderr, "httpapi: admin: cluster query failed: %v\n", err)
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
 		} else {
 			out.Components.DB = dbStatusJSON{OK: false}
 			if err == nil {
 				err = pctx.Err()
 			}
 			fmt.Fprintf(os.Stderr, "httpapi: admin: db ping failed: %v\n", err)
-		}
-
-		runs, err := store.RecentRuns(r.Context(), recentRunsLimit)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		counts, err := store.RunStatusCounts(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-		coverage, err := store.BarCoverage(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal error")
-			return
-		}
-
-		out.Components.Pipeline.Counts = runCountsJSON{Running: counts.Running, Succeeded: counts.Succeeded, Failed: counts.Failed}
-		out.Components.Pipeline.RecentRuns = toRunJSON(runs)
-		out.Components.DataPlane.BarsCoverage = make([]barCoverageJSON, 0, len(coverage))
-		for _, c := range coverage {
-			out.Components.DataPlane.BarsCoverage = append(out.Components.DataPlane.BarsCoverage, barCoverageJSON{
-				Symbol: c.Symbol, Timeframe: c.Timeframe, Count: c.Count,
-				MinTs: c.MinTs.Format(time.RFC3339), MaxTs: c.MaxTs.Format(time.RFC3339),
-			})
 		}
 
 		w.Header().Set("Content-Type", "application/json")

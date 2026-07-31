@@ -23,12 +23,14 @@ type fakeClusterStore struct {
 	countsErr error
 	covErr    error
 
-	gotLimit int
+	queryCalls int
+	gotLimit   int
 }
 
 func (f *fakeClusterStore) Ping(context.Context) error { return f.pingErr }
 
 func (f *fakeClusterStore) RecentRuns(_ context.Context, limit int) ([]ingest.RunStatus, error) {
+	f.queryCalls++
 	f.gotLimit = limit
 	if f.runsErr != nil {
 		return nil, f.runsErr
@@ -37,6 +39,7 @@ func (f *fakeClusterStore) RecentRuns(_ context.Context, limit int) ([]ingest.Ru
 }
 
 func (f *fakeClusterStore) RunStatusCounts(context.Context) (ingest.RunCounts, error) {
+	f.queryCalls++
 	if f.countsErr != nil {
 		return ingest.RunCounts{}, f.countsErr
 	}
@@ -44,6 +47,7 @@ func (f *fakeClusterStore) RunStatusCounts(context.Context) (ingest.RunCounts, e
 }
 
 func (f *fakeClusterStore) BarCoverage(context.Context) ([]ingest.BarCoverage, error) {
+	f.queryCalls++
 	if f.covErr != nil {
 		return nil, f.covErr
 	}
@@ -150,7 +154,8 @@ func TestClusterComponents(t *testing.T) {
 	}
 }
 
-// TestClusterDBDown: ping failure reports db ok:false with 200 and must not mask other components.
+// TestClusterDBDown: ping failure reports 200 + db ok:false and skips the
+// DB-backed queries, leaving pipeline/data plane empty (⑥-A degraded semantics).
 func TestClusterDBDown(t *testing.T) {
 	meta := testMeta()
 	store := &fakeClusterStore{
@@ -163,6 +168,9 @@ func TestClusterDBDown(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
 	}
+	if store.queryCalls != 0 {
+		t.Fatalf("query calls = %d; want 0 when ping fails", store.queryCalls)
+	}
 	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
@@ -171,6 +179,10 @@ func TestClusterDBDown(t *testing.T) {
 	if !ok {
 		t.Fatalf("components = %v; want object", got["components"])
 	}
+	process, ok := comp["process"].(map[string]any)
+	if !ok || process["version"] != meta.Version || process["listen_addr"] != meta.ListenAddr {
+		t.Fatalf("process = %v; want injected meta on db down", comp["process"])
+	}
 	db, ok := comp["db"].(map[string]any)
 	if !ok || db["ok"] != false {
 		t.Fatalf("db = %v; want ok:false", comp["db"])
@@ -178,11 +190,25 @@ func TestClusterDBDown(t *testing.T) {
 	if _, ok := db["latency_ms"]; ok {
 		t.Fatalf("db = %v; want latency_ms omitted when down", comp["db"])
 	}
-	if _, ok := comp["pipeline"].(map[string]any); !ok {
-		t.Fatalf("pipeline missing when db down: %v", comp)
+	pipeline, ok := comp["pipeline"].(map[string]any)
+	if !ok {
+		t.Fatalf("pipeline missing: %v", comp)
 	}
-	if _, ok := comp["data_plane"].(map[string]any); !ok {
-		t.Fatalf("data_plane missing when db down: %v", comp)
+	counts, ok := pipeline["counts"].(map[string]any)
+	if !ok || counts["running"] != float64(0) || counts["succeeded"] != float64(0) || counts["failed"] != float64(0) {
+		t.Fatalf("pipeline counts = %v; want all zero when db down", pipeline["counts"])
+	}
+	runs, ok := pipeline["recent_runs"].([]any)
+	if !ok || len(runs) != 0 {
+		t.Fatalf("recent_runs = %v; want empty array when db down", pipeline["recent_runs"])
+	}
+	dp, ok := comp["data_plane"].(map[string]any)
+	if !ok {
+		t.Fatalf("data_plane missing: %v", comp)
+	}
+	cov, ok := dp["bars_coverage"].([]any)
+	if !ok || len(cov) != 0 {
+		t.Fatalf("bars_coverage = %v; want empty array when db down", dp["bars_coverage"])
 	}
 }
 

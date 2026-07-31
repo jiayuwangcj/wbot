@@ -120,7 +120,9 @@ PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIV
 | `pipeline.recent_runs` | 最近 5 条 | 形状同 /v1/runs；`finished_at` 为 `null` 表示仍在运行 |
 | `data_plane.bars_coverage` | symbol / timeframe / count / min_ts / max_ts | `bars` 表各 symbol×timeframe 组合的条数与 ts 区间 |
 
-存储查询失败返回 `500`（`{"error": "internal error"}`）。
+DB 不可用时（ping 失败）：仍返回 `200`，`db.ok` 为 `false`，且**不执行** pipeline/data_plane 查询——`counts` 全 0、`recent_runs` 与 `bars_coverage` 为空数组（降级语义同 /v1/admin/status；进程字段照常返回）。
+
+ping 通过但存储查询失败时返回 `500`（`{"error": "internal error"}`）。
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
 
