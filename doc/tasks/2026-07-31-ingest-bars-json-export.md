@@ -26,4 +26,4 @@ ROADMAP v1「可选仅开发用的导出目录做比对」收尾：`wbot ingest 
 
 ## Next
 
-- commit + push + CI 绿即闭环。后续候选：Provider 抽象（待用户拍板是否发 GitHub Issue）。
+- 已完成：commit `5d389df` push 后 run `30618962612` CI **绿**，闭环。v1 数据管道（写/读/导出/校验/调度/可观测）全部完成；后续候选：Provider 抽象（待用户拍板）、v2 回测骨架（新里程碑，需设计）。
