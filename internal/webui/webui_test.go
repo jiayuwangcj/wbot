@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -148,5 +149,87 @@ func TestAppJSQueriesDataAPI(t *testing.T) {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
+	}
+}
+
+func TestAdminPageSections(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`<section id="status"`,
+		`<section id="cluster"`,
+		`<section id="config"`,
+		`id="status-error"`,
+		`id="cluster-error"`,
+		`id="config-error"`,
+		`id="config-table"`,
+		`id="cluster-cards"`,
+		`id="cluster-pipeline-runs-table"`,
+		`id="cluster-pipeline-runs-empty"`,
+		`id="cluster-coverage-table"`,
+		`id="cluster-coverage-empty"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin.html missing %q", want)
+		}
+	}
+}
+
+func TestTableEmptyConvention(t *testing.T) {
+	tableRe := regexp.MustCompile(`id="([a-z0-9-]+-table)"`)
+	for _, path := range []string{"web/index.html", "web/admin.html"} {
+		data, err := fs.ReadFile(webFiles, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		html := string(data)
+		for _, m := range tableRe.FindAllStringSubmatch(html, -1) {
+			emptyID := strings.Replace(m[1], "-table", "-empty", 1)
+			if !strings.Contains(html, `id="`+emptyID+`"`) {
+				t.Fatalf("%s: table %q has no matching empty element %q", path, m[1], emptyID)
+			}
+		}
+	}
+}
+
+func TestAdminPageReadOnly(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "<form") {
+		t.Fatal("admin.html contains a form; admin page must be read-only")
+	}
+}
+
+func TestAppJSQueriesAdminAPI(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{`"/v1/admin/status`, `"/v1/admin/cluster`, `"/v1/admin/config`} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+func TestConfigMetadataOnly(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{"c.key", "c.group", "c.set", "c.updated_at"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing config metadata access %q", want)
+		}
+	}
+	if strings.Contains(js, "c.value") {
+		t.Fatal("app.js renders config values (PRIVACY red line)")
 	}
 }

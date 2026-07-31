@@ -17,15 +17,77 @@
 <main>
   <section id="status">
     <h2>Status</h2>
-    <p class="placeholder">Server status will render here (slice 8-3).</p>
+    <p id="status-error" class="notice error" hidden></p>
+    <dl id="status-list" hidden>
+      <dt>Version</dt><dd id="status-version"></dd>
+      <dt>PID</dt><dd id="status-pid"></dd>
+      <dt>Started at</dt><dd id="status-started"></dd>
+      <dt>Uptime</dt><dd id="status-uptime"></dd>
+      <dt>Listen addr</dt><dd id="status-listen"></dd>
+      <dt>DB</dt><dd id="status-db"></dd>
+    </dl>
   </section>
   <section id="cluster">
     <h2>Cluster</h2>
-    <p class="placeholder">Cluster view will render here (slice 8-3).</p>
+    <p id="cluster-error" class="notice error" hidden></p>
+    <div id="cluster-cards" class="cards" hidden>
+      <div class="card">
+        <h3>Process</h3>
+        <dl>
+          <dt>Version</dt><dd id="cluster-process-version"></dd>
+          <dt>PID</dt><dd id="cluster-process-pid"></dd>
+          <dt>Started at</dt><dd id="cluster-process-started"></dd>
+          <dt>Uptime</dt><dd id="cluster-process-uptime"></dd>
+          <dt>Listen addr</dt><dd id="cluster-process-listen"></dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h3>Database</h3>
+        <dl>
+          <dt>State</dt><dd id="cluster-db-state"></dd>
+          <dt>Latency</dt><dd id="cluster-db-latency"></dd>
+        </dl>
+      </div>
+      <div class="card">
+        <h3>Pipeline</h3>
+        <p class="notice">Running <span id="cluster-pipeline-running"></span> · Succeeded <span id="cluster-pipeline-succeeded"></span> · Failed <span id="cluster-pipeline-failed"></span></p>
+        <div class="table-scroll">
+          <table id="cluster-pipeline-runs-table" hidden>
+            <thead>
+              <tr><th>ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cluster-pipeline-runs-empty" class="notice" hidden>No recent runs.</p>
+      </div>
+      <div class="card">
+        <h3>Data plane</h3>
+        <div class="table-scroll">
+          <table id="cluster-coverage-table" hidden>
+            <thead>
+              <tr><th>Symbol</th><th>Timeframe</th><th>Count</th><th>Min ts</th><th>Max ts</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="cluster-coverage-empty" class="notice" hidden>No bars coverage.</p>
+      </div>
+    </div>
   </section>
   <section id="config">
     <h2>Config</h2>
-    <p class="placeholder">Config metadata will render here (slice 8-3).</p>
+    <p class="notice">Metadata only: config values are never shown.</p>
+    <p id="config-error" class="notice error" hidden></p>
+    <p id="config-empty" class="notice" hidden>No config keys.</p>
+    <div class="table-scroll">
+      <table id="config-table" hidden>
+        <thead>
+          <tr><th>Key</th><th>Group</th><th>Set</th><th>Updated at</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 </main>
 <script src="/ui/app.js"></script>
