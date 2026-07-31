@@ -37,23 +37,29 @@ func (f FileSource) Bars(ctx context.Context, _ domain.Symbol, _ string) ([]Bar,
 	if err != nil {
 		return nil, fmt.Errorf("ingest: file source read: %w", err)
 	}
+	return parseBarRecords(data, "file source")
+}
+
+// parseBarRecords parses a JSON array of fileBarRecord into Bars. label names
+// the source in error messages (e.g. "file source", "http source").
+func parseBarRecords(data []byte, label string) ([]Bar, error) {
 	var recs []fileBarRecord
 	if err := json.Unmarshal(data, &recs); err != nil {
-		return nil, fmt.Errorf("ingest: file source json: %w", err)
+		return nil, fmt.Errorf("ingest: %s json: %w", label, err)
 	}
 	if len(recs) == 0 {
-		return nil, errors.New("ingest: file source: empty array")
+		return nil, fmt.Errorf("ingest: %s: empty array", label)
 	}
 	out := make([]Bar, 0, len(recs))
 	for i, r := range recs {
 		if r.Ts == "" {
-			return nil, fmt.Errorf("ingest: file source: record %d: empty ts", i)
+			return nil, fmt.Errorf("ingest: %s: record %d: empty ts", label, i)
 		}
 		ts, err := time.Parse(time.RFC3339Nano, r.Ts)
 		if err != nil {
 			ts, err = time.Parse(time.RFC3339, r.Ts)
 			if err != nil {
-				return nil, fmt.Errorf("ingest: file source: record %d ts: %w", i, err)
+				return nil, fmt.Errorf("ingest: %s: record %d ts: %w", label, i, err)
 			}
 		}
 		out = append(out, Bar{

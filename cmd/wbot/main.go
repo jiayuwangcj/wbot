@@ -261,6 +261,8 @@ func runIngest(prog string, argv []string) int {
 		return runIngestMock(prog, argv[1:])
 	case "file":
 		return runIngestFile(prog, argv[1:])
+	case "url":
+		return runIngestURL(prog, argv[1:])
 	default:
 		usageIngest(prog)
 		return 2
@@ -415,6 +417,85 @@ func runIngestFile(prog string, argv []string) int {
 	return 0
 }
 
+func runIngestURL(prog string, argv []string) int {
+	fs := flag.NewFlagSet("ingest url", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	url := fs.String("url", "", "URL of JSON array of bars (required; see -h)")
+	source := fs.String("source", "cli-url", "ingestion source label")
+	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
+	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s ingest url [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Loads OHLCV bars from a JSON URL and writes one ingestion run.\n")
+		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT).\n")
+		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	u := strings.TrimSpace(*url)
+	if u == "" {
+		fmt.Fprintf(os.Stderr, "ingest url: -url is required\n")
+		return 2
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "ingest url: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest url: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest url: migrate: %v\n", err)
+		return 1
+	}
+
+	sym := domain.Symbol(*symbol)
+	src := ingest.HTTPSource{URL: u}
+	ctx, cancel := ingestRepeatCtx(*every)
+	defer cancel()
+	err = ingest.RunEvery(ctx, *every, func(ctx context.Context) error {
+		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), src); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "ingest url: ok (source=%s symbol=%s timeframe=%s url=%s)\n",
+			strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), u)
+		return nil
+	})
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return 0
+		}
+		fmt.Fprintf(os.Stderr, "ingest url: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
 func ingestRepeatCtx(every time.Duration) (context.Context, context.CancelFunc) {
 	if every <= 0 {
 		return context.Background(), func() {}
@@ -426,6 +507,7 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "Usage: %s ingest <subcommand>\n\n", prog)
 	fmt.Fprintf(os.Stderr, "Subcommands:\n  mock   Insert a mock ingestion run and sample OHLCV bars (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  file   Load bars from a JSON file (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  url    Load bars from a JSON URL (-h for flags)\n")
 }
 
 func usage(argv []string) {
