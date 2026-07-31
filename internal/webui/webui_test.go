@@ -114,3 +114,39 @@ func TestResponsiveBreakpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestDataPageFormAndTables(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`<form id="bars-form"`,
+		`name="symbol"`,
+		`name="timeframe"`,
+		`name="from"`,
+		`name="to"`,
+		`id="bars-table"`,
+		`id="runs-table"`,
+		`id="bars-error"`,
+		`id="runs-error"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+}
+
+func TestAppJSQueriesDataAPI(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{"fetch(", `"/v1/bars`, `"/v1/runs`} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}

@@ -17,11 +17,36 @@
 <main>
   <section id="bars">
     <h2>Bars</h2>
-    <p class="placeholder">Bar query results will render here (slice 8-2).</p>
+    <form id="bars-form">
+      <label>Symbol <input type="text" name="symbol" placeholder="DEMO.US" required></label>
+      <label>Timeframe <input type="text" name="timeframe" placeholder="1d" required></label>
+      <label>From <input type="date" name="from"></label>
+      <label>To <input type="date" name="to"></label>
+      <button type="submit">Query</button>
+    </form>
+    <p id="bars-error" class="notice error" hidden></p>
+    <p id="bars-empty" class="notice" hidden>No bars found for this query.</p>
+    <div class="table-scroll">
+      <table id="bars-table" hidden>
+        <thead>
+          <tr><th>Time</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
   <section id="runs">
     <h2>Recent runs</h2>
-    <p class="placeholder">Recent ingestion runs will render here (slice 8-2).</p>
+    <p id="runs-error" class="notice error" hidden></p>
+    <p id="runs-empty" class="notice" hidden>No ingestion runs yet.</p>
+    <div class="table-scroll">
+      <table id="runs-table" hidden>
+        <thead>
+          <tr><th>ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 </main>
 <script src="/ui/app.js"></script>
