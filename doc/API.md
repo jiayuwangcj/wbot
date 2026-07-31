@@ -1,0 +1,72 @@
+# API 契约（只读数据接口）
+
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。当前只读，面向微信小程序/Web 前端对齐。
+
+## GET /v1/runs
+
+最近 ingestion runs（`ingestion_runs` 表）。
+
+Query 参数：
+
+| 参数 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `limit` | 否 | 10 | 返回条数（<=0 报 400） |
+
+响应 `200`：
+
+```json
+[
+  {"id": 3, "source": "cli-mock", "status": "succeeded",
+   "started_at": "2026-07-31T08:00:00Z", "finished_at": "2026-07-31T08:00:01Z"},
+  {"id": 2, "source": "cli-file", "status": "succeeded",
+   "started_at": "2026-07-31T07:00:00Z", "finished_at": null}
+]
+```
+
+`finished_at` 为 `null` 表示仍在运行。
+
+## GET /v1/bars
+
+已落库 OHLCV bars（`bars` 表），按 `(ts)` 升序。
+
+Query 参数：
+
+| 参数 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `symbol` | 是 | — | 如 `DEMO.US` |
+| `timeframe` | 是 | — | 如 `1d`、`1m` |
+| `from` | 否 | 不限 | RFC3339，闭区间起点 |
+| `to` | 否 | 不限 | RFC3339，闭区间终点 |
+| `limit` | 否 | 100 | 最大条数（<=0 报 400） |
+
+响应 `200`：
+
+```json
+[
+  {"ts": "2024-06-01T00:00:00Z", "open": 100, "high": 101, "low": 99.5, "close": 100.5, "volume": 1000}
+]
+```
+
+## 错误
+
+统一 `{"error": "..."}` JSON：
+
+| 场景 | 状态码 |
+| --- | --- |
+| 缺必填参数 / 参数非法（坏时间、limit<=0） | 400 |
+| 存储查询失败 | 500 |
+| 未知路径 | 404 |
+| 非 GET | 405 |
+
+## 本地验证
+
+```bash
+docker compose -f configs/docker-compose.yml up -d
+export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable'
+wbot ingest mock
+wbot serve &
+curl -s 'http://127.0.0.1:8080/v1/runs'
+curl -s 'http://127.0.0.1:8080/v1/bars?symbol=DEMO.US&timeframe=1d'
+```
+
+关联：[[DATA_PIPELINE]] [[ROADMAP]]（v4 Go API，微信小程序前置依赖）
