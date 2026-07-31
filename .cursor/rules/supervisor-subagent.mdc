@@ -9,6 +9,7 @@ alwaysApply: true
 
 主会话按此顺序重复，直到用户喊停、CI 失败待修、或计划里**没有**下一条可做项：
 
+0. **查 GitHub 更新**（每轮第一步）：`gh issue list --state open` + Discussion 按更新时间倒序（graphql `discussions(orderBy: {field: UPDATED_AT, direction: DESC})`）；新帖/新留言先按「任务来源」分诊结案，再取任务；gh 不可用时跳过并注明。
 1. **取任务**：按下方「计划优先级」选出**一条**可执行最小步。
 2. **执行**：实质性实现优先交给 **Subagent**（串行；主会话不堆长实现链）。
 3. **验证**：本地跑 `scripts/verify.sh`（或与 `ci.yml` test job 等价）；推送后以 **GitHub Actions 绿色**为远程闭环（失败则修到绿再继续）。远程 **CI 未绿**时，调查失败原因须先用 **`scripts/ci_failure_detail.sh`** 拉取 failed job / step（见 `.cursor/rules/ci-failure-detail.mdc`）。

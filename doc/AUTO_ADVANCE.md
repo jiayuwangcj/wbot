@@ -19,6 +19,7 @@ flowchart LR
   N --> T
 ```
 
+0. **查 GitHub 更新**（每轮/每会话第一步）：`gh issue list --state open` + Discussion 按更新时间倒序（`gh api graphql` discussions `orderBy: UPDATED_AT DESC`）；发现**新帖/新留言**先按「任务来源」分诊（结案、派生 Issue、或指回仓库），再进入取任务；gh 未认证时跳过并在任务记录注明。
 1. **取任务**：按下一节「计划来源与优先级」选出**一条**最小可合入步；若队列空，按优先级向上扫描（tasks → 已落账 Issue / 已分诊 Discussion → PLAN_V0 → ROADMAP 与 proposals 的可拆步 → README 外链），直到找到可做项或确认无事可做。
 2. **执行**：代码改动优先由 **Subagent** 完成；主会话只做目标、验收、监督、合并意图；**不并行**多个 Subagent。
 3. **验证**：每步结束前本地 `scripts/verify.sh`（与 `.github/workflows/ci.yml` 中 test **等价**）；有远程则 **push**，以 **CI 绿**为该步远程验收；失败则修到绿再继续。

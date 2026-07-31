@@ -32,4 +32,4 @@
 
 ## Next
 
-- `internal/ingest/status.go`：`RecentRuns(ctx, db *sql.DB, limit int) ([]RunStatus, error)`；`RunStatus{ID int64; Source, Status string; StartedAt time.Time; FinishedAt *time.Time}`（finished_at 可空 → 指针或 sql.NullTime，按仓库风格）；SQL `SELECT id, source, status, started_at, finished_at FROM ingestion_runs ORDER BY id DESC LIMIT $1`；limit<=0 报错或钳制（自定，写清）。`cmd/wbot/main.go` 加 `case "status"` + `runIngestStatus`（`-dsn` 默认 `$WBOT_PG_DSN`、`-limit` 默认 10；无 dsn → 2；stdout 打印表格或 `id source status started finished` 一行一条，格式自定）；usage 文本加 status 行。`main_test.go` 加 `ingest status help → 0`、`ingest status no dsn → 2`。集成测 `internal/ingest/integration_test.go`（或新文件）加 `TestRecentRunsIntegration`：跑一次 mock ingestion 后查询，断言最近一条 source/status 正确、limit 生效。`scripts/verify.sh` 绿 → commit + push → CI 绿闭环。
+- 已完成：commit `29e2952` push 后 run `30615892278` CI **绿**（含 db-integration 跑通 `TestRecentRunsIntegration`），闭环。后续候选：数据源 Provider 抽象、ingest 时间范围参数（from/to）、外部 cron 文档化。
