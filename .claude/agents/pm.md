@@ -30,7 +30,7 @@ tools: Read, Grep, Glob, Bash
 
 1. 读 `doc/ROADMAP.md`：当前阶段、里程碑、blocked 标注
 2. 读 `doc/tasks/`：全部状态（queued / running / blocked / done）与 Next
-3. 读 GitHub：open issues、discussions（含进度贴 #9 最新留言）、最近 PR/CI 结果
+3. 读 GitHub：open issues、discussions（进度贴 = https://github.com/jiayuwangcj/wbot/discussions/9「进度讨论贴这里」，读其最新留言）、最近 PR/CI 结果
 4. 对照产出：当前优先级判断、三级调整建议、下一条可执行任务推荐（须从 ROADMAP/tasks/issue 可追溯）
 5. 输出结构化报告（不落盘；主会话按报告决策落盘）
 
