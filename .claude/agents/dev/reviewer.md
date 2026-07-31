@@ -58,6 +58,13 @@ tools: Read, Grep, Glob, Bash
 - 敏感配置存放：只允许 `~/.wbot/`（home 级，见 `doc/PRIVACY.md`）；仓库内只允许环境变量**名**与测试假值
 - 新引入敏感文件/目录须有 `.gitignore` 覆盖或走 `~/.wbot` 约定；测试 fixture 必须假值
 
+### 5.9 CI Skip 合法性（CI skip legitimacy）
+- **规则**（2026-07-31 用户指令）：各类组织架构/工程文档类、**不实际修改工程内容**的 PR 可以跳过 CI——由 ci.yml `check-skip` job 自动识别 doc/org 白名单路径（doc/、.claude/agents/、.claude/rules/、根级 *.md）
+- **⚠️ 禁用原生 `[skip ci]`/`[ci skip]` 提交标记**：GitHub 原生机制会取消整个 workflow，required checks 挂起导致 PR 无法合入（2026-07-31 实测）；发现含此类标记的提交 → 提示移除
+- **评审把关**：**是否需要 CI 由 reviewer 决定**——声明/触发了 skip 的 PR 必须核实仅含文档/组织类变更（diff 全部在 doc/、.claude/agents/、.claude/rules/、*.md 白名单）；若含工程内容变更（Go 代码、配置、schema、脚本、workflow）却跳过 CI → **P1 阻断**：要求补跑 CI（重触发或移除标记）
+- 未声明 skip 的文档类 PR 不强制要求补跑（CI 已跑则无需处理）；skip 后 reviewer 仍须完成除 CI 实测外全部维度评审（本地验证如 `go build`/`go test` 必要时自行执行）
+- ci.yml/工作流自身变更**永远不跳过**（白名单不含 .github/），reviewer 确认 skip 判断的覆盖范围
+
 ### 5.6 日志与可观测（logging & observability）
 - **服务端/长驻功能的任意功能需有分级日志**：error / warn / info（/ debug 视实现阶段）多等级；仅 stderr 无等级的输出列为差距（P2/排期）
 - **模块关键字**：日志/输出按功能带模块前缀（如 `ingest mock:`、`httpapi:`、`backtest:`），可 grep 定位功能归属；关键字命名一致

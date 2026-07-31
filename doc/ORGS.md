@@ -12,9 +12,14 @@
 │   老板反馈（唯一发贴权限）     ├─ reviewer（评审组）         │   取任务/派单/verify 跟踪（轻 token）
 │   .claude/agents/product/      │   多角色评审（合入门禁）    ├─ efficiency（工程运行提效）
 │   owner.md                     │   .claude/agents/dev/       │   CI/工具链瓶颈评估（轻 token）
-│                                │   reviewer.md               └─ robot（GitHub 机器人）
-│                                │                                 评论[robot]/分诊/进度贴
+│                                │   reviewer.md               ├─ engineering-admin（工程管理员）
+│                                │                                 目录结构/远端分支/发布 发起（轻 token）
 │                                │                                 .claude/agents/pm/
+│                                │                                 engineering-admin.md
+│                                │                                 （仍 PM 组：发起不执行）
+│                                │                                 └─ robot（GitHub 机器人）
+│                                │                                     评论[robot]/分诊/进度贴
+│                                │                                     .claude/agents/pm/
 
 运维组 Ops
 └─ operator（运维）
@@ -27,12 +32,13 @@
 
 | 组 | 角色 | 文件 | 职责 | 不碰 |
 | --- | --- | --- | --- | --- |
-| 产品组 | owner | `product/owner.md` | 需求衍生、需求切片（Goal/验收/非目标）、验收预期、自主任务生成（无指令时）、**老板反馈（唯一发贴权限，与主 agent 并列）** | 代码/评审/排期 |
+| 产品组 | owner | `product/owner.md` | 需求衍生、需求切片（Goal/验收/非目标）、验收预期、自主任务生成（无指令时）、**GitHub issue 与 ROADMAP 自主维护（含删除无用项）**、**老板反馈（唯一发贴权限，与主 agent 并列）** | 代码/评审/排期 |
 | 开发组 | coder | `dev/coder.md` | 按任务记录实现、自测、独立分支提交 | 评审自己的活/计划 |
 | 开发组 | reviewer | `dev/reviewer.md` | 多角色评审（健壮性/容灾/API 兼容/产品体验/CI 覆盖/日志/粒度/调用方视角） | 修改代码 |
 | PM 组 | manager | `pm/manager.md` | 进度评审、三级优先级调整 | 代码/评审 |
 | PM 组 | dispatcher | `pm/dispatcher.md` | **取任务/任务记录/派单/verify 跟踪**（轻 token，peak 时段主力） | 代码/评审 |
 | PM 组 | efficiency | `pm/engineering-efficiency.md` | CI/验证/工具链瓶颈评估与提效建议（轻 token） | 代码实施 |
+| PM 组 | engineering-admin | `pm/engineering-admin.md` | **工程结构管理（发起）**：目录树调整需求、远端分支管理/清理、发布发起（执行归 operator/robot/主会话） | 执行一切（编码/发版/清理 git） |
 | PM 组 | robot | `pm/github-robot.md` | GitHub 评论（[robot]）、分诊、进度贴同步 | 计划决策/代码 |
 | 运维组 | operator | `ops/operator.md` | 版本发布（release.sh）、部署/巡检、阻碍提 bug、老板事项汇总给产品组 | 编码/老板发帖 |
 
@@ -70,6 +76,7 @@
 .claude/worktrees/       # 并行任务 worktree（git worktree add）
 doc/tasks/               # 任务记录（每任务一条，并行任务的记录互不依赖）
 doc/issues/              # 需求切片草稿（owner 产出）
+tools/                   # 可复用工具脚本（python/shell，新写脚本统一入此；scripts/ 保留 CI/发布链路脚本）
 doc/ORGS.md              # 本文档
 ```
 
