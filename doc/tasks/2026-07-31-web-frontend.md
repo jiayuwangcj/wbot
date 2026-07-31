@@ -49,7 +49,7 @@
 
 ## State
 
-- **status**: `queued`
+- **status**: `done`
 - **last step**: dispatcher 建记录（2026-07-31 off-peak）。切片⑧⑨ 排定：⑧ 依赖 ① 已满足（/v1/bars、/v1/runs、/v1/admin/* 均在 origin/main）；⑨ 随 ④ 随 ②③ 布局预留，不单独阻塞。本轮只派子切片①（今天已连续多轮，拆小步）。
 
 ## Next
