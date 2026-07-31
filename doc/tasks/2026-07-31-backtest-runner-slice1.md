@@ -27,4 +27,4 @@
 
 ## Next
 
-- `internal/backtest/`：`State{Cash, Position float64; Price float64}`（equity = cash + position*price）、`Strategy` 接口（`OnBar(ctx, Bar, *State) (Action, error)`，Action: Buy/Sell/Hold + Size 股数）、内置 `HoldStrategy`/`BuyHoldStrategy`、`Result{Equity, TotalReturn, MaxDrawdown float64; Bars int}`、`Run(ctx, bars, initialCash, strategy) (*Result, error)`（校验：空 bars、initialCash<=0、bars 校验可复用 `ingest.ValidateBars`？—— backtest 包 import ingest 包是否合理（会循环依赖吗？ingest 不依赖 backtest，OK））。最大回撤 = equity 曲线峰值到谷值最大跌幅。CLI `wbot backtest -file <json> -cash 10000 -strategy hold|buy-hold`（-strategy 默认 hold；未知策略 → 2；文件缺失 → 2；解析复用 ingest 的 JSON 格式——backtest 包内解析还是复用 ingest？ingest 的 parseBarRecords 未导出——CLI 层或 backtest 包自解析 JSON（同格式），写清）。输出一行 `final_equity total_return max_drawdown bars`。测试：State 结算、BuyHold 全仓买入/卖出、drawdown 计算（构造 V 形曲线）、空 bars/非法 cash 报错、CLI exit codes（help/无 file/坏 strategy/坏 JSON）。verify.sh 与 ci.yml smoke 加 `backtest -h`。`scripts/verify.sh` 绿 → commit + push → CI 绿闭环。
+- 已完成：commit `a18dd03` push 后 run `30620928767` CI **绿**，闭环。后续：v2 后续刀（`-dsn` 直读库输入、时间对齐/多 symbol、手续费占位）、小程序前端（blocked 缺工具链）、券商持仓（blocked 缺凭证）。

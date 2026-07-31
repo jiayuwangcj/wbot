@@ -343,14 +343,22 @@ func runBacktest(prog string, argv []string) int {
 	var showHelp bool
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
-	file := fs.String("file", "", "path to JSON array of bars (required; same format as `ingest bars -json`)")
+	file := fs.String("file", "", "path to JSON array of bars (same format as `ingest bars -json`; mutually exclusive with -dsn)")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN; mutually exclusive with -file)")
+	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
+	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
+	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
+	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
 	strategy := fs.String("strategy", "hold", "strategy to run: hold or buy-hold")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file and prints one summary line.\n")
-		fmt.Fprintf(os.Stderr, "Each element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
+		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file (-file) or directly from the\n")
+		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
+		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-timeframe/-from/-to/-limit apply to -dsn input.\n")
+		fmt.Fprintf(os.Stderr, "Each JSON element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -364,9 +372,28 @@ func runBacktest(prog string, argv []string) int {
 		return 0
 	}
 
+	fromT, err := parseRangeTime("-from", strings.TrimSpace(*from))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 2
+	}
+	toT, err := parseRangeTime("-to", strings.TrimSpace(*to))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 2
+	}
+
 	fp := strings.TrimSpace(*file)
-	if fp == "" {
-		fmt.Fprintf(os.Stderr, "backtest: -file is required\n")
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if fp == "" && d == "" {
+		fmt.Fprintf(os.Stderr, "backtest: set -file or -dsn (or WBOT_PG_DSN)\n")
+		return 2
+	}
+	if fp != "" && d != "" {
+		fmt.Fprintf(os.Stderr, "backtest: -file and -dsn are mutually exclusive\n")
 		return 2
 	}
 
@@ -381,16 +408,38 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 
-	data, err := os.ReadFile(fp)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "backtest: read %s: %v\n", fp, err)
-		return 1
+	var bars []ingest.Bar
+	if fp != "" {
+		data, err := os.ReadFile(fp)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: read %s: %v\n", fp, err)
+			return 1
+		}
+		bars, err = backtest.ParseBars(data)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+	} else {
+		database, err := db.Open(d)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: open db: %v\n", err)
+			return 1
+		}
+		defer database.Close()
+
+		if err := db.MigrateUp(database); err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: migrate: %v\n", err)
+			return 1
+		}
+
+		bars, err = ingest.QueryBars(context.Background(), database, strings.TrimSpace(*symbol), strings.TrimSpace(*timeframe), fromT, toT, *limit)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: query bars: %v\n", err)
+			return 1
+		}
 	}
-	bars, err := backtest.ParseBars(data)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
-		return 1
-	}
+
 	res, err := backtest.Run(context.Background(), bars, *cash, s)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
