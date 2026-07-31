@@ -20,8 +20,8 @@ CI 门禁标准统一为 **Ubuntu**（与当前开发环境一致），从 test 
 ## State
 
 - **status**: `done`
-- **last step**: `ci.yml` test job 去矩阵（`runs-on: ubuntu-latest`），gofmt/race/staticcheck 的 `if: matrix.os` 条件移除，ci-summary 文案改 ubuntu；`doc/PLAN_V0.md` 改「Linux/Ubuntu」。
+- **last step**: `ci.yml` test job 去矩阵（`runs-on: ubuntu-latest`），gofmt/race/staticcheck 的 `if: matrix.os` 条件移除，ci-summary 文案改 ubuntu；`doc/PLAN_V0.md` 改「Linux/Ubuntu」。随后按用户指示**固定 `ubuntu-24.04`（当前 LTS，与开发环境一致）**，不用 `ubuntu-latest`（避免随 runner 前滚）。
 
 ## Next
 
-- push 后 CI（test + db-integration）绿即闭环；随后回到 `doc/tasks/2026-04-18-ingest-source-http.md` 收尾（其 CI 验证已由本步替代完成）。
+- 已完成：commit `4cfb4ee` push 后 run `30614075769` CI **绿**（test + db-integration）；pin LTS 的 commit 推送后同样以 CI 绿闭环。

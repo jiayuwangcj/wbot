@@ -22,8 +22,9 @@
 ## State
 
 - **status**: `done`
-- **last step**: 已实现 `HTTPSource`（`internal/ingest/http.go`，GET URL 取 JSON 数组，非 2xx/坏 JSON/空数组/空 URL 均报错，ctx 贯穿请求）；`internal/ingest/file.go` 解析循环抽取为公共 `parseBarRecords(data, label)`，错误前缀保留 file/http 来源区别；新增 `http_test.go`（httptest 覆盖正常数组+UTC 归一化、500、坏 JSON、ctx 取消、空 URL）；`cmd/wbot/main.go` 加 `ingest url` 子命令（-dsn/-url 必填/-source cli-url/-symbol/-timeframe/-every）与 usage 文本；`main_test.go` 补 3 个 TestRun 用例。`go test ./internal/ingest/ ./cmd/wbot/ -count=1`、`go vet ./...`、`go build ./cmd/wbot`、`scripts/verify.sh`（无 PG，集成测 skip）全部通过。待主会话 commit + push。
+- **last step**: 已实现 `HTTPSource`（`internal/ingest/http.go`，GET URL 取 JSON 数组，非 2xx/坏 JSON/空数组/空 URL 均报错，ctx 贯穿请求）；`internal/ingest/file.go` 解析循环抽取为公共 `parseBarRecords(data, label)`，错误前缀保留 file/http 来源区别；新增 `http_test.go`（httptest 覆盖正常数组+UTC 归一化、500、坏 JSON、ctx 取消、空 URL）；`cmd/wbot/main.go` 加 `ingest url` 子命令（-dsn/-url 必填/-source cli-url/-symbol/-timeframe/-every）与 usage 文本；`main_test.go` 补 3 个 TestRun 用例。`go test ./internal/ingest/ ./cmd/wbot/ -count=1`、`go vet ./...`、`go build ./cmd/wbot`、`scripts/verify.sh`（无 PG，集成测 skip）全部通过。commit `c3bb863` + push。
+- **CI 验证**: 首次 run `30613731989` 在 `test (macos-latest)` 因 runner 环境故障 `dyld: missing LC_UUID` 连挂两次（非代码问题）；按用户指示 CI 标准改 Ubuntu（见 `doc/tasks/2026-07-31-ci-ubuntu-only.md`，commit `4cfb4ee`），run `30614075769` **成功**，本步远程验证闭环。
 
 ## Next
 
-- commit + push，CI（db-integration job 需 PG）绿后闭环。
+- 完成。后续可接数据源 Provider 抽象、`-every` 失败不终止（重试策略）或外部 cron 文档化。
