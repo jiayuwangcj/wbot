@@ -18,6 +18,7 @@
 - [[ROADMAP]]
 - [[DATA_PIPELINE]]（数据管道 v1：命令/行为/调度方式）
 - [[API]]（`wbot serve` 只读数据接口契约）
+- [[BACKTEST]]（v2 回测骨架：命令/指标/约束）
 - [[PLAN_V0]]
 - [[TDD_WORKFLOW]]
 - [[GITHUB_SETUP]]

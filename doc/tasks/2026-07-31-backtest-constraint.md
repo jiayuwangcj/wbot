@@ -27,4 +27,4 @@ ROADMAP v2「可测的绩效/约束」：`wbot backtest -max-drawdown <p>`（0~1
 
 ## Next
 
-- 判定逻辑：backtest 包加纯函数（如 `CheckMaxDrawdown(res *Result, limit float64) error`，res.MaxDrawdown > limit → `backtest: max drawdown %v exceeds limit %v`）？或 CLI 层直接比——**放 backtest 包纯函数**（可单测，CLI 只调用）。`cmd/wbot/main.go` `runBacktest` 加 `-max-drawdown`（默认 0）；值 <0 或 >1 → 2；>0 时 Run 成功后调检查，违反 → stderr + return 1。usage 加一行。测试：backtest 包单测（V 形曲线 drawdown=0.5：limit 0.2 → 错误；limit 0.9 → nil；limit 0 语义由 CLI 处理）；main_test 加 `backtest bad max-drawdown`（`-max-drawdown 1.5` → 2、`-max-drawdown -0.1` → 2）。`scripts/verify.sh` 绿 → commit + push → CI 绿闭环。
+- 已完成：commit `bd948ca` push 后 run `30621678361` CI **绿**，闭环。后续：多 symbol 时间对齐（需设计拆解）、backtest 用法文档。
