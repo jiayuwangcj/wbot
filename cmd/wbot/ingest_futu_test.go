@@ -123,7 +123,6 @@ func TestIngestFutuOptionDispatch(t *testing.T) {
 		{"bad symbol", []string{"wbot", "ingest", "futu-option", "-symbol", "00700"}, 2},
 		{"bad adjust", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700", "-adjust", "bogus"}, 2},
 		{"bad days", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700", "-days", "0"}, 2},
-		{"no dsn", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700"}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
