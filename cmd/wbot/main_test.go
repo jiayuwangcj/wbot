@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/httpapi"
 	"github.com/jiayu/wbot/internal/httpregister"
 	"github.com/jiayu/wbot/internal/ingest"
@@ -65,6 +66,12 @@ func TestRun(t *testing.T) {
 		{"backtest both inputs", []string{"wbot", "backtest", "-file", "/dev/null", "-dsn", "postgres://x"}, 2},
 		{"backtest dsn no value", []string{"wbot", "backtest", "-dsn"}, 2},
 		{"backtest bad strategy", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "nope"}, 2},
+		{"backtest bad params json", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "hold", "-params", "{"}, 2},
+		{"backtest params with hold", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "hold", "-params", `{"a":1}`}, 2},
+		{"backtest covered-call bad param", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "covered-call", "-params", `{"strike_pct_otm":-1}`}, 2},
+		{"backtest covered-call unknown param", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "covered-call", "-params", `{"bogus":1}`}, 2},
+		{"backtest covered-call needs dsn", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "covered-call"}, 2},
+		{"backtest cash-secured-put needs dsn", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "cash-secured-put"}, 2},
 		{"backtest bad maxdrawdown high", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "1.5"}, 2},
 		{"backtest bad maxdrawdown neg", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "-0.1"}, 2},
 		{"backtest save with file", []string{"wbot", "backtest", "-file", "/dev/null", "-save"}, 2},
@@ -110,6 +117,75 @@ func TestRunRequiresDSN(t *testing.T) {
 				t.Fatalf("run() = %d; want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestBacktestOptionStrategyIntegration: full CLI path against real PG —
+// option_quotes + bars seeded, covered-call run with -params prints the
+// deterministic summary (skipped without WBOT_PG_DSN).
+func TestBacktestOptionStrategyIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	const symbol = "STRATCLI.US"
+	if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM option_quotes WHERE underlying = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	day := func(i int) time.Time { return time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC) }
+	for i, c := range []float64{100, 103, 99, 106, 104} {
+		if _, err := database.Exec(`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	quotes := []struct {
+		code   string
+		opt    string
+		strike float64
+		expiry int
+		closes []float64
+	}{
+		{"CLIO105C", "call", 105, 2, []float64{3, 2.5, 1}},
+		{"CLIO110C", "call", 110, 4, []float64{1, 0.8, 0.5, 0.2}},
+	}
+	for _, q := range quotes {
+		for i, c := range q.closes {
+			if _, err := database.Exec(`
+INSERT INTO option_quotes (symbol, underlying, option_type, strike, expiry, ts, open, high, low, close, volume, implied_vol, adjust, source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $7, 10, NULL, 'none', 'futu')`,
+				q.code, symbol, q.opt, q.strike, day(q.expiry), day(i), c); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	argv := []string{"wbot", "backtest", "-dsn", dsn, "-symbol", symbol, "-timeframe", "1d", "-adjust", "none",
+		"-strategy", "covered-call", "-params", `{"strike_pct_otm":0.05}`}
+	// buy 100 @100, sell C105 for 250, OTM void; sell C110 for 20, OTM void:
+	// cash 270 + 100*104 (same fixture as internal/strategy's integration test).
+	out := captureRunOutput(t, argv)
+	for _, want := range []string{"final_equity=10670", "total_return=0.067", "bars=5"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q; want containing %q", out, want)
+		}
+	}
+	// Determinism: a second run prints the identical summary line.
+	if out2 := captureRunOutput(t, argv); out2 != out {
+		t.Fatalf("runs differ: %q vs %q", out2, out)
 	}
 }
 
