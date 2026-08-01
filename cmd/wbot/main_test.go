@@ -68,6 +68,8 @@ func TestRun(t *testing.T) {
 		{"backtest bad maxdrawdown high", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "1.5"}, 2},
 		{"backtest bad maxdrawdown neg", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "-0.1"}, 2},
 		{"serve help", []string{"wbot", "serve", "-h"}, 0},
+		{"configyaml help", []string{"wbot", "configyaml", "-h"}, 0},
+		{"configyaml missing file", []string{"wbot", "configyaml", "-file", "/nonexistent/config.yaml"}, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -106,6 +108,41 @@ func TestRunRequiresDSN(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConfigYAMLOutput(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "config.yaml")
+	content := "futu:\n  login_account: \"${WBOT_TESTYAML_CLI_ACCOUNT:-acc-default}\"\n  login_region: \"${WBOT_TESTYAML_CLI_REGION:-sh}\"\n"
+	if err := os.WriteFile(cfg, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := captureRunOutput(t, []string{"wbot", "configyaml", "-file", cfg})
+	want := "FUTU_LOGIN_ACCOUNT=acc-default\nFUTU_LOGIN_REGION=sh\n"
+	if out != want {
+		t.Fatalf("output = %q; want %q", out, want)
+	}
+}
+
+// captureRunOutput runs run() with stdout redirected and returns what it printed.
+func captureRunOutput(t *testing.T, argv []string) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	code := run(argv)
+	w.Close()
+	os.Stdout = old
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 0 {
+		t.Fatalf("run(%v) = %d; want 0", argv, code)
+	}
+	return string(out)
 }
 
 func TestServeHelpMentionsAdminEndpoints(t *testing.T) {
