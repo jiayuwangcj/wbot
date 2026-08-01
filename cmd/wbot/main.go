@@ -937,6 +937,7 @@ func runIngestMock(prog string, argv []string) int {
 	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
 	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
+	provider := fs.String("provider", "mock", "ingest provider name (default: mock)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest mock [flags]\n\n", prog)
@@ -953,6 +954,12 @@ func runIngestMock(prog string, argv []string) int {
 		fs.SetOutput(os.Stderr)
 		fs.Usage()
 		return 0
+	}
+
+	src, err := ingest.NewProvider(ingestProviderName(*provider, "mock"), nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest mock: %v\n", err)
+		return 2
 	}
 
 	d := strings.TrimSpace(*dsn)
@@ -980,7 +987,7 @@ func runIngestMock(prog string, argv []string) int {
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
 	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
-		if err := ingest.RunMockIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe)); err != nil {
+		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), "none", "mock", time.Time{}, time.Time{}, src); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "ingest mock: ok (source=%s symbol=%s timeframe=%s)\n", strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe))
@@ -1011,6 +1018,7 @@ func runIngestFile(prog string, argv []string) int {
 	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
+	provider := fs.String("provider", "file", "ingest provider name (default: file)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest file [flags]\n\n", prog)
@@ -1048,6 +1056,12 @@ func runIngestFile(prog string, argv []string) int {
 		return 2
 	}
 
+	src, err := ingest.NewProvider(ingestProviderName(*provider, "file"), ingest.Config{"path": fp})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest file: %v\n", err)
+		return 2
+	}
+
 	d := strings.TrimSpace(*dsn)
 	if d == "" {
 		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
@@ -1070,7 +1084,6 @@ func runIngestFile(prog string, argv []string) int {
 	}
 
 	sym := domain.Symbol(*symbol)
-	src := ingest.FileSource{Path: fp}
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
 	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
@@ -1106,6 +1119,7 @@ func runIngestURL(prog string, argv []string) int {
 	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
+	provider := fs.String("provider", "url", "ingest provider name (default: url)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest url [flags]\n\n", prog)
@@ -1143,6 +1157,12 @@ func runIngestURL(prog string, argv []string) int {
 		return 2
 	}
 
+	src, err := ingest.NewProvider(ingestProviderName(*provider, "url"), ingest.Config{"url": u})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest url: %v\n", err)
+		return 2
+	}
+
 	d := strings.TrimSpace(*dsn)
 	if d == "" {
 		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
@@ -1165,7 +1185,6 @@ func runIngestURL(prog string, argv []string) int {
 	}
 
 	sym := domain.Symbol(*symbol)
-	src := ingest.HTTPSource{URL: u}
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
 	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
@@ -1420,6 +1439,15 @@ func ingestRepeatCtx(every time.Duration) (context.Context, context.CancelFunc) 
 		return context.Background(), func() {}
 	}
 	return signal.NotifyContext(context.Background(), os.Interrupt)
+}
+
+// ingestProviderName returns the -provider flag value, falling back to the
+// subcommand's default when empty (default inferred from the subcommand).
+func ingestProviderName(flagVal, def string) string {
+	if s := strings.TrimSpace(flagVal); s != "" {
+		return s
+	}
+	return def
 }
 
 func usageIngest(prog string) {
