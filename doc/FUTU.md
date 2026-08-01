@@ -121,6 +121,27 @@ nc -zv 127.0.0.1 11111    # API 端口可达即网关就绪
 安全提醒：本文件与 compose 只含变量名与 `${VAR:?}` 占位，零凭证值；真实值仅存 `~/.wbot/config.yaml`（600 权限）与宿主环境变量，永不入 commit/PR。关联 [[PRIVACY]]。
 
 
+## 手动模式（图形验证码 + telnet 控制口，2026-08-01 实测）
+
+ostai 镜像的 8000 WebSocket 通道**只处理短信验证码**（`req_phone_verify_code`），**不处理图形验证码**（`req_pic_verify_code`——登录触发安全验证时的图片码）。需要手动模式：
+
+**直接运行 OpenD 二进制并开启 telnet 控制口**——已记录为 compose：`configs/docker-compose.futu-manual.yml`：
+
+```bash
+# 1. 渲染凭证（~/.wbot/config.yaml → ~/.wbot/.env）
+umask 077 && tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env
+# 2. 启动（direct 二进制 + telnet 22222）
+docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu-manual.yml up -d
+```
+
+**登录流程**：
+1. `docker logs -f futu-opend`——看到 `Need a graphic verification code` 表示需图码
+2. `docker cp futu-opend:/root/.com.futunn.FutuOpenD/F3CNN/PicVerifyCode.png ~/pic.png` 取图（每次容器启动验证码会变）
+3. 提交：`telnet 127.0.0.1 22222` → 输入 `input_pic_verify_code -code=XXXX` → `Login successful` 即成功
+   - VM 无 telnet 时：`bash -c 'exec 3<>/dev/tcp/127.0.0.1/22222; printf "input_pic_verify_code -code=XXXX\n" >&3; cat <&3'`
+4. 失败清理（密码错误会扣登录机会）：`docker rm -f futu-opend`
+
+**登录机会**：密码错误有次数限制（`N chances remained`），**停止重试**避免耗尽；先确认 App 密码与 MD5 一致再启动。
 ## arm64 宿主说明（2026-08-01 实测）
 
 - OpenD 官方仅发布 **x86_64** 二进制；在 Apple Silicon / ARM 宿主（如 OrbStack Linux VM aarch64）上需 **amd64 模拟**：compose 已含 `platform: linux/amd64`（OrbStack/QEMU 自动模拟）
