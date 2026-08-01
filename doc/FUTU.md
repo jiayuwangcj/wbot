@@ -177,6 +177,45 @@ $ wbot futu quote -symbol HK.00700
 
 网关地址暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；config.yaml 的 `futu` 配置接入待后续切片。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
 
+## 8. `wbot ingest futu`：K 线落库（⑪-c，2026-08-01 实测）
+
+`wbot ingest futu` 经 REST 22222 拉取 K 线写入 bars 表，复用 `RunIngestion` / `RunEveryResilient` 管道（ON CONFLICT 幂等、-every 调度韧性，见 [[DATA_PIPELINE]]）：
+
+```bash
+wbot ingest futu -symbol HK.00700 -timeframe K_DAY [-addr http://127.0.0.1:22222] [-from -to] [-every] [-dry-run]
+wbot ingest futu -symbol HK.00700 -timeframe K_1M -from 2026-07-30T00:00:00Z -to 2026-07-31T23:59:59Z   # 分钟线建议显式范围
+```
+
+- `-timeframe` 用 futu 名称：`K_1M K_5M K_15M K_30M K_60M K_DAY K_WEEK K_MONTH`（ingest 名称 `1m 5m 15m 30m 60m 1d 1w 1mo` 亦可），落库用 ingest 约定（`bars.timeframe`）
+- `-from`/`-to` RFC3339（空 from = 2004 级全量历史，空 to = now+24h 含当日未收盘 bar）；`-dry-run` 只拉取并打印条数与首末时间，不碰数据库
+- `-every` 重复执行计入同一限频池；未收盘 bar 为部分数据，重拉因 ON CONFLICT 不覆盖（intraday 滚动更新时注意）
+
+### K 线 REST 契约（实测路径）
+
+| 动作 | 请求 | 说明 |
+| --- | --- | --- |
+| 订阅 K 线 | `POST /api/subscribe` | `{"symbols":["HK.00700"],"sub_types":[N],"is_sub_or_un_sub":true}`，N=6/11/7/8/9/12/13/16（Day/1Min/5Min/15Min/30Min/Week/Month/Year） |
+| 最新 K 线 | `POST /api/kline` | `{"security":{"market":1,"code":"00700"},"kl_type":2,"req_num":100,"rehab_type":0}`；**需先订阅**，最多 1000 根，**拒绝** begin/end |
+| 历史 K 线 | `POST /api/history-kline` | `{"security":{...},"kl_type":2,"rehab_type":0,"begin_time":"2026-07-20 00:00:00","end_time":"...","max_count":1000,"next_req_key":[...]?}`；**免订阅**、begin/end 必填、max_count≤1000 分页（游标回传 `next_req_key`，返回 `null` 即末页） |
+
+**kl_type 枚举（实测，与文档/官方 proto 的出入已注明）**：`1=1Min 2=Day 3=Week 4=Month 5=Year 6=5Min 7=15Min 8=30Min 9=60Min`；复权 `rehab_type=0`（不复权）。`ingest futu` 只用 history-kline（免订阅、范围+分页一步到位）。
+
+**响应字段（s2c）**：`kl_list[]` 每根含 `time`（网关本地 +08 墙钟）、`timestamp`（epoch 秒，落库 ts=UTC 该瞬时）、`open_price/high_price/low_price/close_price`、`volume`、`is_blank`（非交易日空 K 线，**落库时跳过**）；另 `security/name/next_req_key`。
+
+**v1.4.93 BUG-002 实测坑**（严格校验逐字段报错，以实测为准）：K 线请求**必须用 `security` 对象**——`symbol` 字符串形态被误报 `unknown field(s): owner`（symbol_normalize 适配器 bug）；`/api/kline` 拒绝 `begin_time/end_time`（未知字段）、`/api/history-kline` 拒绝 `req_num` 与文档声称的 `count` 别名。
+
+### 限频策略（2026-08-01 老板指令）
+
+富途官方限制（协议文档）：**历史 K 线 3103 第 1 页 30 秒内最多 10 次，后续页不限频**；快照 3203 一级 30/二级 20/三级 10 次每 30 秒。实现取更保守值，所有 futu 请求共享全局速率池（`internal/futu/ratelimit.go`）：
+
+- **全部请求**：`QuoteLimit` 20 req/s（50ms/请求）
+- **K 线请求**：叠加 `KlineLimit` 5 req/s（200ms/请求）
+- **history-kline 第 1 页**：叠加 `HistoryPageLimit` 3s/次（官方 10 次/30s 的均匀化）
+- **分页批间**：强制 ≥1s/批（`BatchGap`，含 -every 循环）
+- **超限响应**：HTTP 429 → 1s/2s 指数退避重试至多 3 次后报错停止，不硬拉
+
+拉超会被富途限制行情权限，属安全红线；改动限频参数须先确认官方文档当前数值。
+
 
 ## 手动模式（图形验证码 + telnet 控制口，2026-08-01 实测）
 
