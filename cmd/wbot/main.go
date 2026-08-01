@@ -974,6 +974,8 @@ func runIngest(prog string, argv []string) int {
 		return runIngestFutuOption(prog, argv[1:])
 	case "status":
 		return runIngestStatus(prog, argv[1:])
+	case "freshness":
+		return runIngestFreshness(prog, argv[1:])
 	case "bars":
 		return runIngestBars(prog, argv[1:])
 	default:
@@ -1322,6 +1324,88 @@ func runIngestStatus(prog string, argv []string) int {
 	return 0
 }
 
+// runIngestFreshness checks data freshness per symbol×timeframe and exits 1
+// when any combination is stale — the cron gate `wbot ingest freshness || alert`
+// (doc/DATA_PIPELINE.md); unknown (no data) prints and exits 0.
+func runIngestFreshness(prog string, argv []string) int {
+	fs := flag.NewFlagSet("ingest freshness", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	maxAge := fs.Duration("max-age", 0, "global staleness threshold (e.g. 24h); 0 = per-timeframe defaults (1d → 3d, 1m → 10m, unknown → 24h)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s ingest freshness [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Checks data freshness per symbol×timeframe: prints each combination's\n")
+		fmt.Fprintf(os.Stderr, "max_ts, age and status (fresh / stale / unknown); exits 1 when any\n")
+		fmt.Fprintf(os.Stderr, "combination is stale, 0 otherwise (no data → unknown, exit 0).\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "ingest freshness: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest freshness: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest freshness: migrate: %v\n", err)
+		return 1
+	}
+
+	now := time.Now()
+	entries, err := ingest.QueryFreshness(context.Background(), database, now)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest freshness: %v\n", err)
+		return 1
+	}
+	anyStale := false
+	for _, e := range entries {
+		threshold := ingest.MaxAgeForTimeframe(e.Timeframe)
+		if *maxAge > 0 {
+			threshold = *maxAge
+		}
+		status := ingest.JudgeFreshness(e.MaxTs, now, threshold)
+		if status == ingest.Stale {
+			anyStale = true
+		}
+		maxTs := "-"
+		if !e.MaxTs.IsZero() {
+			maxTs = e.MaxTs.Format(time.RFC3339)
+		}
+		fmt.Printf("%s %s %s %ds %s\n", e.Symbol, e.Timeframe, maxTs, e.AgeSeconds, status)
+	}
+	if len(entries) == 0 {
+		fmt.Println("unknown: no bars data")
+	}
+	if anyStale {
+		fmt.Fprintf(os.Stderr, "ingest freshness: stale data found\n")
+		return 1
+	}
+	return 0
+}
+
 func runIngestBars(prog string, argv []string) int {
 	fs := flag.NewFlagSet("ingest bars", flag.ContinueOnError)
 	var showHelp bool
@@ -1515,6 +1599,7 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "  futu   Fetch K-lines from the futu-opend-rs gateway (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu-option  Fetch option-chain K-lines + underlying bars, cache-first (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  status Show recent ingestion runs (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  freshness  Check data freshness; exit 1 when any symbol×timeframe is stale (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  bars   Show ingested bars for a symbol/timeframe (-h for flags)\n")
 }
 
