@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -370,6 +371,7 @@ func runBacktest(prog string, argv []string) int {
 	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
 	strategy := fs.String("strategy", "hold", "strategy to run: hold or buy-hold")
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
+	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
@@ -377,7 +379,8 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
-		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-timeframe/-from/-to/-limit apply to -dsn input.\n")
+		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics) is stored in backtest_results (migration 003).\n")
+		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-timeframe/-adjust/-from/-to/-limit apply to -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "Each JSON element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
@@ -432,7 +435,12 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 
+	if *save && fp != "" {
+		fmt.Fprintf(os.Stderr, "backtest: -save requires -dsn input\n")
+		return 2
+	}
 	var bars []ingest.Bar
+	var database *sql.DB
 	if fp != "" {
 		data, err := os.ReadFile(fp)
 		if err != nil {
@@ -445,7 +453,8 @@ func runBacktest(prog string, argv []string) int {
 			return 1
 		}
 	} else {
-		database, err := db.Open(d)
+		var err error
+		database, err = db.Open(d)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: open db: %v\n", err)
 			return 1
@@ -470,6 +479,21 @@ func runBacktest(prog string, argv []string) int {
 		return 1
 	}
 	fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
+	if *save {
+		id, err := backtest.SaveResult(context.Background(), database,
+			strings.TrimSpace(*strategy), strings.TrimSpace(*symbol),
+			map[string]any{
+				"cash":      *cash,
+				"fee":       *fee,
+				"timeframe": strings.TrimSpace(*timeframe),
+				"adjust":    strings.TrimSpace(*adjust),
+			}, res, bars[0].Ts, bars[len(bars)-1].Ts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+		fmt.Printf("saved result id=%d\n", id)
+	}
 	if *maxDrawdown > 0 {
 		if err := backtest.CheckMaxDrawdown(res, *maxDrawdown); err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)

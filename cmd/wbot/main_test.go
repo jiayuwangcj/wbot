@@ -67,6 +67,7 @@ func TestRun(t *testing.T) {
 		{"backtest bad strategy", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "nope"}, 2},
 		{"backtest bad maxdrawdown high", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "1.5"}, 2},
 		{"backtest bad maxdrawdown neg", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "-0.1"}, 2},
+		{"backtest save with file", []string{"wbot", "backtest", "-file", "/dev/null", "-save"}, 2},
 		{"serve help", []string{"wbot", "serve", "-h"}, 0},
 		{"configyaml help", []string{"wbot", "configyaml", "-h"}, 0},
 		{"configyaml missing file", []string{"wbot", "configyaml", "-file", "/nonexistent/config.yaml"}, 1},
