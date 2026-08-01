@@ -937,7 +937,7 @@ func runIngestMock(prog string, argv []string) int {
 	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
 	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
-	provider := fs.String("provider", "mock", "ingest provider name (default: mock)")
+	provider := fs.String("provider", "mock", "ingest provider name")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest mock [flags]\n\n", prog)
@@ -1018,7 +1018,7 @@ func runIngestFile(prog string, argv []string) int {
 	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
-	provider := fs.String("provider", "file", "ingest provider name (default: file)")
+	provider := fs.String("provider", "file", "ingest provider name")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest file [flags]\n\n", prog)
@@ -1119,7 +1119,7 @@ func runIngestURL(prog string, argv []string) int {
 	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
-	provider := fs.String("provider", "url", "ingest provider name (default: url)")
+	provider := fs.String("provider", "url", "ingest provider name")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest url [flags]\n\n", prog)
