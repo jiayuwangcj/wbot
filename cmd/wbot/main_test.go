@@ -67,6 +67,8 @@ func TestRun(t *testing.T) {
 		{"ingest file unknown provider", []string{"wbot", "ingest", "file", "-file", "/dev/null", "-provider", "nope"}, 2},
 		{"ingest url unknown provider", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json", "-provider", "nope"}, 2},
 		{"ingest status help", []string{"wbot", "ingest", "status", "-h"}, 0},
+		{"ingest freshness help", []string{"wbot", "ingest", "freshness", "-h"}, 0},
+		{"ingest freshness bad flag", []string{"wbot", "ingest", "freshness", "-notaflag"}, 2},
 		{"ingest bars help", []string{"wbot", "ingest", "bars", "-h"}, 0},
 		{"ingest bars bad from", []string{"wbot", "ingest", "bars", "-from", "not-a-time"}, 2},
 		{"backtest help", []string{"wbot", "backtest", "-h"}, 0},
@@ -135,6 +137,7 @@ func TestRunRequiresDSN(t *testing.T) {
 		{"ingest futu no dsn", []string{"wbot", "ingest", "futu", "-symbol", "HK.00700", "-timeframe", "K_DAY"}, 2},
 		{"ingest futu-option no dsn", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700"}, 2},
 		{"ingest status no dsn", []string{"wbot", "ingest", "status"}, 2},
+		{"ingest freshness no dsn", []string{"wbot", "ingest", "freshness"}, 2},
 		{"ingest bars no dsn", []string{"wbot", "ingest", "bars"}, 2},
 		{"ingest bars json no dsn", []string{"wbot", "ingest", "bars", "-json"}, 2},
 		{"serve no dsn", []string{"wbot", "serve"}, 2},
@@ -1228,5 +1231,99 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 	}
 	if len(got.EquityCurve) != 3 || got.EquityCurve[2].Equity != 12100 {
 		t.Fatalf("equity_curve = %+v; want 3 points ending 12100", got.EquityCurve)
+	}
+}
+
+// runOutput runs the CLI and returns its exit code plus stdout (no assertion).
+func runOutput(argv []string) (int, string) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	os.Stdout = w
+	code := run(argv)
+	w.Close()
+	os.Stdout = old
+	out, err := io.ReadAll(r)
+	if err != nil {
+		panic(err)
+	}
+	return code, string(out)
+}
+
+// TestIngestFreshnessIntegration: `wbot ingest freshness` gates on staleness —
+// exit 0 when fresh (per-timeframe default or -max-age override), exit 1 when
+// any symbol×timeframe is stale (skipped without WBOT_PG_DSN).
+func TestIngestFreshnessIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	const freshSym = "FRESHCLI.US"
+	const staleSym = "STALECLI.US"
+	for _, sym := range []string{freshSym, staleSym} {
+		if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, sym); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert := func(sym string, ts time.Time) {
+		if _, err := database.Exec(`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, '1d', $2, 100, 101, 99, 100.5, 100, 'none', 'futu')`, sym, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	insert(freshSym, now.Add(-2*time.Hour))   // 1d default threshold 72h → fresh
+	insert(staleSym, now.Add(-100*time.Hour)) // 1d default threshold 72h → stale
+
+	statusLine := func(code int, out string, sym string) string {
+		for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+			if strings.HasPrefix(line, sym+" ") {
+				return line
+			}
+		}
+		t.Fatalf("exit %d: output %q missing symbol %s", code, out, sym)
+		return ""
+	}
+
+	// Mixed data: any stale → exit 1, both statuses printed.
+	code, out := runOutput([]string{"wbot", "ingest", "freshness", "-dsn", dsn})
+	if code != 1 {
+		t.Fatalf("mixed: exit = %d; want 1 (output %q)", code, out)
+	}
+	if l := statusLine(code, out, freshSym); !strings.HasSuffix(l, " fresh") {
+		t.Fatalf("fresh symbol line %q; want suffix ' fresh'", l)
+	}
+	if l := statusLine(code, out, staleSym); !strings.HasSuffix(l, " stale") {
+		t.Fatalf("stale symbol line %q; want suffix ' stale'", l)
+	}
+
+	// Global -max-age override covers everything → exit 0.
+	code, out = runOutput([]string{"wbot", "ingest", "freshness", "-dsn", dsn, "-max-age", "1000000h"})
+	if code != 0 {
+		t.Fatalf("-max-age 1000000h: exit = %d; want 0 (output %q)", code, out)
+	}
+	if l := statusLine(code, out, staleSym); !strings.HasSuffix(l, " fresh") {
+		t.Fatalf("-max-age 1000000h: stale symbol line %q; want suffix ' fresh'", l)
+	}
+
+	// -max-age 1h flips the 2h-old entry to stale → exit 1.
+	code, out = runOutput([]string{"wbot", "ingest", "freshness", "-dsn", dsn, "-max-age", "1h"})
+	if code != 1 {
+		t.Fatalf("-max-age 1h: exit = %d; want 1 (output %q)", code, out)
+	}
+	if l := statusLine(code, out, freshSym); !strings.HasSuffix(l, " stale") {
+		t.Fatalf("-max-age 1h: fresh symbol line %q; want suffix ' stale'", l)
 	}
 }

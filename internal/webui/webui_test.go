@@ -304,6 +304,45 @@ func TestAdminPageSections(t *testing.T) {
 	}
 }
 
+// TestAdminPageFreshness: the cluster data-plane table carries a Freshness
+// column, and app.js renders the stale/unknown markers (数据过期 / 无数据).
+func TestAdminPageFreshness(t *testing.T) {
+	html, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"<th>Freshness</th>", `id="cluster-coverage-table"`} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("admin.html missing %q", want)
+		}
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"b.fresh",
+		"freshness-stale",
+		"freshness-unknown",
+		"数据过期",
+		"无数据",
+		"renderCoverageTable",
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js missing freshness logic %q", want)
+		}
+	}
+	css, err := fs.ReadFile(webFiles, "web/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"td.freshness-stale", "td.freshness-unknown"} {
+		if !strings.Contains(string(css), want) {
+			t.Fatalf("style.css missing freshness style %q", want)
+		}
+	}
+}
+
 func TestTableEmptyConvention(t *testing.T) {
 	tableRe := regexp.MustCompile(`id="([a-z0-9-]+-table)"`)
 	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {

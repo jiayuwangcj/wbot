@@ -360,3 +360,72 @@ func TestQueryBarsIntegration(t *testing.T) {
 		t.Fatalf("limit query: got %d bars want 1", len(got))
 	}
 }
+
+// TestQueryFreshnessIntegration: QueryFreshness reports max_ts ages per
+// symbol×timeframe, and JudgeFreshness with the per-timeframe default
+// threshold classifies fresh (2h old, 1d) and stale (100h old, 1d).
+func TestQueryFreshnessIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	const freshSym = "FRESH.US"
+	const staleSym = "STALE.US"
+	for _, sym := range []string{freshSym, staleSym} {
+		if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, sym); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert := func(sym string, ts time.Time) {
+		if _, err := database.Exec(`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, '1d', $2, 100, 101, 99, 100.5, 100, 'none', 'futu')`, sym, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	insert(freshSym, now.Add(-2*time.Hour))   // 1d default threshold 72h → fresh
+	insert(staleSym, now.Add(-100*time.Hour)) // 1d default threshold 72h → stale
+
+	entries, err := QueryFreshness(ctx, database, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(sym string) *Freshness {
+		for i := range entries {
+			if entries[i].Symbol == sym {
+				return &entries[i]
+			}
+		}
+		t.Fatalf("freshness missing %s (got %+v)", sym, entries)
+		return nil
+	}
+	fresh := find(freshSym)
+	if fresh.AgeSeconds != 7200 || !fresh.MaxTs.Equal(now.Add(-2*time.Hour)) {
+		t.Fatalf("fresh entry = %+v; want age 7200s at %v", fresh, now.Add(-2*time.Hour))
+	}
+	if got := JudgeFreshness(fresh.MaxTs, now, MaxAgeForTimeframe(fresh.Timeframe)); got != Fresh {
+		t.Fatalf("fresh judge = %q; want fresh", got)
+	}
+	stale := find(staleSym)
+	if got := JudgeFreshness(stale.MaxTs, now, MaxAgeForTimeframe(stale.Timeframe)); got != Stale {
+		t.Fatalf("stale judge = %q; want stale", got)
+	}
+	// -max-age style global override: 24h flips the 100h-old entry's verdict.
+	if got := JudgeFreshness(stale.MaxTs, now, 24*time.Hour); got != Stale {
+		t.Fatalf("stale judge with 24h = %q; want stale", got)
+	}
+	if got := JudgeFreshness(fresh.MaxTs, now, 24*time.Hour); got != Fresh {
+		t.Fatalf("fresh judge with 24h = %q; want fresh", got)
+	}
+}

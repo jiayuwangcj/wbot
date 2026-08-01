@@ -248,8 +248,48 @@ function renderCluster(c) {
   setText("cluster-pipeline-succeeded", comps.pipeline.counts.succeeded);
   setText("cluster-pipeline-failed", comps.pipeline.counts.failed);
   renderTable("cluster-pipeline-runs-table", comps.pipeline.recent_runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "running" : r.finished_at]));
-  renderTable("cluster-coverage-table", comps.data_plane.bars_coverage.map((b) => [b.symbol, b.timeframe, b.count, b.min_ts, b.max_ts]));
+  renderCoverageTable("cluster-coverage-table", comps.data_plane.bars_coverage);
   document.getElementById("cluster-cards").hidden = false;
+}
+
+/* Freshness column: stale rows are marked 数据过期, unknown rows 无数据
+   (data freshness monitor, doc/DATA_PIPELINE.md). */
+function freshnessCell(b) {
+  const td = document.createElement("td");
+  if (b.fresh === "stale") {
+    td.textContent = "数据过期";
+    td.classList.add("freshness-stale");
+  } else if (b.fresh === "unknown") {
+    td.textContent = "无数据";
+    td.classList.add("freshness-unknown");
+  } else {
+    td.textContent = "fresh";
+  }
+  return td;
+}
+
+function renderCoverageTable(id, rows) {
+  const table = document.getElementById(id);
+  const empty = document.getElementById(id.replace("-table", "-empty"));
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  if (rows.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  for (const b of rows) {
+    const tr = document.createElement("tr");
+    for (const cell of [b.symbol, b.timeframe, b.count, b.min_ts, b.max_ts]) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    }
+    tr.appendChild(freshnessCell(b));
+    tbody.appendChild(tr);
+  }
+  empty.hidden = true;
+  table.hidden = false;
 }
 
 function renderConfig(keys) {
