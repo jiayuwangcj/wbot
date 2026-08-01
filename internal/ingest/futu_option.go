@@ -110,7 +110,7 @@ SET strategy = EXCLUDED.strategy, params = EXCLUDED.params, updated_at = now()`,
 // RunOptionIngestion pulls the underlying's listed future expiries and chain
 // (maxExpiries <= 0 = all), then one daily K-line per contract in [from, to],
 // writing option_quotes rows in one transaction. Adjust follows
-// doc/DATA_STANDARD.md (futu rehab_type). details: doc/FUTU.md §9
+// doc/DATA_STANDARD.md (futu rehab_type). details: doc/FUTU.md §10
 func RunOptionIngestion(ctx context.Context, db *sql.DB, c *futu.Client, underlying, adjust string, from, to time.Time, maxExpiries int) (*OptionIngestStats, error) {
 	if db == nil {
 		return nil, errors.New("ingest: futu-option: nil db")

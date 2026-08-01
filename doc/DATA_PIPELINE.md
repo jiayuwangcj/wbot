@@ -10,7 +10,7 @@
 | `wbot ingest file -file <path>` | 从 JSON 文件拉取 bars（每元素 `{"ts":RFC3339,"open","high","low","close","volume"}`） |
 | `wbot ingest url -url <url>` | 从 HTTP(S) URL 拉取同格式 JSON bars |
 | `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust fwd\|none` 默认 fwd） |
-| `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §9、[[DATA_STANDARD]]） |
+| `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §10、[[DATA_STANDARD]]） |
 | `wbot ingest status` | 只读列出最近 `ingestion_runs`（`-limit` 可调） |
 
 通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-every`（间隔重复）、`-from`/`-to`（RFC3339 时间范围，零值=不限）。

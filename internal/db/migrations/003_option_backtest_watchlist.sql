@@ -11,7 +11,7 @@ ALTER TABLE bars ADD PRIMARY KEY (symbol, timeframe, ts, adjust, source);
 -- Option quotes: per-contract daily OHLCV (chain metadata denormalized per row).
 -- implied_vol is nullable: the gateway REST exposes IV only via
 -- /api/option-quote (combo, one contract per request, snapshot-rate-limited);
--- the v1 pipeline does not populate it (doc/FUTU.md §9).
+-- the v1 pipeline does not populate it (doc/FUTU.md §10).
 CREATE TABLE IF NOT EXISTS option_quotes (
 	symbol text NOT NULL,
 	underlying text NOT NULL,

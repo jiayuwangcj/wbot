@@ -13,7 +13,7 @@ import (
 // "end_time":"YYYY-MM-DD"} (expiration window, inclusive). The chain groups
 // contracts by strike_time: option[].call / option[].put each carry basic
 // (security code like TCH260807C335000) and option_ex_data (type/strike).
-// No subscription needed; snapshot-class rate limits apply (doc/FUTU.md §9).
+// No subscription needed; snapshot-class rate limits apply (doc/FUTU.md §10).
 
 // OptionExpiry is one listed expiration of an underlying's option chain.
 type OptionExpiry struct {
