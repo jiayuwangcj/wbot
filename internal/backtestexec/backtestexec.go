@@ -120,3 +120,64 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 	}
 	return &Outcome{Result: res, StartTs: bars[0].Ts, EndTs: bars[len(bars)-1].Ts}, nil
 }
+
+// MultiOutcome is one multi-symbol run: the combined result plus the aligned
+// bar range it consumed (start/end of the common timeline).
+type MultiOutcome struct {
+	Result  *backtest.MultiResult
+	StartTs time.Time
+	EndTs   time.Time
+}
+
+// RunMulti runs one independent sub-account per symbol over the intersection
+// of their bars (equal cash split) — the CLI's `wbot backtest -symbols` path
+// (doc/BACKTEST.md). Option strategies are rejected: per-symbol OptionsData is
+// not part of the minimal multi-symbol semantic. Each sub-account gets a fresh
+// strategy instance (stateful strategies are not reusable between runs).
+func RunMulti(ctx context.Context, db *sql.DB, o Options, symbols []string) (*MultiOutcome, error) {
+	if len(symbols) == 0 {
+		return nil, errors.New("backtest: exec: multi: empty symbols")
+	}
+	if strings.TrimSpace(o.Strategy) == "" {
+		return nil, errors.New("backtest: exec: multi: strategy is required")
+	}
+	// Strategy/params validation first, so bad input errors without touching
+	// the database (mirrors Run's Build contract).
+	if _, templ, err := Build(o.Strategy, o.Params); err != nil {
+		return nil, err
+	} else if templ != nil && templ.NeedsOptions {
+		return nil, fmt.Errorf("backtest: exec: multi: strategy %s needs option_quotes; multi-symbol runs support hold/buy-hold", o.Strategy)
+	}
+	seen := make(map[string]bool, len(symbols))
+	for _, sym := range symbols {
+		if strings.TrimSpace(sym) == "" {
+			return nil, errors.New("backtest: exec: multi: empty symbol")
+		}
+		if seen[sym] {
+			return nil, fmt.Errorf("backtest: exec: multi: duplicate symbol %s", sym)
+		}
+		seen[sym] = true
+	}
+	if db == nil {
+		return nil, errors.New("backtest: exec: multi: nil db")
+	}
+	series := make([]backtest.SymbolBars, 0, len(symbols))
+	for _, sym := range symbols {
+		bars, err := ingest.QueryBars(ctx, db, sym, o.Timeframe, o.Adjust, o.From, o.To, o.Limit)
+		if err != nil {
+			return nil, err
+		}
+		if len(bars) == 0 {
+			return nil, fmt.Errorf("%w: %s", ErrNoBars, sym)
+		}
+		series = append(series, backtest.SymbolBars{Symbol: sym, Bars: bars})
+	}
+	res, err := backtest.RunMulti(ctx, series, o.Cash, o.Fee, func() (backtest.Strategy, error) {
+		s, _, err := Build(o.Strategy, o.Params)
+		return s, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &MultiOutcome{Result: res, StartTs: res.EquityCurve[0].Ts, EndTs: res.EquityCurve[len(res.EquityCurve)-1].Ts}, nil
+}
