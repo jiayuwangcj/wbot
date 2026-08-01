@@ -20,7 +20,8 @@ func (mockSource) Bars(_ context.Context, _ domain.Symbol, _ string, _, _ time.T
 	}, nil
 }
 
-// RunMockIngestion runs RunIngestion with the fixed mockSource; intended for wiring tests.
+// RunMockIngestion runs RunIngestion with the fixed mockSource (adjust=none,
+// source=mock); intended for wiring tests.
 func RunMockIngestion(ctx context.Context, db *sql.DB, source string, symbol domain.Symbol, timeframe string) error {
-	return RunIngestion(ctx, db, source, symbol, timeframe, time.Time{}, time.Time{}, mockSource{})
+	return RunIngestion(ctx, db, source, symbol, timeframe, "none", "mock", time.Time{}, time.Time{}, mockSource{})
 }

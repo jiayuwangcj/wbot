@@ -26,7 +26,7 @@ type fakeStore struct {
 	gotLimit    int
 }
 
-func (f *fakeStore) QueryBars(_ context.Context, symbol, timeframe string, _, _ time.Time, limit int) ([]ingest.Bar, error) {
+func (f *fakeStore) QueryBars(_ context.Context, symbol, timeframe, adjust string, _, _ time.Time, limit int) ([]ingest.Bar, error) {
 	f.gotSymbol = symbol
 	f.gotTimefram = timeframe
 	f.gotLimit = limit

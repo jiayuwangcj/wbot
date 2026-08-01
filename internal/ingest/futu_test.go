@@ -140,3 +140,25 @@ func TestFutuSourceGatewayError(t *testing.T) {
 		t.Fatalf("Bars() error = %v; want ingest: futu source: with 503", err)
 	}
 }
+
+func TestFutuSourceAdjustMapping(t *testing.T) {
+	fastFutuLimits(t)
+	var rehab any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var m map[string]any
+		if err := json.Unmarshal(mustReadAll(r), &m); err != nil {
+			t.Fatalf("request body: %v", err)
+		}
+		rehab = m["rehab_type"]
+		io.WriteString(w, futuBarsPayload)
+	}))
+	defer srv.Close()
+
+	src := FutuSource{Client: futu.NewClient(srv.URL), Adjust: "fwd"}
+	if _, err := src.Bars(context.Background(), domain.Symbol("HK.00700"), "1d", time.Time{}, time.Time{}); err != nil {
+		t.Fatalf("Bars() error: %v", err)
+	}
+	if rehab != float64(1) {
+		t.Fatalf("rehab_type = %v; want 1 for adjust=fwd", rehab)
+	}
+}

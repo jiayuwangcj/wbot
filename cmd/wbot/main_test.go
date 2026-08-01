@@ -332,7 +332,7 @@ func freeTCPPort(t *testing.T) int {
 // serveFakeStore is a no-data httpapi.Store for serve-mux tests (no DB needed).
 type serveFakeStore struct{}
 
-func (serveFakeStore) QueryBars(context.Context, string, string, time.Time, time.Time, int) ([]ingest.Bar, error) {
+func (serveFakeStore) QueryBars(context.Context, string, string, string, time.Time, time.Time, int) ([]ingest.Bar, error) {
 	return nil, nil
 }
 
