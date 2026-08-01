@@ -293,8 +293,25 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 		t.Fatalf("CLI csv != API csv: %q vs %q", cliCSV, apiCSV.Body)
 	}
 	sections := strings.Split(cliCSV, "\n\n")
-	if len(sections) != 2 || strings.Count(sections[0], "\n") != 4 || strings.Count(sections[1], "\n") != 2 {
-		t.Fatalf("csv sections = %q; want equity 3 rows + trades 1 row", cliCSV)
+	if len(sections) != 2 {
+		t.Fatalf("csv sections = %d; want 2 (equity_curve + trades): %q", len(sections), cliCSV)
+	}
+	// Each section = name line + header + data rows; the last row's newline is
+	// consumed by the blank-line separator, so 4 lines = 3 curve points and
+	// 3 lines = 1 trade.
+	if lines := strings.Count(sections[0], "\n"); lines != 4 {
+		t.Fatalf("equity section lines = %d; want 4 (name + header + 3 rows): %q", lines, cliCSV)
+	}
+	if lines := strings.Count(sections[1], "\n"); lines != 3 {
+		t.Fatalf("trades section lines = %d; want 3 (name + header + 1 row): %q", lines, cliCSV)
+	}
+	for _, want := range []string{
+		"2024-03-01T00:00:00Z,10000\n2024-03-02T00:00:00Z,10300\n2024-03-03T00:00:00Z,9900",
+		"2024-03-01T00:00:00Z,buy,EXPORTCLI.US,100,100,0",
+	} {
+		if !strings.Contains(cliCSV, want) {
+			t.Fatalf("csv missing %q: %q", want, cliCSV)
+		}
 	}
 
 	// Missing id through the CLI: exit 1 with a readable error.
