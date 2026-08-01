@@ -220,8 +220,60 @@ func parseLimit(s string) (int, error) {
 	return n, nil
 }
 
-func writeError(w http.ResponseWriter, status int, msg string) {
+// errorJSON is the API-wide error body: {code, message, action, error}.
+// error mirrors message as a legacy alias kept for existing clients (S1 backtests convention, S5 full rollout).
+type errorJSON struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Action  string `json:"action"`
+	Error   string `json:"error"`
+}
+
+// writeErrorBody writes an errorJSON; the legacy error alias defaults to message.
+func writeErrorBody(w http.ResponseWriter, status int, e errorJSON) {
+	if e.Error == "" {
+		e.Error = e.Message
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+	_ = json.NewEncoder(w).Encode(e)
+}
+
+// writeError writes the API error body with status-derived code and action hints.
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeErrorBody(w, status, errorJSON{
+		Code:    codeForStatus(status),
+		Message: msg,
+		Action:  actionForStatus(status),
+	})
+}
+
+func codeForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "invalid_request"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusMethodNotAllowed:
+		return "method_not_allowed"
+	case http.StatusServiceUnavailable:
+		return "dependency_failed"
+	default:
+		return "internal_error"
+	}
+}
+
+func actionForStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "check the request parameters and retry"
+	case http.StatusNotFound:
+		return "check the path and retry"
+	case http.StatusMethodNotAllowed:
+		return "use the documented HTTP method"
+	case http.StatusServiceUnavailable:
+		return "check the database connection and retry"
+	default:
+		return "check server logs and retry"
+	}
 }
