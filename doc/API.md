@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测结果数据面（只读：CLI `wbot backtest -save` 写入，本端点读取，见 [[BACKTEST]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## Web UI
 
@@ -140,6 +140,85 @@ CLI 等价物：`wbot watchlist add|remove|list`（`-symbol -strategy -params '<
 
 PRIVACY：本端点不涉及配置值（watchlist 参数为用户业务数据，非凭证；API 永不返回配置值，见 doc/PRIVACY.md）。
 
+## GET /v1/backtests
+
+已保存回测运行列表（`backtest_results` 表，migration 003/004），按 `id` 倒序（最新在前）。只读；写入方为 CLI `wbot backtest -save`（`doc/BACKTEST.md`）。列表为摘要形态：完整 metrics，**不含** equity_curve/trades。
+
+Query 参数：
+
+| 参数 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `symbol` | 否 | 不限 | 按标的过滤（如 `DEMO.US`；缺省返回全部） |
+| `strategy` | 否 | 不限 | 按策略名过滤（如 `buy-hold`） |
+| `limit` | 否 | 50 | 最大条数（<=0 或非数字报 400） |
+
+响应 `200`：
+
+```json
+[
+  {"id": 7, "strategy": "buy-hold", "symbol": "DEMO.US",
+   "params": {"cash": 10000, "fee": 0, "timeframe": "1d", "adjust": "none"},
+   "metrics": {"equity": 10500, "total_return": 0.05, "max_drawdown": 0.02, "bars": 2},
+   "start_ts": "2026-07-27T00:00:00Z", "end_ts": "2026-07-28T00:00:00Z",
+   "created_at": "2026-08-01T08:00:00Z"}
+]
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `id` | 运行 id（详情端点路径参数） |
+| `params` | 运行参数（cash/fee/timeframe/adjust 等，JSONB 原样返回） |
+| `metrics` | 摘要指标（equity/total_return/max_drawdown/bars） |
+| `start_ts` / `end_ts` | 回测 bars 时间范围（RFC3339） |
+| `created_at` | 落库时间（RFC3339） |
+
+无结果时返回 `[]`。
+
+## GET /v1/backtests/{id}
+
+单个运行详情：列表字段 + 完整 `equity_curve`/`trades`（migration 004 落库的确定性 trace；`{id}` 为正整数）。
+
+响应 `200`：
+
+```json
+{
+  "id": 7, "strategy": "buy-hold", "symbol": "DEMO.US",
+  "params": {"cash": 10000, "fee": 0},
+  "metrics": {"equity": 10500, "total_return": 0.05, "max_drawdown": 0.02, "bars": 2},
+  "start_ts": "2026-07-27T00:00:00Z", "end_ts": "2026-07-28T00:00:00Z",
+  "created_at": "2026-08-01T08:00:00Z",
+  "equity_curve": [
+    {"ts": "2026-07-27T00:00:00Z", "equity": 10000},
+    {"ts": "2026-07-28T00:00:00Z", "equity": 10500}
+  ],
+  "trades": [
+    {"ts": "2026-07-27T00:00:00Z", "action": "buy", "symbol": "DEMO.US", "size": 100, "price": 100, "cash_after": 0}
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `equity_curve[]` | 每根 bar 一根曲线点：`ts`（bar 时间，RFC3339）+ `equity`（结算后组合市值） |
+| `trades[]` | 逐笔明细：`action`（`buy`/`sell`/`sell-call`/`buy-call`/`sell-put`/`buy-put`/`exercise-call`/`exercise-put`/`expire-otm`）、`symbol`（期权腿为合约代码，正股为标的）、`size`（正股/行权为股数，期权为合约数）、`price`（正股为成交价、期权为每张权利金、行权为 strike）、`cash_after`（结算后现金） |
+
+migration 004 之前的老行（无曲线）返回 `equity_curve: []`、`trades: []`（不报错）。
+
+| 状态码 | 场景 |
+| --- | --- |
+| 200 | 找到该运行 |
+| 400 | `{id}` 非正整数（如 `abc`、`0`、`-1`） |
+| 404 | 该 id 不存在（`backtest_results` 无此行；`action` 提示先 `wbot backtest -save`） |
+| 405 | 方法不允许（仅 GET） |
+
+错误体为本切片起的新约定 `{"code", "message", "action"}`（S5 全量接入；`action` 为可执行的补救建议）：
+
+```json
+{"code": "not_found", "message": "backtest result 42 not found", "action": "run `wbot backtest -save` to persist a run first"}
+```
+
+PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
+
 ## GET /v1/admin/status
 
 进程 + DB 运行状态（后台管理数据面；无查询参数）。
@@ -273,14 +352,14 @@ PRIVACY：API 永不返回配置值——GET 只回 key 元数据、PUT 响应�
 
 ## 错误
 
-统一 `{"error": "..."}` JSON：
+除 `/v1/backtests`（本切片起新约定 `{"code","message","action"}`，见上节；S5 全量接入）外，统一 `{"error": "..."}` JSON：
 
 | 场景 | 状态码 |
 | --- | --- |
 | 缺必填参数 / 参数非法（坏时间、limit<=0、空/超长配置值、body 非 JSON、未知策略模板或非法 watchlist 参数） | 400 |
 | 存储查询失败 | 500 |
 | DB ping 失败 | 503 |
-| 未知路径 / 白名单外 config key / DELETE 不存在的 watchlist 标的 | 404 |
+| 未知路径 / 白名单外 config key / DELETE 不存在的 watchlist 标的 / 不存在的 backtest id | 404 |
 | 方法不允许（非 GET/PUT/DELETE；watchlist 标的路径仅支持 PUT/DELETE） | 405 |
 
 ## 本地验证
@@ -298,6 +377,9 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' -H 'Content-Type: appl
   -d '{"strategy":"covered-call","params":{"strike_pct_otm":0.03}}'
 curl -s 'http://127.0.0.1:8080/v1/watchlist'
 curl -X DELETE 'http://127.0.0.1:8080/v1/watchlist/HK.00700'
+wbot backtest -dsn "$WBOT_PG_DSN" -symbol DEMO.US -adjust none -strategy buy-hold -save
+curl -s 'http://127.0.0.1:8080/v1/backtests?symbol=DEMO.US'
+curl -s 'http://127.0.0.1:8080/v1/backtests/1'
 ```
 
 关联：[[DATA_PIPELINE]] [[ROADMAP]]（v4 Go API，微信小程序前置依赖）
