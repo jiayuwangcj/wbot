@@ -370,6 +370,256 @@ function initWatchlistPage() {
   loadWatchlist();
 }
 
+/* Results page: /v1/backtests list + detail with a hand-drawn equity curve. */
+
+const CURVE_PAD = {top: 12, right: 64, bottom: 26, left: 48};
+
+function cssVar(name) {
+  const raw = getComputedStyle(document.documentElement).getPropertyValue(name);
+  return raw ? raw.trim() : null;
+}
+
+/* palette from style.css vars, hex fallbacks */
+const CURVE_LINE = cssVar("--accent") || "#0969da";
+const CURVE_GRID = cssVar("--border") || "#d0d7de";
+const CURVE_TEXT = cssVar("--muted") || "#656d76";
+
+function fmtMoney(v) {
+  return Number(v).toLocaleString("en-US", {maximumFractionDigits: 0});
+}
+
+function fmtPct(v) {
+  return (Number(v) * 100).toFixed(2) + "%";
+}
+
+function fmtMetric(v, formatter) {
+  return v === null || v === undefined ? "—" : formatter(v);
+}
+
+function metricOf(item, key) {
+  const m = item.metrics;
+  return m && m[key] !== undefined ? m[key] : null;
+}
+
+function renderResultsList(items, onOpen) {
+  const table = document.getElementById("results-table");
+  const empty = document.getElementById("results-empty");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  if (items.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  for (const item of items) {
+    const tr = document.createElement("tr");
+    const cells = [
+      item.id,
+      item.strategy,
+      item.symbol,
+      fmtMetric(metricOf(item, "equity"), fmtMoney),
+      fmtMetric(metricOf(item, "total_return"), fmtPct),
+      fmtMetric(metricOf(item, "max_drawdown"), fmtPct),
+      fmtMetric(metricOf(item, "bars"), String),
+      item.created_at
+    ];
+    for (const cell of cells) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    }
+    const actions = document.createElement("td");
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "link";
+    open.textContent = "Detail";
+    open.addEventListener("click", () => onOpen(item));
+    actions.appendChild(open);
+    tr.appendChild(actions);
+    tbody.appendChild(tr);
+  }
+  empty.hidden = true;
+  table.hidden = false;
+}
+
+function showMetric(id, v, formatter) {
+  setText(id, fmtMetric(v, formatter));
+}
+
+function renderDetail(d) {
+  setText("detail-id", d.id);
+  showMetric("metric-equity", metricOf(d, "equity"), fmtMoney);
+  showMetric("metric-total-return", metricOf(d, "total_return"), fmtPct);
+  showMetric("metric-max-drawdown", metricOf(d, "max_drawdown"), fmtPct);
+  showMetric("metric-bars", metricOf(d, "bars"), String);
+  document.getElementById("metric-cards").hidden = false;
+  renderTable("trades-table", (d.trades || []).map((t) => [t.ts, t.action, t.symbol, t.size, t.price, t.cash_after]));
+  document.getElementById("detail-params").textContent = d.params ? JSON.stringify(d.params, null, 2) : "{}";
+  curvePoints = d.equity_curve || [];
+  curveIndex = 0;
+  renderCurve(null);
+  const detail = document.getElementById("detail");
+  detail.hidden = false;
+  detail.scrollIntoView();
+}
+
+function openDetail(id) {
+  loadJSON("/v1/backtests/" + id, document.getElementById("detail-error"), renderDetail);
+}
+
+function niceStep(range) {
+  const raw = range / 4;
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) {
+    if (raw <= m * mag) return m * mag;
+  }
+  return 10 * mag;
+}
+
+function fmtAxis(v) {
+  const abs = Math.abs(v);
+  if (abs >= 1000000) return (v / 1000000).toFixed(1) + "M";
+  if (abs >= 1000) return (v / 1000).toFixed(1) + "k";
+  return String(Math.round(v));
+}
+
+function drawEquityCurve(points, hoverIdx) {
+  const canvas = document.getElementById("equity-canvas");
+  const empty = document.getElementById("curve-empty");
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!points || points.length === 0) {
+    canvas.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  canvas.hidden = false;
+  empty.hidden = true;
+  const w = canvas.width - CURVE_PAD.left - CURVE_PAD.right;
+  const h = canvas.height - CURVE_PAD.top - CURVE_PAD.bottom;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const p of points) {
+    min = Math.min(min, p.equity);
+    max = Math.max(max, p.equity);
+  }
+  if (min === max) {
+    min -= 1;
+    max += 1;
+  }
+  const step = niceStep(max - min);
+  const lo = Math.floor(min / step) * step;
+  const hi = Math.ceil(max / step) * step;
+  const x = (i) => CURVE_PAD.left + (points.length === 1 ? 0 : (i / (points.length - 1)) * w);
+  const y = (v) => CURVE_PAD.top + (1 - (v - lo) / (hi - lo)) * h;
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = CURVE_GRID;
+  ctx.fillStyle = CURVE_TEXT;
+  ctx.font = "10px system-ui, sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let v = lo; v <= hi + step / 2; v += step) {
+    ctx.beginPath();
+    ctx.moveTo(CURVE_PAD.left, y(v));
+    ctx.lineTo(canvas.width - CURVE_PAD.right, y(v));
+    ctx.stroke();
+    ctx.fillText(fmtAxis(v), CURVE_PAD.left - 6, y(v));
+  }
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  for (const i of [0, Math.floor((points.length - 1) / 2), points.length - 1]) {
+    ctx.fillText(String(points[i].ts).slice(0, 10), x(i), canvas.height - 8);
+  }
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  ctx.lineCap = "round";
+  ctx.strokeStyle = CURVE_LINE;
+  ctx.beginPath();
+  ctx.moveTo(x(0), y(points[0].equity));
+  for (let i = 1; i < points.length; i++) {
+    ctx.lineTo(x(i), y(points[i].equity));
+  }
+  ctx.stroke();
+  const last = points.length - 1;
+  ctx.beginPath();
+  ctx.arc(x(last), y(points[last].equity), 4, 0, 2 * Math.PI);
+  ctx.fillStyle = CURVE_LINE;
+  ctx.fill();
+  ctx.fillStyle = CURVE_TEXT;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(fmtMoney(points[last].equity), x(last) + 10, y(points[last].equity));
+  if (hoverIdx === null || hoverIdx === undefined) return;
+  const hp = points[hoverIdx];
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = CURVE_GRID;
+  ctx.beginPath();
+  ctx.moveTo(x(hoverIdx), CURVE_PAD.top);
+  ctx.lineTo(x(hoverIdx), CURVE_PAD.top + h);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(x(hoverIdx), y(hp.equity), 4, 0, 2 * Math.PI);
+  ctx.fillStyle = CURVE_LINE;
+  ctx.fill();
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+let curvePoints = [];
+let curveIndex = 0;
+
+function renderCurve(hoverIdx) {
+  drawEquityCurve(curvePoints, hoverIdx);
+  const readout = document.getElementById("curve-readout");
+  if (hoverIdx === null || hoverIdx === undefined) {
+    readout.hidden = true;
+    return;
+  }
+  const p = curvePoints[hoverIdx];
+  readout.textContent = String(p.ts).slice(0, 19) + " · " + fmtMoney(p.equity);
+  readout.hidden = false;
+}
+
+function curveIndexAtX(canvas, clientX) {
+  if (curvePoints.length < 2) return 0;
+  const rect = canvas.getBoundingClientRect();
+  const px = (clientX - rect.left) * (canvas.width / rect.width);
+  const plotW = canvas.width - CURVE_PAD.left - CURVE_PAD.right;
+  const frac = (px - CURVE_PAD.left) / plotW;
+  return Math.max(0, Math.min(curvePoints.length - 1, Math.round(frac * (curvePoints.length - 1))));
+}
+
+function initResultsPage() {
+  const listError = document.getElementById("results-error");
+  if (!listError) return;
+  loadJSON("/v1/backtests?limit=50", listError, (items) => {
+    renderResultsList(items, (item) => openDetail(item.id));
+  });
+  document.getElementById("detail-back").addEventListener("click", () => {
+    document.getElementById("detail").hidden = true;
+    document.getElementById("list").scrollIntoView();
+  });
+  const canvas = document.getElementById("equity-canvas");
+  canvas.addEventListener("mousemove", (event) => {
+    if (curvePoints.length === 0) return;
+    curveIndex = curveIndexAtX(canvas, event.clientX);
+    renderCurve(curveIndex);
+  });
+  canvas.addEventListener("mouseleave", () => renderCurve(null));
+  canvas.addEventListener("keydown", (event) => {
+    if (curvePoints.length === 0) return;
+    if (event.key === "ArrowRight") {
+      curveIndex = Math.min(curvePoints.length - 1, curveIndex + 1);
+      renderCurve(curveIndex);
+    } else if (event.key === "ArrowLeft") {
+      curveIndex = Math.max(0, curveIndex - 1);
+      renderCurve(curveIndex);
+    }
+  });
+}
+
 initDataPage();
 initAdminPage();
 initWatchlistPage();
+initResultsPage();
