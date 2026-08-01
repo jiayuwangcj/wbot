@@ -16,6 +16,12 @@ async function fetchJSON(url, opts) {
       const body = await resp.json();
       if (body && typeof body.error === "string") {
         msg = body.error;
+      } else if (body && typeof body.message === "string") {
+        /* backtests API error convention: {code, message, action} */
+        msg = body.message;
+        if (typeof body.action === "string" && body.action !== "") {
+          msg += " · " + body.action;
+        }
       }
     } catch (err) {
       /* error body was not JSON, keep the status line */
@@ -453,6 +459,8 @@ function renderDetail(d) {
   showMetric("metric-max-drawdown", metricOf(d, "max_drawdown"), fmtPct);
   showMetric("metric-bars", metricOf(d, "bars"), String);
   document.getElementById("metric-cards").hidden = false;
+  document.getElementById("curve-wrap").hidden = false;
+  document.getElementById("detail-extra").hidden = false;
   renderTable("trades-table", (d.trades || []).map((t) => [t.ts, t.action, t.symbol, t.size, t.price, t.cash_after]));
   document.getElementById("detail-params").textContent = d.params ? JSON.stringify(d.params, null, 2) : "{}";
   curvePoints = d.equity_curve || [];
@@ -463,8 +471,21 @@ function renderDetail(d) {
   detail.scrollIntoView();
 }
 
+function showDetailError(err) {
+  showError(document.getElementById("detail-error"), err);
+  document.getElementById("metric-cards").hidden = true;
+  document.getElementById("curve-wrap").hidden = true;
+  document.getElementById("detail-extra").hidden = true;
+  const detail = document.getElementById("detail");
+  detail.hidden = false;
+  detail.scrollIntoView();
+}
+
 function openDetail(id) {
-  loadJSON("/v1/backtests/" + id, document.getElementById("detail-error"), renderDetail);
+  fetchJSON("/v1/backtests/" + id).then((d) => {
+    clearError(document.getElementById("detail-error"));
+    renderDetail(d);
+  }).catch(showDetailError);
 }
 
 function niceStep(range) {

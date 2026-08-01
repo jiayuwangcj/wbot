@@ -39,24 +39,26 @@
       <div class="card"><h3>Max drawdown</h3><p id="metric-max-drawdown" class="metric-value"></p></div>
       <div class="card"><h3>Bars</h3><p id="metric-bars" class="metric-value"></p></div>
     </div>
-    <div class="curve-wrap">
+    <div id="curve-wrap" class="curve-wrap" hidden>
       <h3>Equity curve</h3>
       <canvas id="equity-canvas" width="800" height="300" tabindex="0" role="img" aria-label="Equity curve"></canvas>
       <p id="curve-empty" class="notice" hidden>No equity curve for this run (older data).</p>
       <p id="curve-readout" class="notice" hidden></p>
     </div>
-    <h3>Trades</h3>
-    <p id="trades-empty" class="notice" hidden>No trades recorded.</p>
-    <div class="table-scroll">
-      <table id="trades-table" hidden>
-        <thead>
-          <tr><th>Time</th><th>Action</th><th>Symbol</th><th>Size</th><th>Price</th><th>Cash after</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+    <div id="detail-extra" hidden>
+      <h3>Trades</h3>
+      <p id="trades-empty" class="notice" hidden>No trades recorded.</p>
+      <div class="table-scroll">
+        <table id="trades-table" hidden>
+          <thead>
+            <tr><th>Time</th><th>Action</th><th>Symbol</th><th>Size</th><th>Price</th><th>Cash after</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <h3>Params</h3>
+      <pre id="detail-params"></pre>
     </div>
-    <h3>Params</h3>
-    <pre id="detail-params"></pre>
     <button type="button" id="detail-back" class="link">Back to list</button>
   </section>
 </main>

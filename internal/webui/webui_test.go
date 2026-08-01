@@ -352,6 +352,8 @@ func TestResultsPageElements(t *testing.T) {
 		`id="metric-bars"`,
 		`id="equity-canvas"`,
 		`id="curve-empty"`,
+		`id="curve-wrap"`,
+		`id="detail-extra"`,
 		`id="trades-table"`,
 		`id="trades-empty"`,
 		`id="detail-params"`,
@@ -387,7 +389,21 @@ func TestAppJSQueriesBacktestsAPI(t *testing.T) {
 		`"/v1/backtests/" + id`,
 		"initResultsPage",
 		"drawEquityCurve",
+		"showDetailError",
 	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+func TestAppJSErrorBodyConvention(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{"body.error", "body.message", "body.action"} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
