@@ -6,7 +6,7 @@
 
 ## Goal
 
-**今日版本目标（2026-08-01 老板指令）**：可用的**模拟盘回测** + **模拟盘策略运行**（covered call / cash-secured put 等）+ **可调参**（watchlist/每标的参数）+ **Web 后端可用**（serve API + 管理页）。
+**今日版本目标（2026-08-01 老板指令）**：可用的**模拟盘回测** + **模拟盘策略运行**（covered call / cash-secured put 等）+ **可调参**（watchlist/每标的参数）+ **Web 后端可用**（serve API + 管理页）。—— **✅ 已达成（2026-08-01）：** 数据层（#67：期权/正股/回测结果落库+缓存）、交易命令（#66：funds/position/order，模拟盘优先护栏）、策略实现（#69：covered-call/cash-secured-put+期权腿结算）、watchlist 调参（#68：/v1/watchlist+CLI）、Web 后端全链可用。
 
 老板（用户）目标（2026-07-31 产品组，重大变更）：
 
