@@ -15,6 +15,7 @@ wbot backtest \
 | --- | --- | --- |
 | `-file` / `-dsn` | — | 输入二选一（互斥）：JSON bars 文件（`ingest bars -json` 格式）或 PostgreSQL 直读（回落 `$WBOT_PG_DSN`） |
 | `-symbol` / `-timeframe` | `DEMO.US` / `1d` | `-dsn` 输入的选择条件 |
+| `-symbols` | 空 | 逗号分隔的多 symbol 列表（如 `HK.00700,US.AAPL`；2+ 个才走多 symbol 路径，1 个等价于 `-symbol`） |
 | `-from` / `-to` | 不限 | RFC3339 时间范围（`-dsn` 输入） |
 | `-limit` | 10000 | `-dsn` 输入最大 bars 数 |
 | `-cash` | 10000 | 初始资金（>0） |
@@ -29,6 +30,23 @@ wbot backtest \
 ## 服务端执行（v4 阶段 A 切片 4）
 
 `wbot serve` 的 `POST /v1/backtests`（doc/API.md）与 CLI `-dsn` 路径共用同一运行器（`internal/backtestexec`，draft-2026-08-02-oneclick-backtest）：同一套策略/参数校验（`Build`）、同一查询/运行路径（`Run`）、同一落库 params 形状（`SaveParams`），同输入同输出。单进程互斥（busy → 409）+ 执行超时（默认 5 分钟 → 503）；`from_watchlist` 全量模式逐条串行执行并分别落库。
+
+## 多 symbol 组合（v2 最小语义）
+
+`-symbols A,B,C`（逗号分隔，仅 `-dsn` 输入）把初始资金等分（cash/N）为 N 个独立子账户，各自运行同一策略，输出组合汇总 + 每 symbol 一行子账户汇总：
+
+```bash
+wbot backtest -dsn "$WBOT_PG_DSN" -symbols HK.00700,US.AAPL -timeframe 1d -strategy buy-hold
+# final_equity=... total_return=... max_drawdown=... bars=... symbols=2
+#   HK.00700: final_equity=... total_return=... max_drawdown=... bars=...
+#   US.AAPL: final_equity=... total_return=... max_drawdown=... bars=...
+```
+
+- **时间对齐**：intersection——各 symbol 按 `[from,to]`（`QueryBars`）取数后，只有每个 symbol 都有的 ts 参与回测（按时刻对齐，跨时区等价 ts 亦对齐）；窗口外/缺失的 bar 不参与。
+- **静态等权**：每个子账户初始资金 = cash/N，不自动再平衡（非目标，待产品组确认后续语义）。
+- **估值**：每 bar 按各 symbol 自己的 close 估值（复用单 symbol 运行器 `RunOptions`）；组合 equity = 各子账户逐 bar 求和，组合回撤按求和曲线计算。
+- **状态隔离**：每个子账户一个全新策略实例（有状态策略如 buy-hold 不可跨账户复用）；`-symbols` 单 symbol 与 `-symbol` 行为完全一致，`Run`/`RunOptions` 签名与单 symbol 行为不变（入口：`backtest.RunMulti`，DB 路径：`backtestexec.RunMulti`）。
+- **限制（最小语义）**：多 symbol 不支持 `-file` 输入、期权模板策略（covered-call/cash-secured-put 需 per-symbol option_quotes）、`-save`；`-max-drawdown` 按组合曲线检查。
 
 ## 期权腿与策略模板（slice ⑫-b）
 
@@ -75,7 +93,7 @@ wbot backtest -symbol DEMO.US -timeframe 1d -strategy buy-hold
 
 ## 实现
 
-- `internal/backtest/`：`state.go`（State/Equity/期权腿）、`strategy.go`（Action/Strategy/Hold/BuyHold）、`backtest.go`（Run/RunOptions/到期结算）、`options_data.go`（option_quotes → OptionsData）、`constraint.go`（CheckMaxDrawdown）
+- `internal/backtest/`：`state.go`（State/Equity/期权腿）、`strategy.go`（Action/Strategy/Hold/BuyHold）、`backtest.go`（Run/RunOptions/到期结算）、`multi.go`（RunMulti：intersection 对齐 + 等权子账户 + 组合曲线）、`options_data.go`（option_quotes → OptionsData）、`constraint.go`（CheckMaxDrawdown）
 - `internal/strategy/`：模板注册表（`strategy.go`）+ covered-call / cash-secured-put（`options.go`）
 - 任务轨迹：`doc/tasks/2026-07-31-backtest-runner-slice1.md` → `-dsn-input` → `-fee-placeholder` → `-constraint` → 期权腿 + 策略模板（slice ⑫-b，[[draft-2026-08-01-strategy-options]]）
 

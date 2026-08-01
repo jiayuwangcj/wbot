@@ -366,6 +366,7 @@ func runBacktest(prog string, argv []string) int {
 	file := fs.String("file", "", "path to JSON array of bars (same format as `ingest bars -json`; mutually exclusive with -dsn)")
 	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN; mutually exclusive with -file)")
 	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
+	symbols := fs.String("symbols", "", "comma-separated symbols for a multi-symbol run (e.g. HK.00700,US.AAPL; 2+ symbols require -dsn input)")
 	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
 	adjust := fs.String("adjust", "fwd", "adjustment for -dsn bars: fwd (前复权, default) or none (doc/DATA_STANDARD.md)")
 	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
@@ -387,7 +388,10 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades trace) is stored in backtest_results (migrations 003/004).\n")
-		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-timeframe/-adjust/-from/-to/-limit apply to -dsn input.\n")
+		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-symbols/-timeframe/-adjust/-from/-to/-limit apply to -dsn input.\n")
+		fmt.Fprintf(os.Stderr, "With -symbols A,B,C (2+ symbols, -dsn input only), the initial cash is split equally into one\n")
+		fmt.Fprintf(os.Stderr, "sub-account per symbol, run over the intersection of their bars; the summary is printed per\n")
+		fmt.Fprintf(os.Stderr, "symbol plus the combined portfolio (minimal multi-symbol semantic, doc/BACKTEST.md).\n")
 		fmt.Fprintf(os.Stderr, "Each JSON element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
@@ -431,6 +435,17 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 
+	symList, err := parseSymbolList(strings.TrimSpace(*symbols))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 2
+	}
+	multi := len(symList) > 1
+	if multi && fp != "" {
+		fmt.Fprintf(os.Stderr, "backtest: -symbols: multi-symbol runs require -dsn input\n")
+		return 2
+	}
+
 	stratName := strings.TrimSpace(*strat)
 	paramsMap := map[string]any{}
 	if ps := strings.TrimSpace(*params); ps != "" {
@@ -455,9 +470,21 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -save requires -dsn input\n")
 		return 2
 	}
+	if multi && templ != nil && templ.NeedsOptions {
+		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads option_quotes; not supported for multi-symbol runs (use hold or buy-hold)\n", stratName)
+		return 2
+	}
+	if multi && *save {
+		fmt.Fprintf(os.Stderr, "backtest: -save is not supported for multi-symbol runs\n")
+		return 2
+	}
 
+	btSym := strings.TrimSpace(*symbol)
+	if len(symList) == 1 {
+		btSym = symList[0]
+	}
 	btOpts := backtestexec.Options{
-		Symbol:    strings.TrimSpace(*symbol),
+		Symbol:    btSym,
 		Strategy:  stratName,
 		Params:    paramsMap,
 		Timeframe: strings.TrimSpace(*timeframe),
@@ -492,6 +519,39 @@ func runBacktest(prog string, argv []string) int {
 			return 1
 		}
 		startTs, endTs = bars[0].Ts, bars[len(bars)-1].Ts
+	} else if multi {
+		// Multi-symbol: equal-weight sub-accounts over the intersection of the
+		// symbols' bars (shared runner in internal/backtestexec, doc/BACKTEST.md).
+		database, err = db.Open(d)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: open db: %v\n", err)
+			return 1
+		}
+		defer database.Close()
+
+		if err := db.MigrateUp(database); err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: migrate: %v\n", err)
+			return 1
+		}
+
+		mout, err := backtestexec.RunMulti(context.Background(), database, btOpts, symList)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+		mr := mout.Result
+		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d symbols=%d\n",
+			mr.Equity, mr.TotalReturn, mr.MaxDrawdown, mr.Bars, len(mr.PerSymbol))
+		for _, sub := range mr.PerSymbol {
+			r := sub.Result
+			fmt.Printf("  %s: final_equity=%v total_return=%v max_drawdown=%v bars=%d\n",
+				sub.Symbol, r.Equity, r.TotalReturn, r.MaxDrawdown, r.Bars)
+		}
+		if *maxDrawdown > 0 && mr.MaxDrawdown > *maxDrawdown {
+			fmt.Fprintf(os.Stderr, "backtest: max drawdown %v exceeds limit %v\n", mr.MaxDrawdown, *maxDrawdown)
+			return 1
+		}
+		return 0
 	} else {
 		var err error
 		database, err = db.Open(d)
@@ -1317,6 +1377,30 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/ui/", http.StripPrefix("/ui/", webui.FileServer()))
 	top.Handle("/", httpapi.Handler(store))
 	return top
+}
+
+// parseSymbolList splits a -symbols value on commas into trimmed symbols;
+// empty entries and duplicates are rejected. Empty value yields nil
+// (single-symbol mode).
+func parseSymbolList(s string) ([]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, p := range parts {
+		sym := strings.TrimSpace(p)
+		if sym == "" {
+			return nil, errors.New("-symbols: empty symbol entry")
+		}
+		if seen[sym] {
+			return nil, fmt.Errorf("-symbols: duplicate symbol %s", sym)
+		}
+		seen[sym] = true
+		out = append(out, sym)
+	}
+	return out, nil
 }
 
 // parseRangeTime parses a -from/-to flag value. Empty means unbounded (zero time).
