@@ -138,6 +138,9 @@ func (tc *TradeClient) PlaceOrder(ctx context.Context, acc *trdcommon.TrdAcc, re
 	if req.Qty <= 0 {
 		return "", 0, fmt.Errorf("bad qty %v (want > 0)", req.Qty)
 	}
+	if req.Price < 0 {
+		return "", 0, fmt.Errorf("bad price %v (want >= 0; 0 = market order)", req.Price)
+	}
 	var side trdcommon.TrdSide
 	switch strings.ToLower(req.Side) {
 	case "buy":
@@ -149,16 +152,35 @@ func (tc *TradeClient) PlaceOrder(ctx context.Context, acc *trdcommon.TrdAcc, re
 	}
 	orderType := trdcommon.OrderType_OrderType_Normal
 	price := req.Price
-	if price <= 0 {
+	if price == 0 {
 		orderType = trdcommon.OrderType_OrderType_Market
+	}
+	trdMkt, err := trdMarket(market)
+	if err != nil {
+		return "", 0, err
 	}
 	if err := QuoteLimit.Wait(ctx); err != nil {
 		return "", 0, err
 	}
 	orderIDEx, orderID, err = tc.cli.PlaceOrder(acc, side, orderType, code, req.Qty, price,
-		qotcommon.QotMarket(market), trdcommon.TrdMarket(market), trdcommon.TimeInForce_TimeInForce_DAY)
+		qotcommon.QotMarket(market), trdMkt, trdcommon.TimeInForce_TimeInForce_DAY)
 	if err != nil {
 		return "", 0, fmt.Errorf("order %s qty %v: %w", req.Symbol, req.Qty, err)
 	}
 	return orderIDEx, orderID, nil
+}
+
+// trdMarket maps the QotMarket enum (from ParseSymbol) to the TrdMarket enum;
+// the value domains differ (QotMarket: HK=1 US=11 SH=21 SZ=22; TrdMarket:
+// HK=1 US=2 CN=3), so a direct cast would misroute US/CN orders.
+func trdMarket(market int) (trdcommon.TrdMarket, error) {
+	switch market {
+	case 1:
+		return trdcommon.TrdMarket_TrdMarket_HK, nil
+	case 11:
+		return trdcommon.TrdMarket_TrdMarket_US, nil
+	case 21, 22:
+		return trdcommon.TrdMarket_TrdMarket_CN, nil
+	}
+	return 0, fmt.Errorf("unsupported market %d for trading", market)
 }

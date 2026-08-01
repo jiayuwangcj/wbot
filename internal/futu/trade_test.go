@@ -193,6 +193,41 @@ func pos(code, name string, qty, val float64) *trdcommon.Position {
 	}
 }
 
+func TestPlaceOrderMarketMapping(t *testing.T) {
+	// QotMarket and TrdMarket enums differ (US=11 vs 2, SH/SZ=21/22 vs CN=3);
+	// the request header must carry the TrdMarket value per symbol market.
+	got := map[string]int32{}
+	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
+		if protoID == protoOrder {
+			req := &trdplaceorder.Request{}
+			proto.Unmarshal(body, req)
+			got[req.GetC2S().GetCode()] = req.GetC2S().GetHeader().GetTrdMarket()
+			return fakegw.PlaceOrderBody(0, 1907141, "EX123", 777)
+		}
+		return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1, 2, 3)})
+	}))
+	tc := openTrade(t, addr)
+	acc, err := tc.Account(context.Background(), EnvSim, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for symbol, wantMkt := range map[string]int32{
+		"HK.00700":  1, // TrdMarket_HK
+		"US.AAPL":   2, // TrdMarket_US
+		"SH.600000": 3, // TrdMarket_CN
+		"SZ.000001": 3, // TrdMarket_CN
+	} {
+		if _, _, err := tc.PlaceOrder(context.Background(), acc, OrderRequest{
+			Symbol: symbol, Side: "buy", Qty: 100, Price: 470,
+		}); err != nil {
+			t.Fatalf("PlaceOrder %s: %v", symbol, err)
+		}
+		if gotMkt := got[strings.SplitN(symbol, ".", 2)[1]]; gotMkt != wantMkt {
+			t.Fatalf("%s: trd_market = %d; want %d", symbol, gotMkt, wantMkt)
+		}
+	}
+}
+
 func TestPlaceOrderLimitAndMarket(t *testing.T) {
 	var gotReqs []*trdplaceorder.Request
 	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
@@ -251,6 +286,7 @@ func TestPlaceOrderValidation(t *testing.T) {
 		"bad symbol": {Symbol: "00700", Side: "buy", Qty: 100},
 		"bad side":   {Symbol: "HK.00700", Side: "hold", Qty: 100},
 		"bad qty":    {Symbol: "HK.00700", Side: "buy", Qty: 0},
+		"bad price":  {Symbol: "HK.00700", Side: "buy", Qty: 100, Price: -5},
 	} {
 		if _, _, err := tc.PlaceOrder(context.Background(), acc, req); err == nil {
 			t.Fatalf("%s: want validation error", name)
