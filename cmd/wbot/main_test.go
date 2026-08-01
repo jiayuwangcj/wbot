@@ -61,6 +61,9 @@ func TestRun(t *testing.T) {
 		{"ingest url help", []string{"wbot", "ingest", "url", "-h"}, 0},
 		{"ingest url bad to", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json", "-to", "x"}, 2},
 		{"ingest url no url", []string{"wbot", "ingest", "url"}, 2},
+		{"ingest mock unknown provider", []string{"wbot", "ingest", "mock", "-provider", "nope"}, 2},
+		{"ingest file unknown provider", []string{"wbot", "ingest", "file", "-file", "/dev/null", "-provider", "nope"}, 2},
+		{"ingest url unknown provider", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json", "-provider", "nope"}, 2},
 		{"ingest status help", []string{"wbot", "ingest", "status", "-h"}, 0},
 		{"ingest bars help", []string{"wbot", "ingest", "bars", "-h"}, 0},
 		{"ingest bars bad from", []string{"wbot", "ingest", "bars", "-from", "not-a-time"}, 2},
@@ -120,6 +123,7 @@ func TestRunRequiresDSN(t *testing.T) {
 		want int
 	}{
 		{"ingest mock no dsn", []string{"wbot", "ingest", "mock"}, 2},
+		{"ingest file valid provider no dsn", []string{"wbot", "ingest", "file", "-file", "/dev/null", "-provider", "file"}, 2},
 		{"ingest mock no dsn with every", []string{"wbot", "ingest", "mock", "-every", "1ms"}, 2},
 		{"ingest file no dsn", []string{"wbot", "ingest", "file", "-file", "/dev/null"}, 2},
 		{"ingest url no dsn", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json"}, 2},
