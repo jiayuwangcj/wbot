@@ -142,6 +142,66 @@ func TestResponsiveBreakpoints(t *testing.T) {
 	}
 }
 
+// TestTablesInScrollContainers: every data table must sit inside a .table-scroll
+// wrapper so narrow screens scroll in-container instead of overflowing the page.
+func TestTablesInScrollContainers(t *testing.T) {
+	tableRe := regexp.MustCompile(`id="([a-z0-9-]+-table)"`)
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {
+		data, err := fs.ReadFile(webFiles, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		html := string(data)
+		for _, m := range tableRe.FindAllStringSubmatch(html, -1) {
+			pos := strings.Index(html, `id="`+m[1]+`"`)
+			if wrap := strings.LastIndex(html[:pos], `class="table-scroll"`); wrap == -1 {
+				t.Fatalf("%s: table %q is not inside a .table-scroll container", path, m[1])
+			}
+		}
+	}
+}
+
+// TestMobileBreakpointStyles: the 767px media query must cover the mobile
+// layout rules (stacked forms, 44px tap targets, scrollable tables).
+func TestMobileBreakpointStyles(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	css := string(data)
+	start := strings.Index(css, "@media (max-width: 767px)")
+	if start == -1 {
+		t.Fatal("style.css missing mobile breakpoint")
+	}
+	// Find the media query block by matching braces.
+	depth, end := 0, len(css)
+	for i := start; i < len(css); i++ {
+		switch css[i] {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				end = i + 1
+				i = len(css)
+			}
+		}
+	}
+	mobile := css[start:end]
+	for _, want := range []string{
+		"flex-direction: column", // forms and fieldsets stack vertically
+		"form > button",          // submit buttons full width
+		"width: 100%",
+		"min-height: 44px", // touch targets >= 44px
+		"min-width: 600px", // tables scroll inside .table-scroll
+		"display: block",   // nav links stack instead of overflowing
+	} {
+		if !strings.Contains(mobile, want) {
+			t.Fatalf("mobile media query missing %q", want)
+		}
+	}
+}
+
 func TestDataPageFormAndTables(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/index.html")
 	if err != nil {
