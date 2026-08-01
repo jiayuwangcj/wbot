@@ -84,6 +84,34 @@ button {
   cursor: pointer;
 }
 
+fieldset {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin: 0;
+  padding: 0.75rem;
+  min-width: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+legend {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+button.link {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 0;
+  margin-right: 0.75rem;
+}
+
+button.link.danger {
+  color: #cf222e;
+}
+
 .table-scroll {
   overflow-x: auto;
 }
