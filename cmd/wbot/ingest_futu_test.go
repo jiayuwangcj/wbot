@@ -40,7 +40,6 @@ func TestIngestFutuDispatch(t *testing.T) {
 		{"bad symbol", []string{"wbot", "ingest", "futu", "-symbol", "00700", "-timeframe", "K_DAY"}, 2},
 		{"bad timeframe", []string{"wbot", "ingest", "futu", "-symbol", "HK.00700", "-timeframe", "K_3M"}, 2},
 		{"bad from", []string{"wbot", "ingest", "futu", "-symbol", "HK.00700", "-timeframe", "K_DAY", "-from", "nope"}, 2},
-		{"no dsn", []string{"wbot", "ingest", "futu", "-symbol", "HK.00700", "-timeframe", "K_DAY"}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

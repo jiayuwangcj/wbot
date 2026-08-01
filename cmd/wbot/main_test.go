@@ -95,6 +95,7 @@ func TestRunRequiresDSN(t *testing.T) {
 		{"ingest mock no dsn with every", []string{"wbot", "ingest", "mock", "-every", "1ms"}, 2},
 		{"ingest file no dsn", []string{"wbot", "ingest", "file", "-file", "/dev/null"}, 2},
 		{"ingest url no dsn", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json"}, 2},
+		{"ingest futu no dsn", []string{"wbot", "ingest", "futu", "-symbol", "HK.00700", "-timeframe", "K_DAY"}, 2},
 		{"ingest status no dsn", []string{"wbot", "ingest", "status"}, 2},
 		{"ingest bars no dsn", []string{"wbot", "ingest", "bars"}, 2},
 		{"ingest bars json no dsn", []string{"wbot", "ingest", "bars", "-json"}, 2},

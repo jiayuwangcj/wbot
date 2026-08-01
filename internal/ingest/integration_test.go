@@ -147,7 +147,7 @@ func TestRunFutuIngestionIntegration(t *testing.T) {
 
 	ctx := context.Background()
 	source := "futu-ingest-test"
-	symbol := domain.Symbol("FUTU.US")
+	symbol := domain.Symbol("US.FUTU")
 	tf := "1d"
 	src := FutuSource{Client: futu.NewClient(srv.URL)}
 	if err := RunIngestion(ctx, database, source, symbol, tf, time.Time{}, time.Time{}, src); err != nil {
