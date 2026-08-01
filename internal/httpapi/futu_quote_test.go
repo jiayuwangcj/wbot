@@ -26,9 +26,9 @@ func fastFutuLimits(t *testing.T) {
 
 // fakeFutuQuoter is a scriptable FutuQuoter for endpoint-level tests.
 type fakeFutuQuoter struct {
-	err  error
-	s2c  json.RawMessage
-	got  string
+	err error
+	s2c json.RawMessage
+	got string
 }
 
 func (f *fakeFutuQuoter) Quote(_ context.Context, symbol string) (json.RawMessage, error) {
