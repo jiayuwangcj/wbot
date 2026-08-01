@@ -235,7 +235,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}, POST /v1/backtests), the live Futu quote proxy (GET /v1/futu/quote, gateway via $FUTU_GATEWAY_URL) and the embedded Web UI (GET / redirects to /ui/).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the live Futu quote proxy (GET /v1/futu/quote, gateway via $FUTU_GATEWAY_URL) and the embedded Web UI (GET / redirects to /ui/).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -378,6 +378,8 @@ func runBacktest(prog string, argv []string) int {
 	params := fs.String("params", "", `strategy params as JSON, e.g. {"strike_pct_otm":0.05}; validated against the template schema (option strategies only)`)
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
+	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
+	format := fs.String("format", "csv", "export format with -export: csv or json (same output as GET /v1/backtests/{id}/export)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
@@ -388,6 +390,8 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades trace) is stored in backtest_results (migrations 003/004).\n")
+		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
+		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
 		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-symbols/-timeframe/-adjust/-from/-to/-limit apply to -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "With -symbols A,B,C (2+ symbols, -dsn input only), the initial cash is split equally into one\n")
 		fmt.Fprintf(os.Stderr, "sub-account per symbol, run over the intersection of their bars; the summary is printed per\n")
@@ -433,6 +437,18 @@ func runBacktest(prog string, argv []string) int {
 	if fp != "" && d != "" {
 		fmt.Fprintf(os.Stderr, "backtest: -file and -dsn are mutually exclusive\n")
 		return 2
+	}
+
+	if *exportID != 0 {
+		if fp != "" {
+			fmt.Fprintf(os.Stderr, "backtest: -export reads from the database; -file is mutually exclusive\n")
+			return 2
+		}
+		if *exportID < 0 {
+			fmt.Fprintf(os.Stderr, "backtest: -export must be a positive result id\n")
+			return 2
+		}
+		return runBacktestExport(d, *exportID, strings.TrimSpace(*format))
 	}
 
 	symList, err := parseSymbolList(strings.TrimSpace(*symbols))
@@ -592,6 +608,45 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
+	}
+	return 0
+}
+
+// runBacktestExport writes one saved result to stdout in csv or json, using
+// the same serializer as GET /v1/backtests/{id}/export (roundtrip: identical
+// output on CLI and API; exit 1 when the id has no row).
+func runBacktestExport(dsn string, id int64, format string) int {
+	if format != "csv" && format != "json" {
+		fmt.Fprintf(os.Stderr, "backtest: -format %q (want csv or json)\n", format)
+		return 2
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: migrate: %v\n", err)
+		return 1
+	}
+	rec, err := backtest.LoadResult(context.Background(), database, id)
+	if errors.Is(err, backtest.ErrResultNotFound) {
+		fmt.Fprintf(os.Stderr, "backtest: result %d not found; run `wbot backtest -save` to persist a run first\n", id)
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: load result %d: %v\n", id, err)
+		return 1
+	}
+	payload, _, err := backtest.Export(*rec, format)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 1
+	}
+	if _, err := os.Stdout.Write(payload); err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: write: %v\n", err)
+		return 1
 	}
 	return 0
 }
@@ -1382,9 +1437,10 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/v1/strategies", wl)
 	top.Handle("/v1/watchlist", wl)
 	top.Handle("/v1/watchlist/", wl)
-	// Backtest results: saved runs list + detail with equity/trades (one handler mux);
-	// the method-specific pattern wins for POST, so the execute endpoint runs
-	// one backtest synchronously (manual body or from_watchlist batch).
+	// Backtest results: saved runs list + detail with equity/trades + csv/json
+	// export (one handler mux); the method-specific pattern wins for POST, so
+	// the execute endpoint runs one backtest synchronously (manual body or
+	// from_watchlist batch).
 	bt := httpapi.BacktestsHandler(bstore)
 	top.Handle("/v1/backtests", bt)
 	top.Handle("/v1/backtests/", bt)

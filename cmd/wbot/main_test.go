@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +86,9 @@ func TestRun(t *testing.T) {
 		{"backtest multi empty entry", []string{"wbot", "backtest", "-dsn", "postgres://x", "-symbols", "A.US,,B.US"}, 2},
 		{"backtest multi option strategy", []string{"wbot", "backtest", "-dsn", "postgres://x", "-symbols", "A.US,B.US", "-strategy", "covered-call"}, 2},
 		{"backtest multi save unsupported", []string{"wbot", "backtest", "-dsn", "postgres://x", "-symbols", "A.US,B.US", "-save"}, 2},
+		{"backtest export with file", []string{"wbot", "backtest", "-file", "/dev/null", "-export", "3"}, 2},
+		{"backtest export bad id", []string{"wbot", "backtest", "-export", "-1", "-dsn", "postgres://x"}, 2},
+		{"backtest export bad format", []string{"wbot", "backtest", "-export", "3", "-dsn", "postgres://x", "-format", "xml"}, 2},
 		{"watchlist no sub", []string{"wbot", "watchlist"}, 2},
 		{"watchlist help", []string{"wbot", "watchlist", "-h"}, 0},
 		{"watchlist bad sub", []string{"wbot", "watchlist", "nope"}, 2},
@@ -134,6 +138,7 @@ func TestRunRequiresDSN(t *testing.T) {
 		{"ingest bars json no dsn", []string{"wbot", "ingest", "bars", "-json"}, 2},
 		{"serve no dsn", []string{"wbot", "serve"}, 2},
 		{"backtest no file", []string{"wbot", "backtest"}, 2},
+		{"backtest export no dsn", []string{"wbot", "backtest", "-export", "3"}, 2},
 		{"watchlist add no dsn", []string{"wbot", "watchlist", "add", "-symbol", "HK.00700", "-strategy", "covered-call"}, 2},
 		{"watchlist remove no dsn", []string{"wbot", "watchlist", "remove", "-symbol", "HK.00700"}, 2},
 		{"watchlist list no dsn", []string{"wbot", "watchlist", "list"}, 2},
@@ -213,6 +218,88 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $7, 10, NULL, 'none', 'futu')`,
 	// Determinism: a second run prints the identical summary line.
 	if out2 := captureRunOutput(t, argv); out2 != out {
 		t.Fatalf("runs differ: %q vs %q", out2, out)
+	}
+}
+
+// TestBacktestExportIntegration: CLI -save → -export roundtrips against the
+// result API (skipped without WBOT_PG_DSN): exported json == GET detail body
+// and exported csv == GET export body, CLI and API from one serializer.
+func TestBacktestExportIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	const symbol = "EXPORTCLI.US"
+	if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM backtest_results WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	day := func(i int) time.Time { return time.Date(2024, 3, 1+i, 0, 0, 0, 0, time.UTC) }
+	for i, c := range []float64{100, 103, 99} {
+		if _, err := database.Exec(`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// buy-hold: one buy at bar 1 close, 3 curve points (equity = 100 * close).
+	out := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", dsn, "-symbol", symbol, "-timeframe", "1d",
+		"-adjust", "none", "-strategy", "buy-hold", "-save"})
+	var id int64
+	if _, err := fmt.Sscanf(out, "final_equity=%g total_return=%g max_drawdown=%g bars=%d\nsaved result id=%d",
+		new(float64), new(float64), new(float64), new(int), &id); err != nil || id == 0 {
+		t.Fatalf("output %q; want saved result id=N (err %v)", out, err)
+	}
+	idStr := strconv.FormatInt(id, 10)
+
+	// API side: export json is byte-identical to the detail endpoint.
+	h := httpapi.BacktestsHandler(httpapi.NewDBBacktestStore(database))
+	apiDetail := serveGet(t, h, "/v1/backtests/"+idStr)
+	apiJSON := serveGet(t, h, "/v1/backtests/"+idStr+"/export?format=json")
+	if apiJSON.Code != http.StatusOK || apiDetail.Code != http.StatusOK || apiJSON.Body.String() != apiDetail.Body.String() {
+		t.Fatalf("export json (%d) != detail (%d): %q vs %q", apiJSON.Code, apiDetail.Code, apiJSON.Body, apiDetail.Body)
+	}
+	apiCSV := serveGet(t, h, "/v1/backtests/"+idStr+"/export")
+	if apiCSV.Code != http.StatusOK || apiCSV.Header().Get("Content-Type") != "text/csv; charset=utf-8" {
+		t.Fatalf("export csv = %d (%s); want 200 text/csv", apiCSV.Code, apiCSV.Body)
+	}
+
+	// CLI side: same bodies as the API (roundtrip contract).
+	cliJSON := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", dsn, "-export", idStr, "-format", "json"})
+	if cliJSON != apiDetail.Body.String() {
+		t.Fatalf("CLI json != API detail: %q vs %q", cliJSON, apiDetail.Body)
+	}
+	var detail backtest.DetailJSON
+	if err := json.Unmarshal([]byte(cliJSON), &detail); err != nil {
+		t.Fatalf("unmarshal CLI json: %v", err)
+	}
+	if detail.ID != id || detail.Symbol != symbol || len(detail.EquityCurve) != 3 || len(detail.Trades) != 1 {
+		t.Fatalf("detail = %+v; want id %d symbol %s with 3 curve points and 1 trade", detail, id, symbol)
+	}
+	cliCSV := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", dsn, "-export", idStr})
+	if cliCSV != apiCSV.Body.String() {
+		t.Fatalf("CLI csv != API csv: %q vs %q", cliCSV, apiCSV.Body)
+	}
+	sections := strings.Split(cliCSV, "\n\n")
+	if len(sections) != 2 || strings.Count(sections[0], "\n") != 4 || strings.Count(sections[1], "\n") != 2 {
+		t.Fatalf("csv sections = %q; want equity 3 rows + trades 1 row", cliCSV)
+	}
+
+	// Missing id through the CLI: exit 1 with a readable error.
+	if code := run([]string{"wbot", "backtest", "-dsn", dsn, "-export", "99999999"}); code != 1 {
+		t.Fatalf("export missing id = %d; want 1", code)
 	}
 }
 
@@ -471,7 +558,7 @@ func TestServeHelpMentionsWatchlist(t *testing.T) {
 
 func TestServeHelpMentionsBacktests(t *testing.T) {
 	out := serveHelpOutput(t)
-	for _, want := range []string{"/v1/backtests", "/v1/backtests/{id}", "POST /v1/backtests"} {
+	for _, want := range []string{"/v1/backtests", "/v1/backtests/{id}", "/v1/backtests/{id}/export", "POST /v1/backtests"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("serve help missing %s: %q", want, out)
 		}

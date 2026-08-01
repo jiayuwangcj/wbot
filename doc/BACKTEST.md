@@ -24,8 +24,19 @@ wbot backtest \
 | `-fee` | 0 | 每笔正股交易固定费用（买入从现金扣、卖出从所得扣） |
 | `-max-drawdown` | 0 | 约束检查（0..1）：结果最大回撤超限 → exit 1；0 = 不检查 |
 | `-save` | false | 落库 `backtest_results`（要求 `-dsn` 输入）：metrics + equity_curve/trades 明细（migration 003/004），经 `GET /v1/backtests` 读取（doc/API.md） |
+| `-export` | 0 | 导出模式：把已保存运行（`-export <id>`）写到 stdout，不再运行（要求 `-dsn` 输入；与 `-file` 互斥） |
+| `-format` | `csv` | 与 `-export` 配合：`csv` 或 `json`；非法值 exit 2 |
 
 输出一行摘要：`final_equity=... total_return=... max_drawdown=... bars=...`（确定性：同输入同输出）。`-save` 时另打印 `saved result id=...`；落库的 equity_curve 为每根 bar 结算后市值、trades 为正股买卖/期权开平仓/行权（ITM 行权、OTM 作废）逐笔明细（同输入同输出，见 `internal/backtest` 确定性单测）。
+
+## 结果导出（draft 2026-08-02）
+
+```bash
+wbot backtest -dsn "$WBOT_PG_DSN" -export 7              # csv 到 stdout
+wbot backtest -dsn "$WBOT_PG_DSN" -export 7 -format json # json 到 stdout
+```
+
+与 `GET /v1/backtests/{id}/export` **同序列化器、同输出**（roundtrip 契约，doc/API.md）：`json` 即详情端点 body、`csv` 为 equity_curve/trades 两段（空行分隔）。缺 id（`-export 0`/负数）或格式非法 → exit 2；id 不存在 → exit 1 + 可读错误。
 
 ## 服务端执行（v4 阶段 A 切片 4）
 
