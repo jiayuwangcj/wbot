@@ -235,7 +235,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist) and the embedded Web UI (GET / redirects to /ui/).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}) and the embedded Web UI (GET / redirects to /ui/).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -282,7 +282,7 @@ func runServe(prog string, argv []string) int {
 	// meta must carry the bound address: with -listen 127.0.0.1:0 the port exists only after Listen.
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
 	store := httpapi.NewDBStore(database)
-	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database))
+	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database))
 	srv := &http.Server{Handler: top}
 
 	go func() {
@@ -386,7 +386,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "chain metadata from option_quotes, so they require -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
-		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics) is stored in backtest_results (migration 003).\n")
+		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades trace) is stored in backtest_results (migrations 003/004).\n")
 		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-timeframe/-adjust/-from/-to/-limit apply to -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "Each JSON element: {\"ts\":\"RFC3339\",\"open\":...,\"high\":...,\"low\":...,\"close\":...,\"volume\":...}\n\n")
 		fs.SetOutput(os.Stderr)
@@ -1297,8 +1297,9 @@ func runIngestBars(prog string, argv []string) int {
 	return 0
 }
 
-// serveMux assembles serve's top-level routes: admin API, watchlist API, data API, embedded Web UI.
-func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore) *http.ServeMux {
+// serveMux assembles serve's top-level routes: admin API, watchlist API,
+// backtest results API, data API, embedded Web UI.
+func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore, bstore httpapi.BacktestStore) *http.ServeMux {
 	top := http.NewServeMux()
 	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, pinger))
 	// Exact pattern wins over the /v1/admin/ subtree, so cluster/config keep their own handler muxes.
@@ -1315,6 +1316,10 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/v1/strategies", wl)
 	top.Handle("/v1/watchlist", wl)
 	top.Handle("/v1/watchlist/", wl)
+	// Backtest results: saved runs list + detail with equity/trades (one handler mux).
+	bt := httpapi.BacktestsHandler(bstore)
+	top.Handle("/v1/backtests", bt)
+	top.Handle("/v1/backtests/", bt)
 	// Longest pattern wins: GET /{$} beats the / catch-all; other methods still reach the API's JSON 404.
 	top.Handle("GET /{$}", http.RedirectHandler("/ui/", http.StatusMovedPermanently))
 	top.Handle("/ui/", http.StripPrefix("/ui/", webui.FileServer()))

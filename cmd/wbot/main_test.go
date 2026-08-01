@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/httpapi"
 	"github.com/jiayu/wbot/internal/httpregister"
@@ -358,6 +359,46 @@ func TestServeHelpMentionsWatchlist(t *testing.T) {
 	}
 }
 
+func TestServeHelpMentionsBacktests(t *testing.T) {
+	out := serveHelpOutput(t)
+	for _, want := range []string{"/v1/backtests", "/v1/backtests/{id}"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("serve help missing %s: %q", want, out)
+		}
+	}
+}
+
+func TestServeMuxBacktestRoutes(t *testing.T) {
+	top := serveMuxForTest()
+	rec := serveGet(t, top, "/v1/backtests")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1/backtests = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	// Unknown id through the real mux: 404 with the new error body shape.
+	rec = serveGet(t, top, "/v1/backtests/999")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("/v1/backtests/999 = %d; want 404 (body %s)", rec.Code, rec.Body)
+	}
+	var errBody struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Action  string `json:"action"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || errBody.Code == "" {
+		t.Fatalf("/v1/backtests/999 body %q; want {code,message,action} error", rec.Body)
+	}
+	// Non-numeric id: 400; non-GET: 405.
+	rec = serveGet(t, top, "/v1/backtests/abc")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("/v1/backtests/abc = %d; want 400 (body %s)", rec.Code, rec.Body)
+	}
+	rec = httptest.NewRecorder()
+	top.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/backtests", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("DELETE /v1/backtests = %d; want 405 (body %s)", rec.Code, rec.Body)
+	}
+}
+
 func TestServeMuxWatchlistRoutes(t *testing.T) {
 	top := serveMuxForTest()
 	rec := serveGet(t, top, "/v1/strategies")
@@ -526,9 +567,19 @@ func (serveFakeWatchlistStore) Upsert(context.Context, string, string, map[strin
 }
 func (serveFakeWatchlistStore) Delete(context.Context, string) (bool, error) { return false, nil }
 
+// serveFakeBacktestStore is a no-data httpapi.BacktestStore for serve-mux tests.
+type serveFakeBacktestStore struct{}
+
+func (serveFakeBacktestStore) List(context.Context, string, string, int) ([]backtest.ResultRecord, error) {
+	return nil, nil
+}
+func (serveFakeBacktestStore) Get(context.Context, int64) (*backtest.ResultRecord, error) {
+	return nil, backtest.ErrResultNotFound
+}
+
 func serveMuxForTest() http.Handler {
 	meta := httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:8080"}
-	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{})
+	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{})
 }
 
 func serveGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -607,6 +658,7 @@ func TestServeMuxAPIRegression(t *testing.T) {
 		{"/v1/bars", http.StatusBadRequest}, // missing symbol/timeframe
 		{"/v1/runs", http.StatusOK},
 		{"/v1/health", http.StatusOK},
+		{"/v1/backtests", http.StatusOK},
 		{"/v1/nope", http.StatusNotFound},
 	}
 	for _, tt := range tests {
@@ -625,5 +677,103 @@ func TestServeMuxAPIRegression(t *testing.T) {
 func TestServeHelpMentionsWebUI(t *testing.T) {
 	if out := serveHelpOutput(t); !strings.Contains(out, "/ui/") {
 		t.Fatalf("serve help missing /ui/: %q", out)
+	}
+}
+
+// TestBacktestSaveReadAPIIntegration: `wbot backtest -save` persists the run
+// (metrics + equity_curve/trades), and the read API returns the same numbers
+// the CLI printed (skipped without WBOT_PG_DSN).
+func TestBacktestSaveReadAPIIntegration(t *testing.T) {
+	if os.Getenv("WBOT_PG_DSN") == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(os.Getenv("WBOT_PG_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	const symbol = "BTAPI.US"
+	if _, err := database.Exec(`DELETE FROM backtest_results WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	day := func(i int) time.Time { return time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC) }
+	for i, c := range []float64{100, 110, 121} {
+		if _, err := database.Exec(`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", os.Getenv("WBOT_PG_DSN"),
+		"-symbol", symbol, "-timeframe", "1d", "-adjust", "none", "-strategy", "buy-hold", "-save"})
+	if !strings.Contains(out, "final_equity=12100") || !strings.Contains(out, "saved result id=") {
+		t.Fatalf("backtest output %q; want final_equity=12100 and saved id", out)
+	}
+
+	// Serve wiring with real DB stores (same as runServe).
+	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
+		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database))
+
+	rec := serveGet(t, top, "/v1/backtests?symbol="+symbol)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var list []struct {
+		ID      int64          `json:"id"`
+		Metrics map[string]any `json:"metrics"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 || list[0].Metrics["equity"] != 12100.0 {
+		t.Fatalf("list = %+v; want one run with equity 12100", list)
+	}
+
+	rec = serveGet(t, top, fmt.Sprintf("/v1/backtests/%d", list[0].ID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var detail struct {
+		EquityCurve []struct {
+			Ts     string  `json:"ts"`
+			Equity float64 `json:"equity"`
+		} `json:"equity_curve"`
+		Trades []struct {
+			Ts        string  `json:"ts"`
+			Action    string  `json:"action"`
+			Symbol    string  `json:"symbol"`
+			Size      float64 `json:"size"`
+			Price     float64 `json:"price"`
+			CashAfter float64 `json:"cash_after"`
+		} `json:"trades"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatal(err)
+	}
+	// Equity curve: 10000 → 11000 → 12100 (all-in at 100, marked to close).
+	wantCurve := []float64{10000, 11000, 12100}
+	if len(detail.EquityCurve) != len(wantCurve) {
+		t.Fatalf("equity_curve = %+v; want %v", detail.EquityCurve, wantCurve)
+	}
+	for i, eq := range wantCurve {
+		if detail.EquityCurve[i].Equity != eq {
+			t.Fatalf("equity_curve[%d] = %v; want %v", i, detail.EquityCurve[i].Equity, eq)
+		}
+	}
+	if len(detail.Trades) != 1 {
+		t.Fatalf("trades = %+v; want exactly the opening buy", detail.Trades)
+	}
+	tr := detail.Trades[0]
+	if tr.Action != "buy" || tr.Symbol != symbol || tr.Size != 100 || tr.Price != 100 || tr.CashAfter != 0 {
+		t.Fatalf("trade = %+v; want buy %s 100 @100 cash_after 0", tr, symbol)
 	}
 }
