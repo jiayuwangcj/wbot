@@ -157,7 +157,7 @@ func (h *backtestExecuteHandler) execOne(w http.ResponseWriter, r *http.Request,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(toBacktestDetail(*rec))
+	_ = json.NewEncoder(w).Encode(backtest.Detail(*rec))
 }
 
 // execWatchlist runs every watchlist row serially (symbol order) and saves each;
@@ -186,14 +186,14 @@ func (h *backtestExecuteHandler) execWatchlist(w http.ResponseWriter, r *http.Re
 
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
-	runs := make([]backtestDetailJSON, 0, len(items))
+	runs := make([]backtest.DetailJSON, 0, len(items))
 	for _, it := range items {
 		rec, err := h.exec.RunOne(ctx, it.Symbol, it.Strategy, it.Params)
 		if err != nil {
 			h.writeExecError(w, ctx, err, it.Symbol)
 			return
 		}
-		runs = append(runs, toBacktestDetail(*rec))
+		runs = append(runs, backtest.Detail(*rec))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)

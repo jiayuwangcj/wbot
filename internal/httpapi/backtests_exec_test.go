@@ -67,7 +67,7 @@ func TestBacktestExecuteManual(t *testing.T) {
 	if ct := got.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content-type = %q; want application/json", ct)
 	}
-	var detail backtestDetailJSON
+	var detail backtest.DetailJSON
 	if err := json.Unmarshal(got.Body.Bytes(), &detail); err != nil {
 		t.Fatalf("unmarshal: %v (body %s)", err, got.Body)
 	}
@@ -242,7 +242,7 @@ func TestBacktestExecuteFromWatchlist(t *testing.T) {
 		t.Fatalf("status = %d; want 201 (body %s)", got.Code, got.Body)
 	}
 	var body struct {
-		Runs []backtestDetailJSON `json:"runs"`
+		Runs []backtest.DetailJSON `json:"runs"`
 	}
 	if err := json.Unmarshal(got.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v (body %s)", err, got.Body)
