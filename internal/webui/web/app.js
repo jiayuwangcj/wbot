@@ -114,7 +114,6 @@ async function loadQuote(symbol) {
   }
 }
 
-
 function toRFC3339(dateValue) {
   return dateValue === "" ? "" : dateValue + "T00:00:00Z";
 }
