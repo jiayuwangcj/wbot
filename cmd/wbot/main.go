@@ -58,6 +58,8 @@ func run(argv []string) int {
 		return runPaper(argv[0], argv[2:])
 	case "ingest":
 		return runIngest(argv[0], argv[2:])
+	case "futu":
+		return runFutu(argv[0], argv[2:])
 	case "backtest":
 		return runBacktest(argv[0], argv[2:])
 	case "configyaml":
@@ -1038,5 +1040,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               Read-only HTTP data API (try -h)\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  futu                futu-opend-rs gateway REST client: status/quote (try futu -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               Read-only HTTP data API (try -h)\n")
 }

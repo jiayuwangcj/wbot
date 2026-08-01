@@ -1,6 +1,6 @@
-# Futu OpenD 容器部署（⑪-a）
+# Futu 网关部署与 `wbot futu` 客户端（⑪-a/b）
 
-富途接入的**连接层**：OpenD（Futu 行情网关）以容器方式跑在本地，⑪-b 的 `wbot futu` 经 11111 端口 protobuf API 连接。对应 `doc/tasks/2026-07-31-futu-integration.md` ⑪-a（⑪-b/c 待账号与 go.mod 决策），行情落库见 [[DATA_PIPELINE]]。
+富途接入的**连接层**：网关以容器方式跑在本地，⑪-b 的 `wbot futu` 子命令经 **22222 端口 REST API**（futu-opend-rs，标准库 net/http，零新依赖）连接；11111 端口 protobuf API 保留给 proto 客户端。对应 `doc/tasks/2026-07-31-futu-integration.md` ⑪-a/⑪-b，行情落库见 [[DATA_PIPELINE]]。
 
 ## 前置条件
 
@@ -54,9 +54,9 @@ docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml logs -
 
 | 端口 | 用途 |
 | --- | --- |
-| `11111` | OpenD protobuf API（`wbot futu` 客户端连接口） |
+| `11111` | OpenD protobuf API（proto 客户端连接口） |
 | `8000` | 首登短信验证码 WebSocket（见下节） |
-| `22222` | telnet 控制台（compose 中默认注释，调试可放开） |
+| `22222` | telnet 控制台（compose 中默认注释，调试可放开）；**futu-opend-rs 网关的 22222 为 REST API**（见下节） |
 
 登录会话与数据持久化在宿主 `~/.com.futunn.FutuOpenD`，重建容器不丢。
 
@@ -119,6 +119,63 @@ nc -zv 127.0.0.1 11111    # API 端口可达即网关就绪
 ```
 
 安全提醒：本文件与 compose 只含变量名与 `${VAR:?}` 占位，零凭证值；真实值仅存 `~/.wbot/config.yaml`（600 权限）与宿主环境变量，永不入 commit/PR。关联 [[PRIVACY]]。
+
+## 7. `wbot futu` REST 客户端（⑪-b，2026-08-01 实测）
+
+`wbot futu` 经 futu-opend-rs 网关的 **REST 22222 通道**取行情（legacy 模式读端点免认证，无凭证值；scope 模式需 Bearer header 时再扩展）。实现见 `internal/futu`（客户端）+ `cmd/wbot/futu.go`（CLI，Go 标准库）。
+
+```bash
+wbot futu status [-addr http://127.0.0.1:22222]            # 健康 + 登录态
+wbot futu quote -symbol HK.00700 [-addr http://127.0.0.1:22222]   # 订阅后取 Basic 行情
+```
+
+实测输出（2026-08-01，futu-opend-rs 1.5.0）：
+
+```json
+$ wbot futu status
+{
+  "addr": "http://127.0.0.1:22222",
+  "health": "ok",
+  "server_ver": 1002,
+  "qot_logined": true,
+  "trd_logined": true,
+  "time": 1785554473
+}
+```
+
+```json
+$ wbot futu quote -symbol HK.00700
+{
+  "basic_qot_list": [
+    {
+      "amplitude": 3.773,
+      "cur_price": 475.2,
+      "high_price": 479.8,
+      "low_price": 462.0,
+      "name": "TENCENT",
+      "open_price": 470.0,
+      "security": {"code": "00700", "market": 1},
+      "update_time": "2026-07-31 16:07:51",
+      "volume": 31100240
+    }
+  ]
+}
+```
+
+**实测确认的 REST 路径**（与官方文档的出入已注明）：
+
+| 动作 | 请求 | 说明 |
+| --- | --- | --- |
+| 健康检查 | `GET /health` | 200 `ok`；后端断开时 503（`{"error": ...}`） |
+| 网关状态 | `GET /api/global-state` | envelope `ret_type=0`，s2c 含 `server_ver`/`qot_logined`/`trd_logined`/`time` |
+| 订阅 | `POST /api/subscribe` | body `{"symbols":["HK.00700"],"sub_types":[1],"is_sub_or_un_sub":true}` |
+| 行情 | `POST /api/quote` | body `{"security_list":[{"market":1,"code":"00700"}]}` |
+
+出入记录：REST 参考文档（futuapi.com/en/reference/rest-api/）给出的 `{"symbol":"HK.00700"}` 与 `{"symbol":"HK.00700","sub_types":...}` 形态**实测均被 400 拒绝**（严格校验 v1.4.93 BUG-002：`unknown field 'symbol'` / `sub_type_list`）；有效 body 是 `security_list` 对象数组（market 枚举：1=HK、11=US、21=SH、22=SZ）。`quote` 命令先订阅后取数（未订阅时网关返回业务错误「未订阅以下股票」，属预期）；`wbot futu quote` 内部自动处理订阅，重复执行幂等。
+
+**错误处理**：网关不可达 → `futu: status: ... connection refused`（exit 1）；HTTP 4xx/5xx → 输出状态码与 `{"error": ...}` 内容；业务错误（`ret_type != 0`）→ 输出 `ret_msg`。market 前缀支持 `HK./US./SH./SZ.`，其余报错（exit 2）。
+
+网关地址暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；config.yaml 的 `futu` 配置接入待后续切片。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
 
 
 ## 手动模式（图形验证码 + telnet 控制口，2026-08-01 实测）
