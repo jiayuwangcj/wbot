@@ -1361,6 +1361,10 @@ func runIngestFreshness(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "ingest freshness: set -dsn or WBOT_PG_DSN\n")
 		return 2
 	}
+	if *maxAge < 0 {
+		fmt.Fprintf(os.Stderr, "ingest freshness: -max-age must not be negative\n")
+		return 2
+	}
 
 	database, err := db.Open(d)
 	if err != nil {
