@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## Web UI
 
@@ -60,6 +60,85 @@ Query 参数：
   {"ts": "2024-06-01T00:00:00Z", "open": 100, "high": 101, "low": 99.5, "close": 100.5, "volume": 1000}
 ]
 ```
+
+## GET /v1/strategies
+
+策略模板清单（名称 + 参数 schema；数据源 ⑫-b 模板注册表，见 [[ROADMAP]]）。只读、无查询参数。CLI 等价物：`wbot backtest -strategy <name>` 的模板名（模板落地前，本端点按草稿契约硬编码，见 `internal/watchlist`）。
+
+响应 `200`：
+
+```json
+[
+  {
+    "name": "covered-call",
+    "description": "备兑看涨：持有正股 + 卖出看涨",
+    "params": [
+      {"name": "strike_pct_otm", "type": "number", "default": 0.03, "description": "行权价偏离度：行权价 = 现价×(1+pct) 就近 chain 档"},
+      {"name": "expiry_rule", "type": "choice", "default": "next_expiry", "choices": ["next_expiry"], "description": "到期选择规则"},
+      {"name": "days_to_expiry", "type": "number", "default": 28, "description": "目标到期天数"},
+      {"name": "fee_per_contract", "type": "number", "default": 0, "description": "每合约费用"}
+    ]
+  },
+  {"name": "cash-secured-put", "description": "现金担保看跌：卖出看跌、现金担保", "params": [同上]}
+]
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 模板名（PUT watchlist 的 `strategy` 取值） |
+| `params[].name` | 参数名 |
+| `params[].type` | `number` \| `string` \| `choice`（PUT 时按此校验，非法 400） |
+| `params[].default` | 缺省值（缺省时不传该参数即可） |
+| `params[].choices` | `choice` 类型的合法取值 |
+
+## GET /v1/watchlist
+
+关注标的列表（`watchlist` 表，migration 003），按 `symbol` 升序。只读、无查询参数。
+
+响应 `200`：
+
+```json
+[
+  {"symbol": "HK.00700", "strategy": "covered-call",
+   "params": {"strike_pct_otm": 0.03},
+   "created_at": "2026-08-01T08:00:00Z", "updated_at": "2026-08-01T08:00:00Z"}
+]
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `symbol` | 关注标的（PK，如 `HK.00700`） |
+| `strategy` | 绑定策略模板名 |
+| `params` | 该标的的独立参数（JSONB 原样返回；未传时为 `{}`） |
+| `created_at` / `updated_at` | RFC3339；PUT 更新时 `created_at` 保留、`updated_at` 刷新 |
+
+## PUT /v1/watchlist/{symbol}
+
+添加或更新（upsert，`ON CONFLICT (symbol) DO UPDATE`）一个标的的策略绑定。body `{"strategy": "...", "params": {...}}`；`strategy` 必填且必须为 /v1/strategies 模板名，`params` 按模板 schema 校验（未知参数、类型不符、choice 越界 → 400），省略 `params` 视为 `{}`（其余参数用模板默认值）。
+
+请求：
+
+```bash
+curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
+  -H 'Content-Type: application/json' \
+  -d '{"strategy":"covered-call","params":{"strike_pct_otm":0.03}}'
+```
+
+响应 `200`（存储后的条目，形状同 GET /v1/watchlist 元素）。
+
+| 状态码 | 场景 |
+| --- | --- |
+| 200 | 添加/更新成功 |
+| 400 | 缺 `strategy` / 未知模板 / 非法参数 / body 非 JSON / symbol 为空 |
+| 405 | 方法不允许（非 PUT/DELETE） |
+
+## DELETE /v1/watchlist/{symbol}
+
+移除一个标的。响应 `200`：`{"symbol": "HK.00700", "deleted": true}`；标的不在列表时 `404`（`{"error": "not found"}`）。
+
+CLI 等价物：`wbot watchlist add|remove|list`（`-symbol -strategy -params '<json>'`；列表输出 `symbol strategy params` 一行一条）。
+
+PRIVACY：本端点不涉及配置值（watchlist 参数为用户业务数据，非凭证；API 永不返回配置值，见 doc/PRIVACY.md）。
 
 ## GET /v1/admin/status
 
@@ -198,11 +277,11 @@ PRIVACY：API 永不返回配置值——GET 只回 key 元数据、PUT 响应�
 
 | 场景 | 状态码 |
 | --- | --- |
-| 缺必填参数 / 参数非法（坏时间、limit<=0、空/超长配置值、body 非 JSON） | 400 |
+| 缺必填参数 / 参数非法（坏时间、limit<=0、空/超长配置值、body 非 JSON、未知策略模板或非法 watchlist 参数） | 400 |
 | 存储查询失败 | 500 |
 | DB ping 失败 | 503 |
-| 未知路径 / 白名单外 config key | 404 |
-| 方法不允许（非 GET/PUT） | 405 |
+| 未知路径 / 白名单外 config key / DELETE 不存在的 watchlist 标的 | 404 |
+| 方法不允许（非 GET/PUT/DELETE；watchlist 标的路径仅支持 PUT/DELETE） | 405 |
 
 ## 本地验证
 
@@ -214,6 +293,11 @@ wbot serve &
 curl -s 'http://127.0.0.1:8080/v1/runs'
 curl -s 'http://127.0.0.1:8080/v1/bars?symbol=DEMO.US&timeframe=1d'
 curl -s 'http://127.0.0.1:8080/v1/admin/cluster'
+curl -s 'http://127.0.0.1:8080/v1/strategies'
+curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' -H 'Content-Type: application/json' \
+  -d '{"strategy":"covered-call","params":{"strike_pct_otm":0.03}}'
+curl -s 'http://127.0.0.1:8080/v1/watchlist'
+curl -X DELETE 'http://127.0.0.1:8080/v1/watchlist/HK.00700'
 ```
 
 关联：[[DATA_PIPELINE]] [[ROADMAP]]（v4 Go API，微信小程序前置依赖）
