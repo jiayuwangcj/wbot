@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wbot · Watchlist</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header>
+  <h1>wbot</h1>
+  <nav>
+    <a href="/ui/">Data</a>
+    <a href="/ui/watchlist.html">Watchlist</a>
+    <a href="/ui/admin.html">Admin</a>
+  </nav>
+</header>
+<main>
+  <section id="editor">
+    <h2>Add or edit symbol</h2>
+    <form id="watchlist-form">
+      <label>Symbol <input type="text" name="symbol" placeholder="HK.00700" required></label>
+      <label>Strategy
+        <select name="strategy" id="strategy-select" required></select>
+      </label>
+      <fieldset id="param-fields">
+        <legend>Parameters</legend>
+      </fieldset>
+      <button type="submit">Save</button>
+    </form>
+    <p id="watchlist-form-error" class="notice error" hidden></p>
+  </section>
+  <section id="list">
+    <h2>Watchlist</h2>
+    <p id="watchlist-error" class="notice error" hidden></p>
+    <p id="watchlist-empty" class="notice" hidden>No symbols on the watchlist.</p>
+    <div class="table-scroll">
+      <table id="watchlist-table" hidden>
+        <thead>
+          <tr><th>Symbol</th><th>Strategy</th><th>Params</th><th>Updated at</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script src="/ui/app.js"></script>
+</body>
+</html>

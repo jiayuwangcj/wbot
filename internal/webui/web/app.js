@@ -3,10 +3,10 @@ document.documentElement.classList.add("js");
 
 /* Shared helpers; per-page init no-ops when its elements are absent. */
 
-async function fetchJSON(url) {
+async function fetchJSON(url, opts) {
   let resp;
   try {
-    resp = await fetch(url);
+    resp = await fetch(url, opts);
   } catch (err) {
     throw new Error("cannot reach the server");
   }
@@ -168,5 +168,208 @@ function initAdminPage() {
   loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
 }
 
+/* Watchlist page: /v1/watchlist CRUD + /v1/strategies schema-driven param form. */
+
+function renderParamFields(strategy, values) {
+  const fields = document.getElementById("param-fields");
+  fields.replaceChildren();
+  const legend = document.createElement("legend");
+  legend.textContent = "Parameters";
+  fields.appendChild(legend);
+  if (!strategy) return;
+  for (const p of strategy.params) {
+    const label = document.createElement("label");
+    const name = document.createElement("span");
+    name.textContent = p.name + (p.description ? " · " + p.description : "");
+    label.appendChild(name);
+    let value = values && values[p.name] !== undefined ? values[p.name] : p.default;
+    let input;
+    if (p.type === "choice") {
+      input = document.createElement("select");
+      for (const choice of p.choices) {
+        const opt = document.createElement("option");
+        opt.value = choice;
+        opt.textContent = choice;
+        input.appendChild(opt);
+      }
+      if (p.choices.indexOf(value) === -1) value = p.choices[0];
+    } else if (p.type === "number") {
+      input = document.createElement("input");
+      input.type = "number";
+      input.step = "any";
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+    }
+    input.name = "params." + p.name;
+    input.value = value === undefined || value === null ? "" : value;
+    label.appendChild(input);
+    fields.appendChild(label);
+  }
+}
+
+function collectParams(strategy, form) {
+  const params = {};
+  for (const p of strategy.params) {
+    const raw = form.elements["params." + p.name].value;
+    if (raw === "") continue; /* omit: strategy default applies */
+    if (p.type === "number") {
+      const n = Number(raw);
+      if (!isFinite(n)) return {error: "invalid number for " + p.name};
+      params[p.name] = n;
+    } else if (p.type === "choice") {
+      if (p.choices.indexOf(raw) === -1) return {error: "invalid choice for " + p.name};
+      params[p.name] = raw;
+    } else {
+      params[p.name] = raw;
+    }
+  }
+  return {params: params};
+}
+
+function renderWatchlist(items, onEdit, onDelete) {
+  const table = document.getElementById("watchlist-table");
+  const empty = document.getElementById("watchlist-empty");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  if (items.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  for (const item of items) {
+    const tr = document.createElement("tr");
+    for (const cell of [item.symbol, item.strategy, JSON.stringify(item.params), item.updated_at]) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    }
+    const actions = document.createElement("td");
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "link";
+    edit.textContent = "Edit";
+    edit.addEventListener("click", () => onEdit(item));
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "link danger";
+    del.textContent = "Delete";
+    del.addEventListener("click", () => onDelete(item));
+    actions.appendChild(edit);
+    actions.appendChild(del);
+    tr.appendChild(actions);
+    tbody.appendChild(tr);
+  }
+  empty.hidden = true;
+  table.hidden = false;
+}
+
+function initWatchlistPage() {
+  const form = document.getElementById("watchlist-form");
+  if (!form) return;
+  const strategySelect = document.getElementById("strategy-select");
+  const formError = document.getElementById("watchlist-form-error");
+  const listError = document.getElementById("watchlist-error");
+  let strategies = [];
+  let editingSymbol = null;
+
+  function strategyByName(name) {
+    for (const s of strategies) {
+      if (s.name === name) return s;
+    }
+    return null;
+  }
+
+  function currentStrategy() {
+    return strategyByName(strategySelect.value);
+  }
+
+  function renderStrategySelect() {
+    strategySelect.replaceChildren();
+    for (const s of strategies) {
+      const opt = document.createElement("option");
+      opt.value = s.name;
+      opt.textContent = s.name;
+      strategySelect.appendChild(opt);
+    }
+    renderParamFields(currentStrategy());
+  }
+
+  function loadStrategies() {
+    loadJSON("/v1/strategies", formError, (list) => {
+      strategies = list;
+      renderStrategySelect();
+    });
+  }
+
+  function loadWatchlist() {
+    loadJSON("/v1/watchlist", listError, (items) => {
+      renderWatchlist(items, beginEdit, deleteItem);
+    });
+  }
+
+  function beginEdit(item) {
+    editingSymbol = item.symbol;
+    form.symbol.value = item.symbol;
+    strategySelect.value = item.strategy;
+    renderParamFields(currentStrategy(), item.params);
+    clearError(formError);
+    document.getElementById("editor").scrollIntoView();
+  }
+
+  function resetForm() {
+    editingSymbol = null;
+    form.symbol.value = "";
+    renderParamFields(currentStrategy());
+    form.symbol.focus();
+  }
+
+  async function deleteItem(item) {
+    if (!confirm("Remove " + item.symbol + " from the watchlist?")) return;
+    try {
+      await fetchJSON("/v1/watchlist/" + encodeURIComponent(item.symbol), {method: "DELETE"});
+      loadWatchlist();
+    } catch (err) {
+      showError(listError, err);
+    }
+  }
+
+  strategySelect.addEventListener("change", () => renderParamFields(currentStrategy()));
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const symbol = form.symbol.value.trim();
+    if (!symbol) {
+      showError(formError, new Error("symbol is required"));
+      return;
+    }
+    const strategy = currentStrategy();
+    if (!strategy) {
+      showError(formError, new Error("select a strategy"));
+      return;
+    }
+    const collected = collectParams(strategy, form);
+    if (collected.error) {
+      showError(formError, new Error(collected.error));
+      return;
+    }
+    try {
+      await fetchJSON("/v1/watchlist/" + encodeURIComponent(symbol), {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({strategy: strategy.name, params: collected.params})
+      });
+      clearError(formError);
+      resetForm();
+      loadWatchlist();
+    } catch (err) {
+      showError(formError, err);
+    }
+  });
+
+  loadStrategies();
+  loadWatchlist();
+}
+
 initDataPage();
 initAdminPage();
+initWatchlistPage();
