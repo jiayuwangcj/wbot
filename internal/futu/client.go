@@ -26,6 +26,9 @@ type Client struct {
 	HTTP    *http.Client
 }
 
+// retryBackoff is the pause before each HTTP 429 retry attempt (1s, then 2s).
+var retryBackoff = []time.Duration{time.Second, 2 * time.Second}
+
 // NewClient returns a Client for baseURL with a sane timeout.
 func NewClient(baseURL string) *Client {
 	return &Client{BaseURL: strings.TrimRight(baseURL, "/"), HTTP: &http.Client{Timeout: 10 * time.Second}}
@@ -98,6 +101,9 @@ func (c *Client) Quote(ctx context.Context, symbol string) (json.RawMessage, err
 	}); err != nil {
 		return nil, fmt.Errorf("subscribe %s: %w", symbol, err)
 	}
+	if err := SnapshotLimit.Wait(ctx); err != nil {
+		return nil, err
+	}
 	s2c, err := c.post(ctx, "/api/quote", map[string]any{
 		"security_list": []map[string]any{{"market": market, "code": code}},
 	})
@@ -120,8 +126,11 @@ func ParseSymbol(symbol string) (int, string, error) {
 	return market, code, nil
 }
 
-// get performs a GET and returns the trimmed response body.
+// get performs a GET (rate-limited by QuoteLimit) and returns the trimmed body.
 func (c *Client) get(ctx context.Context, path string) (string, error) {
+	if err := QuoteLimit.Wait(ctx); err != nil {
+		return "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+path, nil)
 	if err != nil {
 		return "", err
@@ -141,40 +150,59 @@ func (c *Client) get(ctx context.Context, path string) (string, error) {
 	return strings.TrimSpace(string(body)), nil
 }
 
-// post sends a JSON body and returns the s2c payload after ret_type validation.
+// post sends a JSON body (rate-limited) and returns the s2c payload after
+// ret_type validation; HTTP 429 (rate limited) retries with backoff, then fails.
 func (c *Client) post(ctx context.Context, path string, body any) (json.RawMessage, error) {
 	enc, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(enc))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, httpError(resp.StatusCode, data)
-	}
-	var env envelope
-	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, fmt.Errorf("bad JSON: %w", err)
-	}
-	if env.RetType != 0 {
-		if env.RetMsg != "" {
-			return nil, errors.New(env.RetMsg)
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryBackoff[attempt-1]):
+			}
 		}
-		return nil, fmt.Errorf("ret_type=%d", env.RetType)
+		if err := QuoteLimit.Wait(ctx); err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, bytes.NewReader(enc))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode == http.StatusTooManyRequests {
+			lastErr = httpError(resp.StatusCode, data)
+			continue
+		}
+		if resp.StatusCode != http.StatusOK {
+			return nil, httpError(resp.StatusCode, data)
+		}
+		var env envelope
+		if err := json.Unmarshal(data, &env); err != nil {
+			return nil, fmt.Errorf("bad JSON: %w", err)
+		}
+		if env.RetType != 0 {
+			if env.RetMsg != "" {
+				return nil, errors.New(env.RetMsg)
+			}
+			return nil, fmt.Errorf("ret_type=%d", env.RetType)
+		}
+		return env.S2C, nil
 	}
-	return env.S2C, nil
+	return nil, fmt.Errorf("rate limited (HTTP 429): %w", lastErr)
 }
 
 // httpError renders a non-200 response into a readable error (the gateway sends {"error": ...}).

@@ -559,6 +559,8 @@ func runIngest(prog string, argv []string) int {
 		return runIngestFile(prog, argv[1:])
 	case "url":
 		return runIngestURL(prog, argv[1:])
+	case "futu":
+		return runIngestFutu(prog, argv[1:])
 	case "status":
 		return runIngestStatus(prog, argv[1:])
 	case "bars":
@@ -1028,6 +1030,7 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "Subcommands:\n  mock   Insert a mock ingestion run and sample OHLCV bars (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  file   Load bars from a JSON file (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  url    Load bars from a JSON URL (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  futu   Fetch K-lines from the futu-opend-rs gateway (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  status Show recent ingestion runs (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  bars   Show ingested bars for a symbol/timeframe (-h for flags)\n")
 }
