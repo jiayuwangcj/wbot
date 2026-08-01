@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"math"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -149,6 +150,45 @@ func TestRunTraceExercisePut(t *testing.T) {
 	ex := res.Trades[1]
 	if !ex.Ts.Equal(expiryAt(1)) || ex.Action != "exercise-put" || ex.Symbol != "P" || ex.Size != -100 || ex.Price != 95 || ex.CashAfter != 504 {
 		t.Fatalf("Trades[1] = %+v; want exercise-put -100 @95 on day 1, cash_after 504", ex)
+	}
+}
+
+func TestRunTraceSameDayExpiryDeterministic(t *testing.T) {
+	// Two short calls (A strike 90, B strike 100) expire on the same bar;
+	// settleExpired must book them in contract-code order so every run yields
+	// the identical ledger (map iteration alone is random).
+	chain := map[string]OptionContract{
+		"A": {Code: "A", Kind: OptionCall, Strike: 90, Expiry: expiryAt(1)},
+		"B": {Code: "B", Kind: OptionCall, Strike: 100, Expiry: expiryAt(1)},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"A": {1, 0.5}, "B": {0.5, 0.25}})
+	newScript := func() *scriptStrategy {
+		return &scriptStrategy{
+			actions: []Action{ActionSellCall, ActionSellCall},
+			sizes:   []float64{1, 1},
+			pending: []*OptionPosition{
+				{Code: "A", Kind: OptionCall, Strike: 90, Expiry: expiryAt(1), Lot: 100, AvgPremium: 1},
+				{Code: "B", Kind: OptionCall, Strike: 100, Expiry: expiryAt(1), Lot: 100, AvgPremium: 0.25},
+			},
+		}
+	}
+	want := []Trade{
+		{Ts: expiryAt(0), Action: "sell-call", Symbol: "A", Size: 1, Price: 1, CashAfter: 10001},
+		{Ts: expiryAt(1), Action: "sell-call", Symbol: "B", Size: 1, Price: 0.25, CashAfter: 10001.25},
+		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "A", Size: -100, Price: 90, CashAfter: 19001.25},
+		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "B", Size: -100, Price: 100, CashAfter: 29001.25},
+	}
+	for i := 0; i < 20; i++ {
+		res, err := RunOptions(context.Background(), mkBars(100, 110), 10000, 0, newScript(), opts)
+		if err != nil {
+			t.Fatalf("run %d: RunOptions() error: %v", i, err)
+		}
+		if !reflect.DeepEqual(res.Trades, want) {
+			t.Fatalf("run %d: Trades = %+v; want %+v (stable contract-code order)", i, res.Trades, want)
+		}
+		if i == 0 {
+			assertCurve(t, res, []eqPoint{{0, 9901}, {1, 7001.25}})
+		}
 	}
 }
 

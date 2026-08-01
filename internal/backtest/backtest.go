@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
@@ -222,11 +223,18 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades
 // settleExpired exercises ITM legs (call: shares out at strike, put: shares in
 // at strike) and voids OTM legs once their expiry date has passed; the leg is
 // always removed. ITM exercise and OTM void both land in the trade ledger.
+// Expiring legs are processed in contract-code order: map iteration alone is
+// random, and same-day expiries must produce a stable ledger (determinism).
 func settleExpired(st *State, ts time.Time, trades *[]Trade) {
+	codes := make([]string, 0, len(st.Options))
 	for code, p := range st.Options {
-		if ts.Before(p.Expiry) {
-			continue
+		if !ts.Before(p.Expiry) {
+			codes = append(codes, code)
 		}
+	}
+	sort.Strings(codes)
+	for _, code := range codes {
+		p := st.Options[code]
 		shares := p.Contracts * float64(p.Lot)
 		switch p.Kind {
 		case OptionCall:
