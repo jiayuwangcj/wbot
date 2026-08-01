@@ -116,10 +116,12 @@ func (c *Client) OptionChain(ctx context.Context, symbol string, begin, end time
 	if err := SnapshotLimit.Wait(ctx); err != nil {
 		return nil, err
 	}
+	// strike_timestamp is +08 market-local midnight (实测 2026-08-01); the
+	// gateway takes dates in that zone, so format in futuLoc (like HistoryKline).
 	s2c, err := c.post(ctx, "/api/option-chain", map[string]any{
 		"owner":      map[string]any{"market": market, "code": code},
-		"begin_time": begin.UTC().Format("2006-01-02"),
-		"end_time":   end.UTC().Format("2006-01-02"),
+		"begin_time": begin.In(futuLoc).Format("2006-01-02"),
+		"end_time":   end.In(futuLoc).Format("2006-01-02"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("option-chain %s: %w", symbol, err)

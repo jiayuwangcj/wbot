@@ -48,6 +48,7 @@ Query 参数：
 | --- | --- | --- | --- |
 | `symbol` | 是 | — | 如 `DEMO.US` |
 | `timeframe` | 是 | — | 如 `1d`、`1m` |
+| `adjust` | 否 | `fwd` | 复权：`fwd`（前复权，数据标准默认）\| `none`（不复权）\| `back`（后复权），见 [[DATA_STANDARD]]；migration 003 之前的存量行 `adjust='none'`，需显式 `adjust=none` 或重新拉取 |
 | `from` | 否 | 不限 | RFC3339，闭区间起点 |
 | `to` | 否 | 不限 | RFC3339，闭区间终点 |
 | `limit` | 否 | 100 | 最大条数（<=0 报 400） |

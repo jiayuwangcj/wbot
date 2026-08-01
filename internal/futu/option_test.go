@@ -77,8 +77,11 @@ func TestOptionChain(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	begin := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
-	end := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	// Expiry timestamps are +08 market-local midnights (1786032000 =
+	// 2026-08-07 00:00 +08 = 2026-08-06T16:00Z); the chain request must send
+	// the +08 dates, not the UTC ones (P1-1: off-by-one window otherwise).
+	begin := time.Unix(1786032000, 0).UTC()
+	end := time.Unix(1787846400, 0).UTC()
 	contracts, err := NewClient(srv.URL).OptionChain(context.Background(), "HK.00700", begin, end)
 	if err != nil {
 		t.Fatalf("OptionChain() error: %v", err)
@@ -93,8 +96,9 @@ func TestOptionChain(t *testing.T) {
 	if c0.Underlying != "HK.00700" || c0.LotSize != 100 {
 		t.Fatalf("contract[0] underlying/lot = %+v; want HK.00700 / 100", c0)
 	}
-	if !c0.Expiry.Equal(begin) {
-		t.Fatalf("contract[0] expiry = %v; want %v", c0.Expiry, begin)
+	wantExpiry := time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC)
+	if !c0.Expiry.Equal(wantExpiry) {
+		t.Fatalf("contract[0] expiry = %v; want %v", c0.Expiry, wantExpiry)
 	}
 	if contracts[1].Symbol != "HK.TCH260807P335000" || contracts[1].OptionType != "put" {
 		t.Fatalf("contract[1] = %+v; want HK.TCH260807P335000 put", contracts[1])
@@ -103,7 +107,7 @@ func TestOptionChain(t *testing.T) {
 		t.Fatalf("contract[2] = %+v; want HK.TCH260807C750000", contracts[2])
 	}
 	if got["begin_time"] != "2026-08-07" || got["end_time"] != "2026-08-28" {
-		t.Fatalf("begin/end = %v/%v; want YYYY-MM-DD window", got["begin_time"], got["end_time"])
+		t.Fatalf("begin/end = %v/%v; want +08 dates 2026-08-07..2026-08-28 (UTC form would be 08-06..08-27)", got["begin_time"], got["end_time"])
 	}
 }
 
