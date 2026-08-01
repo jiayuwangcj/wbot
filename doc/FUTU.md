@@ -1,4 +1,4 @@
-# Futu 网关部署与 `wbot futu` 客户端（⑪-a/b）
+# Futu 网关部署与 `wbot futu` 客户端（⑪-a/b/d）
 
 富途接入的**连接层**：网关以容器方式跑在本地，⑪-b 的 `wbot futu` 子命令经 **22222 端口 REST API**（futu-opend-rs，标准库 net/http，零新依赖）连接；11111 端口 protobuf API 保留给 proto 客户端。对应 `doc/tasks/2026-07-31-futu-integration.md` ⑪-a/⑪-b，行情落库见 [[DATA_PIPELINE]]。
 
@@ -252,8 +252,40 @@ docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu-manual.yml
 - **默认使用模拟盘（Paper Trade）**：所有开发/测试交易走模拟盘账户（trd_env=0，如 acc_id 1907141）
 - **实盘只读**：实盘账户（trd_env=1）**禁止一切写操作**（下单/改单/撤单/解锁等），仅允许查询（资金/持仓/订单只读）
 - **实盘写操作需老板确认**：任何解除实盘写限制的变更（代码/配置/流程）必须经老板在 GitHub（discussions/21 或 issue）明确确认后才可实施
-- **工程护栏**（第一个交易命令实现时内置）：
+- **工程护栏**（⑪-d 已内置，见 §9）：
   - 交易类命令默认 `trd_env=0`（模拟盘）；实盘写操作需显式 `--live` 标志 + 启动日志红色告警
   - 网关 REST legacy 模式天然阻止 mutating 端点（`blocked_mutating_endpoints`）——保持该配置，不因解锁而开放
   - 实盘查询类命令（funds/position/order 只读）无需确认，但输出标注账户环境（real/simulate）
 - **例外**：老板在场明确指示且确认账户/金额时，可临时放开（执行后恢复默认）
+
+## 9. 交易命令 `wbot futu funds/position/order`（⑪-d，2026-08-01 实测）
+
+交易命令经 **OpenD protobuf 接口（TCP 11111）** 接入——老板指令（2026-08-01）：「使用 protobuf 接口接入，使用 api 操作」，不集成 futucli 进程、不走 REST（网关 REST mutating 端点保持 blocked 配置，见 §8 前交易安全策略）。proto 生成代码与连接层来自 [qtopie/gofutuapi](https://github.com/qtopie/gofutuapi)（MIT，老板 07-31 原指令指定参考）；go.mod 因此升至 **go 1.24.4**（gofutuapi 要求），CI 同步 setup-go 1.24.x。
+
+```bash
+wbot futu funds [-env sim|real] [-acc-id X] [-addr 127.0.0.1:11111]     # 资金（两环境均只读）
+wbot futu position [-env sim|real] [-acc-id X]                          # 持仓（两环境均只读）
+wbot futu order -symbol HK.00700 -side buy -qty 100 [-price 470] [-env sim] [-dry-run]
+wbot futu order -symbol HK.00700 -side buy -qty 100 -env real -live-confirm -acc-id <实盘账户>   # 实盘写（红线流程）
+```
+
+- `-env`：`sim`（默认，trd_env=0 模拟盘）| `real`（trd_env=1 实盘）；`-acc-id` 缺省取该环境第一个账户（输出标注 acc_id 与 env）
+- **安全护栏（代码内实现，见 cmd/wbot/futu.go runFutuOrder）**：`-env real` 下单必须同时带 `-live-confirm`（显式确认，红色告警输出）**且** `-acc-id`（确认账户）；缺任一项 → 拒绝并提示（exit 2）。实盘查询（funds/position）无需确认
+- `-dry-run`：只做参数校验并打印下单计划，不连网关不发单（本地验证链路主用）
+- `-price` 缺省 0 → 市价单（OrderType_Market）；给定 → 增强限价单（OrderType_Normal，港股）
+- exit code：用法/护栏拒绝 = 2；运行/网关错误 = 1；成功 = 0。所有错误日志前缀 `futu: <子命令>:`
+- 限频：交易请求计入全局 `QuoteLimit`（20 req/s 总帽），交易低频不再叠加档位；改动见 §8 限频策略红线
+
+### 实测记录（2026-08-01，网关 futu-opend-rs 1.5.0）
+
+| 命令 | 结果 |
+| --- | --- |
+| `wbot futu funds`（默认 sim） | 模拟盘 acc 1907141，total_assets=1198286.822（119.8 万） |
+| `wbot futu funds -env real` | 实盘 acc 281756478875559548（只读 OK） |
+| `wbot futu position` / `-env real` | 两环境持仓列表（只读 OK） |
+| `wbot futu order -env real`（无 -live-confirm） | 拒绝：实盘写需老板确认（exit 2） |
+| `wbot futu order -env real -live-confirm`（无 -acc-id） | 拒绝：确认账户（exit 2） |
+| `wbot futu order -env real -live-confirm -acc-id … -dry-run` | LIVE CONFIRMED 红色告警 + 计划输出（exit 0，不发单） |
+| `wbot futu order -env sim -symbol HK.00700 -side buy -qty 100 -price 1.0` | 模拟盘真实下单成功（order_id=8947461567535334561，限价 1.0 永不成交的纸面挂单，验证全链路；实盘写链路只以 dry-run 验证，真单需老板在场） |
+
+已知限制：下单前需交易解锁（TradePassword）——实盘解锁密码**不存储**（[[PRIVACY]] 红线），故实盘下单即使过护栏也会在网关侧因未解锁被拒；这是纵深防御而非缺陷。模拟盘挂单可用富途 App/未来切片撤单。
