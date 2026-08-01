@@ -44,6 +44,19 @@ func TestServesWatchlistPage(t *testing.T) {
 	}
 }
 
+func TestServesResultsPage(t *testing.T) {
+	rec := serveGet(t, "/results.html")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("content-type = %q; want text/html", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "<title>wbot · Backtest Results</title>") {
+		t.Fatalf("results missing title: %s", rec.Body)
+	}
+}
+
 func TestServesAdminPlaceholder(t *testing.T) {
 	rec := serveGet(t, "/admin.html")
 	if rec.Code != http.StatusOK {
@@ -105,7 +118,7 @@ func TestNoExternalURLs(t *testing.T) {
 }
 
 func TestViewportMetaOnAllPages(t *testing.T) {
-	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -193,7 +206,7 @@ func TestAdminPageSections(t *testing.T) {
 
 func TestTableEmptyConvention(t *testing.T) {
 	tableRe := regexp.MustCompile(`id="([a-z0-9-]+-table)"`)
-	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatal(err)
@@ -318,5 +331,106 @@ func TestConfigMetadataOnly(t *testing.T) {
 	}
 	if strings.Contains(js, "c.value") {
 		t.Fatal("app.js renders config values (PRIVACY red line)")
+	}
+}
+
+func TestResultsPageElements(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/results.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`id="results-table"`,
+		`id="results-empty"`,
+		`id="results-error"`,
+		`id="detail"`,
+		`id="metric-cards"`,
+		`id="metric-equity"`,
+		`id="metric-total-return"`,
+		`id="metric-max-drawdown"`,
+		`id="metric-bars"`,
+		`id="equity-canvas"`,
+		`id="curve-empty"`,
+		`id="curve-wrap"`,
+		`id="detail-extra"`,
+		`id="trades-table"`,
+		`id="trades-empty"`,
+		`id="detail-params"`,
+		`id="detail-back"`,
+		`/ui/app.js`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("results.html missing %q", want)
+		}
+	}
+}
+
+func TestResultsNavLinks(t *testing.T) {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {
+		data, err := fs.ReadFile(webFiles, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "/ui/results.html") {
+			t.Fatalf("%s missing results nav link", path)
+		}
+	}
+}
+
+func TestAppJSQueriesBacktestsAPI(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`"/v1/backtests?limit=50"`,
+		`"/v1/backtests/" + id`,
+		"initResultsPage",
+		"drawEquityCurve",
+		"showDetailError",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+func TestAppJSErrorBodyConvention(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{"body.error", "body.message", "body.action"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+func TestAppJSEquityCurveDrawing(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`getContext("2d")`,
+		"canvas.width",
+		"canvas.height",
+		"beginPath",
+		"moveTo",
+		"lineTo",
+		"fillText",
+		"Math.PI",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing curve drawing primitive %q", want)
+		}
+	}
+	if strings.Contains(js, "d3") || strings.Contains(js, "chart.js") || strings.Contains(js, "echarts") {
+		t.Fatal("app.js references an external chart library")
 	}
 }
