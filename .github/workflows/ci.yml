@@ -135,7 +135,8 @@ jobs:
         run: |
           set -euo pipefail
           bin="$(mktemp)"
-          trap 'rm -f "$bin"' EXIT
+          tmp="$(mktemp -d)"
+          trap 'rm -f "$bin"; rm -rf "$tmp"' EXIT
           go build -o "$bin" ./cmd/wbot
           "$bin" -version
           "$bin" master -duration 1ms 2>/dev/null
@@ -143,6 +144,9 @@ jobs:
           "$bin" paper -symbol V.US -side buy
           "$bin" serve -h >/dev/null 2>&1
           "$bin" backtest -h >/dev/null 2>&1
+          cp tools/config.yaml.example "$tmp/config.yaml"
+          chmod 600 "$tmp/config.yaml"
+          "$bin" configyaml -file "$tmp/config.yaml" >/dev/null
 
   # PostgreSQL integration (Linux only; see internal/db WBOT_PG_DSN).
   db-integration:

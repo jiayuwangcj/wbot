@@ -8,7 +8,8 @@ go test ./... -count=1
 go vet ./...
 
 bin="$(mktemp)"
-trap 'rm -f "$bin"' EXIT
+tmp="$(mktemp -d)"
+trap 'rm -f "$bin"; rm -rf "$tmp"' EXIT
 go build -o "$bin" ./cmd/wbot
 
 "$bin" -version >/dev/null
@@ -17,4 +18,7 @@ go build -o "$bin" ./cmd/wbot
 "$bin" paper -symbol V.US -side buy >/dev/null
 "$bin" serve -h >/dev/null 2>&1
 "$bin" backtest -h >/dev/null 2>&1
+cp tools/config.yaml.example "$tmp/config.yaml"
+chmod 600 "$tmp/config.yaml"
+tools/config-to-env.sh "$tmp/config.yaml" >/dev/null
 echo "verify: ok"

@@ -11,12 +11,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/jiayu/wbot/internal/agent"
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/config"
+	"github.com/jiayu/wbot/internal/configyaml"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
 	"github.com/jiayu/wbot/internal/httpapi"
@@ -57,6 +60,8 @@ func run(argv []string) int {
 		return runIngest(argv[0], argv[2:])
 	case "backtest":
 		return runBacktest(argv[0], argv[2:])
+	case "configyaml":
+		return runConfigYAML(argv[0], argv[2:])
 	case "serve":
 		return runServe(argv[0], argv[2:])
 	default:
@@ -469,6 +474,72 @@ func runBacktest(prog string, argv []string) int {
 		}
 	}
 	return 0
+}
+
+func runConfigYAML(prog string, argv []string) int {
+	fs := flag.NewFlagSet("configyaml", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	path := fs.String("file", "", "path to config.yaml (default: ~/.wbot/config.yaml)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s configyaml [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Renders ~/.wbot/config.yaml to KEY=VALUE dotenv lines for docker compose --env-file or shell source (see doc/FUTU.md).\n")
+		fmt.Fprintf(os.Stderr, "Nested YAML keys flatten to UPPER_SNAKE; ${VAR} and ${VAR:-default} expand from the environment (undefined -> error).\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	p := strings.TrimSpace(*path)
+	if p == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "configyaml: home dir: %v\n", err)
+			return 1
+		}
+		p = filepath.Join(home, ".wbot", "config.yaml")
+	}
+	env, err := configyaml.Load(p)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "configyaml: %v\n", err)
+		return 1
+	}
+	keys := make([]string, 0, len(env))
+	for k := range env {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		val, err := dotenvValue(env[k])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "configyaml: %s: %v\n", k, err)
+			return 1
+		}
+		fmt.Printf("%s=%s\n", k, val)
+	}
+	return 0
+}
+
+// dotenvValue quotes a value so the line parses both as docker compose --env-file
+// (plain KEY=VALUE, no export) and as shell source; single quotes are rejected.
+func dotenvValue(s string) (string, error) {
+	if s == "" || !strings.ContainsAny(s, " \t\r\n'\"#") {
+		return s, nil
+	}
+	if strings.ContainsRune(s, '\'') {
+		return "", fmt.Errorf("value contains a single quote (unsupported in dotenv)")
+	}
+	return "'" + s + "'", nil
 }
 
 func runIngest(prog string, argv []string) int {
@@ -967,5 +1038,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  serve               Read-only HTTP data API (try -h)\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               Read-only HTTP data API (try -h)\n")
 }

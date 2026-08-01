@@ -1,13 +1,13 @@
 # FutuOpenD gateway — connection point for `wbot futu` (see doc/FUTU.md).
-#   source ~/.wbot/env.sh && docker compose -f configs/docker-compose.futu.yml up -d
-# Credentials are injected from the host env (~/.wbot/env.sh) only, never stored here.
+#   umask 077 && tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env && docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml up -d
+# Credentials render from ~/.wbot/config.yaml only; the derived .env holds them too (600, umask 077).
 services:
   futu-opend:
     image: ostai/futuopend:9.4.5418   # pinned; ostai also publishes `latest`
     environment:
       # `:?` fails loudly when unset/empty — the error proves injection works
-      FUTU_LOGIN_ACCOUNT: "${FUTU_LOGIN_ACCOUNT:?set in ~/.wbot/env.sh (see doc/FUTU.md)}"
-      FUTU_LOGIN_PWD_MD5: "${FUTU_LOGIN_PWD_MD5:?set in ~/.wbot/env.sh (see doc/FUTU.md)}"
+      FUTU_LOGIN_ACCOUNT: "${FUTU_LOGIN_ACCOUNT:?set in ~/.wbot/config.yaml (see doc/FUTU.md)}"
+      FUTU_LOGIN_PWD_MD5: "${FUTU_LOGIN_PWD_MD5:?set in ~/.wbot/config.yaml (see doc/FUTU.md)}"
       FUTU_LOGIN_REGION: "${FUTU_LOGIN_REGION:-sh}"
       FUTU_INIT_ON_START: "${FUTU_INIT_ON_START:-yes}"
     ports:
