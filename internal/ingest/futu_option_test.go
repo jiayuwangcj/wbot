@@ -6,7 +6,6 @@ package ingest
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -70,7 +69,7 @@ func optionGatewayServer(t *testing.T, kline func(code string) string) *httptest
 			http.NotFound(w, r)
 			return
 		}
-		io.WriteString(w, string(body))
+		w.Write(body)
 	}))
 }
 
