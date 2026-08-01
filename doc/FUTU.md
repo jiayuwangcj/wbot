@@ -142,3 +142,8 @@ docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu-manual.yml
 4. 失败清理（密码错误会扣登录机会）：`docker rm -f futu-opend`
 
 **登录机会**：密码错误有次数限制（`N chances remained`），**停止重试**避免耗尽；先确认 App 密码与 MD5 一致再启动。
+## arm64 宿主说明（2026-08-01 实测）
+
+- OpenD 官方仅发布 **x86_64** 二进制；在 Apple Silicon / ARM 宿主（如 OrbStack Linux VM aarch64）上需 **amd64 模拟**：compose 已含 `platform: linux/amd64`（OrbStack/QEMU 自动模拟）
+- 验证：`docker run --platform linux/amd64 --rm ostai/futuopend:9.4.5418 echo OK`
+- 登录失败（密码错误/图形验证码）时的日志关键字：`Login failed`、`Need a graphic verification code`；验证码图片在容器 `/root/.com.futunn.FutuOpenD/F3CNN/PicVerifyCode.png`（`docker cp` 取出查看）
