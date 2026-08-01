@@ -6,35 +6,48 @@
 
 - Docker + Compose v2（`docker compose version` 可跑）
 - 富途账号 + 密码 + 首登短信验证码（老板侧，见 [[ORGS]]）
-- 敏感值只放 `~/.wbot/env.sh`（[[PRIVACY]] 红线：仓库与镜像配置**零凭证值**）
+- 敏感值只放 `~/.wbot/config.yaml`（[[PRIVACY]] 红线：仓库与镜像配置**零凭证值**）
+- Go toolchain（`tools/config-to-env.sh` 内部 `go build` 渲染；构建过 wbot 的机器都有）
 
-## 1. 凭证注入（~/.wbot/env.sh）
+## 1. 凭证注入（~/.wbot/config.yaml）
 
-compose 用 `${VAR:?}` 占位强制注入，真实值来自宿主环境变量：
+部署级配置统一写 `~/.wbot/config.yaml`（YAML；`${VAR}` 展开为宿主环境变量，未定义 → 报错含变量名；`${VAR:-default}` 给默认值）：
 
 ```bash
 mkdir -p ~/.wbot
-cat > ~/.wbot/env.sh <<'EOF'
-# Futu OpenD 登录凭证（值不入库，见 doc/PRIVACY.md）
-export FUTU_LOGIN_ACCOUNT='<富途账号>'
-export FUTU_LOGIN_PWD_MD5='<密码明文 MD5>'   # 生成：echo -n '<明文密码>' | md5sum | awk '{print $1}'
-export FUTU_LOGIN_REGION='sh'                # 可选：sh=上海(默认) | hk | us
-EOF
-chmod 600 ~/.wbot/env.sh    # 仅本人可读
+cp tools/config.yaml.example ~/.wbot/config.yaml
+chmod 600 ~/.wbot/config.yaml    # 仅本人可读（渲染工具校验，不通过即报错）
+# 编辑：futu.login_account 等值用 ${VAR} 引用环境变量，或 ${VAR:-默认值} 就地占位
+```
+
+示例形态：
+
+```yaml
+futu:
+  login_account: "${FUTU_LOGIN_ACCOUNT}"        # 值来自环境变量；未定义即报错（fail-fast）
+  login_pwd_md5: "${FUTU_LOGIN_PWD_MD5}"        # MD5 生成见下方要点
+  login_region: "${FUTU_LOGIN_REGION:-sh}"      # 可选：sh=上海(默认) | hk | us
+```
+
+渲染为 dotenv 再交给 compose（`wbot configyaml` 输出纯 `KEY=VALUE` 行，经 `tools/config-to-env.sh` 薄封装）：
+
+```bash
+tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env    # --env-file 格式（无 export 前缀）
+docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml up -d
 ```
 
 要点：
 
-- MD5 必须对密码明文计算且**不含换行**：`echo -n '<明文>' | md5sum`（`echo` 漏写 `-n` 会算出错误散列）；MD5 本身等同凭证，同样只进 env.sh
-- 任何 compose 操作前先 `source ~/.wbot/env.sh`（`FUTU_LOGIN_REGION` 不设时 compose 默认 `sh`）
+- MD5 必须对密码明文计算且**不含换行**：`echo -n '<明文>' | md5sum`（`echo` 漏写 `-n` 会算出错误散列）；MD5 本身等同凭证，同样只进 config.yaml / 环境变量
+- 任何 compose 操作前先渲染 env 文件（`FUTU_LOGIN_REGION` 不设时默认 `sh`）
 
 ## 2. 拉取与启动
 
 ```bash
-source ~/.wbot/env.sh
-docker compose -f configs/docker-compose.futu.yml pull     # 首次拉取 ostai/futuopend:9.4.5418
-docker compose -f configs/docker-compose.futu.yml up -d    # 后台启动
-docker compose -f configs/docker-compose.futu.yml logs -f futu-opend
+tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env
+docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml pull     # 首次拉取 ostai/futuopend:9.4.5418
+docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml up -d    # 后台启动
+docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml logs -f futu-opend
 ```
 
 | 端口 | 用途 |
@@ -74,22 +87,23 @@ for _ in range(60):
 没有富途账号也能验证 compose 文件与注入机制，两态都该跑：
 
 ```bash
-# 状态一：未加载 env → 期望显式报错（`${VAR:?}` 生效即证明注入机制正确）
+# 状态一：未渲染 env → 期望显式报错（`${VAR:?}` 生效即证明注入机制正确）
 docker compose -f configs/docker-compose.futu.yml config
 # => Error: required variable FUTU_LOGIN_ACCOUNT is missing a value: ...
 
-# 状态二：已 source env.sh（值为非空占位即可，无需真实凭证）→ 正常渲染
-source ~/.wbot/env.sh
-docker compose -f configs/docker-compose.futu.yml config
+# 状态二：已渲染 env 文件（值可为占位，无需真实凭证）→ 正常渲染
+tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env
+docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml config
 ```
 
-备选注入方式：`docker compose --env-file <file>`（文件须为纯 `VAR=value` 行、无 `export` 前缀；`~/.wbot/env.sh` 是 `export` 语法故不能直接复用，若走此路径另备一份同权限 600 的 env 文件）。
+`tools/config-to-env.sh` 输出的 env 文件即 compose 要求的纯 `VAR=value` 行（无 `export` 前缀），可直接复用；不写 `--env-file` 时 compose 读宿主 shell 环境变量（即状态一）。
 
 ## 5. 常见错误
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| `required variable FUTU_LOGIN_ACCOUNT is missing a value` | env 未注入：`source ~/.wbot/env.sh` 后再执行 |
+| `required variable FUTU_LOGIN_ACCOUNT is missing a value` | env 未注入：先渲染 `tools/config-to-env.sh > ~/.wbot/.env` 并加 `--env-file ~/.wbot/.env` |
+| `environment variable not set`（含变量名） | config.yaml 的 `${VAR}` 引用未定义：设置对应环境变量，或改 `${VAR:-默认值}` |
 | 登录失败 / 账号或密码错误 | MD5 算错（换行、大小写、空格）：按第 1 节重算 |
 | 验证码错误或过期 | 重连 8000 重新提交新短信验证码 |
 | 行情报未开通市场（美股/港股等） | 账号未开通对应市场权限，**属预期错误**；向老板确认开通（`doc/tasks/2026-07-31-futu-integration.md` ⑪-c 文档注明） |
@@ -102,4 +116,4 @@ docker compose -f configs/docker-compose.futu.yml config
 nc -zv 127.0.0.1 11111    # API 端口可达即网关就绪
 ```
 
-安全提醒：本文件与 compose 只含变量名与 `${VAR:?}` 占位，零凭证值；真实值仅存 `~/.wbot/env.sh`（600 权限），永不入 commit/PR。关联 [[PRIVACY]]。
+安全提醒：本文件与 compose 只含变量名与 `${VAR:?}` 占位，零凭证值；真实值仅存 `~/.wbot/config.yaml`（600 权限）与宿主环境变量，永不入 commit/PR。关联 [[PRIVACY]]。
