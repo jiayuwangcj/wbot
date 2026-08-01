@@ -4,6 +4,9 @@ package ingest
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +14,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
+	"github.com/jiayu/wbot/internal/futu"
 )
 
 func TestRunMockIngestionIntegration(t *testing.T) {
@@ -119,6 +123,58 @@ SELECT status FROM ingestion_runs WHERE source = $1 ORDER BY id DESC LIMIT 1`, s
 	}
 	if st != "succeeded" {
 		t.Fatalf("run status: got %q want succeeded", st)
+	}
+}
+
+func TestRunFutuIngestionIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, futuBarsPayload)
+	}))
+	defer srv.Close()
+
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	source := "futu-ingest-test"
+	symbol := domain.Symbol("FUTU.US")
+	tf := "1d"
+	src := FutuSource{Client: futu.NewClient(srv.URL)}
+	if err := RunIngestion(ctx, database, source, symbol, tf, time.Time{}, time.Time{}, src); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	err = database.QueryRow(`
+SELECT COUNT(*) FROM bars WHERE symbol = $1 AND timeframe = $2`, string(symbol), tf).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("bars count: got %d want 2 (blank bar skipped)", n)
+	}
+
+	// Second run with identical bars must not fail (ON CONFLICT DO NOTHING).
+	if err := RunIngestion(ctx, database, source, symbol, tf, time.Time{}, time.Time{}, src); err != nil {
+		t.Fatal(err)
+	}
+	err = database.QueryRow(`
+SELECT COUNT(*) FROM bars WHERE symbol = $1 AND timeframe = $2`, string(symbol), tf).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("bars count after repeat: got %d want 2", n)
 	}
 }
 
