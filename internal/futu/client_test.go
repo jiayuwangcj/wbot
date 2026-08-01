@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStatusSuccess(t *testing.T) {
@@ -86,6 +87,7 @@ func TestStatusGlobalStateBusinessError(t *testing.T) {
 }
 
 func TestQuoteSuccess(t *testing.T) {
+	fastLimits(t)
 	var subBody, quoteBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -140,6 +142,7 @@ func TestQuoteSuccess(t *testing.T) {
 }
 
 func TestQuoteHTTPError(t *testing.T) {
+	fastLimits(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		io.WriteString(w, `{"error":"missing bearer token"}`)
@@ -153,6 +156,7 @@ func TestQuoteHTTPError(t *testing.T) {
 }
 
 func TestQuoteBusinessError(t *testing.T) {
+	fastLimits(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/subscribe":
@@ -172,6 +176,7 @@ func TestQuoteBusinessError(t *testing.T) {
 }
 
 func TestQuoteSubscribeError(t *testing.T) {
+	fastLimits(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		io.WriteString(w, `{"error":"unknown field"}`)
@@ -181,6 +186,38 @@ func TestQuoteSubscribeError(t *testing.T) {
 	_, err := NewClient(srv.URL).Quote(context.Background(), "HK.00700")
 	if err == nil || !strings.Contains(err.Error(), "subscribe") || !strings.Contains(err.Error(), "400") {
 		t.Fatalf("Quote() error = %v; want subscribe HTTP 400", err)
+	}
+}
+
+// TestQuoteRateLimitedBySnapshot verifies the /api/quote path passes the
+// SnapshotLimit gate (official tier 1 per 3s; swapped to a small gap here).
+func TestQuoteRateLimitedBySnapshot(t *testing.T) {
+	fastLimits(t)
+	old := SnapshotLimit
+	SnapshotLimit = NewLimiter(30 * time.Millisecond)
+	t.Cleanup(func() { SnapshotLimit = old })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/subscribe":
+			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{}}`)
+		case "/api/quote":
+			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{"basic_qot_list":[{"cur_price":475.2}]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	start := time.Now()
+	for i := 0; i < 2; i++ {
+		if _, err := c.Quote(context.Background(), "HK.00700"); err != nil {
+			t.Fatalf("Quote() #%d error: %v", i, err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
+		t.Fatalf("two Quotes completed in %v; want >= snapshot gap 30ms", elapsed)
 	}
 }
 

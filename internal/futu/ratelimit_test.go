@@ -39,6 +39,27 @@ func TestLimiterSpacing(t *testing.T) {
 	}
 }
 
+// TestDefaultTiers locks the conservative official-tier gaps (review P1): any
+// loosening must be deliberate and re-documented in doc/FUTU.md §8.
+func TestDefaultTiers(t *testing.T) {
+	tests := []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{"quote total cap", QuoteLimit.gap, 50 * time.Millisecond},
+		{"kline total cap", KlineLimit.gap, 200 * time.Millisecond},
+		{"kline first page", HistoryPageLimit.gap, 3 * time.Second},
+		{"snapshot", SnapshotLimit.gap, 3 * time.Second},
+		{"kline batch gap", BatchGap, time.Second},
+	}
+	for _, tt := range tests {
+		if tt.got != tt.want {
+			t.Errorf("%s gap = %v; want %v", tt.name, tt.got, tt.want)
+		}
+	}
+}
+
 func TestLimiterContextCancel(t *testing.T) {
 	l := NewLimiter(10 * time.Millisecond)
 	if err := l.Wait(context.Background()); err != nil {

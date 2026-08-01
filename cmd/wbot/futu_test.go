@@ -117,6 +117,7 @@ func TestFutuStatusHTTPError(t *testing.T) {
 }
 
 func TestFutuQuoteSuccess(t *testing.T) {
+	fastFutuLimits(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/subscribe":
@@ -141,6 +142,7 @@ func TestFutuQuoteSuccess(t *testing.T) {
 }
 
 func TestFutuQuoteUnreachable(t *testing.T) {
+	fastFutuLimits(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	addr := srv.URL
 	srv.Close()
@@ -155,6 +157,7 @@ func TestFutuQuoteUnreachable(t *testing.T) {
 }
 
 func TestFutuQuoteUnauthorized(t *testing.T) {
+	fastFutuLimits(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		io.WriteString(w, `{"error":"missing bearer token"}`)

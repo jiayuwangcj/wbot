@@ -14,13 +14,14 @@ import (
 // fastLimits shrinks the global rate pools so unit tests run quickly.
 func fastLimits(t *testing.T) {
 	t.Helper()
-	oldQ, oldK, oldH, oldG := QuoteLimit, KlineLimit, HistoryPageLimit, BatchGap
+	oldQ, oldK, oldH, oldS, oldG := QuoteLimit, KlineLimit, HistoryPageLimit, SnapshotLimit, BatchGap
 	QuoteLimit = NewLimiter(time.Microsecond)
 	KlineLimit = NewLimiter(time.Microsecond)
 	HistoryPageLimit = NewLimiter(time.Microsecond)
+	SnapshotLimit = NewLimiter(time.Microsecond)
 	BatchGap = time.Microsecond
 	t.Cleanup(func() {
-		QuoteLimit, KlineLimit, HistoryPageLimit, BatchGap = oldQ, oldK, oldH, oldG
+		QuoteLimit, KlineLimit, HistoryPageLimit, SnapshotLimit, BatchGap = oldQ, oldK, oldH, oldS, oldG
 	})
 }
 

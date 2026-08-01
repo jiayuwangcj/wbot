@@ -14,13 +14,14 @@ import (
 // fastFutuLimits shrinks the global futu rate pools for fast CLI tests.
 func fastFutuLimits(t *testing.T) {
 	t.Helper()
-	oldQ, oldK, oldH, oldG := futu.QuoteLimit, futu.KlineLimit, futu.HistoryPageLimit, futu.BatchGap
+	oldQ, oldK, oldH, oldS, oldG := futu.QuoteLimit, futu.KlineLimit, futu.HistoryPageLimit, futu.SnapshotLimit, futu.BatchGap
 	futu.QuoteLimit = futu.NewLimiter(time.Microsecond)
 	futu.KlineLimit = futu.NewLimiter(time.Microsecond)
 	futu.HistoryPageLimit = futu.NewLimiter(time.Microsecond)
+	futu.SnapshotLimit = futu.NewLimiter(time.Microsecond)
 	futu.BatchGap = time.Microsecond
 	t.Cleanup(func() {
-		futu.QuoteLimit, futu.KlineLimit, futu.HistoryPageLimit, futu.BatchGap = oldQ, oldK, oldH, oldG
+		futu.QuoteLimit, futu.KlineLimit, futu.HistoryPageLimit, futu.SnapshotLimit, futu.BatchGap = oldQ, oldK, oldH, oldS, oldG
 	})
 }
 

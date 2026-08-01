@@ -101,6 +101,9 @@ func (c *Client) Quote(ctx context.Context, symbol string) (json.RawMessage, err
 	}); err != nil {
 		return nil, fmt.Errorf("subscribe %s: %w", symbol, err)
 	}
+	if err := SnapshotLimit.Wait(ctx); err != nil {
+		return nil, err
+	}
 	s2c, err := c.post(ctx, "/api/quote", map[string]any{
 		"security_list": []map[string]any{{"market": market, "code": code}},
 	})
