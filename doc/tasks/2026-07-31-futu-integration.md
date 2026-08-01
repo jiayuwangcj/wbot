@@ -34,11 +34,11 @@
 
 ## State
 
-- **status**: `queued`（⑪-a 排本轮；⑪-b/c 待凭证与 go.mod 决策）
+- **status**: `done`（⑪-a/b/c 全部完成：网关上线 PR #58、客户端 PR #59、数据管道 PR #61）
 - **last step**: 2026-07-31 dispatcher 调研完成：OpenD 社区镜像 `ostai/futuopend`（FUTU_LOGIN_ACCOUNT/FUTU_LOGIN_PWD_MD5/FUTU_PORT=11111/SERVER_PORT=8000 验证码 WebSocket；持久化目录 `/root/.com.futunn.FutuOpenD`）；qtopie/gofutuapi 可用（38 commits、MIT、未归档、约 2 个月前有推送；连接/行情/交易 API 形态已确认，proto 用 buf 生成、gen/ 已提交）；**风险：其 go.mod 要求 go 1.24.4，本仓库 go 1.22.0**。
 
 ## Next
 
 - ⑪-a：派 coder（worktree `.claude/worktrees/futu-opend`，分支 `feat/futu-opend`）产出 compose + doc/FUTU.md → verify（compose config 校验）→ reviewer（重点：凭证泄漏扫描）→ 合入。
-- ⑪-b 前置：确认老板富途账号（discussions/21）+ go.mod 升级决策；OpenD 容器起好后接 `wbot futu status` 连通性自测。
+- 无（⑪ 完成）。后续：交易命令（默认模拟盘 trd_env=0，实盘写需老板确认——doc/FUTU.md 交易安全策略）；K 线全量拉取页数上限/流式（P3 排期）。
 - ⑪-c 依赖 ⑪-b 连接层真实可用。
