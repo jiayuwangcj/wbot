@@ -31,7 +31,7 @@ type OptionQuoteRow struct {
 	ImpliedVol *float64 // nil = unknown (gateway REST does not expose IV in v1)
 }
 
-// OptionIngestStats reports one futu-option pull.
+// OptionIngestStats reports one futu-option pull (Rows = actually inserted).
 type OptionIngestStats struct {
 	Expiries  int
 	Contracts int
@@ -168,12 +168,16 @@ func RunOptionIngestion(ctx context.Context, db *sql.DB, c *futu.Client, underly
 INSERT INTO option_quotes (symbol, underlying, option_type, strike, expiry, ts, open, high, low, close, volume, implied_vol, adjust, source)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'futu')
 ON CONFLICT (symbol, ts, adjust, source) DO NOTHING`
+	inserted := 0
 	for _, r := range rows {
-		_, err = tx.ExecContext(ctx, insertRow,
+		res, err := tx.ExecContext(ctx, insertRow,
 			r.Symbol, r.Underlying, r.OptionType, r.Strike, r.Expiry, r.Ts,
 			r.Open, r.High, r.Low, r.Close, r.Volume, r.ImpliedVol, adjust)
 		if err != nil {
 			return nil, fmt.Errorf("ingest: futu-option: insert %s: %w", r.Symbol, err)
+		}
+		if n, err := res.RowsAffected(); err == nil {
+			inserted += int(n)
 		}
 	}
 	if err := UpsertWatchlist(ctx, tx, underlying, "option-watch", map[string]any{
@@ -187,7 +191,7 @@ ON CONFLICT (symbol, ts, adjust, source) DO NOTHING`
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &OptionIngestStats{Expiries: len(window), Contracts: used, Rows: len(rows)}, nil
+	return &OptionIngestStats{Expiries: len(window), Contracts: used, Rows: inserted}, nil
 }
 
 // fetchOptionRows pulls each contract's daily K-lines (skipping blanks and

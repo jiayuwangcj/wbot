@@ -40,7 +40,7 @@ func TestHandlerIntegration(t *testing.T) {
 	defer srv.Close()
 
 	// GET /v1/bars: mock feed yields exactly 3 bars for DEMO.US 1d.
-	resp, err := http.Get(srv.URL + "/v1/bars?symbol=DEMO.US&timeframe=1d")
+	resp, err := http.Get(srv.URL + "/v1/bars?symbol=DEMO.US&timeframe=1d&adjust=none")
 	if err != nil {
 		t.Fatal(err)
 	}
