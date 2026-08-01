@@ -104,6 +104,82 @@ func TestSaveLoadResultsIntegration(t *testing.T) {
 	}
 }
 
+// TestSaveLoadResultDetailIntegration: the equity_curve/trades trace (migration
+// 004) round-trips through SaveResult/LoadResult; stock trades get the symbol
+// filled, list rows stay curve-free, and a metrics-only row reads back clean.
+func TestSaveLoadResultDetailIntegration(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	symbol := "CURVE.US"
+	strategy := "buy-hold"
+	if _, err := database.Exec(`DELETE FROM backtest_results WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
+	end := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	res := &Result{
+		Equity: 10500, TotalReturn: 0.05, MaxDrawdown: 0.02, Bars: 2,
+		EquityCurve: []EquityPoint{
+			{Ts: start, Equity: 10000},
+			{Ts: end, Equity: 10500},
+		},
+		Trades: []Trade{
+			{Ts: start, Action: "buy", Size: 100, Price: 100, CashAfter: 0},
+			{Ts: end, Action: "sell-call", Symbol: "C105", Size: 1, Price: 2.5, CashAfter: 250},
+		},
+	}
+	id, err := SaveResult(ctx, database, strategy, symbol,
+		map[string]any{"cash": 10000.0, "fee": 0.0}, res, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := LoadResult(ctx, database, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.EquityCurve) != 2 || !rec.EquityCurve[1].Ts.Equal(end) || rec.EquityCurve[1].Equity != 10500 {
+		t.Fatalf("equity curve = %+v; want 2 points ending at 10500 on %v", rec.EquityCurve, end)
+	}
+	if len(rec.Trades) != 2 {
+		t.Fatalf("trades = %+v; want 2", rec.Trades)
+	}
+	// The stock trade's empty symbol is filled with the underlying.
+	if rec.Trades[0].Symbol != symbol || rec.Trades[0].Action != "buy" {
+		t.Fatalf("trades[0] = %+v; want buy with symbol %s", rec.Trades[0], symbol)
+	}
+	// Option trades keep their contract code.
+	if rec.Trades[1].Symbol != "C105" || rec.Trades[1].Action != "sell-call" {
+		t.Fatalf("trades[1] = %+v; want sell-call on C105", rec.Trades[1])
+	}
+
+	// The list view stays curve-free (summary only).
+	recs, err := LoadResults(ctx, database, symbol, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].EquityCurve != nil || recs[0].Trades != nil {
+		t.Fatalf("list row = %+v; want no trace loaded", recs)
+	}
+
+	// Metrics-only save (no trace): columns stay NULL, LoadResult reads back clean.
+	oldID, err := SaveResult(ctx, database, "hold", symbol, map[string]any{}, &Result{Bars: 1}, start, end)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRec, err := LoadResult(ctx, database, oldID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if oldRec.EquityCurve != nil || oldRec.Trades != nil {
+		t.Fatalf("metrics-only row = %+v; want nil trace", oldRec)
+	}
+
+	if _, err := LoadResult(ctx, database, id+1000000); err != ErrResultNotFound {
+		t.Fatalf("LoadResult(missing) error = %v; want ErrResultNotFound", err)
+	}
+}
+
 func TestSaveResultValidation(t *testing.T) {
 	ctx := context.Background()
 	start := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
@@ -129,5 +205,14 @@ func TestSaveResultValidation(t *testing.T) {
 	}
 	if _, err := LoadResults(ctx, &sql.DB{}, "", "", 10); err == nil {
 		t.Fatal("LoadResults(empty symbol) = nil error; want error")
+	}
+	if _, err := ListResults(ctx, nil, "", "", 10); err == nil {
+		t.Fatal("ListResults(nil db) = nil error; want error")
+	}
+	if _, err := LoadResult(ctx, nil, 1); err == nil {
+		t.Fatal("LoadResult(nil db) = nil error; want error")
+	}
+	if _, err := LoadResult(ctx, &sql.DB{}, 0); err == nil {
+		t.Fatal("LoadResult(id 0) = nil error; want error")
 	}
 }

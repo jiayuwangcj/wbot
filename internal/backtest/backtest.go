@@ -5,17 +5,40 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
 )
 
-// Result summarizes one backtest run.
+// Result summarizes one backtest run; EquityCurve/Trades are the deterministic
+// per-bar trace (draft 2026-08-02 S1: same input, same trace).
 type Result struct {
 	Equity      float64
 	TotalReturn float64
 	MaxDrawdown float64
 	Bars        int
+	EquityCurve []EquityPoint
+	Trades      []Trade
+}
+
+// EquityPoint is one bar's portfolio equity at the bar timestamp.
+type EquityPoint struct {
+	Ts     time.Time `json:"ts"`
+	Equity float64   `json:"equity"`
+}
+
+// Trade is one settled trade event: fills at the bar close (stock at close,
+// option at per-contract premium), expiry events exercise ITM legs at the
+// strike or void OTM legs. Symbol is the option contract code for legs and is
+// filled with the underlying symbol by SaveResult for stock trades.
+type Trade struct {
+	Ts        time.Time `json:"ts"`
+	Action    string    `json:"action"` // buy/sell/*-call/*-put/exercise-call/exercise-put/expire-otm
+	Symbol    string    `json:"symbol"`
+	Size      float64   `json:"size"`  // shares for stock/exercise, contracts for option fills
+	Price     float64   `json:"price"` // close, premium, or strike
+	CashAfter float64   `json:"cash_after"`
 }
 
 // buyTol tolerates one-ulp float error in BuyHold's all-in size (cash/close).
@@ -56,7 +79,11 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		st.Chain = opts.Chain
 		st.OptBars = opts.Bars
 	}
-	var peak, maxDD float64
+	var (
+		peak, maxDD float64
+		curve       []EquityPoint
+		trades      []Trade
+	)
 	for i, b := range bars {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -68,11 +95,12 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		if err != nil {
 			return nil, fmt.Errorf("backtest: bar %d: strategy: %w", i, err)
 		}
-		if err := settleAction(st, act, size, b, feePerTrade); err != nil {
+		if err := settleAction(st, act, size, b, feePerTrade, &trades); err != nil {
 			return nil, fmt.Errorf("backtest: bar %d: %w", i, err)
 		}
-		settleExpired(st, b.Ts)
+		settleExpired(st, b.Ts, &trades)
 		eq := st.Equity(b.Close)
+		curve = append(curve, EquityPoint{Ts: b.Ts, Equity: eq})
 		if eq > peak {
 			peak = eq
 		}
@@ -87,6 +115,8 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		TotalReturn: (final - initialCash) / initialCash,
 		MaxDrawdown: maxDD,
 		Bars:        len(bars),
+		EquityCurve: curve,
+		Trades:      trades,
 	}, nil
 }
 
@@ -101,7 +131,7 @@ func markOptions(st *State, ts time.Time) {
 
 // settleAction books one bar's trade: stock trades at the close, option trades
 // at the pending contract's latest close (size = contracts).
-func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade float64) error {
+func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade float64, trades *[]Trade) error {
 	switch act {
 	case ActionHold:
 	case ActionBuy:
@@ -110,14 +140,16 @@ func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade
 		}
 		st.Cash -= size*b.Close + feePerTrade
 		st.Position += size
+		*trades = append(*trades, Trade{Ts: b.Ts, Action: "buy", Size: size, Price: b.Close, CashAfter: st.Cash})
 	case ActionSell:
 		if size < 0 || size > st.Position+buyTol {
 			return fmt.Errorf("sell %v shares exceeds position %v", size, st.Position)
 		}
 		st.Cash += size*b.Close - feePerTrade
 		st.Position -= size
+		*trades = append(*trades, Trade{Ts: b.Ts, Action: "sell", Size: size, Price: b.Close, CashAfter: st.Cash})
 	case ActionSellCall, ActionBuyCall, ActionSellPut, ActionBuyPut:
-		return settleOptionTrade(st, act, size, b)
+		return settleOptionTrade(st, act, size, b, trades)
 	default:
 		return fmt.Errorf("unknown action %s", act)
 	}
@@ -126,7 +158,7 @@ func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade
 
 // settleOptionTrade books one option action: size contracts of the pending
 // contract at its latest close, enforcing the CSP cash reserve on short puts.
-func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar) error {
+func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades *[]Trade) error {
 	if size <= 0 {
 		return fmt.Errorf("%s size %v; want > 0 contracts", act, size)
 	}
@@ -177,6 +209,7 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar) error 
 		}
 	}
 	st.Cash += flow
+	*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash})
 	if pos.Contracts == 0 {
 		delete(st.Options, p.Code)
 	} else {
@@ -189,23 +222,36 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar) error 
 
 // settleExpired exercises ITM legs (call: shares out at strike, put: shares in
 // at strike) and voids OTM legs once their expiry date has passed; the leg is
-// always removed.
-func settleExpired(st *State, ts time.Time) {
+// always removed. ITM exercise and OTM void both land in the trade ledger.
+// Expiring legs are processed in contract-code order: map iteration alone is
+// random, and same-day expiries must produce a stable ledger (determinism).
+func settleExpired(st *State, ts time.Time, trades *[]Trade) {
+	codes := make([]string, 0, len(st.Options))
 	for code, p := range st.Options {
-		if ts.Before(p.Expiry) {
-			continue
+		if !ts.Before(p.Expiry) {
+			codes = append(codes, code)
 		}
+	}
+	sort.Strings(codes)
+	for _, code := range codes {
+		p := st.Options[code]
 		shares := p.Contracts * float64(p.Lot)
 		switch p.Kind {
 		case OptionCall:
 			if st.Price > p.Strike {
 				st.Position += shares
 				st.Cash -= shares * p.Strike
+				*trades = append(*trades, Trade{Ts: ts, Action: "exercise-call", Symbol: code, Size: shares, Price: p.Strike, CashAfter: st.Cash})
+			} else {
+				*trades = append(*trades, Trade{Ts: ts, Action: "expire-otm", Symbol: code, CashAfter: st.Cash})
 			}
 		case OptionPut:
 			if st.Price < p.Strike {
 				st.Position -= shares
 				st.Cash += shares * p.Strike
+				*trades = append(*trades, Trade{Ts: ts, Action: "exercise-put", Symbol: code, Size: shares, Price: p.Strike, CashAfter: st.Cash})
+			} else {
+				*trades = append(*trades, Trade{Ts: ts, Action: "expire-otm", Symbol: code, CashAfter: st.Cash})
 			}
 		}
 		delete(st.Options, code)

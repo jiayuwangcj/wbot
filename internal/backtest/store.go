@@ -10,23 +10,33 @@ import (
 	"time"
 )
 
-// Result persistence in backtest_results (migration 003): params/metrics as
-// JSONB; SaveResult inserts one run, LoadResults lists newest first.
+// Result persistence in backtest_results (migration 003, detail columns 004):
+// params/metrics as JSONB, equity_curve/trades nullable; SaveResult inserts one
+// run, LoadResults lists newest first, LoadResult reads one run's full trace.
 
-// ResultRecord is one persisted backtest run.
+// ErrResultNotFound reports LoadResult missing its row.
+var ErrResultNotFound = errors.New("backtest: result not found")
+
+// ResultRecord is one persisted backtest run; EquityCurve/Trades are nil for
+// pre-004 rows (or metrics-only saves).
 type ResultRecord struct {
-	ID        int64
-	Strategy  string
-	Symbol    string
-	Params    map[string]any
-	Metrics   map[string]any
-	StartTs   time.Time
-	EndTs     time.Time
-	CreatedAt time.Time
+	ID          int64
+	Strategy    string
+	Symbol      string
+	Params      map[string]any
+	Metrics     map[string]any
+	StartTs     time.Time
+	EndTs       time.Time
+	CreatedAt   time.Time
+	EquityCurve []EquityPoint
+	Trades      []Trade
 }
 
 // SaveResult persists one run: params (e.g. cash/fee/adjust) plus the metrics
-// derived from Result (equity/total_return/max_drawdown/bars).
+// derived from Result (equity/total_return/max_drawdown/bars) and, when the
+// Result carries them, the equity_curve/trades trace (migration 004). Stock
+// trades get their Symbol filled with the underlying symbol; option trades
+// keep the contract code. A trace-less Result saves metrics only.
 func SaveResult(ctx context.Context, db *sql.DB, strategy, symbol string, params map[string]any, r *Result, startTs, endTs time.Time) (int64, error) {
 	if db == nil {
 		return 0, errors.New("backtest: save result: nil db")
@@ -56,15 +66,94 @@ func SaveResult(ctx context.Context, db *sql.DB, strategy, symbol string, params
 	if err != nil {
 		return 0, fmt.Errorf("backtest: save result: metrics: %w", err)
 	}
+	var curveArg, tradesArg any
+	if len(r.EquityCurve) > 0 {
+		curveJSON, err := json.Marshal(r.EquityCurve)
+		if err != nil {
+			return 0, fmt.Errorf("backtest: save result: equity curve: %w", err)
+		}
+		curveArg = string(curveJSON)
+	}
+	if len(r.Trades) > 0 {
+		trades := make([]Trade, len(r.Trades))
+		copy(trades, r.Trades)
+		for i := range trades {
+			if trades[i].Symbol == "" {
+				trades[i].Symbol = symbol
+			}
+		}
+		tradesJSON, err := json.Marshal(trades)
+		if err != nil {
+			return 0, fmt.Errorf("backtest: save result: trades: %w", err)
+		}
+		tradesArg = string(tradesJSON)
+	}
 	var id int64
 	err = db.QueryRowContext(ctx, `
-INSERT INTO backtest_results (strategy, symbol, params, metrics, start_ts, end_ts)
-VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
-RETURNING id`, strategy, symbol, string(paramsJSON), string(metricsJSON), startTs, endTs).Scan(&id)
+INSERT INTO backtest_results (strategy, symbol, params, metrics, start_ts, end_ts, equity_curve, trades)
+VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb)
+RETURNING id`, strategy, symbol, string(paramsJSON), string(metricsJSON), startTs, endTs, curveArg, tradesArg).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("backtest: save result: insert: %w", err)
 	}
 	return id, nil
+}
+
+// ListResults lists saved runs newest first; symbol/strategy filter when
+// non-empty (empty symbol lists all), limit <= 0 defaults to 50. The list
+// shape is the summary only (no equity_curve/trades).
+func ListResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit int) ([]ResultRecord, error) {
+	if db == nil {
+		return nil, errors.New("backtest: list results: nil db")
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	conds := []string{}
+	args := []any{}
+	if symbol != "" {
+		args = append(args, symbol)
+		conds = append(conds, fmt.Sprintf("symbol = $%d", len(args)))
+	}
+	if strategy != "" {
+		args = append(args, strategy)
+		conds = append(conds, fmt.Sprintf("strategy = $%d", len(args)))
+	}
+	args = append(args, limit)
+	query := `
+SELECT id, strategy, symbol, params, metrics, start_ts, end_ts, created_at
+FROM backtest_results`
+	if len(conds) > 0 {
+		query += " WHERE " + strings.Join(conds, " AND ")
+	}
+	query += fmt.Sprintf(" ORDER BY id DESC LIMIT $%d", len(args))
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("backtest: list results: query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ResultRecord
+	for rows.Next() {
+		var rec ResultRecord
+		var paramsJSON, metricsJSON []byte
+		if err := rows.Scan(&rec.ID, &rec.Strategy, &rec.Symbol, &paramsJSON, &metricsJSON,
+			&rec.StartTs, &rec.EndTs, &rec.CreatedAt); err != nil {
+			return nil, fmt.Errorf("backtest: list results: scan: %w", err)
+		}
+		if err := json.Unmarshal(paramsJSON, &rec.Params); err != nil {
+			return nil, fmt.Errorf("backtest: list results: params: %w", err)
+		}
+		if err := json.Unmarshal(metricsJSON, &rec.Metrics); err != nil {
+			return nil, fmt.Errorf("backtest: list results: metrics: %w", err)
+		}
+		out = append(out, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("backtest: list results: rows: %w", err)
+	}
+	return out, nil
 }
 
 // LoadResults lists saved runs for symbol (strategy filters when non-empty),
@@ -76,45 +165,46 @@ func LoadResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit
 	if symbol == "" {
 		return nil, errors.New("backtest: load results: empty symbol")
 	}
-	if limit <= 0 {
-		limit = 50
-	}
-	conds := []string{"symbol = $1"}
-	args := []any{symbol}
-	if strategy != "" {
-		args = append(args, strategy)
-		conds = append(conds, fmt.Sprintf("strategy = $%d", len(args)))
-	}
-	args = append(args, limit)
-	query := fmt.Sprintf(`
-SELECT id, strategy, symbol, params, metrics, start_ts, end_ts, created_at
-FROM backtest_results WHERE %s ORDER BY id DESC LIMIT $%d`,
-		strings.Join(conds, " AND "), len(args))
+	return ListResults(ctx, db, symbol, strategy, limit)
+}
 
-	rows, err := db.QueryContext(ctx, query, args...)
+// LoadResult reads one run by id including its equity_curve/trades trace;
+// ErrResultNotFound when no row has that id.
+func LoadResult(ctx context.Context, db *sql.DB, id int64) (*ResultRecord, error) {
+	if db == nil {
+		return nil, errors.New("backtest: load result: nil db")
+	}
+	if id <= 0 {
+		return nil, errors.New("backtest: load result: id must be positive")
+	}
+	var rec ResultRecord
+	var paramsJSON, metricsJSON, curveJSON, tradesJSON []byte
+	err := db.QueryRowContext(ctx, `
+SELECT id, strategy, symbol, params, metrics, start_ts, end_ts, created_at, equity_curve, trades
+FROM backtest_results WHERE id = $1`, id).
+		Scan(&rec.ID, &rec.Strategy, &rec.Symbol, &paramsJSON, &metricsJSON,
+			&rec.StartTs, &rec.EndTs, &rec.CreatedAt, &curveJSON, &tradesJSON)
+	if err == sql.ErrNoRows {
+		return nil, ErrResultNotFound
+	}
 	if err != nil {
-		return nil, fmt.Errorf("backtest: load results: query: %w", err)
+		return nil, fmt.Errorf("backtest: load result: query: %w", err)
 	}
-	defer rows.Close()
-
-	var out []ResultRecord
-	for rows.Next() {
-		var rec ResultRecord
-		var paramsJSON, metricsJSON []byte
-		if err := rows.Scan(&rec.ID, &rec.Strategy, &rec.Symbol, &paramsJSON, &metricsJSON,
-			&rec.StartTs, &rec.EndTs, &rec.CreatedAt); err != nil {
-			return nil, fmt.Errorf("backtest: load results: scan: %w", err)
-		}
-		if err := json.Unmarshal(paramsJSON, &rec.Params); err != nil {
-			return nil, fmt.Errorf("backtest: load results: params: %w", err)
-		}
-		if err := json.Unmarshal(metricsJSON, &rec.Metrics); err != nil {
-			return nil, fmt.Errorf("backtest: load results: metrics: %w", err)
-		}
-		out = append(out, rec)
+	if err := json.Unmarshal(paramsJSON, &rec.Params); err != nil {
+		return nil, fmt.Errorf("backtest: load result: params: %w", err)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("backtest: load results: rows: %w", err)
+	if err := json.Unmarshal(metricsJSON, &rec.Metrics); err != nil {
+		return nil, fmt.Errorf("backtest: load result: metrics: %w", err)
 	}
-	return out, nil
+	if curveJSON != nil {
+		if err := json.Unmarshal(curveJSON, &rec.EquityCurve); err != nil {
+			return nil, fmt.Errorf("backtest: load result: equity curve: %w", err)
+		}
+	}
+	if tradesJSON != nil {
+		if err := json.Unmarshal(tradesJSON, &rec.Trades); err != nil {
+			return nil, fmt.Errorf("backtest: load result: trades: %w", err)
+		}
+	}
+	return &rec, nil
 }

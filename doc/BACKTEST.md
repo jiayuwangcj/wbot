@@ -22,8 +22,9 @@ wbot backtest \
 | `-params` | — | 策略参数 JSON（仅模板策略），如 `{"strike_pct_otm":0.05}`；非法参数报错 exit 2 |
 | `-fee` | 0 | 每笔正股交易固定费用（买入从现金扣、卖出从所得扣） |
 | `-max-drawdown` | 0 | 约束检查（0..1）：结果最大回撤超限 → exit 1；0 = 不检查 |
+| `-save` | false | 落库 `backtest_results`（要求 `-dsn` 输入）：metrics + equity_curve/trades 明细（migration 003/004），经 `GET /v1/backtests` 读取（doc/API.md） |
 
-输出一行摘要：`final_equity=... total_return=... max_drawdown=... bars=...`（确定性：同输入同输出）。
+输出一行摘要：`final_equity=... total_return=... max_drawdown=... bars=...`（确定性：同输入同输出）。`-save` 时另打印 `saved result id=...`；落库的 equity_curve 为每根 bar 结算后市值、trades 为正股买卖/期权开平仓/行权（ITM 行权、OTM 作废）逐笔明细（同输入同输出，见 `internal/backtest` 确定性单测）。
 
 ## 期权腿与策略模板（slice ⑫-b）
 
