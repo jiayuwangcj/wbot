@@ -58,6 +58,7 @@ func (e backtestExecutor) RunOne(ctx context.Context, symbol, strategy string, p
 	if err != nil {
 		return nil, err
 	}
+	fmt.Fprintf(os.Stderr, "httpapi: backtests: exec %s saved id=%d\n", symbol, id)
 	return backtest.LoadResult(ctx, e.db, id)
 }
 
