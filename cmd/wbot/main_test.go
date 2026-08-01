@@ -841,9 +841,28 @@ func (f serveFakeFutuAccounter) Account(_ context.Context, _ futu.Env, _ uint64)
 	}, nil
 }
 
+// serveFakeFutuChainer is a scriptable FutuOptionChainer for serveMux tests.
+type serveFakeFutuChainer struct {
+	err error
+}
+
+func (f serveFakeFutuChainer) Expirations(_ context.Context, _ string) ([]futu.OptionExpiry, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []futu.OptionExpiry{{Date: "2026-08-07", Timestamp: time.Date(2026, 8, 7, 0, 0, 0, 0, time.UTC), DistanceDays: 5, Cycle: 1}}, nil
+}
+
+func (f serveFakeFutuChainer) Chain(_ context.Context, _ string, begin, end time.Time) ([]futu.OptionContract, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []futu.OptionContract{{Symbol: "HK.TCH260807C335000", Underlying: "HK.00700", OptionType: "call", Strike: 335, Expiry: begin, LotSize: 100}}, nil
+}
+
 func serveMuxForTest() http.Handler {
 	meta := httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:8080"}
-	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{}, serveFakeFutuQuoter{s2c: json.RawMessage(`{"basic_qot_list":[{"cur_price":475.2}]}`)}, serveFakeFutuAccounter{})
+	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{}, serveFakeFutuQuoter{s2c: json.RawMessage(`{"basic_qot_list":[{"cur_price":475.2}]}`)}, serveFakeFutuAccounter{}, serveFakeFutuChainer{})
 }
 
 // TestServeMuxBacktestExecuteRoute: POST /v1/backtests routes to the execute
@@ -927,6 +946,34 @@ func TestServeMuxFutuAccountRoute(t *testing.T) {
 func TestServeHelpMentionsFutuAccount(t *testing.T) {
 	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/futu/account") {
 		t.Fatalf("serve help missing /v1/futu/account: %q", out)
+	}
+}
+
+func TestServeMuxFutuOptionsRoute(t *testing.T) {
+	top := serveMuxForTest()
+	rec := serveGet(t, top, "/v1/futu/options?symbol=HK.00700")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("options = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "expirations") || !strings.Contains(rec.Body.String(), "TCH260807C335000") {
+		t.Fatalf("options body missing expirations/contracts: %s", rec.Body)
+	}
+	// Missing symbol through the real mux: 400 with the {code,message,action} body.
+	rec = serveGet(t, top, "/v1/futu/options")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing symbol = %d; want 400 (body %s)", rec.Code, rec.Body)
+	}
+	// Non-GET: 405.
+	rec = httptest.NewRecorder()
+	top.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/futu/options?symbol=HK.00700", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /v1/futu/options = %d; want 405 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestServeHelpMentionsFutuOptions(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/futu/options") {
+		t.Fatalf("serve help missing /v1/futu/options: %q", out)
 	}
 }
 
@@ -1069,7 +1116,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	// Serve wiring with real DB stores (same as runServe).
 	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
 		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
-		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter())
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOptionChainer())
 
 	rec := serveGet(t, top, "/v1/backtests?symbol="+symbol)
 	if rec.Code != http.StatusOK {
@@ -1169,7 +1216,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 	// API POST: same fixture, same strategy → identical metrics/params.
 	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
 		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
-		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter())
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOptionChainer())
 	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
 		strings.NewReader(`{"symbol":"`+symbol+`","strategy":"buy-hold"}`))
 	rec := httptest.NewRecorder()
