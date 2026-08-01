@@ -35,6 +35,10 @@ func TestSaveLoadResultsIntegration(t *testing.T) {
 	ctx := context.Background()
 	symbol := "SAVE.US"
 	strategy := "buy-hold"
+	// Self-cleaning: the local dev DB persists between runs (CI uses a fresh one).
+	if _, err := database.Exec(`DELETE FROM backtest_results WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
 	start := time.Date(2026, 7, 27, 0, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 7, 31, 0, 0, 0, 0, time.UTC)
 

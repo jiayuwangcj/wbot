@@ -191,6 +191,14 @@ func TestRunOptionIngestionIntegration(t *testing.T) {
 	srv := optionGatewayServer(t, func(code string) string { return klineForCode(code) })
 	defer srv.Close()
 
+	// Self-cleaning: the local dev DB persists between runs (CI uses a fresh one).
+	if _, err := database.Exec(`DELETE FROM option_quotes WHERE underlying = $1`, "HK.00700"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM watchlist WHERE symbol = $1`, "HK.00700"); err != nil {
+		t.Fatal(err)
+	}
+
 	ctx := context.Background()
 	from := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
