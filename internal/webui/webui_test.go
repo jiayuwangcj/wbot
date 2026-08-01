@@ -393,6 +393,49 @@ func TestWatchlistPageElements(t *testing.T) {
 	}
 }
 
+func TestOptionsChainSectionElements(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/watchlist.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`<section id="options"`,
+		`<form id="options-form"`,
+		`name="options-symbol"`,
+		`id="options-expiry"`,
+		`id="options-table"`,
+		`id="options-empty"`,
+		`id="options-error"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("watchlist.html missing %q", want)
+		}
+	}
+}
+
+func TestAppJSQueriesOptionsAPI(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`"/v1/futu/options`,
+		"initOptionsChainPage",
+		"renderOptionChain",
+		"renderOptionExpirySelect",
+		"options-expiry",
+		"data.expirations",
+		"data.contracts",
+		"option_type",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 func TestWatchlistNavLinks(t *testing.T) {
 	for _, path := range []string{"web/index.html", "web/admin.html"} {
 		data, err := fs.ReadFile(webFiles, path)

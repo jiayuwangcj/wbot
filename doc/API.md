@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/options` 为期权链代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## Web UI
 
@@ -510,6 +510,54 @@ Query 参数：
 
 响应 `502`（网关已应答但拒绝——如 `env` 无匹配账户、trd_env 不匹配、网关业务错误）：`message` 为网关消息透传（含出错步骤 `accounts`/`funds`/`positions`）。
 
+## GET /v1/futu/options
+
+期权链代理（期权链可视化切片）：标的的到期日列表 + 单个到期日的 call/put 链（复用 `internal/futu` 的 `OptionExpirations`/`OptionChain`，快照类限频 1 次/3s 内置，见 [[FUTU]] §8/§10）。浏览器不能直连网关，serve 代浏览器调用。
+
+Query 参数：
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| `symbol` | 是 | market 限定 symbol，如 `HK.00700`（前缀支持 `HK./US./SH./SZ.`，非法 → 400） |
+| `expiry` | 否 | 链到期日 `YYYY-MM-DD`（格式非法 → 400）；缺省为最近未来到期日（`distance_days` ≥ 0 最小者），全部已到期时 `contracts` 为空数组 |
+
+网关地址：环境变量 `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`，同 quote/account 代理）。
+
+响应 `200`：
+
+```json
+{
+  "symbol": "HK.00700",
+  "expiry": "2026-08-07",
+  "expirations": [
+    {"date": "2026-07-31", "timestamp": "2026-07-30T16:00:00Z", "distance_days": -1, "cycle": 1},
+    {"date": "2026-08-07", "timestamp": "2026-08-06T16:00:00Z", "distance_days": 5, "cycle": 1},
+    {"date": "2026-08-28", "timestamp": "2026-08-27T16:00:00Z", "distance_days": 26, "cycle": 1}
+  ],
+  "contracts": [
+    {"expiry": "2026-08-07", "option_type": "call", "strike": 335.0, "symbol": "HK.TCH260807C335000", "lot_size": 100},
+    {"expiry": "2026-08-07", "option_type": "put", "strike": 335.0, "symbol": "HK.TCH260807P335000", "lot_size": 100}
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `expiry` | `contracts` 所属到期日（请求值或默认最近未来；无可用到期时为 `""`） |
+| `expirations[].date` | 到期日 `YYYY-MM-DD`（网关 `strike_time`，市场本地日期，权威字段） |
+| `expirations[].timestamp` | 到期时刻 RFC3339 UTC（网关 `strike_timestamp`，+08 本地午夜） |
+| `expirations[].distance_days` | 距今天数（负 = 已到期） |
+| `expirations[].cycle` | 到期周期 |
+| `contracts[]` | 该到期日全部行权价的 call/put（按 strike 升序，同 strike call 在前）；`option_type` 为 `call`/`put`，`symbol` 为合约代码（如 `HK.TCH260807C335000`，前缀+到期+Call/Put+行权价×1000），`lot_size` 为每张合约股数 |
+
+**权利金说明**：期权链契约实测（[[FUTU]] §10）不含权利金/隐含波动率——`/api/option-chain` 仅返回合约代码/行权价/lot_size；premium 需逐合约 `option-quote` 或合约 K 线（拉取成本高，P3 排期）。故 `contracts` 无 premium 字段，UI 以合约代码代替。
+
+响应 `503`（网关不可达，连接失败/超时）：`action` 提示启动网关容器（同 `/v1/futu/quote` 约定）。
+
+响应 `502`（网关已应答但拒绝——HTTP 4xx/5xx 或业务错误如未开通市场权限）：`message` 为网关消息透传（含出错步骤 `option-expiration-date`/`option-chain`）。
+
+PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。限频：每请求 2 次快照类调用（到期日 + 链，各 1 次/3s），浏览器轮询需注意。
+
 ## 错误
 
 **全量统一约定**（S5，自 `/v1/backtests` S1 引入后全量接入）：所有端点错误体为 `{"code", "message", "action", "error"}`——`code` 为机器可读错误码、`message` 为人类可读描述、`action` 为可执行的补救建议（`invalid_request` → 检查参数重试、`not_found` → 检查路径、`method_not_allowed` → 用文档方法、`internal_error`/`dependency_failed` → 查日志/连接重试）；`error` 为**兼容别名**（值同 `message`），保留给既有客户端（S5 起存量端点也带 `code`/`action`，`error` 字段仍存在，不破坏老消费方）。新客户端优先读 `code`/`message`/`action`。
@@ -526,8 +574,8 @@ Query 参数：
 | --- | --- |
 | 缺必填参数 / 参数非法（坏时间、limit<=0、空/超长配置值、body 非 JSON、未知策略模板或非法 watchlist 参数） | 400 |
 | 存储查询失败 | 500 |
-| DB ping 失败 / `/v1/futu/quote`、`/v1/futu/account` 网关不可达 | 503 |
-| `/v1/futu/quote`、`/v1/futu/account` 网关拒绝或业务错误（消息透传） | 502 |
+| DB ping 失败 / `/v1/futu/quote`、`/v1/futu/account`、`/v1/futu/options` 网关不可达 | 503 |
+| `/v1/futu/quote`、`/v1/futu/account`、`/v1/futu/options` 网关拒绝或业务错误（消息透传） | 502 |
 | 未知路径 / 白名单外 config key / DELETE 不存在的 watchlist 标的 / 不存在的 backtest id | 404 |
 | 方法不允许（非 GET/PUT/DELETE；watchlist 标的路径仅支持 PUT/DELETE） | 405 |
 | POST /v1/backtests：非法参数 422、单进程互斥 busy 409、依赖失败/无数据/超时 503（错误体见上节） | 见上节 |
@@ -542,6 +590,8 @@ wbot serve &
 curl -s 'http://127.0.0.1:8080/v1/runs'
 curl -s 'http://127.0.0.1:8080/v1/bars?symbol=DEMO.US&timeframe=1d'
 curl -s 'http://127.0.0.1:8080/v1/admin/cluster'
+curl -s 'http://127.0.0.1:8080/v1/futu/options?symbol=HK.00700'
+curl -s 'http://127.0.0.1:8080/v1/futu/options?symbol=HK.00700&expiry=2026-08-07'
 curl -s 'http://127.0.0.1:8080/v1/strategies'
 curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' -H 'Content-Type: application/json' \
   -d '{"strategy":"covered-call","params":{"strike_pct_otm":0.03}}'
