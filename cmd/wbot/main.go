@@ -29,6 +29,7 @@ import (
 	"github.com/jiayu/wbot/internal/master"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
+	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/webui"
 )
 
@@ -63,6 +64,8 @@ func run(argv []string) int {
 		return runFutu(argv[0], argv[2:])
 	case "backtest":
 		return runBacktest(argv[0], argv[2:])
+	case "watchlist":
+		return runWatchlist(argv[0], argv[2:])
 	case "configyaml":
 		return runConfigYAML(argv[0], argv[2:])
 	case "serve":
@@ -231,7 +234,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config) and the embedded Web UI (GET / redirects to /ui/).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist) and the embedded Web UI (GET / redirects to /ui/).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -278,7 +281,7 @@ func runServe(prog string, argv []string) int {
 	// meta must carry the bound address: with -listen 127.0.0.1:0 the port exists only after Listen.
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
 	store := httpapi.NewDBStore(database)
-	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store)
+	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database))
 	srv := &http.Server{Handler: top}
 
 	go func() {
@@ -501,6 +504,242 @@ func runBacktest(prog string, argv []string) int {
 		}
 	}
 	return 0
+}
+
+func runWatchlist(prog string, argv []string) int {
+	if len(argv) < 1 {
+		usageWatchlist(prog)
+		return 2
+	}
+	switch argv[0] {
+	case "-h", "-help", "--help", "help":
+		usageWatchlist(prog)
+		return 0
+	case "add":
+		return runWatchlistAdd(prog, argv[1:])
+	case "remove":
+		return runWatchlistRemove(prog, argv[1:])
+	case "list":
+		return runWatchlistList(prog, argv[1:])
+	default:
+		usageWatchlist(prog)
+		return 2
+	}
+}
+
+func runWatchlistAdd(prog string, argv []string) int {
+	fs := flag.NewFlagSet("watchlist add", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	symbol := fs.String("symbol", "", "instrument symbol (required, e.g. HK.00700)")
+	strategy := fs.String("strategy", "", "strategy template name (required, e.g. covered-call)")
+	params := fs.String("params", "", "strategy params as JSON object, e.g. '{\"strike_pct_otm\":0.03}'")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s watchlist add [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Adds or updates one watchlist entry: symbol + strategy + params,\n")
+		fmt.Fprintf(os.Stderr, "validated against the strategy template schema (watchlist strategies via GET /v1/strategies).\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	sym := strings.TrimSpace(*symbol)
+	strat := strings.TrimSpace(*strategy)
+	if sym == "" {
+		fmt.Fprintf(os.Stderr, "watchlist add: -symbol is required\n")
+		return 2
+	}
+	if strat == "" {
+		fmt.Fprintf(os.Stderr, "watchlist add: -strategy is required\n")
+		return 2
+	}
+	paramsMap := map[string]any{}
+	if s := strings.TrimSpace(*params); s != "" {
+		if err := json.Unmarshal([]byte(s), &paramsMap); err != nil {
+			fmt.Fprintf(os.Stderr, "watchlist add: -params: %v\n", err)
+			return 2
+		}
+	}
+	if err := watchlist.Validate(strat, paramsMap); err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist add: %v\n", err)
+		return 2
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "watchlist add: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist add: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist add: migrate: %v\n", err)
+		return 1
+	}
+
+	it, err := watchlist.Upsert(context.Background(), database, sym, strat, paramsMap)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist add: %v\n", err)
+		return 1
+	}
+	paramsJSON, err := json.Marshal(it.Params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist add: params: %v\n", err)
+		return 1
+	}
+	fmt.Printf("watchlist: %s strategy=%s params=%s\n", it.Symbol, it.Strategy, paramsJSON)
+	return 0
+}
+
+func runWatchlistRemove(prog string, argv []string) int {
+	fs := flag.NewFlagSet("watchlist remove", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+	symbol := fs.String("symbol", "", "instrument symbol (required, e.g. HK.00700)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s watchlist remove [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Removes one symbol from the watchlist (exits 1 when it is not on the list).\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	sym := strings.TrimSpace(*symbol)
+	if sym == "" {
+		fmt.Fprintf(os.Stderr, "watchlist remove: -symbol is required\n")
+		return 2
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "watchlist remove: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist remove: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist remove: migrate: %v\n", err)
+		return 1
+	}
+
+	found, err := watchlist.Delete(context.Background(), database, sym)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist remove: %v\n", err)
+		return 1
+	}
+	if !found {
+		fmt.Fprintf(os.Stderr, "watchlist remove: %s: not on watchlist\n", sym)
+		return 1
+	}
+	fmt.Printf("watchlist: removed %s\n", sym)
+	return 0
+}
+
+func runWatchlistList(prog string, argv []string) int {
+	fs := flag.NewFlagSet("watchlist list", flag.ContinueOnError)
+	var showHelp bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
+
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s watchlist list [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Shows watchlist entries (symbol strategy params), one per line.\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+
+	d := strings.TrimSpace(*dsn)
+	if d == "" {
+		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
+	}
+	if d == "" {
+		fmt.Fprintf(os.Stderr, "watchlist list: set -dsn or WBOT_PG_DSN\n")
+		return 2
+	}
+
+	database, err := db.Open(d)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist list: open db: %v\n", err)
+		return 1
+	}
+	defer database.Close()
+
+	if err := db.MigrateUp(database); err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist list: migrate: %v\n", err)
+		return 1
+	}
+
+	items, err := watchlist.List(context.Background(), database)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchlist list: %v\n", err)
+		return 1
+	}
+	for _, it := range items {
+		paramsJSON, err := json.Marshal(it.Params)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "watchlist list: params: %v\n", err)
+			return 1
+		}
+		fmt.Printf("%s %s %s\n", it.Symbol, it.Strategy, paramsJSON)
+	}
+	return 0
+}
+
+func usageWatchlist(prog string) {
+	fmt.Fprintf(os.Stderr, "Usage: %s watchlist <subcommand>\n\n", prog)
+	fmt.Fprintf(os.Stderr, "Subcommands:\n  add    Add or update a symbol's strategy binding (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  remove Remove a symbol from the watchlist (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  list   Show watchlist entries (symbol strategy params) (-h for flags)\n")
 }
 
 func runConfigYAML(prog string, argv []string) int {
@@ -1014,8 +1253,8 @@ func runIngestBars(prog string, argv []string) int {
 	return 0
 }
 
-// serveMux assembles serve's top-level routes: admin API, data API, embedded Web UI.
-func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store) *http.ServeMux {
+// serveMux assembles serve's top-level routes: admin API, watchlist API, data API, embedded Web UI.
+func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore) *http.ServeMux {
 	top := http.NewServeMux()
 	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, pinger))
 	// Exact pattern wins over the /v1/admin/ subtree, so cluster/config keep their own handler muxes.
@@ -1027,6 +1266,11 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 		top.Handle("/v1/admin/config", cfg)
 		top.Handle("/v1/admin/config/", cfg)
 	}
+	// Watchlist endpoints: template catalog + per-symbol strategy bindings (one handler mux).
+	wl := httpapi.WatchlistHandler(wstore)
+	top.Handle("/v1/strategies", wl)
+	top.Handle("/v1/watchlist", wl)
+	top.Handle("/v1/watchlist/", wl)
 	// Longest pattern wins: GET /{$} beats the / catch-all; other methods still reach the API's JSON 404.
 	top.Handle("GET /{$}", http.RedirectHandler("/ui/", http.StatusMovedPermanently))
 	top.Handle("/ui/", http.StripPrefix("/ui/", webui.FileServer()))
@@ -1072,5 +1316,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  futu                futu-opend-rs gateway REST client: status/quote (try futu -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               Read-only HTTP data API (try -h)\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  futu                futu-opend-rs gateway REST client: status/quote (try futu -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  watchlist           Watchlist management: add/remove/list (try watchlist -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               Read-only HTTP data API (try -h)\n")
 }
