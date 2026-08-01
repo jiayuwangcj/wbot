@@ -9,8 +9,10 @@
 | 路径 | 行为 |
 | --- | --- |
 | `GET /` | 301 → `/ui/`（精确根匹配 `GET /{$}`；行为变化：原为 JSON 404） |
-| `GET /ui/` | 数据页 `index.html`（bars/runs 查询骨架） |
-| `GET /ui/admin.html` | 管理页占位（status/cluster/config 只读，slice 8-3） |
+| `GET /ui/` | 数据页 `index.html`（bars/runs 查询骨架；bars 查询结果显示覆盖范围，来自 `/v1/admin/cluster` 的 `bars_coverage` 或查询结果首末 ts） |
+| `GET /ui/watchlist.html` | 关注标的页（watchlist CRUD + 策略参数表单，slice 12-c） |
+| `GET /ui/results.html` | 回测结果页：列表（可勾选 2 条对比）/ 详情 / 对比视图（指标并排 + equity 曲线叠加，S5） |
+| `GET /ui/admin.html` | 管理页（status/cluster/config 只读，slice 8-3） |
 | `GET /ui/*` | 其余静态资源（`style.css`、`app.js`；不存在 → 404） |
 
 UI 页面不请求、不渲染任何配置值（PRIVACY 红线，见 [[PRIVACY]]）。API 路径（`/v1/*`）不受 `/ui/` 影响；其余未知路径仍为 JSON 404。
@@ -134,7 +136,7 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 
 ## DELETE /v1/watchlist/{symbol}
 
-移除一个标的。响应 `200`：`{"symbol": "HK.00700", "deleted": true}`；标的不在列表时 `404`（`{"error": "not found"}`）。
+移除一个标的。响应 `200`：`{"symbol": "HK.00700", "deleted": true}`；标的不在列表时 `404`（错误体见 [[#错误]]，如 `{"code":"not_found","message":"not found","action":"check the path and retry","error":"not found"}`）。
 
 CLI 等价物：`wbot watchlist add|remove|list`（`-symbol -strategy -params '<json>'`；列表输出 `symbol strategy params` 一行一条）。
 
@@ -211,10 +213,10 @@ migration 004 之前的老行（无曲线）返回 `equity_curve: []`、`trades:
 | 404 | 该 id 不存在（`backtest_results` 无此行；`action` 提示先 `wbot backtest -save`） |
 | 405 | 方法不允许（仅 GET） |
 
-错误体为本切片起的新约定 `{"code", "message", "action"}`（S5 全量接入；`action` 为可执行的补救建议）：
+错误体为本切片起的新约定 `{"code", "message", "action", "error"}`（S5 全量接入；`action` 为可执行的补救建议，`error` 为兼容别名，值同 `message`）：
 
 ```json
-{"code": "not_found", "message": "backtest result 42 not found", "action": "run `wbot backtest -save` to persist a run first"}
+{"code": "not_found", "message": "backtest result 42 not found", "action": "run `wbot backtest -save` to persist a run first", "error": "backtest result 42 not found"}
 ```
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
@@ -256,10 +258,10 @@ PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIV
 | 503 | 依赖失败：无 bars/期权数据（`no_data`，action 提示先 ingest）、执行超时（`timeout`）、DB/运行失败（`dependency_failed`） |
 | 405 | 方法不允许（仅 POST） |
 
-错误体沿用 `{"code", "message", "action"}` 约定；`action` 为可执行的补救建议，例如无数据时：
+错误体沿用 `{"code", "message", "action", "error"}` 约定；`action` 为可执行的补救建议，例如无数据时（`error` 为兼容别名，值同 `message`）：
 
 ```json
-{"code": "no_data", "message": "no bars data for HK.00700", "action": "ingest first: `wbot ingest futu -symbol HK.00700 -timeframe 1d`"}
+{"code": "no_data", "message": "no bars data for HK.00700", "action": "ingest first: `wbot ingest futu -symbol HK.00700 -timeframe 1d`", "error": "no bars data for HK.00700"}
 ```
 
 CLI 等价物：`wbot backtest -dsn "$WBOT_PG_DSN" -symbol X -strategy Y -params '<json>' -save`（同输入同输出，见 [[BACKTEST]]）。
@@ -366,7 +368,7 @@ key 白名单：`credentials.wechat.{appid,secret,token}`、`credentials.schwab.
 
 DB 不可用时（ping 失败）：仍返回 `200`，`db.ok` 为 `false`，且**不执行** pipeline/data_plane 查询——`counts` 全 0、`recent_runs` 与 `bars_coverage` 为空数组（降级语义同 /v1/admin/status；进程字段照常返回）。
 
-ping 通过但存储查询失败时返回 `500`（`{"error": "internal error"}`）。
+ping 通过但存储查询失败时返回 `500`（错误体见 [[#错误]]，`code: internal_error`）。
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
 {"key": "credentials.wechat.appid", "set": true}
@@ -394,12 +396,20 @@ PRIVACY：API 永不返回配置值——GET 只回 key 元数据、PUT 响应�
 响应 `503`（数据库不可达）：
 
 ```json
-{"error": "database unavailable"}
+{"code": "dependency_failed", "message": "database unavailable", "action": "check the database connection and retry", "error": "database unavailable"}
 ```
 
 ## 错误
 
-`/v1/backtests` 起新约定 `{"code","message","action"}`（GET 与 POST，见上节；S5 全量接入），其余统一 `{"error": "..."}` JSON：
+**全量统一约定**（S5，自 `/v1/backtests` S1 引入后全量接入）：所有端点错误体为 `{"code", "message", "action", "error"}`——`code` 为机器可读错误码、`message` 为人类可读描述、`action` 为可执行的补救建议（`invalid_request` → 检查参数重试、`not_found` → 检查路径、`method_not_allowed` → 用文档方法、`internal_error`/`dependency_failed` → 查日志/连接重试）；`error` 为**兼容别名**（值同 `message`），保留给既有客户端（S5 起存量端点也带 `code`/`action`，`error` 字段仍存在，不破坏老消费方）。新客户端优先读 `code`/`message`/`action`。
+
+`{code, message, action, error}` 形态示例：
+
+```json
+{"code": "invalid_request", "message": "missing query parameter: symbol", "action": "check the request parameters and retry", "error": "missing query parameter: symbol"}
+```
+
+状态码映射（含既有端点）：
 
 | 场景 | 状态码 |
 | --- | --- |
