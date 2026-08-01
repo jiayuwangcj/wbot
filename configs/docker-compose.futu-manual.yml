@@ -1,0 +1,39 @@
+# Futu OpenD — manual mode (direct binary + telnet control port)
+#
+# Why: the default compose (docker-compose.futu.yml) uses the ostai wrapper whose
+# WebSocket (8000) channel handles SMS codes only. When login triggers a GRAPHIC
+# verification code (req_pic_verify_code), use this manual mode: run the OpenD
+# binary directly with -telnet_port=22222 so the code can be submitted over telnet.
+#
+# Usage (credentials from ~/.wbot/config.yaml via tools/config-to-env.sh):
+#   umask 077 && tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env
+#   docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu-manual.yml up -d
+#   docker logs -f configs-futu-opend-1          # wait for "Need a graphic verification code"
+#   docker cp configs-futu-opend-1:/root/.com.futunn.FutuOpenD/F3CNN/PicVerifyCode.png ~/pic.png
+#   telnet 127.0.0.1 22222                      # input_pic_verify_code -code=XXXX
+#
+# Note: every container start regenerates the graphic code. Password failures
+# deduct login chances ("N chances remained") — stop retrying once wrong.
+#
+name: futu-manual
+
+services:
+  futu-opend:
+    image: ostai/futuopend:9.4.5418
+    platform: linux/amd64  # OpenD ships x86_64 only; OrbStack/QEMU emulates on arm64 hosts
+    entrypoint: /usr/src/app/bin/FutuOpenD
+    command:
+      - "-login_account=${FUTU_LOGIN_ACCOUNT:?set in ~/.wbot/env via config.yaml}"
+      - "-login_pwd_md5=${FUTU_LOGIN_PWD_MD5:?set in ~/.wbot/env via config.yaml}"
+      - "-lang=en"
+      - "-log_level=no"
+      - "-api_ip=0.0.0.0"
+      - "-api_port=11111"
+      - "-telnet_port=22222"
+    ports:
+      # Loopback only: OpenD API/control have no auth; expose via proxy for remote access.
+      - "127.0.0.1:11111:11111"
+      - "127.0.0.1:22222:22222"
+    volumes:
+      - ~/.com.futunn.FutuOpenD:/root/.com.futunn.FutuOpenD
+    restart: unless-stopped
