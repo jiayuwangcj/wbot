@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jiayu/wbot/internal/futu"
@@ -31,11 +32,13 @@ type OptionQuoteRow struct {
 	ImpliedVol *float64 // nil = unknown (gateway REST does not expose IV in v1)
 }
 
-// OptionIngestStats reports one futu-option pull (Rows = actually inserted).
+// OptionIngestStats reports one futu-option pull (Rows = actually inserted;
+// Skipped = chain contracts the gateway cannot serve, e.g. cache-warmth gaps).
 type OptionIngestStats struct {
 	Expiries  int
 	Contracts int
 	Rows      int
+	Skipped   int
 }
 
 // OptionQuotesCached reports whether option_quotes already covers the
@@ -153,7 +156,7 @@ func RunOptionIngestion(ctx context.Context, db *sql.DB, c *futu.Client, underly
 		return nil, fmt.Errorf("ingest: futu-option: %s: empty chain for %d expiries", underlying, len(window))
 	}
 
-	rows, used, err := fetchOptionRows(ctx, c, underlying, adjust, rehabType, from, to, contracts)
+	rows, used, skipped, err := fetchOptionRows(ctx, c, underlying, adjust, rehabType, from, to, contracts)
 	if err != nil {
 		return nil, err
 	}
@@ -191,25 +194,29 @@ ON CONFLICT (symbol, ts, adjust, source) DO NOTHING`
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &OptionIngestStats{Expiries: len(window), Contracts: used, Rows: inserted}, nil
+	return &OptionIngestStats{Expiries: len(window), Contracts: used, Rows: inserted, Skipped: skipped}, nil
 }
 
 // fetchOptionRows pulls each contract's daily K-lines (skipping blanks and
 // contracts without data) and returns validated rows plus the used count.
-func fetchOptionRows(ctx context.Context, c *futu.Client, underlying, adjust string, rehabType int, from, to time.Time, contracts []futu.OptionContract) ([]OptionQuoteRow, int, error) {
+func fetchOptionRows(ctx context.Context, c *futu.Client, underlying, adjust string, rehabType int, from, to time.Time, contracts []futu.OptionContract) (rows []OptionQuoteRow, used, skipped int, err error) {
 	klType, _, err := futu.ParseTimeframe("K_DAY")
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	var rows []OptionQuoteRow
-	used := 0
 	for _, ct := range contracts {
 		if err := ctx.Err(); err != nil {
-			return nil, 0, ctx.Err()
+			return nil, 0, 0, ctx.Err()
 		}
 		kbars, err := c.HistoryKline(ctx, ct.Symbol, klType, rehabType, from, to)
 		if err != nil {
-			return nil, 0, fmt.Errorf("ingest: futu-option: kline %s: %w", ct.Symbol, err)
+			// Gateway cache-warmth gap (实测 2026-08-01): chain-listed contracts
+			// the gateway cannot serve yet; skip instead of failing the whole pull.
+			if strings.Contains(err.Error(), "security not found in cache") {
+				skipped++
+				continue
+			}
+			return nil, 0, 0, fmt.Errorf("ingest: futu-option: kline %s: %w", ct.Symbol, err)
 		}
 		bars := make([]Bar, 0, len(kbars))
 		for _, k := range kbars {
@@ -222,7 +229,7 @@ func fetchOptionRows(ctx context.Context, c *futu.Client, underlying, adjust str
 			continue
 		}
 		if err := ValidateBars(bars); err != nil {
-			return nil, 0, fmt.Errorf("ingest: futu-option: %s: %w", ct.Symbol, err)
+			return nil, 0, 0, fmt.Errorf("ingest: futu-option: %s: %w", ct.Symbol, err)
 		}
 		used++
 		for _, b := range filterRange(bars, from, to) {
@@ -233,5 +240,5 @@ func fetchOptionRows(ctx context.Context, c *futu.Client, underlying, adjust str
 			})
 		}
 	}
-	return rows, used, nil
+	return rows, used, skipped, nil
 }

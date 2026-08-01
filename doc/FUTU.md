@@ -297,7 +297,7 @@ wbot futu order -symbol HK.00700 -side buy -qty 100 -env real -live-confirm -acc
 wbot ingest futu-option -symbol HK.00700 [-days 7] [-expiries 1] [-adjust fwd|none] [-addr ...] [-dsn ...]
 ```
 
-流程：拉期权到期日 → 期权链（最近 `-expiries` 个到期、全部行权价）→ 每个合约近 `-days` 天日 K 落 `option_quotes`（`strike/expiry/option_type/underlying` 冗余）；正股日 K 落 `bars`（复用 ⑪-c 管道）；symbol 注册进 `watchlist`。**缓存语义**：二次运行先查 DB，`option_quotes`/`bars` 已覆盖窗口即打印行数跳过拉取（不碰网络）；`-adjust` 映射 `rehab_type`（0=不复权 1=前复权 2=后复权），默认 `fwd` 前复权（回测用）。
+流程：拉期权到期日 → 期权链（最近 `-expiries` 个到期、全部行权价）→ 每个合约近 `-days` 天日 K 落 `option_quotes`（`strike/expiry/option_type/underlying` 冗余）；正股日 K 落 `bars`（复用 ⑪-c 管道）；symbol 注册进 `watchlist`。**缓存语义**：二次运行先查 DB，`option_quotes`/`bars` 已覆盖窗口即打印行数跳过拉取（不碰网络）；`-force` 显式绕过缓存重拉（ON CONFLICT 幂等）。`-adjust` 映射 `rehab_type`（0=不复权 1=前复权 2=后复权），默认 `fwd` 前复权（回测用）。实测坑（2026-08-01）：网关缓存未热时链上合约可能 `security not found in cache`——该合约跳过并计入 `skipped=`，不中断整次拉取（网关重启后先 `ingest futu` 或等待 stock list sync 完成可减少 skipped）。
 
 ### 期权 REST 契约（实测路径）
 

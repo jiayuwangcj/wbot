@@ -29,6 +29,7 @@ func runIngestFutuOption(prog string, argv []string) int {
 	days := fs.Int("days", 7, "pull window: the last N days of daily K-lines")
 	expiries := fs.Int("expiries", 1, "number of nearest listed expiries to include (<=0 = all)")
 	adjust := fs.String("adjust", futu.AdjustFwd, "adjustment: fwd (前复权, default) or none (doc/DATA_STANDARD.md)")
+	force := fs.Bool("force", false, "bypass the DB cache check and pull again (ON CONFLICT keeps rows idempotent)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest futu-option -symbol HK.00700 [flags]\n\n", prog)
@@ -104,21 +105,30 @@ func runIngestFutuOption(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "ingest futu-option: %v\n", err)
 		return 1
 	}
-	if optHit && barHit {
+	if !*force && optHit && barHit {
 		fmt.Printf("ingest futu-option: cache hit: option_quotes=%d bars=%d in window for %s (adjust=%s), skip pull\n",
 			optRows, barRows, sym, adjustName)
 		return 0
 	}
+	if *force && optHit && barHit {
+		fmt.Printf("ingest futu-option: -force: cache has option_quotes=%d bars=%d, pulling again\n",
+			optRows, barRows)
+	}
 
 	runSource := strings.TrimSpace(*source)
-	if !optHit {
+	if !optHit || *force {
 		stats, err := ingest.RunOptionIngestion(ctx, database, client, sym, adjustName, from, to, *expiries)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ingest futu-option: %v\n", err)
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "ingest futu-option: ok (source=%s underlying=%s expiries=%d contracts=%d rows=%d adjust=%s)\n",
-			runSource, sym, stats.Expiries, stats.Contracts, stats.Rows, adjustName)
+		if stats.Skipped > 0 {
+			fmt.Fprintf(os.Stderr, "ingest futu-option: ok (source=%s underlying=%s expiries=%d contracts=%d rows=%d skipped=%d adjust=%s)\n",
+				runSource, sym, stats.Expiries, stats.Contracts, stats.Rows, stats.Skipped, adjustName)
+		} else {
+			fmt.Fprintf(os.Stderr, "ingest futu-option: ok (source=%s underlying=%s expiries=%d contracts=%d rows=%d adjust=%s)\n",
+				runSource, sym, stats.Expiries, stats.Contracts, stats.Rows, adjustName)
+		}
 	}
 	if !barHit {
 		_, ingestTF, err := futu.ParseTimeframe("K_DAY")

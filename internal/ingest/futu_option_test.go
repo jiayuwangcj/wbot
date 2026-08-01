@@ -124,12 +124,12 @@ func TestFetchOptionRows(t *testing.T) {
 
 	from := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
-	rows, used, err := fetchOptionRows(context.Background(), futu.NewClient(srv.URL), "HK.00700", "fwd", 1, from, to, contracts)
+	rows, used, skipped, err := fetchOptionRows(context.Background(), futu.NewClient(srv.URL), "HK.00700", "fwd", 1, from, to, contracts)
 	if err != nil {
 		t.Fatalf("fetchOptionRows error: %v", err)
 	}
-	if used != 4 || len(rows) != 20 {
-		t.Fatalf("used=%d rows=%d; want 4 contracts x 5 bars = 20", used, len(rows))
+	if used != 4 || len(rows) != 20 || skipped != 0 {
+		t.Fatalf("used=%d rows=%d skipped=%d; want 4 contracts x 5 bars, 0 skipped", used, len(rows), skipped)
 	}
 	r0 := rows[0]
 	if r0.Symbol != "HK.TCH260807C335000" || r0.OptionType != "call" || r0.Strike != 335.0 {
@@ -299,5 +299,59 @@ func TestBarsCachedIntegration(t *testing.T) {
 	}
 	if hit {
 		t.Fatal("BarsCached hit for unrelated window; want miss")
+	}
+}
+
+func TestFetchOptionRowsSkipsUncachedContracts(t *testing.T) {
+	fastFutuLimits(t)
+	const uncached = "HK.TCH260807X999999"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body []byte
+		switch r.URL.Path {
+		case "/api/option-expiration-date":
+			body = []byte(expirationsPayload)
+		case "/api/option-chain":
+			body = []byte(chainTwoExpiriesPayload)
+		case "/api/history-kline":
+			var req struct {
+				Security struct {
+					Code string `json:"code"`
+				} `json:"security"`
+			}
+			_ = json.Unmarshal(mustReadAll(r), &req)
+			if "HK."+req.Security.Code == uncached {
+				// Gateway cache-warmth gap: chain-listed symbol not yet servable.
+				w.Write([]byte("{\"ret_type\":-1,\"ret_msg\":\"[err_code=none] security not found in cache\",\"err_code\":null,\"s2c\":null}"))
+				return
+			}
+			body = []byte(klineForCode(req.Security.Code))
+		default:
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	from := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	client := futu.NewClient(srv.URL)
+	contracts, err := client.OptionChain(context.Background(), "HK.00700", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(contracts) != 4 {
+		t.Fatalf("contracts = %d; want 4", len(contracts))
+	}
+
+	// One contract is replaced by one the gateway cannot serve: the run must
+	// skip it (counted) instead of failing the whole pull.
+	contracts[1].Symbol = uncached
+	rows, used, skipped, err := fetchOptionRows(context.Background(), client, "HK.00700", "fwd", 1, from, to, contracts)
+	if err != nil {
+		t.Fatalf("fetchOptionRows error: %v", err)
+	}
+	if skipped != 1 || used != 3 || len(rows) != 15 {
+		t.Fatalf("used=%d rows=%d skipped=%d; want 3/15/1 (uncached contract skipped)", used, len(rows), skipped)
 	}
 }
