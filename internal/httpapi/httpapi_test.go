@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -330,6 +331,9 @@ func TestLegacyErrorBodiesCarryCodeAndAction(t *testing.T) {
 		{"watchlist bad params", WatchlistHandler(&fakeWatchlistStore{}), makeReq(http.MethodPut, "/v1/watchlist/HK.00700", `{"strategy":"nope"}`), "invalid_request"},
 		{"watchlist delete missing", WatchlistHandler(&fakeWatchlistStore{}), makeReq(http.MethodDelete, "/v1/watchlist/NOPE", ""), "not_found"},
 		{"backtests 404", BacktestsHandler(&fakeBacktestStore{getErr: backtest.ErrResultNotFound}), makeReq(http.MethodGet, "/v1/backtests/42", ""), "not_found"},
+		{"futu quote invalid symbol", FutuQuoteHandler(&fakeFutuQuoter{}), makeReq(http.MethodGet, "/v1/futu/quote?symbol=00700", ""), "invalid_request"},
+		{"futu quote gateway down", FutuQuoteHandler(&fakeFutuQuoter{err: &net.OpError{Err: errors.New("connection refused")}}), makeReq(http.MethodGet, "/v1/futu/quote?symbol=HK.00700", ""), "dependency_failed"},
+		{"futu quote upstream error", FutuQuoteHandler(&fakeFutuQuoter{err: errors.New("no permission for market")}), makeReq(http.MethodGet, "/v1/futu/quote?symbol=HK.00700", ""), "dependency_failed"},
 	}
 	for _, tt := range tests {
 		rec := httptest.NewRecorder()
