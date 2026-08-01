@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## Web UI
 
@@ -220,6 +220,44 @@ migration 004 之前的老行（无曲线）返回 `equity_curve: []`、`trades:
 ```
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
+
+## GET /v1/backtests/{id}/export
+
+单个运行结果下载（draft 2026-08-02：策略结果可视化的数据出口——外部工具/报告存档）。数据与 `GET /v1/backtests/{id}` 详情**同源同序列化器**（`internal/backtest` Export）：`format=json` 与详情**逐字节一致**（roundtrip 契约），`format=csv` 为同一批数据的两个 section。
+
+Query 参数：
+
+| 参数 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `format` | 否 | `csv` | `csv` 或 `json`；其他值 400（`invalid_request`） |
+
+响应头：`Content-Type: text/csv; charset=utf-8`（csv）/ `application/json`（json）+ `Content-Disposition: attachment; filename="backtest-{id}-{strategy}-{created日期}.{ext}"`。
+
+CSV 结构（单响应两段，空行分隔；每段首行为 section 名、次行为表头）：
+
+```
+equity_curve
+ts,equity
+2026-07-27T00:00:00Z,10000
+2026-07-28T00:00:00Z,10500
+
+trades
+ts,action,symbol,size,price,cash_after
+2026-07-27T00:00:00Z,buy,DEMO.US,100,100,0
+```
+
+`equity_curve` 行数 = 详情 `equity_curve` 数组长度、`trades` 同理；migration 004 之前的老行（无曲线）返回 200 + 空 section（仅表头行，兼容语义同详情端点的 `[]`）。
+
+| 状态码 | 场景 |
+| --- | --- |
+| 200 | 找到该运行（csv 默认；json 与详情一致） |
+| 400 | `{id}` 非正整数、`format` 不是 `csv`/`json` |
+| 404 | 该 id 不存在（错误体同详情端点） |
+| 405 | 方法不允许（仅 GET） |
+
+CLI 等价物：`wbot backtest -dsn "$WBOT_PG_DSN" -export <id> -format csv|json`（stdout 输出，同 API 逐字节一致；见 [[BACKTEST]]）。
+
+PRIVACY：本端点仅回测数据，无配置值/凭证字段（API 永不返回配置值，见 doc/PRIVACY.md）。
 
 ## POST /v1/backtests
 
@@ -472,6 +510,8 @@ curl -X DELETE 'http://127.0.0.1:8080/v1/watchlist/HK.00700'
 wbot backtest -dsn "$WBOT_PG_DSN" -symbol DEMO.US -adjust none -strategy buy-hold -save
 curl -s 'http://127.0.0.1:8080/v1/backtests?symbol=DEMO.US'
 curl -s 'http://127.0.0.1:8080/v1/backtests/1'
+curl -s 'http://127.0.0.1:8080/v1/backtests/1/export' -o backtest-1.csv
+curl -s 'http://127.0.0.1:8080/v1/backtests/1/export?format=json'
 curl -X POST 'http://127.0.0.1:8080/v1/backtests' -H 'Content-Type: application/json' \
   -d '{"symbol":"DEMO.US","strategy":"buy-hold"}'
 curl -X POST 'http://127.0.0.1:8080/v1/backtests' -H 'Content-Type: application/json' \

@@ -229,6 +229,120 @@ func TestBacktestsUnknownSubpath(t *testing.T) {
 	assertErrorShape(t, rec, "not_found")
 }
 
+// --- GET /v1/backtests/{id}/export (draft 2026-08-02: result export) ---
+
+func TestBacktestsExportCSV(t *testing.T) {
+	rec := sampleRecord(3)
+	got := get(t, BacktestsHandler(&fakeBacktestStore{rec: &rec}), "/v1/backtests/3/export")
+	if got.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", got.Code, got.Body)
+	}
+	if ct := got.Header().Get("Content-Type"); ct != "text/csv; charset=utf-8" {
+		t.Fatalf("content-type = %q; want text/csv; charset=utf-8", ct)
+	}
+	// CreatedAt = 2026-08-03 in sampleRecord: filename carries id-strategy-date.
+	if cd := got.Header().Get("Content-Disposition"); cd != `attachment; filename="backtest-3-buy-hold-2026-08-03.csv"` {
+		t.Fatalf("content-disposition = %q; want attachment filename backtest-3-buy-hold-2026-08-03.csv", cd)
+	}
+	want := "equity_curve\nts,equity\n2026-08-01T00:00:00Z,10000\n2026-08-02T00:00:00Z,10500\n\ntrades\nts,action,symbol,size,price,cash_after\n2026-08-01T00:00:00Z,buy,DEMO.US,100,100,0\n"
+	if got.Body.String() != want {
+		t.Fatalf("csv body = %q; want %q", got.Body, want)
+	}
+}
+
+func TestBacktestsExportCSVExplicitFormat(t *testing.T) {
+	rec := sampleRecord(3)
+	got := get(t, BacktestsHandler(&fakeBacktestStore{rec: &rec}), "/v1/backtests/3/export?format=csv")
+	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), "equity_curve\nts,equity\n") {
+		t.Fatalf("status = %d body %s; want 200 with equity section", got.Code, got.Body)
+	}
+}
+
+// Roundtrip: export?format=json is byte-identical to the detail endpoint
+// (same serializer, same source record).
+func TestBacktestsExportJSONMatchesDetail(t *testing.T) {
+	rec := sampleRecord(3)
+	h := BacktestsHandler(&fakeBacktestStore{rec: &rec})
+	detail := get(t, h, "/v1/backtests/3")
+	exp := get(t, h, "/v1/backtests/3/export?format=json")
+	if detail.Code != http.StatusOK || exp.Code != http.StatusOK {
+		t.Fatalf("detail=%d export=%d; want 200/200", detail.Code, exp.Code)
+	}
+	if ct := exp.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("content-type = %q; want application/json", ct)
+	}
+	if cd := exp.Header().Get("Content-Disposition"); !strings.HasSuffix(cd, `backtest-3-buy-hold-2026-08-03.json"`) {
+		t.Fatalf("content-disposition = %q; want .json attachment", cd)
+	}
+	if exp.Body.String() != detail.Body.String() {
+		t.Fatalf("export json != detail: export %q detail %q", exp.Body, detail.Body)
+	}
+}
+
+func TestBacktestsExportNoTraceStillServed(t *testing.T) {
+	rec := sampleRecord(5)
+	rec.EquityCurve, rec.Trades = nil, nil
+	h := BacktestsHandler(&fakeBacktestStore{rec: &rec})
+	csv := get(t, h, "/v1/backtests/5/export")
+	if csv.Code != http.StatusOK {
+		t.Fatalf("csv status = %d; want 200 (body %s)", csv.Code, csv.Body)
+	}
+	// Compatibility: 200 with empty curve/trades sections (headers only).
+	if !strings.Contains(csv.Body.String(), "equity_curve\nts,equity\n\ntrades\nts,action,symbol,size,price,cash_after\n") {
+		t.Fatalf("no-trace csv = %q; want empty sections after headers", csv.Body)
+	}
+	jsonGot := get(t, h, "/v1/backtests/5/export?format=json")
+	if jsonGot.Code != http.StatusOK {
+		t.Fatalf("json status = %d; want 200 (body %s)", jsonGot.Code, jsonGot.Body)
+	}
+	var detail backtest.DetailJSON
+	if err := json.Unmarshal(jsonGot.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("unmarshal: %v (body %s)", err, jsonGot.Body)
+	}
+	if len(detail.EquityCurve) != 0 || len(detail.Trades) != 0 {
+		t.Fatalf("no-trace json = curve %d trades %d; want empty arrays", len(detail.EquityCurve), len(detail.Trades))
+	}
+}
+
+func TestBacktestsExportNotFound(t *testing.T) {
+	rec := get(t, BacktestsHandler(&fakeBacktestStore{getErr: backtest.ErrResultNotFound}), "/v1/backtests/42/export")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d; want 404 (body %s)", rec.Code, rec.Body)
+	}
+	assertErrorShape(t, rec, "not_found")
+}
+
+func TestBacktestsExportInvalidFormat(t *testing.T) {
+	rec := sampleRecord(3)
+	got := get(t, BacktestsHandler(&fakeBacktestStore{rec: &rec}), "/v1/backtests/3/export?format=xml")
+	if got.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d; want 400 (body %s)", got.Code, got.Body)
+	}
+	assertErrorShape(t, got, "invalid_request")
+}
+
+func TestBacktestsExportInvalidID(t *testing.T) {
+	for _, id := range []string{"abc", "0", "-1"} {
+		rec := get(t, BacktestsHandler(&fakeBacktestStore{}), "/v1/backtests/"+id+"/export")
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("id=%s status = %d; want 400 (body %s)", id, rec.Code, rec.Body)
+		}
+		assertErrorShape(t, rec, "invalid_request")
+	}
+}
+
+func TestBacktestsExportMethodNotAllowed(t *testing.T) {
+	h := BacktestsHandler(&fakeBacktestStore{})
+	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(method, "/v1/backtests/1/export", nil))
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("%s export: status = %d; want 405 (body %s)", method, rec.Code, rec.Body)
+		}
+		assertErrorShape(t, rec, "method_not_allowed")
+	}
+}
+
 // assertErrorShape checks the new error contract {code,message,action}.
 func assertErrorShape(t *testing.T, rec *httptest.ResponseRecorder, wantCode string) {
 	t.Helper()
