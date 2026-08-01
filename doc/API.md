@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## Web UI
 
@@ -9,7 +9,7 @@
 | 路径 | 行为 |
 | --- | --- |
 | `GET /` | 301 → `/ui/`（精确根匹配 `GET /{$}`；行为变化：原为 JSON 404） |
-| `GET /ui/` | 数据页 `index.html`（bars/runs 查询骨架 + 实时报价卡；bars 查询结果显示覆盖范围，来自 `/v1/admin/cluster` 的 `bars_coverage` 或查询结果首末 ts；bars 表单提交同时刷新报价卡，复用其 symbol 输入，走 `/v1/futu/quote`） |
+| `GET /ui/` | 数据页 `index.html`（bars/runs 查询骨架 + 实时报价卡 + 账户卡/持仓表；bars 查询结果显示覆盖范围，来自 `/v1/admin/cluster` 的 `bars_coverage` 或查询结果首末 ts；bars 表单提交同时刷新报价卡，复用其 symbol 输入，走 `/v1/futu/quote`；账户卡/持仓表加载时与「Refresh」按钮走 `/v1/futu/account`） |
 | `GET /ui/watchlist.html` | 关注标的页（watchlist CRUD + 策略参数表单，slice 12-c） |
 | `GET /ui/results.html` | 回测结果页：列表（可勾选 2 条对比）/ 详情 / 对比视图（指标并排 + equity 曲线叠加，S5） |
 | `GET /ui/admin.html` | 管理页（status/cluster/config 只读，slice 8-3） |
@@ -432,6 +432,45 @@ Query 参数：
 
 响应 `502`（网关已应答但拒绝——HTTP 4xx/5xx 或业务错误如未开通市场权限）：`message` 为网关消息透传（含出错步骤 `subscribe`/`quote`）。
 
+## GET /v1/futu/account
+
+资金 + 持仓只读代理（富途模拟盘账户页，产品切片 ⑤）：浏览器不能直连富途网关（loopback，CORS/安全），serve 代浏览器走 **OpenD protobuf 接口（TCP 11111）** 查询（复用 `internal/futu` 交易客户端 `TradeClient`：Account → Funds/Positions，见 [[FUTU]] §10）。**只读端点**：不下单、不改状态；默认 `sim`（trd_env=0 模拟盘，安全红线默认值），`real` 为只读查询（与 CLI `wbot futu funds|position` 同一安全策略：实盘写操作需老板确认，见 [[FUTU]] 交易安全策略）。
+
+Query 参数：
+
+| 参数 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `env` | 否 | `sim` | 交易环境：`sim`（模拟盘，默认）\| `real`（实盘只读查询；非法值 → 400） |
+| `acc_id` | 否 | 该环境第一个账户 | 账户 ID（uint64；非法 → 400） |
+
+网关地址：环境变量 `FUTU_GATEWAY_URL`（与 quote 代理同源；本端点默认 `127.0.0.1:11111` 即 OpenD protobuf 端口）。连接管理：serve 进程内**包级复用**一条 TradeClient 连接（互斥串行；网关自动重连）。
+
+响应 `200`（字段白名单，不泄漏账户/订单元数据；`positions` 空时为空数组）：
+
+```json
+{
+  "env": "simulate",
+  "acc_id": 1907141,
+  "funds": {"power": 1198286.822, "total_assets": 1198286.822, "cash": 318666.822, "market_val": 879620, "available_cash": 318666.822},
+  "positions": [
+    {"symbol": "HK.00700", "qty": 100, "avg_cost": 470.0, "price": 475.2, "market_val": 47520, "pl": 520}
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `env` / `acc_id` | 账户环境（simulate/real）与账户 ID（标注查询目标，同 CLI 输出约定） |
+| `funds.power` / `total_assets` | 购买力 / 资产总额 |
+| `funds.cash` / `market_val` / `available_cash` | 现金 / 证券市值 / 可用资金（proto `available_funds`） |
+| `positions[].symbol` | market 限定代码（HK./US./SH./SZ.，CN 市场按代码段推断交易所） |
+| `positions[].qty` / `avg_cost` / `price` | 数量 / 成本价 / 市价 |
+| `positions[].market_val` / `pl` | 市值 / 盈亏金额 |
+
+响应 `503`（网关不可达，连接失败/超时）：`action` 提示启动网关容器（同 `/v1/futu/quote` 约定）。
+
+响应 `502`（网关已应答但拒绝——如 `env` 无匹配账户、trd_env 不匹配、网关业务错误）：`message` 为网关消息透传（含出错步骤 `accounts`/`funds`/`positions`）。
+
 ## 错误
 
 **全量统一约定**（S5，自 `/v1/backtests` S1 引入后全量接入）：所有端点错误体为 `{"code", "message", "action", "error"}`——`code` 为机器可读错误码、`message` 为人类可读描述、`action` 为可执行的补救建议（`invalid_request` → 检查参数重试、`not_found` → 检查路径、`method_not_allowed` → 用文档方法、`internal_error`/`dependency_failed` → 查日志/连接重试）；`error` 为**兼容别名**（值同 `message`），保留给既有客户端（S5 起存量端点也带 `code`/`action`，`error` 字段仍存在，不破坏老消费方）。新客户端优先读 `code`/`message`/`action`。
@@ -448,8 +487,8 @@ Query 参数：
 | --- | --- |
 | 缺必填参数 / 参数非法（坏时间、limit<=0、空/超长配置值、body 非 JSON、未知策略模板或非法 watchlist 参数） | 400 |
 | 存储查询失败 | 500 |
-| DB ping 失败 / `/v1/futu/quote` 网关不可达 | 503 |
-| `/v1/futu/quote` 网关拒绝或业务错误（消息透传） | 502 |
+| DB ping 失败 / `/v1/futu/quote`、`/v1/futu/account` 网关不可达 | 503 |
+| `/v1/futu/quote`、`/v1/futu/account` 网关拒绝或业务错误（消息透传） | 502 |
 | 未知路径 / 白名单外 config key / DELETE 不存在的 watchlist 标的 / 不存在的 backtest id | 404 |
 | 方法不允许（非 GET/PUT/DELETE；watchlist 标的路径仅支持 PUT/DELETE） | 405 |
 | POST /v1/backtests：非法参数 422、单进程互斥 busy 409、依赖失败/无数据/超时 503（错误体见上节） | 见上节 |
