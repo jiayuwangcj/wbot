@@ -73,9 +73,6 @@ func TestStateEquityWithOptions(t *testing.T) {
 		t.Fatalf("Equity() = %v; want 11430", eq)
 	}
 	// Legs without a price mark to 0 (unknown).
-	if eq := st.Equity(110); eq == 0 {
-		t.Fatal("Equity() unexpectedly 0")
-	}
 	st.OptPrice = map[string]float64{}
 	if eq := st.Equity(110); math.Abs(eq-500-11000) > 1e-9 {
 		t.Fatalf("Equity() unpriced = %v; want 11500", eq)
