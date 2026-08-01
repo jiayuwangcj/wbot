@@ -42,3 +42,8 @@
 - [ ] migration 004 + SaveResult 扩展 + runner 序列/交易输出（确定性单测）
 - [ ] `internal/httpapi/backtests.go` GET 列表/详情 + 错误体 code/action + 契约测
 - [ ] API.md + serve -h + verify/CI 绿
+
+
+## 状态（2026-08-02）
+
+✅ **已完成并合入**：S1（#73）、S2（#74）、S3（#72）、S4（#75）、S5（#76）——策略回测工作台里程碑完整交付（watchlist 调参 → 一键回测 → 结果查看/对比全 Web 闭环）。
