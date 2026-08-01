@@ -204,3 +204,15 @@ docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu-manual.yml
 - OpenD 官方仅发布 **x86_64** 二进制；在 Apple Silicon / ARM 宿主（如 OrbStack Linux VM aarch64）上需 **amd64 模拟**：compose 已含 `platform: linux/amd64`（OrbStack/QEMU 自动模拟）
 - 验证：`docker run --platform linux/amd64 --rm ostai/futuopend:9.4.5418 echo OK`
 - 登录失败（密码错误/图形验证码）时的日志关键字：`Login failed`、`Need a graphic verification code`；验证码图片在容器 `/root/.com.futunn.FutuOpenD/F3CNN/PicVerifyCode.png`（`docker cp` 取出查看）
+
+
+## 交易安全策略（2026-08-01 老板指令）
+
+- **默认使用模拟盘（Paper Trade）**：所有开发/测试交易走模拟盘账户（trd_env=0，如 acc_id 1907141）
+- **实盘只读**：实盘账户（trd_env=1）**禁止一切写操作**（下单/改单/撤单/解锁等），仅允许查询（资金/持仓/订单只读）
+- **实盘写操作需老板确认**：任何解除实盘写限制的变更（代码/配置/流程）必须经老板在 GitHub（discussions/21 或 issue）明确确认后才可实施
+- **工程护栏**（第一个交易命令实现时内置）：
+  - 交易类命令默认 `trd_env=0`（模拟盘）；实盘写操作需显式 `--live` 标志 + 启动日志红色告警
+  - 网关 REST legacy 模式天然阻止 mutating 端点（`blocked_mutating_endpoints`）——保持该配置，不因解锁而开放
+  - 实盘查询类命令（funds/position/order 只读）无需确认，但输出标注账户环境（real/simulate）
+- **例外**：老板在场明确指示且确认账户/金额时，可临时放开（执行后恢复默认）
