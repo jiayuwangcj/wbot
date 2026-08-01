@@ -31,6 +31,19 @@ func TestServesIndex(t *testing.T) {
 	}
 }
 
+func TestServesWatchlistPage(t *testing.T) {
+	rec := serveGet(t, "/watchlist.html")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("content-type = %q; want text/html", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "<title>wbot · Watchlist</title>") {
+		t.Fatalf("watchlist missing title: %s", rec.Body)
+	}
+}
+
 func TestServesAdminPlaceholder(t *testing.T) {
 	rec := serveGet(t, "/admin.html")
 	if rec.Code != http.StatusOK {
@@ -92,7 +105,7 @@ func TestNoExternalURLs(t *testing.T) {
 }
 
 func TestViewportMetaOnAllPages(t *testing.T) {
-	for _, path := range []string{"web/index.html", "web/admin.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -180,7 +193,7 @@ func TestAdminPageSections(t *testing.T) {
 
 func TestTableEmptyConvention(t *testing.T) {
 	tableRe := regexp.MustCompile(`id="([a-z0-9-]+-table)"`)
-	for _, path := range []string{"web/index.html", "web/admin.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatal(err)
@@ -202,6 +215,80 @@ func TestAdminPageReadOnly(t *testing.T) {
 	}
 	if strings.Contains(string(data), "<form") {
 		t.Fatal("admin.html contains a form; admin page must be read-only")
+	}
+}
+
+func TestWatchlistPageElements(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/watchlist.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`<form id="watchlist-form"`,
+		`name="symbol"`,
+		`id="strategy-select"`,
+		`id="param-fields"`,
+		`id="watchlist-table"`,
+		`id="watchlist-empty"`,
+		`id="watchlist-error"`,
+		`id="watchlist-form-error"`,
+		`/ui/app.js`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("watchlist.html missing %q", want)
+		}
+	}
+}
+
+func TestWatchlistNavLinks(t *testing.T) {
+	for _, path := range []string{"web/index.html", "web/admin.html"} {
+		data, err := fs.ReadFile(webFiles, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "/ui/watchlist.html") {
+			t.Fatalf("%s missing watchlist nav link", path)
+		}
+	}
+}
+
+func TestAppJSQueriesWatchlistAPI(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`"/v1/watchlist`,
+		`"/v1/strategies`,
+		`method: "PUT"`,
+		`method: "DELETE"`,
+		"initWatchlistPage",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+func TestAppJSDynamicParamForm(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`p.type === "choice"`,
+		`p.type === "number"`,
+		`"params." + p.name`,
+		"p.choices",
+		"p.default",
+		"invalid number for ",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing schema-driven param form logic %q", want)
+		}
 	}
 }
 
