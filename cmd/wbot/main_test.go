@@ -24,6 +24,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/db"
+	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/httpapi"
 	"github.com/jiayu/wbot/internal/httpregister"
 	"github.com/jiayu/wbot/internal/ingest"
@@ -714,9 +715,28 @@ func (f serveFakeFutuQuoter) Quote(_ context.Context, _ string) (json.RawMessage
 	return f.s2c, nil
 }
 
+// serveFakeFutuAccounter is a scriptable FutuAccounter for serveMux tests.
+type serveFakeFutuAccounter struct {
+	err error
+}
+
+func (f serveFakeFutuAccounter) Account(_ context.Context, _ futu.Env, _ uint64) (httpapi.AccountSnapshot, error) {
+	if f.err != nil {
+		return httpapi.AccountSnapshot{}, f.err
+	}
+	return httpapi.AccountSnapshot{
+		Env:   "simulate",
+		AccID: 1907141,
+		Funds: httpapi.FundsJSON{Power: 1198286.822, TotalAssets: 1198286.822, Cash: 318666.822, MarketVal: 879620, AvailableCash: 318666.822},
+		Positions: []httpapi.PositionJSON{
+			{Symbol: "HK.00700", Qty: 100, AvgCost: 470.0, Price: 475.2, MarketVal: 47520, PL: 520},
+		},
+	}, nil
+}
+
 func serveMuxForTest() http.Handler {
 	meta := httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:8080"}
-	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{}, serveFakeFutuQuoter{s2c: json.RawMessage(`{"basic_qot_list":[{"cur_price":475.2}]}`)})
+	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{}, serveFakeFutuQuoter{s2c: json.RawMessage(`{"basic_qot_list":[{"cur_price":475.2}]}`)}, serveFakeFutuAccounter{})
 }
 
 // TestServeMuxBacktestExecuteRoute: POST /v1/backtests routes to the execute
@@ -772,6 +792,34 @@ func TestServeMuxFutuQuoteRoute(t *testing.T) {
 func TestServeHelpMentionsFutuQuote(t *testing.T) {
 	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/futu/quote") {
 		t.Fatalf("serve help missing /v1/futu/quote: %q", out)
+	}
+}
+
+func TestServeMuxFutuAccountRoute(t *testing.T) {
+	top := serveMuxForTest()
+	rec := serveGet(t, top, "/v1/futu/account")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("account = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "total_assets") || !strings.Contains(rec.Body.String(), "HK.00700") {
+		t.Fatalf("account body missing whitelisted fields: %s", rec.Body)
+	}
+	// Bad env through the real mux: 400 with the {code,message,action} body.
+	rec = serveGet(t, top, "/v1/futu/account?env=production")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad env = %d; want 400 (body %s)", rec.Code, rec.Body)
+	}
+	// Non-GET: 405.
+	rec = httptest.NewRecorder()
+	top.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/futu/account", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /v1/futu/account = %d; want 405 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestServeHelpMentionsFutuAccount(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/futu/account") {
+		t.Fatalf("serve help missing /v1/futu/account: %q", out)
 	}
 }
 
@@ -914,7 +962,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	// Serve wiring with real DB stores (same as runServe).
 	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
 		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
-		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter())
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter())
 
 	rec := serveGet(t, top, "/v1/backtests?symbol="+symbol)
 	if rec.Code != http.StatusOK {
@@ -1014,7 +1062,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 	// API POST: same fixture, same strategy → identical metrics/params.
 	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
 		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
-		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter())
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter())
 	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
 		strings.NewReader(`{"symbol":"`+symbol+`","strategy":"buy-hold"}`))
 	rec := httptest.NewRecorder()
