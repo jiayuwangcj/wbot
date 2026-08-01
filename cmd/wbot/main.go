@@ -19,6 +19,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/agent"
 	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/backtestexec"
 	"github.com/jiayu/wbot/internal/config"
 	"github.com/jiayu/wbot/internal/configyaml"
 	"github.com/jiayu/wbot/internal/db"
@@ -29,7 +30,6 @@ import (
 	"github.com/jiayu/wbot/internal/master"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
-	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/webui"
 )
@@ -235,7 +235,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}) and the embedded Web UI (GET / redirects to /ui/).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}, POST /v1/backtests) and the embedded Web UI (GET / redirects to /ui/).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -282,7 +282,7 @@ func runServe(prog string, argv []string) int {
 	// meta must carry the bound address: with -listen 127.0.0.1:0 the port exists only after Listen.
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
 	store := httpapi.NewDBStore(database)
-	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database))
+	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database))
 	srv := &http.Server{Handler: top}
 
 	go func() {
@@ -439,29 +439,12 @@ func runBacktest(prog string, argv []string) int {
 			return 2
 		}
 	}
-	var (
-		s     backtest.Strategy
-		templ *strategy.Template
-	)
-	switch stratName {
-	case "hold":
-		s = backtest.HoldStrategy{}
-	case "buy-hold":
-		s = &backtest.BuyHoldStrategy{}
-	default:
-		t, err := strategy.Factory(stratName, paramsMap)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
-			return 2
-		}
-		s = t
-		templ, _ = strategy.Lookup(stratName)
-	}
-	if stratName == "hold" || stratName == "buy-hold" {
-		if len(paramsMap) > 0 {
-			fmt.Fprintf(os.Stderr, "backtest: strategy %s takes no -params\n", stratName)
-			return 2
-		}
+	// Build is the shared CLI/API validation contract (internal/backtestexec):
+	// the API's POST /v1/backtests accepts exactly these strategies and params.
+	s, templ, err := backtestexec.Build(stratName, paramsMap)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 2
 	}
 	if templ != nil && templ.NeedsOptions && fp != "" {
 		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads option_quotes; -file input has no option data (use -dsn)\n", stratName)
@@ -472,7 +455,25 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -save requires -dsn input\n")
 		return 2
 	}
-	var bars []ingest.Bar
+
+	btOpts := backtestexec.Options{
+		Symbol:    strings.TrimSpace(*symbol),
+		Strategy:  stratName,
+		Params:    paramsMap,
+		Timeframe: strings.TrimSpace(*timeframe),
+		Adjust:    strings.TrimSpace(*adjust),
+		From:      fromT,
+		To:        toT,
+		Limit:     *limit,
+		Cash:      *cash,
+		Fee:       *fee,
+	}
+
+	var (
+		res     *backtest.Result
+		startTs time.Time
+		endTs   time.Time
+	)
 	var database *sql.DB
 	if fp != "" {
 		data, err := os.ReadFile(fp)
@@ -480,11 +481,17 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: read %s: %v\n", fp, err)
 			return 1
 		}
-		bars, err = backtest.ParseBars(data)
+		bars, err := backtest.ParseBars(data)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
+		res, err = backtest.RunOptions(context.Background(), bars, *cash, *fee, s, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+		startTs, endTs = bars[0].Ts, bars[len(bars)-1].Ts
 	} else {
 		var err error
 		database, err = db.Open(d)
@@ -499,42 +506,21 @@ func runBacktest(prog string, argv []string) int {
 			return 1
 		}
 
-		bars, err = ingest.QueryBars(context.Background(), database, strings.TrimSpace(*symbol), strings.TrimSpace(*timeframe), strings.TrimSpace(*adjust), fromT, toT, *limit)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "backtest: query bars: %v\n", err)
-			return 1
-		}
-	}
-
-	var opts *backtest.OptionsData
-	if templ != nil && templ.NeedsOptions {
-		rows, err := ingest.QueryOptionQuotes(context.Background(), database, strings.TrimSpace(*symbol), strings.TrimSpace(*adjust), fromT, toT, *limit)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "backtest: query option quotes: %v\n", err)
-			return 1
-		}
-		opts, err = backtest.OptionsDataFromQuotes(rows)
+		// The -dsn run path is the API's execution path (POST /v1/backtests):
+		// same runner, same persisted params, same output (doc/API.md).
+		outcome, err := backtestexec.Run(context.Background(), database, btOpts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
+		res, startTs, endTs = outcome.Result, outcome.StartTs, outcome.EndTs
 	}
 
-	res, err := backtest.RunOptions(context.Background(), bars, *cash, *fee, s, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
-		return 1
-	}
 	fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
 	if *save {
 		id, err := backtest.SaveResult(context.Background(), database,
-			strings.TrimSpace(*strat), strings.TrimSpace(*symbol),
-			map[string]any{
-				"cash":      *cash,
-				"fee":       *fee,
-				"timeframe": strings.TrimSpace(*timeframe),
-				"adjust":    strings.TrimSpace(*adjust),
-			}, res, bars[0].Ts, bars[len(bars)-1].Ts)
+			stratName, strings.TrimSpace(*symbol),
+			backtestexec.SaveParams(btOpts), res, startTs, endTs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
@@ -1298,8 +1284,8 @@ func runIngestBars(prog string, argv []string) int {
 }
 
 // serveMux assembles serve's top-level routes: admin API, watchlist API,
-// backtest results API, data API, embedded Web UI.
-func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore, bstore httpapi.BacktestStore) *http.ServeMux {
+// backtest results API (read + execute), data API, embedded Web UI.
+func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore, bstore httpapi.BacktestStore, bexec httpapi.BacktestExecutor) *http.ServeMux {
 	top := http.NewServeMux()
 	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, pinger))
 	// Exact pattern wins over the /v1/admin/ subtree, so cluster/config keep their own handler muxes.
@@ -1316,10 +1302,13 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/v1/strategies", wl)
 	top.Handle("/v1/watchlist", wl)
 	top.Handle("/v1/watchlist/", wl)
-	// Backtest results: saved runs list + detail with equity/trades (one handler mux).
+	// Backtest results: saved runs list + detail with equity/trades (one handler mux);
+	// the method-specific pattern wins for POST, so the execute endpoint runs
+	// one backtest synchronously (manual body or from_watchlist batch).
 	bt := httpapi.BacktestsHandler(bstore)
 	top.Handle("/v1/backtests", bt)
 	top.Handle("/v1/backtests/", bt)
+	top.Handle("POST /v1/backtests", httpapi.BacktestExecuteHandler(bexec, wstore))
 	// Longest pattern wins: GET /{$} beats the / catch-all; other methods still reach the API's JSON 404.
 	top.Handle("GET /{$}", http.RedirectHandler("/ui/", http.StatusMovedPermanently))
 	top.Handle("/ui/", http.StripPrefix("/ui/", webui.FileServer()))
