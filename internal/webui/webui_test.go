@@ -476,10 +476,18 @@ func TestAppJSCompareView(t *testing.T) {
 		"runLabel",
 		"CURVE_ALT",
 		"Select exactly two runs to compare.",
+		"series.find((s) => s.points.length > 0)", /* P1: empty first series (legacy run) must not crash the label loop */
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
+	}
+	/* P1: compare section is revealed before drawing, so render/fetch errors stay visible. */
+	rcStart := strings.Index(js, "function renderCompare")
+	reveal := strings.Index(js[rcStart:], "compare.hidden = false")
+	draw := strings.Index(js[rcStart:], "drawMultiCurve")
+	if reveal == -1 || draw == -1 || reveal > draw {
+		t.Fatalf("renderCompare must reveal the compare section before drawing")
 	}
 }
 

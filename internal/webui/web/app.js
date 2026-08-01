@@ -611,11 +611,14 @@ function drawCurvePlot(canvas, series, hover) {
     ctx.stroke();
     ctx.fillText(fmtAxis(v), CURVE_PAD.left - 6, y(v));
   }
-  ctx.textAlign = "center";
-  ctx.textBaseline = "alphabetic";
-  const first = series[0].points;
-  for (const i of [0, Math.floor((first.length - 1) / 2), first.length - 1]) {
-    ctx.fillText(String(first[i].ts).slice(0, 10), x(Date.parse(first[i].ts)), canvas.height - 8);
+  const labelSeries = series.find((s) => s.points.length > 0);
+  if (labelSeries) {
+    const first = labelSeries.points;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    for (const i of [0, Math.floor((first.length - 1) / 2), first.length - 1]) {
+      ctx.fillText(String(first[i].ts).slice(0, 10), x(Date.parse(first[i].ts)), canvas.height - 8);
+    }
   }
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
@@ -714,6 +717,9 @@ function renderCompareLegend(runs, colors) {
 }
 
 function renderCompare(runs) {
+  const compare = document.getElementById("compare");
+  compare.hidden = false;
+  compare.scrollIntoView();
   const colors = [CURVE_LINE, CURVE_ALT];
   const table = document.getElementById("compare-table");
   const headRow = table.tHead.rows[0];
@@ -737,9 +743,6 @@ function renderCompare(runs) {
   document.getElementById("compare-curve-wrap").hidden = false;
   renderCompareLegend(runs, colors);
   drawMultiCurve(runs.map((r, i) => ({label: runLabel(r), color: colors[i], points: r.equity_curve || []})), "compare-canvas");
-  const compare = document.getElementById("compare");
-  compare.hidden = false;
-  compare.scrollIntoView();
 }
 
 async function openCompare() {
@@ -756,7 +759,10 @@ async function openCompare() {
     clearError(errorEl);
     renderCompare(runs);
   } catch (err) {
+    const compare = document.getElementById("compare");
     showError(errorEl, err);
+    compare.hidden = false;
+    compare.scrollIntoView();
   }
 }
 
