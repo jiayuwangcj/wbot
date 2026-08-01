@@ -14,14 +14,14 @@ async function fetchJSON(url, opts) {
     let msg = "HTTP " + resp.status;
     try {
       const body = await resp.json();
-      if (body && typeof body.error === "string") {
-        msg = body.error;
-      } else if (body && typeof body.message === "string") {
-        /* backtests API error convention: {code, message, action} */
+      if (body && typeof body.message === "string") {
+        /* API-wide error convention: {code, message, action} */
         msg = body.message;
         if (typeof body.action === "string" && body.action !== "") {
           msg += " · " + body.action;
         }
+      } else if (body && typeof body.error === "string") {
+        msg = body.error;
       }
     } catch (err) {
       /* error body was not JSON, keep the status line */
@@ -100,15 +100,45 @@ function renderRuns(runs) {
   renderTable("runs-table", runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "running" : r.finished_at]));
 }
 
+/* Bars coverage hint: /v1/admin/cluster bars_coverage (all adjusts), queried once on load. */
+let barsCoverage = new Map();
+
+function loadBarsCoverage() {
+  fetchJSON("/v1/admin/cluster").then((c) => {
+    for (const cov of (c.components.data_plane.bars_coverage || [])) {
+      barsCoverage.set(cov.symbol + "|" + cov.timeframe, cov);
+    }
+  }).catch(() => {});
+}
+
+function showBarsCoverage(bars, symbol, timeframe) {
+  const el = document.getElementById("bars-coverage");
+  if (!el) return;
+  const cov = barsCoverage.get(symbol + "|" + timeframe);
+  if (cov) {
+    el.textContent = "Data coverage: " + cov.count + " bars · " + cov.min_ts.slice(0, 10) + " → " + cov.max_ts.slice(0, 10) + " (ingested, all adjusts)";
+  } else if (bars.length > 0) {
+    el.textContent = "Query results: " + bars.length + " bars · " + bars[0].ts.slice(0, 10) + " → " + bars[bars.length - 1].ts.slice(0, 10);
+  } else {
+    el.textContent = "";
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+}
+
 function initDataPage() {
   const barsForm = document.getElementById("bars-form");
   if (!barsForm) return;
   const barsError = document.getElementById("bars-error");
+  loadBarsCoverage();
   barsForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    const symbol = barsForm.symbol.value.trim();
+    const timeframe = barsForm.timeframe.value.trim();
     const params = new URLSearchParams();
-    params.set("symbol", barsForm.symbol.value.trim());
-    params.set("timeframe", barsForm.timeframe.value.trim());
+    params.set("symbol", symbol);
+    params.set("timeframe", timeframe);
     params.set("adjust", "fwd"); /* 数据标准默认前复权 (doc/DATA_STANDARD.md) */
     const from = toRFC3339(barsForm.from.value);
     const to = toRFC3339(barsForm.to.value);
@@ -118,6 +148,7 @@ function initDataPage() {
       const bars = await fetchJSON("/v1/bars?" + params.toString());
       clearError(barsError);
       renderBars(bars);
+      showBarsCoverage(bars, symbol, timeframe);
     } catch (err) {
       showError(barsError, err);
     }
@@ -387,6 +418,7 @@ function cssVar(name) {
 
 /* palette from style.css vars, hex fallbacks */
 const CURVE_LINE = cssVar("--accent") || "#0969da";
+const CURVE_ALT = cssVar("--accent-2") || "#eb6834";
 const CURVE_GRID = cssVar("--border") || "#d0d7de";
 const CURVE_TEXT = cssVar("--muted") || "#656d76";
 
@@ -407,6 +439,27 @@ function metricOf(item, key) {
   return m && m[key] !== undefined ? m[key] : null;
 }
 
+/* Compare selection: exactly two runs (checkbox column + compare button). */
+let compareSelection = [];
+
+function toggleCompareSelection(id, checked) {
+  const btn = document.getElementById("compare-btn");
+  const hint = document.getElementById("compare-hint");
+  if (checked && compareSelection.length >= 2) {
+    hint.textContent = "Select exactly two runs to compare.";
+    hint.hidden = false;
+    return false;
+  }
+  if (checked) {
+    compareSelection.push(id);
+  } else {
+    compareSelection = compareSelection.filter((x) => x !== id);
+  }
+  hint.hidden = true;
+  btn.disabled = compareSelection.length !== 2;
+  return true;
+}
+
 function renderResultsList(items, onOpen) {
   const table = document.getElementById("results-table");
   const empty = document.getElementById("results-empty");
@@ -419,6 +472,17 @@ function renderResultsList(items, onOpen) {
   }
   for (const item of items) {
     const tr = document.createElement("tr");
+    const pick = document.createElement("td");
+    const check = document.createElement("input");
+    check.type = "checkbox";
+    check.className = "row-check";
+    check.checked = compareSelection.indexOf(item.id) !== -1;
+    check.setAttribute("aria-label", "select run " + item.id + " for comparison");
+    check.addEventListener("change", () => {
+      if (!toggleCompareSelection(item.id, check.checked)) check.checked = false;
+    });
+    pick.appendChild(check);
+    tr.appendChild(pick);
     const cells = [
       item.id,
       item.strategy,
@@ -504,25 +568,25 @@ function fmtAxis(v) {
   return String(Math.round(v));
 }
 
-function drawEquityCurve(points, hoverIdx) {
-  const canvas = document.getElementById("equity-canvas");
-  const empty = document.getElementById("curve-empty");
+/* drawCurvePlot renders one or more equity series on a canvas: shared
+   time-domain x scale, per-series color, final-point label per series. */
+function drawCurvePlot(canvas, series, hover) {
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  if (!points || points.length === 0) {
-    canvas.hidden = true;
-    empty.hidden = false;
-    return;
-  }
-  canvas.hidden = false;
-  empty.hidden = true;
   const w = canvas.width - CURVE_PAD.left - CURVE_PAD.right;
   const h = canvas.height - CURVE_PAD.top - CURVE_PAD.bottom;
   let min = Infinity;
   let max = -Infinity;
-  for (const p of points) {
-    min = Math.min(min, p.equity);
-    max = Math.max(max, p.equity);
+  let tsMin = Infinity;
+  let tsMax = -Infinity;
+  for (const s of series) {
+    for (const p of s.points) {
+      min = Math.min(min, p.equity);
+      max = Math.max(max, p.equity);
+      const t = Date.parse(p.ts);
+      tsMin = Math.min(tsMin, t);
+      tsMax = Math.max(tsMax, t);
+    }
   }
   if (min === max) {
     min -= 1;
@@ -531,7 +595,8 @@ function drawEquityCurve(points, hoverIdx) {
   const step = niceStep(max - min);
   const lo = Math.floor(min / step) * step;
   const hi = Math.ceil(max / step) * step;
-  const x = (i) => CURVE_PAD.left + (points.length === 1 ? 0 : (i / (points.length - 1)) * w);
+  const span = tsMax - tsMin;
+  const x = (ts) => (span === 0 ? CURVE_PAD.left + w / 2 : CURVE_PAD.left + ((ts - tsMin) / span) * w);
   const y = (v) => CURVE_PAD.top + (1 - (v - lo) / (hi - lo)) * h;
   ctx.lineWidth = 1;
   ctx.strokeStyle = CURVE_GRID;
@@ -548,43 +613,151 @@ function drawEquityCurve(points, hoverIdx) {
   }
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  for (const i of [0, Math.floor((points.length - 1) / 2), points.length - 1]) {
-    ctx.fillText(String(points[i].ts).slice(0, 10), x(i), canvas.height - 8);
+  const first = series[0].points;
+  for (const i of [0, Math.floor((first.length - 1) / 2), first.length - 1]) {
+    ctx.fillText(String(first[i].ts).slice(0, 10), x(Date.parse(first[i].ts)), canvas.height - 8);
   }
   ctx.lineWidth = 2;
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
-  ctx.strokeStyle = CURVE_LINE;
-  ctx.beginPath();
-  ctx.moveTo(x(0), y(points[0].equity));
-  for (let i = 1; i < points.length; i++) {
-    ctx.lineTo(x(i), y(points[i].equity));
+  for (const s of series) {
+    const pts = s.points;
+    if (pts.length === 0) continue;
+    ctx.strokeStyle = s.color;
+    ctx.beginPath();
+    ctx.moveTo(x(Date.parse(pts[0].ts)), y(pts[0].equity));
+    for (let i = 1; i < pts.length; i++) {
+      ctx.lineTo(x(Date.parse(pts[i].ts)), y(pts[i].equity));
+    }
+    ctx.stroke();
+    const last = pts.length - 1;
+    ctx.beginPath();
+    ctx.arc(x(Date.parse(pts[last].ts)), y(pts[last].equity), 4, 0, 2 * Math.PI);
+    ctx.fillStyle = s.color;
+    ctx.fill();
+    ctx.fillStyle = CURVE_TEXT;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(fmtMoney(pts[last].equity), x(Date.parse(pts[last].ts)) + 10, y(pts[last].equity));
   }
-  ctx.stroke();
-  const last = points.length - 1;
-  ctx.beginPath();
-  ctx.arc(x(last), y(points[last].equity), 4, 0, 2 * Math.PI);
-  ctx.fillStyle = CURVE_LINE;
-  ctx.fill();
-  ctx.fillStyle = CURVE_TEXT;
-  ctx.textAlign = "left";
-  ctx.textBaseline = "middle";
-  ctx.fillText(fmtMoney(points[last].equity), x(last) + 10, y(points[last].equity));
-  if (hoverIdx === null || hoverIdx === undefined) return;
-  const hp = points[hoverIdx];
+  if (hover === null || hover === undefined) return;
+  const hp = series[0].points[hover];
   ctx.lineWidth = 1;
   ctx.strokeStyle = CURVE_GRID;
   ctx.beginPath();
-  ctx.moveTo(x(hoverIdx), CURVE_PAD.top);
-  ctx.lineTo(x(hoverIdx), CURVE_PAD.top + h);
+  ctx.moveTo(x(Date.parse(hp.ts)), CURVE_PAD.top);
+  ctx.lineTo(x(Date.parse(hp.ts)), CURVE_PAD.top + h);
   ctx.stroke();
   ctx.beginPath();
-  ctx.arc(x(hoverIdx), y(hp.equity), 4, 0, 2 * Math.PI);
+  ctx.arc(x(Date.parse(hp.ts)), y(hp.equity), 4, 0, 2 * Math.PI);
   ctx.fillStyle = CURVE_LINE;
   ctx.fill();
   ctx.strokeStyle = "#fff";
   ctx.lineWidth = 2;
   ctx.stroke();
+}
+
+function drawEquityCurve(points, hoverIdx) {
+  const canvas = document.getElementById("equity-canvas");
+  const empty = document.getElementById("curve-empty");
+  if (!points || points.length === 0) {
+    canvas.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  canvas.hidden = false;
+  empty.hidden = true;
+  drawCurvePlot(canvas, [{points: points, color: CURVE_LINE}], hoverIdx);
+}
+
+function drawMultiCurve(series, canvasId) {
+  const canvas = document.getElementById(canvasId);
+  const empty = document.getElementById("compare-empty");
+  if (!series.some((s) => s.points && s.points.length > 0)) {
+    canvas.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  canvas.hidden = false;
+  empty.hidden = true;
+  drawCurvePlot(canvas, series, null);
+}
+
+/* Compare view: side-by-side metrics + overlaid equity curves with legend. */
+
+function runLabel(r) {
+  return "#" + r.id + " " + r.strategy + " " + r.symbol;
+}
+
+const COMPARE_METRICS = [
+  ["equity", "Equity", fmtMoney],
+  ["total_return", "Total return", fmtPct],
+  ["max_drawdown", "Max drawdown", fmtPct],
+  ["bars", "Bars", String]
+];
+
+function renderCompareLegend(runs, colors) {
+  const legend = document.getElementById("compare-legend");
+  legend.replaceChildren();
+  for (let i = 0; i < runs.length; i++) {
+    const item = document.createElement("span");
+    item.className = "legend-item";
+    const swatch = document.createElement("span");
+    swatch.className = "legend-swatch";
+    swatch.style.background = colors[i];
+    const text = document.createElement("span");
+    text.textContent = runLabel(runs[i]);
+    item.appendChild(swatch);
+    item.appendChild(text);
+    legend.appendChild(item);
+  }
+}
+
+function renderCompare(runs) {
+  const colors = [CURVE_LINE, CURVE_ALT];
+  const table = document.getElementById("compare-table");
+  const headRow = table.tHead.rows[0];
+  headRow.replaceChildren();
+  const metricHead = document.createElement("th");
+  metricHead.textContent = "Metric";
+  headRow.appendChild(metricHead);
+  for (let i = 0; i < runs.length; i++) {
+    const th = document.createElement("th");
+    th.textContent = runLabel(runs[i]);
+    headRow.appendChild(th);
+  }
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  for (const [key, label, fmt] of COMPARE_METRICS) {
+    appendRow(tbody, [label].concat(runs.map((r) => fmtMetric(metricOf(r, key), fmt))));
+  }
+  appendRow(tbody, ["Params"].concat(runs.map((r) => JSON.stringify(r.params || {}))));
+  document.getElementById("compare-table-empty").hidden = true;
+  table.hidden = false;
+  document.getElementById("compare-curve-wrap").hidden = false;
+  renderCompareLegend(runs, colors);
+  drawMultiCurve(runs.map((r, i) => ({label: runLabel(r), color: colors[i], points: r.equity_curve || []})), "compare-canvas");
+  const compare = document.getElementById("compare");
+  compare.hidden = false;
+  compare.scrollIntoView();
+}
+
+async function openCompare() {
+  const hint = document.getElementById("compare-hint");
+  const errorEl = document.getElementById("compare-error");
+  if (compareSelection.length !== 2) {
+    hint.textContent = "Select exactly two runs to compare.";
+    hint.hidden = false;
+    return;
+  }
+  hint.hidden = true;
+  try {
+    const runs = await Promise.all(compareSelection.map((id) => fetchJSON("/v1/backtests/" + id)));
+    clearError(errorEl);
+    renderCompare(runs);
+  } catch (err) {
+    showError(errorEl, err);
+  }
 }
 
 let curvePoints = [];
@@ -619,6 +792,11 @@ function initResultsPage() {
   });
   document.getElementById("detail-back").addEventListener("click", () => {
     document.getElementById("detail").hidden = true;
+    document.getElementById("list").scrollIntoView();
+  });
+  document.getElementById("compare-btn").addEventListener("click", openCompare);
+  document.getElementById("compare-back").addEventListener("click", () => {
+    document.getElementById("compare").hidden = true;
     document.getElementById("list").scrollIntoView();
   });
   const canvas = document.getElementById("equity-canvas");

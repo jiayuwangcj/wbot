@@ -24,11 +24,13 @@
     <div class="table-scroll">
       <table id="results-table" hidden>
         <thead>
-          <tr><th>ID</th><th>Strategy</th><th>Symbol</th><th>Equity</th><th>Return</th><th>Max drawdown</th><th>Bars</th><th>Created at</th><th></th></tr>
+          <tr><th></th><th>ID</th><th>Strategy</th><th>Symbol</th><th>Equity</th><th>Return</th><th>Max drawdown</th><th>Bars</th><th>Created at</th><th></th></tr>
         </thead>
         <tbody></tbody>
       </table>
     </div>
+    <p id="compare-hint" class="notice" hidden></p>
+    <button type="button" id="compare-btn" disabled>Compare selected runs</button>
   </section>
   <section id="detail" hidden>
     <h2>Backtest <span id="detail-id"></span></h2>
@@ -60,6 +62,24 @@
       <pre id="detail-params"></pre>
     </div>
     <button type="button" id="detail-back" class="link">Back to list</button>
+  </section>
+  <section id="compare" hidden>
+    <h2>Compare runs</h2>
+    <p id="compare-error" class="notice error" hidden></p>
+    <div class="table-scroll">
+      <table id="compare-table" hidden>
+        <thead><tr><th>Metric</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <p id="compare-table-empty" class="notice" hidden>Select exactly two runs to compare.</p>
+    <div id="compare-curve-wrap" class="curve-wrap" hidden>
+      <h3>Equity curves</h3>
+      <canvas id="compare-canvas" width="800" height="300" role="img" aria-label="Equity curves overlay"></canvas>
+      <p id="compare-empty" class="notice" hidden>No equity curves to overlay (older data).</p>
+      <div id="compare-legend" class="legend"></div>
+    </div>
+    <button type="button" id="compare-back" class="link">Back to list</button>
   </section>
 </main>
 <script src="/ui/app.js"></script>
