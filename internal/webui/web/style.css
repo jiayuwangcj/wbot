@@ -143,6 +143,17 @@ th {
   color: #cf222e;
 }
 
+/* Freshness column: stale rows alert in red, unknown rows muted (data freshness
+   monitor, doc/DATA_PIPELINE.md). */
+td.freshness-stale {
+  color: #cf222e;
+  font-weight: 600;
+}
+
+td.freshness-unknown {
+  color: var(--muted);
+}
+
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

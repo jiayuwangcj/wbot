@@ -63,12 +63,17 @@ type dataPlaneJSON struct {
 	BarsCoverage []barCoverageJSON `json:"bars_coverage"`
 }
 
+// barCoverageJSON carries the coverage plus staleness fields: max_ts_age_seconds
+// (age of the newest bar) and fresh (fresh/stale/unknown, per-timeframe default
+// thresholds, doc/DATA_PIPELINE.md). New fields only — old clients keep working.
 type barCoverageJSON struct {
-	Symbol    string `json:"symbol"`
-	Timeframe string `json:"timeframe"`
-	Count     int64  `json:"count"`
-	MinTs     string `json:"min_ts"`
-	MaxTs     string `json:"max_ts"`
+	Symbol          string `json:"symbol"`
+	Timeframe       string `json:"timeframe"`
+	Count           int64  `json:"count"`
+	MinTs           string `json:"min_ts"`
+	MaxTs           string `json:"max_ts"`
+	MaxTsAgeSeconds int64  `json:"max_ts_age_seconds"`
+	Fresh           string `json:"fresh"`
 }
 
 // fillPipelineAndDataPlane loads the DB-backed components; call only after a successful ping.
@@ -87,11 +92,18 @@ func fillPipelineAndDataPlane(ctx context.Context, c *componentsJSON, store Clus
 	}
 	c.Pipeline.Counts = runCountsJSON{Running: counts.Running, Succeeded: counts.Succeeded, Failed: counts.Failed}
 	c.Pipeline.RecentRuns = toRunJSON(runs)
+	now := time.Now()
 	c.DataPlane.BarsCoverage = make([]barCoverageJSON, 0, len(coverage))
 	for _, cov := range coverage {
+		age := now.Sub(cov.MaxTs)
+		if age < 0 {
+			age = 0
+		}
 		c.DataPlane.BarsCoverage = append(c.DataPlane.BarsCoverage, barCoverageJSON{
 			Symbol: cov.Symbol, Timeframe: cov.Timeframe, Count: cov.Count,
 			MinTs: cov.MinTs.Format(time.RFC3339), MaxTs: cov.MaxTs.Format(time.RFC3339),
+			MaxTsAgeSeconds: int64(age.Seconds()),
+			Fresh:           string(ingest.JudgeFreshness(cov.MaxTs, now, ingest.MaxAgeForTimeframe(cov.Timeframe))),
 		})
 	}
 	return nil

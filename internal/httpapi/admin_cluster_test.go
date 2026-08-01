@@ -154,6 +154,64 @@ func TestClusterComponents(t *testing.T) {
 	}
 }
 
+// TestClusterFreshnessFields: bars_coverage entries carry max_ts_age_seconds and
+// fresh (fresh/stale by the per-timeframe default threshold), and the pre-existing
+// fields are unchanged (backward compatibility).
+func TestClusterFreshnessFields(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	freshTs := now.Add(-2 * time.Hour)   // 1d default threshold 72h → fresh
+	staleTs := now.Add(-100 * time.Hour) // 1d default threshold 72h → stale
+	store := &fakeClusterStore{
+		coverage: []ingest.BarCoverage{
+			{Symbol: "FRESH.US", Timeframe: "1d", Adjust: "none", Count: 3, MinTs: freshTs.Add(-48 * time.Hour), MaxTs: freshTs},
+			{Symbol: "STALE.US", Timeframe: "1d", Adjust: "none", Count: 5, MinTs: staleTs.Add(-48 * time.Hour), MaxTs: staleTs},
+		},
+	}
+	rec := get(t, ClusterHandler(testMeta(), store), "/v1/admin/cluster")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var got struct {
+		Components struct {
+			DataPlane struct {
+				BarsCoverage []struct {
+					Symbol          string `json:"symbol"`
+					Timeframe       string `json:"timeframe"`
+					Count           int64  `json:"count"`
+					MinTs           string `json:"min_ts"`
+					MaxTs           string `json:"max_ts"`
+					MaxTsAgeSeconds int64  `json:"max_ts_age_seconds"`
+					Fresh           string `json:"fresh"`
+				} `json:"bars_coverage"`
+			} `json:"data_plane"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
+	}
+	cov := got.Components.DataPlane.BarsCoverage
+	if len(cov) != 2 {
+		t.Fatalf("bars_coverage len = %d; want 2", len(cov))
+	}
+	fresh, stale := cov[0], cov[1]
+	// New fields: fresh entry age ≈ 7200s and status fresh; stale entry status stale.
+	if fresh.Fresh != "fresh" || fresh.MaxTsAgeSeconds < 7199 || fresh.MaxTsAgeSeconds > 7201 {
+		t.Fatalf("fresh entry = %+v; want fresh with max_ts_age_seconds ≈ 7200", fresh)
+	}
+	if stale.Fresh != "stale" || stale.MaxTsAgeSeconds < 359999 || stale.MaxTsAgeSeconds > 360001 {
+		t.Fatalf("stale entry = %+v; want stale with max_ts_age_seconds ≈ 360000", stale)
+	}
+	// Backward compatibility: old fields keep their values.
+	if fresh.Symbol != "FRESH.US" || fresh.Timeframe != "1d" || fresh.Count != 3 ||
+		fresh.MinTs != freshTs.Add(-48*time.Hour).Format(time.RFC3339) || fresh.MaxTs != freshTs.Format(time.RFC3339) {
+		t.Fatalf("fresh entry old fields = %+v; want FRESH.US 1d count 3 with injected ts", fresh)
+	}
+	if stale.Symbol != "STALE.US" || stale.Timeframe != "1d" || stale.Count != 5 ||
+		stale.MinTs != staleTs.Add(-48*time.Hour).Format(time.RFC3339) || stale.MaxTs != staleTs.Format(time.RFC3339) {
+		t.Fatalf("stale entry old fields = %+v; want STALE.US 1d count 5 with injected ts", stale)
+	}
+}
+
 // TestClusterDBDown: ping failure reports 200 + db ok:false and skips the
 // DB-backed queries, leaving pipeline/data plane empty (⑥-A degraded semantics).
 func TestClusterDBDown(t *testing.T) {

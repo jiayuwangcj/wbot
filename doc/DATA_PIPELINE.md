@@ -12,6 +12,7 @@
 | `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust fwd\|none` 默认 fwd） |
 | `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §10、[[DATA_STANDARD]]） |
 | `wbot ingest status` | 只读列出最近 `ingestion_runs`（`-limit` 可调） |
+| `wbot ingest freshness` | 数据新鲜度检查：各 symbol×timeframe 的 max_ts 年龄与三态状态；**任一 stale → exit 1**（可接 cron 门禁） |
 
 通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-every`（间隔重复）、`-from`/`-to`（RFC3339 时间范围，零值=不限）。
 
@@ -54,6 +55,20 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 ```
 
 > 注：示例中的 `$(...)` 由 cron 的 shell 求值；更稳的写法是包一层脚本（参考 `scripts/verify.sh` 的脚本化风格）。`-every` 与外部 cron 二选一即可，不要叠加。
+
+## 数据新鲜度（freshness）
+
+`wbot ingest freshness [-dsn] [-max-age <dur>]` 按 symbol×timeframe×adjust 列出 bars 表各组合的 `max_ts`、年龄（秒）与状态，作为「数据停更」的观察闭环（与 `ingest status` 互补：status 看拉取任务成败，freshness 看数据是否新鲜）。
+
+- **三态**：`fresh`（max_ts 年龄 ≤ 阈值，等于阈值算 fresh）、`stale`（超过阈值）、`unknown`（无数据，bars 表为空）。
+- **阈值**：默认按 timeframe 映射——3 × 名义 bar 间隔，下限 10 分钟（`1d` → 3 天、`1m` → 10 分钟、`5m` → 15 分钟、`1w` → 21 天、`1mo` → 90 天）；无法解析的 timeframe 回退 24h。`-max-age`（如 `-max-age 24h`）全局覆盖。
+- **退出码**：任一 stale → `1`；全 fresh / 无数据 unknown → `0`；参数错误 → `2`。cron 门禁示例：
+
+```cron
+*/10 * * * * wbot ingest freshness >>"$HOME/.cache/wbot-freshness.log" 2>&1 || notify-freshness-stale
+```
+
+- 判定实现：`internal/ingest`（`JudgeFreshness`/`MaxAgeForTimeframe`/`QueryFreshness`）；`/v1/admin/cluster` 的 `bars_coverage` 每项带 `max_ts_age_seconds`/`fresh`（同阈值规则，向后兼容，见 [[API]]）。
 
 ## 相关实现
 
