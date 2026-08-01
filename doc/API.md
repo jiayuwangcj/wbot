@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测结果数据面（只读：CLI `wbot backtest -save` 写入，本端点读取，见 [[BACKTEST]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## Web UI
 
@@ -219,6 +219,53 @@ migration 004 之前的老行（无曲线）返回 `equity_curve: []`、`trades:
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。
 
+## POST /v1/backtests
+
+执行并落库一次回测（v4 阶段 A 切片 4，draft-2026-08-02-oneclick-backtest）。**同步执行**（请求内完成，单回测秒级）；复用 CLI `wbot backtest -dsn` 同一运行器路径（`internal/backtestexec`：同输入同输出——与 CLI `-save` 落库的 metrics/params/equity_curve/trades 一致，见 [[BACKTEST]]）。
+
+**单进程语义**：同一时刻只跑一个回测（互斥锁覆盖整批），busy → 409；执行超时（默认 5 分钟，覆盖整批）→ 503。客户端断开会中止运行且不落库。
+
+请求 body 两种形态（互斥，同传 422）：
+
+1. **手填**：`{"symbol": "HK.00700", "strategy": "covered-call", "params": {"strike_pct_otm": 0.05}}`
+   - `symbol` / `strategy` 必填；`strategy` 取值同 CLI `-strategy`（`hold` / `buy-hold` / `covered-call` / `cash-secured-put`），`params` 按模板 schema 校验（未知参数、类型不符、越界 → 422），省略视为 `{}`（模板默认值）；`hold`/`buy-hold` 不得携带 `params`
+   - 运行参数取文档化默认值（同 CLI 缺省）：timeframe `1d`、adjust `fwd`、cash 10000、fee 0、limit 10000；本端点不暴露这些输入
+2. **全量**：`{"from_watchlist": true}` — 逐条 watchlist（按 symbol 升序）串行执行并分别落库；任一标的失败即中止并返回该错误（此前已落库的运行保留）；watchlist 为空 → 422 `empty_watchlist`
+
+响应 `201`（创建的结果详情，形状同 GET /v1/backtests/{id}，含 equity_curve/trades）：
+
+```json
+{
+  "id": 8, "strategy": "buy-hold", "symbol": "DEMO.US",
+  "params": {"cash": 10000, "fee": 0, "timeframe": "1d", "adjust": "fwd"},
+  "metrics": {"equity": 12100, "total_return": 0.21, "max_drawdown": 0, "bars": 3},
+  "start_ts": "2024-06-01T00:00:00Z", "end_ts": "2024-06-03T00:00:00Z",
+  "created_at": "2026-08-02T08:00:00Z",
+  "equity_curve": [{"ts": "2024-06-01T00:00:00Z", "equity": 10000}],
+  "trades": [{"ts": "2024-06-01T00:00:00Z", "action": "buy", "symbol": "DEMO.US", "size": 100, "price": 100, "cash_after": 0}]
+}
+```
+
+`from_watchlist` 响应 `201`：`{"runs": [<详情>, ...]}`（每条 watchlist 一行）。
+
+| 状态码 | 场景 |
+| --- | --- |
+| 201 | 执行完成并落库（手填返回详情体；`from_watchlist` 返回 `{"runs": [...]}`） |
+| 409 | 已有回测在运行（单进程互斥；`code: busy`，action 提示稍后重试） |
+| 422 | 参数校验失败：body 非 JSON、缺 symbol/strategy、未知策略、非法 params、from_watchlist 与显式字段同传、watchlist 为空（`code: invalid_request` / `empty_watchlist`） |
+| 503 | 依赖失败：无 bars/期权数据（`no_data`，action 提示先 ingest）、执行超时（`timeout`）、DB/运行失败（`dependency_failed`） |
+| 405 | 方法不允许（仅 POST） |
+
+错误体沿用 `{"code", "message", "action"}` 约定；`action` 为可执行的补救建议，例如无数据时：
+
+```json
+{"code": "no_data", "message": "no bars data for HK.00700", "action": "ingest first: `wbot ingest futu -symbol HK.00700 -timeframe 1d`"}
+```
+
+CLI 等价物：`wbot backtest -dsn "$WBOT_PG_DSN" -symbol X -strategy Y -params '<json>' -save`（同输入同输出，见 [[BACKTEST]]）。
+
+PRIVACY：本端点不涉及配置值（symbol/strategy/params 为用户业务数据，非凭证；API 永不返回配置值，见 doc/PRIVACY.md）。
+
 ## GET /v1/admin/status
 
 进程 + DB 运行状态（后台管理数据面；无查询参数）。
@@ -352,7 +399,7 @@ PRIVACY：API 永不返回配置值——GET 只回 key 元数据、PUT 响应�
 
 ## 错误
 
-除 `/v1/backtests`（本切片起新约定 `{"code","message","action"}`，见上节；S5 全量接入）外，统一 `{"error": "..."}` JSON：
+`/v1/backtests` 起新约定 `{"code","message","action"}`（GET 与 POST，见上节；S5 全量接入），其余统一 `{"error": "..."}` JSON：
 
 | 场景 | 状态码 |
 | --- | --- |
@@ -361,6 +408,7 @@ PRIVACY：API 永不返回配置值——GET 只回 key 元数据、PUT 响应�
 | DB ping 失败 | 503 |
 | 未知路径 / 白名单外 config key / DELETE 不存在的 watchlist 标的 / 不存在的 backtest id | 404 |
 | 方法不允许（非 GET/PUT/DELETE；watchlist 标的路径仅支持 PUT/DELETE） | 405 |
+| POST /v1/backtests：非法参数 422、单进程互斥 busy 409、依赖失败/无数据/超时 503（错误体见上节） | 见上节 |
 
 ## 本地验证
 
@@ -380,6 +428,10 @@ curl -X DELETE 'http://127.0.0.1:8080/v1/watchlist/HK.00700'
 wbot backtest -dsn "$WBOT_PG_DSN" -symbol DEMO.US -adjust none -strategy buy-hold -save
 curl -s 'http://127.0.0.1:8080/v1/backtests?symbol=DEMO.US'
 curl -s 'http://127.0.0.1:8080/v1/backtests/1'
+curl -X POST 'http://127.0.0.1:8080/v1/backtests' -H 'Content-Type: application/json' \
+  -d '{"symbol":"DEMO.US","strategy":"buy-hold"}'
+curl -X POST 'http://127.0.0.1:8080/v1/backtests' -H 'Content-Type: application/json' \
+  -d '{"from_watchlist":true}'
 ```
 
 关联：[[DATA_PIPELINE]] [[ROADMAP]]（v4 Go API，微信小程序前置依赖）
