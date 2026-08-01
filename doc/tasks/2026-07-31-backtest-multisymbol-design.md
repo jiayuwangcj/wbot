@@ -29,7 +29,7 @@ ROADMAP v2「时间对齐」的拆解设计：多 symbol 组合回测的时间�
 
 ## State
 
-- **status**: `blocked`
+- **status**: `done`（2026-08-02 合入 PR #81——产品组拍板最小语义：intersection 对齐 + 静态等权 + 最近价估值）
 - **last step**: 拆解完成；缺「对齐语义拍板」（用户或 discussion 确认）。
 - **缺什么**: 上述设计要点 1-4 的确认（或直接采用「Constraints」里的最小语义）。
 
