@@ -361,7 +361,7 @@ func TestServeHelpMentionsWatchlist(t *testing.T) {
 
 func TestServeHelpMentionsBacktests(t *testing.T) {
 	out := serveHelpOutput(t)
-	for _, want := range []string{"/v1/backtests", "/v1/backtests/{id}"} {
+	for _, want := range []string{"/v1/backtests", "/v1/backtests/{id}", "POST /v1/backtests"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("serve help missing %s: %q", want, out)
 		}
@@ -577,9 +577,51 @@ func (serveFakeBacktestStore) Get(context.Context, int64) (*backtest.ResultRecor
 	return nil, backtest.ErrResultNotFound
 }
 
+// serveFakeBacktestExecutor is a canned httpapi.BacktestExecutor for serve-mux tests.
+type serveFakeBacktestExecutor struct{}
+
+func (serveFakeBacktestExecutor) RunOne(context.Context, string, string, map[string]any) (*backtest.ResultRecord, error) {
+	ts := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	return &backtest.ResultRecord{
+		ID: 1, Strategy: "buy-hold", Symbol: "DEMO.US",
+		Params:  map[string]any{"cash": 10000.0, "fee": 0.0},
+		Metrics: map[string]any{"equity": 12100.0, "total_return": 0.21, "max_drawdown": 0.0, "bars": 3},
+		StartTs: ts, EndTs: ts.Add(48 * time.Hour), CreatedAt: ts,
+		EquityCurve: []backtest.EquityPoint{}, Trades: []backtest.Trade{},
+	}, nil
+}
+
 func serveMuxForTest() http.Handler {
 	meta := httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:8080"}
-	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{})
+	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{})
+}
+
+// TestServeMuxBacktestExecuteRoute: POST /v1/backtests routes to the execute
+// handler (201 with the created detail) while GET stays on the read handler.
+func TestServeMuxBacktestExecuteRoute(t *testing.T) {
+	top := serveMuxForTest()
+	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
+		strings.NewReader(`{"symbol":"DEMO.US","strategy":"buy-hold"}`))
+	rec := httptest.NewRecorder()
+	top.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST /v1/backtests = %d; want 201 (body %s)", rec.Code, rec.Body)
+	}
+	var detail struct {
+		ID      int64          `json:"id"`
+		Metrics map[string]any `json:"metrics"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("body %q not JSON: %v", rec.Body, err)
+	}
+	if detail.ID != 1 || detail.Metrics["equity"] != 12100.0 {
+		t.Fatalf("detail = %+v; want id 1 equity 12100", detail)
+	}
+	// GET on the same path still serves the read handler's list.
+	rec = serveGet(t, top, "/v1/backtests")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /v1/backtests = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
 }
 
 func serveGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -721,7 +763,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	// Serve wiring with real DB stores (same as runServe).
 	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
 		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
-		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database))
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database))
 
 	rec := serveGet(t, top, "/v1/backtests?symbol="+symbol)
 	if rec.Code != http.StatusOK {
@@ -775,5 +817,113 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	tr := detail.Trades[0]
 	if tr.Action != "buy" || tr.Symbol != symbol || tr.Size != 100 || tr.Price != 100 || tr.CashAfter != 0 {
 		t.Fatalf("trade = %+v; want buy %s 100 @100 cash_after 0", tr, symbol)
+	}
+}
+
+// TestBacktestExecuteMatchesCLISave: POST /v1/backtests and `wbot backtest
+// -save` share the runner path — same input yields the same metrics and the
+// same persisted params (acceptance: 同输入同输出, draft 2026-08-02 S4).
+func TestBacktestExecuteMatchesCLISave(t *testing.T) {
+	if os.Getenv("WBOT_PG_DSN") == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(os.Getenv("WBOT_PG_DSN"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	const symbol = "BTEXECCLI.US"
+	if _, err := database.Exec(`DELETE FROM backtest_results WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	day := func(i int) time.Time { return time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC) }
+	for i, c := range []float64{100, 110, 121} {
+		// adjust 'fwd' matches both the CLI default and the API's default.
+		if _, err := database.Exec(`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// CLI -save: baseline output (deterministic; doc/BACKTEST.md).
+	cliOut := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", os.Getenv("WBOT_PG_DSN"),
+		"-symbol", symbol, "-timeframe", "1d", "-strategy", "buy-hold", "-save"})
+	if !strings.Contains(cliOut, "final_equity=12100") || !strings.Contains(cliOut, "saved result id=") {
+		t.Fatalf("CLI output %q; want final_equity=12100 and saved id", cliOut)
+	}
+
+	// API POST: same fixture, same strategy → identical metrics/params.
+	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
+		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database))
+	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
+		strings.NewReader(`{"symbol":"`+symbol+`","strategy":"buy-hold"}`))
+	rec := httptest.NewRecorder()
+	top.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("POST = %d; want 201 (body %s)", rec.Code, rec.Body)
+	}
+	var posted struct {
+		ID      int64          `json:"id"`
+		Params  map[string]any `json:"params"`
+		Metrics map[string]any `json:"metrics"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &posted); err != nil {
+		t.Fatal(err)
+	}
+	if posted.Metrics["equity"] != 12100.0 || posted.Metrics["bars"] != 3.0 {
+		t.Fatalf("POST metrics = %v; want the CLI's equity 12100 over 3 bars", posted.Metrics)
+	}
+
+	// Both runs are listed; their persisted params match field for field.
+	list := serveGet(t, top, "/v1/backtests?symbol="+symbol)
+	var rows []struct {
+		ID      int64          `json:"id"`
+		Params  map[string]any `json:"params"`
+		Metrics map[string]any `json:"metrics"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("list = %d rows; want 2 (CLI + API)", len(rows))
+	}
+	for _, row := range rows {
+		if row.Metrics["equity"] != 12100.0 {
+			t.Fatalf("row %d metrics = %v; want equity 12100", row.ID, row.Metrics)
+		}
+		for _, k := range []string{"cash", "fee", "timeframe", "adjust"} {
+			if row.Params[k] == nil {
+				t.Fatalf("row %d params = %v; missing %q", row.ID, row.Params, k)
+			}
+		}
+		if row.Params["adjust"] != "fwd" || row.Params["timeframe"] != "1d" {
+			t.Fatalf("row %d params = %v; want timeframe 1d adjust fwd", row.ID, row.Params)
+		}
+	}
+
+	// The GET detail of the POSTed run carries the same trace as the CLI save.
+	detail := serveGet(t, top, fmt.Sprintf("/v1/backtests/%d", posted.ID))
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail = %d; want 200 (body %s)", detail.Code, detail.Body)
+	}
+	var got struct {
+		EquityCurve []struct {
+			Equity float64 `json:"equity"`
+		} `json:"equity_curve"`
+	}
+	if err := json.Unmarshal(detail.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.EquityCurve) != 3 || got.EquityCurve[2].Equity != 12100 {
+		t.Fatalf("equity_curve = %+v; want 3 points ending 12100", got.EquityCurve)
 	}
 }

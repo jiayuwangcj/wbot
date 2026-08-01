@@ -26,6 +26,10 @@ wbot backtest \
 
 输出一行摘要：`final_equity=... total_return=... max_drawdown=... bars=...`（确定性：同输入同输出）。`-save` 时另打印 `saved result id=...`；落库的 equity_curve 为每根 bar 结算后市值、trades 为正股买卖/期权开平仓/行权（ITM 行权、OTM 作废）逐笔明细（同输入同输出，见 `internal/backtest` 确定性单测）。
 
+## 服务端执行（v4 阶段 A 切片 4）
+
+`wbot serve` 的 `POST /v1/backtests`（doc/API.md）与 CLI `-dsn` 路径共用同一运行器（`internal/backtestexec`，draft-2026-08-02-oneclick-backtest）：同一套策略/参数校验（`Build`）、同一查询/运行路径（`Run`）、同一落库 params 形状（`SaveParams`），同输入同输出。单进程互斥（busy → 409）+ 执行超时（默认 5 分钟 → 503）；`from_watchlist` 全量模式逐条串行执行并分别落库。
+
 ## 期权腿与策略模板（slice ⑫-b）
 
 - **期权腿**（`internal/backtest`）：`Action` 增 `sell-call / buy-call / sell-put / buy-put`（size = 合约数）；`State.Options` 存开仓腿（`Code/Kind/Strike/Expiry/Lot/Contracts/AvgPremium`，Contracts 负 = 短腿）；腿的**到期结算由 runner 机械执行**：`bar.Ts ≥ Expiry` 时 ITM 按 strike 行权（Call 卖出/买入 `lot×contracts` 股，Put 反向），OTM 作废移除；CSP 开仓强制现金储备校验（`Cash ≥ strike×lot×contracts`）。
