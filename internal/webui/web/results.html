@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wbot · Backtest Results</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header>
+  <h1>wbot</h1>
+  <nav>
+    <a href="/ui/">Data</a>
+    <a href="/ui/watchlist.html">Watchlist</a>
+    <a href="/ui/results.html">Results</a>
+    <a href="/ui/admin.html">Admin</a>
+  </nav>
+</header>
+<main class="full">
+  <section id="list">
+    <h2>Backtest runs</h2>
+    <p id="results-error" class="notice error" hidden></p>
+    <p id="results-empty" class="notice" hidden>No backtest results yet. Run wbot backtest -save to persist one.</p>
+    <div class="table-scroll">
+      <table id="results-table" hidden>
+        <thead>
+          <tr><th>ID</th><th>Strategy</th><th>Symbol</th><th>Equity</th><th>Return</th><th>Max drawdown</th><th>Bars</th><th>Created at</th><th></th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+  <section id="detail" hidden>
+    <h2>Backtest <span id="detail-id"></span></h2>
+    <p id="detail-error" class="notice error" hidden></p>
+    <div id="metric-cards" class="cards" hidden>
+      <div class="card"><h3>Final equity</h3><p id="metric-equity" class="metric-value"></p></div>
+      <div class="card"><h3>Total return</h3><p id="metric-total-return" class="metric-value"></p></div>
+      <div class="card"><h3>Max drawdown</h3><p id="metric-max-drawdown" class="metric-value"></p></div>
+      <div class="card"><h3>Bars</h3><p id="metric-bars" class="metric-value"></p></div>
+    </div>
+    <div class="curve-wrap">
+      <h3>Equity curve</h3>
+      <canvas id="equity-canvas" width="800" height="300" tabindex="0" role="img" aria-label="Equity curve"></canvas>
+      <p id="curve-empty" class="notice" hidden>No equity curve for this run (older data).</p>
+      <p id="curve-readout" class="notice" hidden></p>
+    </div>
+    <h3>Trades</h3>
+    <p id="trades-empty" class="notice" hidden>No trades recorded.</p>
+    <div class="table-scroll">
+      <table id="trades-table" hidden>
+        <thead>
+          <tr><th>Time</th><th>Action</th><th>Symbol</th><th>Size</th><th>Price</th><th>Cash after</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <h3>Params</h3>
+    <pre id="detail-params"></pre>
+    <button type="button" id="detail-back" class="link">Back to list</button>
+  </section>
+</main>
+<script src="/ui/app.js"></script>
+</body>
+</html>
