@@ -26,6 +26,7 @@ import (
 	"github.com/jiayu/wbot/internal/httpregister"
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/master"
+	"github.com/jiayu/wbot/internal/watchlist"
 )
 
 func TestRun(t *testing.T) {
@@ -68,6 +69,19 @@ func TestRun(t *testing.T) {
 		{"backtest bad maxdrawdown high", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "1.5"}, 2},
 		{"backtest bad maxdrawdown neg", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "-0.1"}, 2},
 		{"backtest save with file", []string{"wbot", "backtest", "-file", "/dev/null", "-save"}, 2},
+		{"watchlist no sub", []string{"wbot", "watchlist"}, 2},
+		{"watchlist help", []string{"wbot", "watchlist", "-h"}, 0},
+		{"watchlist bad sub", []string{"wbot", "watchlist", "nope"}, 2},
+		{"watchlist add help", []string{"wbot", "watchlist", "add", "-h"}, 0},
+		{"watchlist remove help", []string{"wbot", "watchlist", "remove", "-h"}, 0},
+		{"watchlist list help", []string{"wbot", "watchlist", "list", "-h"}, 0},
+		{"watchlist add no symbol", []string{"wbot", "watchlist", "add", "-strategy", "covered-call"}, 2},
+		{"watchlist add no strategy", []string{"wbot", "watchlist", "add", "-symbol", "HK.00700"}, 2},
+		{"watchlist add bad params", []string{"wbot", "watchlist", "add", "-symbol", "HK.00700", "-strategy", "covered-call", "-params", "not-json"}, 2},
+		{"watchlist add unknown strategy", []string{"wbot", "watchlist", "add", "-symbol", "HK.00700", "-strategy", "nope"}, 2},
+		{"watchlist add unknown param", []string{"wbot", "watchlist", "add", "-symbol", "HK.00700", "-strategy", "covered-call", "-params", `{"nope":1}`}, 2},
+		{"watchlist add param type", []string{"wbot", "watchlist", "add", "-symbol", "HK.00700", "-strategy", "covered-call", "-params", `{"strike_pct_otm":"0.03"}`}, 2},
+		{"watchlist remove no symbol", []string{"wbot", "watchlist", "remove"}, 2},
 		{"serve help", []string{"wbot", "serve", "-h"}, 0},
 		{"configyaml help", []string{"wbot", "configyaml", "-h"}, 0},
 		{"configyaml missing file", []string{"wbot", "configyaml", "-file", "/nonexistent/config.yaml"}, 1},
@@ -103,6 +117,9 @@ func TestRunRequiresDSN(t *testing.T) {
 		{"ingest bars json no dsn", []string{"wbot", "ingest", "bars", "-json"}, 2},
 		{"serve no dsn", []string{"wbot", "serve"}, 2},
 		{"backtest no file", []string{"wbot", "backtest"}, 2},
+		{"watchlist add no dsn", []string{"wbot", "watchlist", "add", "-symbol", "HK.00700", "-strategy", "covered-call"}, 2},
+		{"watchlist remove no dsn", []string{"wbot", "watchlist", "remove", "-symbol", "HK.00700"}, 2},
+		{"watchlist list no dsn", []string{"wbot", "watchlist", "list"}, 2},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -256,6 +273,76 @@ func TestServeHelpMentionsAdminStatus(t *testing.T) {
 	}
 }
 
+func TestServeHelpMentionsWatchlist(t *testing.T) {
+	out := serveHelpOutput(t)
+	for _, want := range []string{"/v1/strategies", "/v1/watchlist"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("serve help missing %s: %q", want, out)
+		}
+	}
+}
+
+func TestServeMuxWatchlistRoutes(t *testing.T) {
+	top := serveMuxForTest()
+	rec := serveGet(t, top, "/v1/strategies")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1/strategies = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "covered-call") {
+		t.Fatalf("/v1/strategies missing covered-call: %s", rec.Body)
+	}
+	rec = serveGet(t, top, "/v1/watchlist")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1/watchlist = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/v1/watchlist/HK.00700", strings.NewReader(`{"strategy":"covered-call"}`))
+	rec = httptest.NewRecorder()
+	top.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT /v1/watchlist/HK.00700 = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	// GET on a symbol path is 405 (only PUT/DELETE are defined), like admin config keys.
+	rec = serveGet(t, top, "/v1/watchlist/nope")
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("/v1/watchlist/nope = %d; want 405 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+// TestWatchlistCLIIntegration runs the real add → list → remove cycle against
+// PostgreSQL (skipped without WBOT_PG_DSN; see .github/workflows/ci.yml db-integration).
+func TestWatchlistCLIIntegration(t *testing.T) {
+	if os.Getenv("WBOT_PG_DSN") == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	const symbol = "CLI.TEST.00700"
+
+	// Clean a previous crashed run's residue.
+	if got := run([]string{"wbot", "watchlist", "remove", "-symbol", symbol}); got != 0 && got != 1 {
+		t.Fatalf("cleanup remove = %d; want 0 or 1", got)
+	}
+
+	addArgs := []string{"wbot", "watchlist", "add", "-symbol", symbol, "-strategy", "covered-call", "-params", `{"strike_pct_otm":0.03}`}
+	if out := captureRunOutput(t, addArgs); !strings.Contains(out, symbol) {
+		t.Fatalf("add output missing symbol: %q", out)
+	}
+
+	listOut := captureRunOutput(t, []string{"wbot", "watchlist", "list"})
+	if !strings.Contains(listOut, symbol) || !strings.Contains(listOut, "covered-call") {
+		t.Fatalf("list output missing entry: %q", listOut)
+	}
+
+	if got := run([]string{"wbot", "watchlist", "remove", "-symbol", symbol}); got != 0 {
+		t.Fatalf("remove = %d; want 0", got)
+	}
+	if listOut := captureRunOutput(t, []string{"wbot", "watchlist", "list"}); strings.Contains(listOut, symbol) {
+		t.Fatalf("list still contains %s after remove: %q", symbol, listOut)
+	}
+	// Second remove: not on the list anymore.
+	if got := run([]string{"wbot", "watchlist", "remove", "-symbol", symbol}); got != 1 {
+		t.Fatalf("second remove = %d; want 1", got)
+	}
+}
+
 func TestServeHelpMentionsAdminConfig(t *testing.T) {
 	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/admin/config") {
 		t.Fatalf("serve help missing /v1/admin/config: %q", out)
@@ -354,9 +441,18 @@ func (serveFakeStore) Ping(context.Context) error {
 	return nil
 }
 
+// serveFakeWatchlistStore is a no-data httpapi.WatchlistStore for serve-mux tests.
+type serveFakeWatchlistStore struct{}
+
+func (serveFakeWatchlistStore) List(context.Context) ([]watchlist.Item, error) { return nil, nil }
+func (serveFakeWatchlistStore) Upsert(context.Context, string, string, map[string]any) (watchlist.Item, error) {
+	return watchlist.Item{}, nil
+}
+func (serveFakeWatchlistStore) Delete(context.Context, string) (bool, error) { return false, nil }
+
 func serveMuxForTest() http.Handler {
 	meta := httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:8080"}
-	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{})
+	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{})
 }
 
 func serveGet(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
