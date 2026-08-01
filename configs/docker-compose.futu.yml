@@ -3,7 +3,8 @@
 # Credentials render from ~/.wbot/config.yaml only; the derived .env holds them too (600, umask 077).
 services:
   futu-opend:
-    image: ostai/futuopend:9.4.5418   # pinned; ostai also publishes `latest`
+    image: ostai/futuopend:9.4.5418
+    platform: linux/amd64  # OpenD ships x86_64 only; OrbStack/QEMU emulates on arm64 hosts   # pinned; ostai also publishes `latest`
     environment:
       # `:?` fails loudly when unset/empty — the error proves injection works
       FUTU_LOGIN_ACCOUNT: "${FUTU_LOGIN_ACCOUNT:?set in ~/.wbot/config.yaml (see doc/FUTU.md)}"

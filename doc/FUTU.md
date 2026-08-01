@@ -119,3 +119,10 @@ nc -zv 127.0.0.1 11111    # API 端口可达即网关就绪
 ```
 
 安全提醒：本文件与 compose 只含变量名与 `${VAR:?}` 占位，零凭证值；真实值仅存 `~/.wbot/config.yaml`（600 权限）与宿主环境变量，永不入 commit/PR。关联 [[PRIVACY]]。
+
+
+## arm64 宿主说明（2026-08-01 实测）
+
+- OpenD 官方仅发布 **x86_64** 二进制；在 Apple Silicon / ARM 宿主（如 OrbStack Linux VM aarch64）上需 **amd64 模拟**：compose 已含 `platform: linux/amd64`（OrbStack/QEMU 自动模拟）
+- 验证：`docker run --platform linux/amd64 --rm ostai/futuopend:9.4.5418 echo OK`
+- 登录失败（密码错误/图形验证码）时的日志关键字：`Login failed`、`Need a graphic verification code`；验证码图片在容器 `/root/.com.futunn.FutuOpenD/F3CNN/PicVerifyCode.png`（`docker cp` 取出查看）
