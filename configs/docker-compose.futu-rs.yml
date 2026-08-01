@@ -1,0 +1,40 @@
+# FutuOpenD-rs (Rust gateway) — the modern OpenD (v1.4.17+ credential dir ~/.futu-opend-rs).
+#
+# Why not ostai/futuopend: that image wraps the legacy C++ OpenD which (a) uses
+# ~/.com.futunn.FutuOpenD and (b) only handles SMS codes over its 8000 WebSocket —
+# it cannot pass the graphic verification code flow. futu-opend-rs supports
+# remember-login from cached credentials, so mounting the mac-side
+# ~/.futu-opend-rs (already logged in) makes the gateway start without any
+# password/SMS.
+#
+# Build image first:
+#   docker build --platform linux/amd64 -t futu-opend-rs:1.5.0 -f configs/futu-opend-rs.Dockerfile .
+# Run:
+#   docker compose -f configs/docker-compose.futu-rs.yml up -d
+#
+# Ports: 11111 TCP (OpenD-compatible), 22222 REST, 33333 gRPC.
+# Credentials: copy mac ~/.futu-opend-rs into this VM's ~/.futu-opend-rs
+# (mac: ~/ -> VM: ~/OrbStack/ubuntu/home/jiayu/ mirrors it via OrbStack).
+
+name: futu-rs
+
+services:
+  futu-opend-rs:
+    image: futu-opend-rs:1.5.0
+    platform: linux/amd64  # upstream publishes x86_64 only
+    environment:
+      - FUTU_LOGIN_ACCOUNT=${FUTU_LOGIN_ACCOUNT:?set in ~/.wbot/config.yaml or environment}
+      - FUTU_PWD=${FUTU_LOGIN_PWD:?set in ~/.wbot/config.yaml or environment}
+    command:
+      - --login-account=${FUTU_LOGIN_ACCOUNT:?}
+      - --login-pwd=${FUTU_LOGIN_PWD:?}
+      - --rest-port=22222
+      - --grpc-port=33333
+    ports:
+      # Loopback only: gateway has no auth on these ports.
+      - "127.0.0.1:11111:11111"
+      - "127.0.0.1:22222:22222"
+      - "127.0.0.1:33333:33333"
+    volumes:
+      - ~/.futu-opend-rs:/root/.futu-opend-rs
+    restart: unless-stopped
