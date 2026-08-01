@@ -1,0 +1,8 @@
+# Example ~/.wbot/config.yaml (values never committed; see doc/PRIVACY.md).
+# Copy to ~/.wbot/config.yaml, chmod 600, then render: tools/config-to-env.sh ~/.wbot/config.yaml
+# ${VAR} expands from the environment (undefined -> error); ${VAR:-default} provides a fallback.
+futu:
+  login_account: "${FUTU_LOGIN_ACCOUNT:-<your-futu-account>}"
+  login_pwd_md5: "${FUTU_LOGIN_PWD_MD5:-<password-md5>}"
+  login_region: "${FUTU_LOGIN_REGION:-sh}"
+  init_on_start: "${FUTU_INIT_ON_START:-yes}"
