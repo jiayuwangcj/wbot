@@ -114,6 +114,35 @@ async function loadQuote(symbol) {
   }
 }
 
+/* Futu paper account: /v1/futu/account funds card + positions table (read-only). */
+
+function fmtAccountMoney(v) {
+  return Number(v).toLocaleString("en-US", {maximumFractionDigits: 2});
+}
+
+function renderAccount(snap) {
+  setText("account-power", fmtAccountMoney(snap.funds.power));
+  setText("account-total-assets", fmtAccountMoney(snap.funds.total_assets));
+  setText("account-cash", fmtAccountMoney(snap.funds.cash));
+  setText("account-market-val", fmtAccountMoney(snap.funds.market_val));
+  setText("account-available-cash", fmtAccountMoney(snap.funds.available_cash));
+  document.getElementById("account-card").hidden = false;
+  renderTable("positions-table", snap.positions.map((p) => [p.symbol, p.qty, p.avg_cost, p.price, p.market_val, p.pl]));
+}
+
+async function loadAccount() {
+  const errorEl = document.getElementById("account-error");
+  if (!errorEl) return;
+  try {
+    const snap = await fetchJSON("/v1/futu/account");
+    clearError(errorEl);
+    renderAccount(snap);
+  } catch (err) {
+    document.getElementById("account-card").hidden = true;
+    showError(errorEl, err);
+  }
+}
+
 function toRFC3339(dateValue) {
   return dateValue === "" ? "" : dateValue + "T00:00:00Z";
 }
@@ -181,6 +210,9 @@ function initDataPage() {
     }
   });
   loadJSON("/v1/runs?limit=10", document.getElementById("runs-error"), renderRuns);
+  loadAccount();
+  const refresh = document.getElementById("account-refresh");
+  if (refresh) refresh.addEventListener("click", loadAccount);
 }
 
 /* Admin page: /v1/admin/status, /v1/admin/cluster, /v1/admin/config (read-only). */

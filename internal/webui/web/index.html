@@ -51,6 +51,28 @@
       <div><dt>Time</dt><dd id="quote-time">—</dd></div>
     </dl>
   </section>
+  <section id="account">
+    <h2>Futu account</h2>
+    <p class="notice">Paper account funds and positions, read-only (Futu gateway, /v1/futu/account; simulate env by default).</p>
+    <p id="account-error" class="notice error" hidden></p>
+    <dl id="account-card" class="quote-card" hidden>
+      <div><dt>Power</dt><dd id="account-power">—</dd></div>
+      <div><dt>Total assets</dt><dd id="account-total-assets">—</dd></div>
+      <div><dt>Cash</dt><dd id="account-cash">—</dd></div>
+      <div><dt>Market value</dt><dd id="account-market-val">—</dd></div>
+      <div><dt>Available cash</dt><dd id="account-available-cash">—</dd></div>
+    </dl>
+    <p id="positions-empty" class="notice" hidden>No open positions.</p>
+    <div class="table-scroll">
+      <table id="positions-table" hidden>
+        <thead>
+          <tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Price</th><th>Market value</th><th>P/L</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <button type="button" id="account-refresh">Refresh</button>
+  </section>
   <section id="runs">
     <h2>Recent runs</h2>
     <p id="runs-error" class="notice error" hidden></p>
