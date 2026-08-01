@@ -1,13 +1,88 @@
 package backtest
 
-// State is a backtest's portfolio state; Run updates Price to each bar's close before OnBar.
+import (
+	"time"
+
+	"github.com/jiayu/wbot/internal/ingest"
+)
+
+// OptionKind distinguishes call and put legs.
+type OptionKind string
+
+const (
+	OptionCall OptionKind = "call"
+	OptionPut  OptionKind = "put"
+)
+
+// OptionContract is one tradable contract's static data (chain entry).
+type OptionContract struct {
+	Code   string
+	Kind   OptionKind
+	Strike float64
+	Expiry time.Time
+}
+
+// OptionPosition is one open option leg; Contracts > 0 = long, < 0 = short,
+// AvgPremium is the per-contract premium (received on sells, paid on buys).
+type OptionPosition struct {
+	Code       string
+	Kind       OptionKind
+	Strike     float64
+	Expiry     time.Time
+	Lot        int
+	Contracts  float64
+	AvgPremium float64
+}
+
+// OptionChain maps a contract code to its static data (runner-injected).
+type OptionChain map[string]OptionContract
+
+// OptionBars maps a contract code to its bars, ts ascending (runner-injected).
+type OptionBars map[string][]ingest.Bar
+
+// OptionsData is the runner-injected option universe: chain + per-code bars.
+type OptionsData struct {
+	Bars  OptionBars
+	Chain OptionChain
+}
+
+// State is a backtest's portfolio state; Run updates Price to each bar's close
+// before OnBar, fills OptPrice from open legs, and clears Pending per bar.
 type State struct {
 	Cash     float64
 	Position float64
 	Price    float64
+	Options  map[string]OptionPosition
+	Chain    OptionChain
+	OptBars  OptionBars
+	OptPrice map[string]float64
+	// Pending is the contract a strategy picked for an option action on the
+	// current bar; the runner settles size contracts against it and clears it.
+	Pending *OptionPosition
 }
 
-// Equity returns total portfolio value: cash plus position at the given price.
+// Equity returns total portfolio value: cash + position at price plus option
+// legs marked to their latest option close (OptPrice; 0 when unknown).
 func (s *State) Equity(price float64) float64 {
-	return s.Cash + s.Position*price
+	eq := s.Cash + s.Position*price
+	for _, p := range s.Options {
+		eq += p.Contracts * float64(p.Lot) * s.OptPrice[p.Code]
+	}
+	return eq
+}
+
+// PriceAt returns code's latest option close at or before ts (false if none).
+func (s *State) PriceAt(code string, ts time.Time) (float64, bool) {
+	bars := s.OptBars[code]
+	best := -1
+	for i, b := range bars {
+		if b.Ts.After(ts) {
+			break
+		}
+		best = i
+	}
+	if best < 0 {
+		return 0, false
+	}
+	return bars[best].Close, true
 }

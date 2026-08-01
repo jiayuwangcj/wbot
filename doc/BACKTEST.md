@@ -18,11 +18,38 @@ wbot backtest \
 | `-from` / `-to` | 不限 | RFC3339 时间范围（`-dsn` 输入） |
 | `-limit` | 10000 | `-dsn` 输入最大 bars 数 |
 | `-cash` | 10000 | 初始资金（>0） |
-| `-strategy` | `hold` | `hold`（不交易）或 `buy-hold`（首根 bar 全仓买入后持有） |
-| `-fee` | 0 | 每笔交易固定费用（占位；买入从现金扣、卖出从所得扣） |
+| `-strategy` | `hold` | `hold` / `buy-hold` / `covered-call` / `cash-secured-put`（模板参数见 `-params`） |
+| `-params` | — | 策略参数 JSON（仅模板策略），如 `{"strike_pct_otm":0.05}`；非法参数报错 exit 2 |
+| `-fee` | 0 | 每笔正股交易固定费用（买入从现金扣、卖出从所得扣） |
 | `-max-drawdown` | 0 | 约束检查（0..1）：结果最大回撤超限 → exit 1；0 = 不检查 |
 
 输出一行摘要：`final_equity=... total_return=... max_drawdown=... bars=...`（确定性：同输入同输出）。
+
+## 期权腿与策略模板（slice ⑫-b）
+
+- **期权腿**（`internal/backtest`）：`Action` 增 `sell-call / buy-call / sell-put / buy-put`（size = 合约数）；`State.Options` 存开仓腿（`Code/Kind/Strike/Expiry/Lot/Contracts/AvgPremium`，Contracts 负 = 短腿）；腿的**到期结算由 runner 机械执行**：`bar.Ts ≥ Expiry` 时 ITM 按 strike 行权（Call 卖出/买入 `lot×contracts` 股，Put 反向），OTM 作废移除；CSP 开仓强制现金储备校验（`Cash ≥ strike×lot×contracts`）。
+- **期权腿数据**：`RunOptions` 注入 `OptionsData{Chain, Bars}`（CLI 从 `option_quotes` 读，映射见 `backtest.OptionsDataFromQuotes`）；腿按「主 symbol 时间轴 + 最新 `close ≤ bar.Ts`」估值，`State.Equity` 纳入市值。`Run` 签名与行为不变（无腿时等价）。
+- **策略模板**（`internal/strategy` 注册表）：`Templates()` / `Factory(name, params)`，参数 schema 校验（未知参数/类型/范围报错）。
+- **covered-call**：买 `lot_size` 股正股 + 卖 1 张价外看涨，到期结算后滚仓（被行权则先补回正股再卖）。
+- **cash-secured-put**：现金担保卖价外看跌，张数 = `cash / (cash_reserve × strike × lot)`（不足 1 张报错）；被行权按 strike 买入，下一 bar 市价卖出后滚仓。
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `strike_pct_otm` | 0.03 | 目标行权价偏离率：call = 现价×(1+pct)，put = 现价×(1-pct)，就近选 chain 档 |
+| `expiry_rule` | `next_expiry` | `next_expiry`（最近到期）或 `days`（按 `days_to_expiry` 天选最近档） |
+| `days_to_expiry` | 28 | `expiry_rule=days` 的目标到期天数 |
+| `fee_per_contract` | 0 | 每张合约费用（从权利金中扣除） |
+| `lot_size` | 100 | 合约乘数（`option_quotes` 无 lot 列，以参数为准） |
+| `cash_reserve` | 1 | 仅 cash-secured-put：现金担保倍率（≥1） |
+
+```bash
+wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00700 -adjust none \
+  -strategy covered-call -params '{"strike_pct_otm":0.05,"fee_per_contract":5}'
+wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00700 -adjust none \
+  -strategy cash-secured-put -params '{"cash_reserve":1.2}'
+```
+
+模板策略必须 `-dsn` 输入（读 `option_quotes`），`-file` 仅支持 `hold`/`buy-hold`。
 
 ## 行为保证
 
@@ -43,7 +70,8 @@ wbot backtest -symbol DEMO.US -timeframe 1d -strategy buy-hold
 
 ## 实现
 
-- `internal/backtest/`：`state.go`（State/Equity）、`strategy.go`（Action/Strategy/Hold/BuyHold）、`backtest.go`（Run/ParseBars/Result）、`constraint.go`（CheckMaxDrawdown）
-- 任务轨迹：`doc/tasks/2026-07-31-backtest-runner-slice1.md` → `-dsn-input` → `-fee-placeholder` → `-constraint`
+- `internal/backtest/`：`state.go`（State/Equity/期权腿）、`strategy.go`（Action/Strategy/Hold/BuyHold）、`backtest.go`（Run/RunOptions/到期结算）、`options_data.go`（option_quotes → OptionsData）、`constraint.go`（CheckMaxDrawdown）
+- `internal/strategy/`：模板注册表（`strategy.go`）+ covered-call / cash-secured-put（`options.go`）
+- 任务轨迹：`doc/tasks/2026-07-31-backtest-runner-slice1.md` → `-dsn-input` → `-fee-placeholder` → `-constraint` → 期权腿 + 策略模板（slice ⑫-b，[[draft-2026-08-01-strategy-options]]）
 
 关联：[[DATA_PIPELINE]] [[API]] [[ROADMAP]]（v2）

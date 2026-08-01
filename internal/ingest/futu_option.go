@@ -81,6 +81,62 @@ WHERE symbol = $1 AND timeframe = $2 AND adjust = $3 AND ts >= $4 AND ts <= $5`,
 	return n > 0, n, nil
 }
 
+// QueryOptionQuotes returns an underlying's option_quotes rows in [from, to]
+// (zero from/to unbounded), symbol then ts ascending; chain metadata is per row.
+func QueryOptionQuotes(ctx context.Context, db *sql.DB, underlying, adjust string, from, to time.Time, limit int) ([]OptionQuoteRow, error) {
+	if db == nil {
+		return nil, errors.New("ingest: query option quotes: nil db")
+	}
+	if underlying == "" {
+		return nil, errors.New("ingest: query option quotes: empty underlying")
+	}
+	if adjust == "" {
+		return nil, errors.New("ingest: query option quotes: empty adjust")
+	}
+	if !from.IsZero() && !to.IsZero() && from.After(to) {
+		return nil, errors.New("ingest: query option quotes: from after to")
+	}
+	if limit <= 0 {
+		return nil, errors.New("ingest: query option quotes: invalid limit")
+	}
+
+	conds := []string{"underlying = $1", "adjust = $2"}
+	args := []any{underlying, adjust}
+	if !from.IsZero() {
+		args = append(args, from)
+		conds = append(conds, fmt.Sprintf("ts >= $%d", len(args)))
+	}
+	if !to.IsZero() {
+		args = append(args, to)
+		conds = append(conds, fmt.Sprintf("ts <= $%d", len(args)))
+	}
+	args = append(args, limit)
+	query := fmt.Sprintf(`
+SELECT symbol, underlying, option_type, strike, expiry, ts, open, high, low, close, volume, implied_vol
+FROM option_quotes WHERE %s ORDER BY symbol ASC, ts ASC LIMIT $%d`,
+		strings.Join(conds, " AND "), len(args))
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("ingest: query option quotes: query: %w", err)
+	}
+	defer rows.Close()
+
+	var out []OptionQuoteRow
+	for rows.Next() {
+		var r OptionQuoteRow
+		if err := rows.Scan(&r.Symbol, &r.Underlying, &r.OptionType, &r.Strike, &r.Expiry, &r.Ts,
+			&r.Open, &r.High, &r.Low, &r.Close, &r.Volume, &r.ImpliedVol); err != nil {
+			return nil, fmt.Errorf("ingest: query option quotes: scan: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("ingest: query option quotes: rows: %w", err)
+	}
+	return out, nil
+}
+
 // sqlExecutor is the minimal DB surface UpsertWatchlist needs (*sql.DB or *sql.Tx).
 type sqlExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)

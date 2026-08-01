@@ -29,6 +29,7 @@ import (
 	"github.com/jiayu/wbot/internal/master"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
+	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/webui"
 )
@@ -372,7 +373,8 @@ func runBacktest(prog string, argv []string) int {
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
 	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
-	strategy := fs.String("strategy", "hold", "strategy to run: hold or buy-hold")
+	strat := fs.String("strategy", "hold", "strategy to run: hold, buy-hold, covered-call or cash-secured-put")
+	params := fs.String("params", "", `strategy params as JSON, e.g. {"strike_pct_otm":0.05}; validated against the template schema (option strategies only)`)
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 
@@ -380,6 +382,8 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file (-file) or directly from the\n")
 		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
+		fmt.Fprintf(os.Stderr, "Option strategies (covered-call, cash-secured-put) read contract prices and\n")
+		fmt.Fprintf(os.Stderr, "chain metadata from option_quotes, so they require -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics) is stored in backtest_results (migration 003).\n")
@@ -427,14 +431,40 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 
-	var s backtest.Strategy
-	switch strings.TrimSpace(*strategy) {
+	stratName := strings.TrimSpace(*strat)
+	paramsMap := map[string]any{}
+	if ps := strings.TrimSpace(*params); ps != "" {
+		if err := json.Unmarshal([]byte(ps), &paramsMap); err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: -params: %v\n", err)
+			return 2
+		}
+	}
+	var (
+		s     backtest.Strategy
+		templ *strategy.Template
+	)
+	switch stratName {
 	case "hold":
 		s = backtest.HoldStrategy{}
 	case "buy-hold":
 		s = &backtest.BuyHoldStrategy{}
 	default:
-		fmt.Fprintf(os.Stderr, "backtest: unknown strategy %q (want hold or buy-hold)\n", *strategy)
+		t, err := strategy.Factory(stratName, paramsMap)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 2
+		}
+		s = t
+		templ, _ = strategy.Lookup(stratName)
+	}
+	if stratName == "hold" || stratName == "buy-hold" {
+		if len(paramsMap) > 0 {
+			fmt.Fprintf(os.Stderr, "backtest: strategy %s takes no -params\n", stratName)
+			return 2
+		}
+	}
+	if templ != nil && templ.NeedsOptions && fp != "" {
+		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads option_quotes; -file input has no option data (use -dsn)\n", stratName)
 		return 2
 	}
 
@@ -476,7 +506,21 @@ func runBacktest(prog string, argv []string) int {
 		}
 	}
 
-	res, err := backtest.Run(context.Background(), bars, *cash, *fee, s)
+	var opts *backtest.OptionsData
+	if templ != nil && templ.NeedsOptions {
+		rows, err := ingest.QueryOptionQuotes(context.Background(), database, strings.TrimSpace(*symbol), strings.TrimSpace(*adjust), fromT, toT, *limit)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: query option quotes: %v\n", err)
+			return 1
+		}
+		opts, err = backtest.OptionsDataFromQuotes(rows)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+	}
+
+	res, err := backtest.RunOptions(context.Background(), bars, *cash, *fee, s, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 		return 1
@@ -484,7 +528,7 @@ func runBacktest(prog string, argv []string) int {
 	fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
 	if *save {
 		id, err := backtest.SaveResult(context.Background(), database,
-			strings.TrimSpace(*strategy), strings.TrimSpace(*symbol),
+			strings.TrimSpace(*strat), strings.TrimSpace(*symbol),
 			map[string]any{
 				"cash":      *cash,
 				"fee":       *fee,
