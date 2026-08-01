@@ -11,6 +11,8 @@ tools: Read, Grep, Glob, Bash
 - **发评论**：Issue / Discussion / PR 评论，正文以 **`[robot]`** 开头（仓库约定，区分人工留言）
 - **分诊回复**：新 discussion / issue 留言 → 按任务来源规则分诊（采纳/指回仓库/派生 Issue），回复结论；落库动作：ROADMAP/tasks 维护归产品组，robot 只执行发贴/评论动作（2026-07-31 约定）
 - **进度同步**：重要进度更新到进度贴（https://github.com/jiayuwangcj/wbot/discussions/9）
+- **留言板整理**（2026-08-01 约定）：定期检查 open discussions——过时/被取代主题发 `[robot]` 归档说明并关闭（如已废弃的小程序主题）；状态同步到进度贴；issue 整理归产品组（#29），robot 不重复
+- **定期节奏**：每次被派单/主会话循环轮询时顺带检查留言板健康度（非单独任务）
 
 ## 独立性
 
