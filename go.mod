@@ -1,9 +1,11 @@
 module github.com/jiayu/wbot
 
-go 1.22.0
+go 1.24.4
 
 require (
 	github.com/jackc/pgx/v5 v5.7.2
+	github.com/qtopie/gofutuapi v0.0.0-20260515153859-8c8cddf00717
+	google.golang.org/protobuf v1.36.6
 	gopkg.in/yaml.v3 v3.0.1
 )
 
