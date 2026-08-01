@@ -923,7 +923,74 @@ function initResultsPage() {
   });
 }
 
+/* Options chain: /v1/futu/options — expiry dropdown + call/put table per expiry. */
+
+function renderOptionExpirySelect(expirations, selected) {
+  const sel = document.getElementById("options-expiry");
+  sel.replaceChildren();
+  for (const e of expirations) {
+    const opt = document.createElement("option");
+    opt.value = e.date;
+    opt.textContent = e.date + (e.distance_days >= 0 ? " (" + e.distance_days + "d)" : " (expired)");
+    sel.appendChild(opt);
+  }
+  if (selected !== "") sel.value = selected;
+  sel.hidden = false;
+}
+
+function renderOptionChain(data) {
+  renderOptionExpirySelect(data.expirations, data.expiry);
+  const byStrike = new Map();
+  for (const c of data.contracts) {
+    let row = byStrike.get(c.strike);
+    if (!row) {
+      row = {strike: c.strike, call: "—", put: "—", lot: "—"};
+      byStrike.set(c.strike, row);
+    }
+    if (c.option_type === "call") row.call = c.symbol;
+    else if (c.option_type === "put") row.put = c.symbol;
+    row.lot = c.lot_size;
+  }
+  const strikes = [...byStrike.keys()].sort((a, b) => a - b);
+  renderTable("options-table", strikes.map((s) => {
+    const row = byStrike.get(s);
+    return [row.strike, row.call, row.put, row.lot];
+  }));
+}
+
+async function loadOptionChain(symbol, expiry) {
+  const errorEl = document.getElementById("options-error");
+  if (!errorEl) return;
+  let url = "/v1/futu/options?symbol=" + encodeURIComponent(symbol);
+  if (expiry !== "") url += "&expiry=" + encodeURIComponent(expiry);
+  try {
+    const data = await fetchJSON(url);
+    clearError(errorEl);
+    renderOptionChain(data);
+  } catch (err) {
+    document.getElementById("options-table").hidden = true;
+    showError(errorEl, err);
+  }
+}
+
+function initOptionsChainPage() {
+  const form = document.getElementById("options-form");
+  if (!form) return;
+  const select = document.getElementById("options-expiry");
+  let symbol = "";
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    symbol = form.elements["options-symbol"].value.trim();
+    if (symbol === "") return;
+    loadOptionChain(symbol, "");
+  });
+  select.addEventListener("change", () => {
+    if (symbol !== "") loadOptionChain(symbol, select.value);
+  });
+}
+
 initDataPage();
 initAdminPage();
 initWatchlistPage();
+initOptionsChainPage();
 initResultsPage();

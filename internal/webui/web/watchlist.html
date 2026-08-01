@@ -44,6 +44,27 @@
       </table>
     </div>
   </section>
+  <section id="options">
+    <h2>Options chain</h2>
+    <p class="notice">Expiry list and call/put chain for one expiry (Futu gateway, /v1/futu/options).</p>
+    <form id="options-form">
+      <label>Underlying <input type="text" name="options-symbol" placeholder="HK.00700" required></label>
+      <label>Expiry
+        <select id="options-expiry" hidden></select>
+      </label>
+      <button type="submit">Load chain</button>
+    </form>
+    <p id="options-error" class="notice error" hidden></p>
+    <p id="options-empty" class="notice" hidden>No contracts for this expiry.</p>
+    <div class="table-scroll">
+      <table id="options-table" hidden>
+        <thead>
+          <tr><th>Strike</th><th>Call</th><th>Put</th><th>Lot size</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 <script src="/ui/app.js"></script>
 </body>
