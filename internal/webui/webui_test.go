@@ -238,6 +238,46 @@ func TestAppJSQueriesDataAPI(t *testing.T) {
 	}
 }
 
+func TestDataPageLiveQuoteBlock(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`id="quote-card"`,
+		`id="quote-error"`,
+		`id="quote-last"`,
+		`id="quote-open"`,
+		`id="quote-high"`,
+		`id="quote-low"`,
+		`id="quote-volume"`,
+		`id="quote-time"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+}
+
+func TestAppJSQuotesFutuQuoteAPI(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`"/v1/futu/quote`,
+		"basic_qot_list",
+		"loadQuote",
+		"quote-card",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 func TestAdminPageSections(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/admin.html")
 	if err != nil {

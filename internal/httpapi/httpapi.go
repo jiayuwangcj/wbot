@@ -256,7 +256,7 @@ func codeForStatus(status int) string {
 		return "not_found"
 	case http.StatusMethodNotAllowed:
 		return "method_not_allowed"
-	case http.StatusServiceUnavailable:
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
 		return "dependency_failed"
 	default:
 		return "internal_error"

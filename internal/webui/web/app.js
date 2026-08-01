@@ -86,7 +86,33 @@ async function loadJSON(url, errorEl, render) {
   }
 }
 
-/* Data page: /v1/bars on form submit, /v1/runs on load. */
+/* Data page: /v1/bars on form submit, /v1/runs on load,
+   /v1/futu/quote on submit too (live quote, reuses the symbol input). */
+
+function renderQuote(s2c, symbol) {
+  const q = (s2c.basic_qot_list && s2c.basic_qot_list[0]) || null;
+  if (!q) throw new Error("no quote returned for " + symbol);
+  setText("quote-last", q.cur_price);
+  setText("quote-open", q.open_price);
+  setText("quote-high", q.high_price);
+  setText("quote-low", q.low_price);
+  setText("quote-volume", q.volume);
+  setText("quote-time", q.update_time);
+  document.getElementById("quote-card").hidden = false;
+}
+
+async function loadQuote(symbol) {
+  const errorEl = document.getElementById("quote-error");
+  if (!errorEl) return;
+  try {
+    const s2c = await fetchJSON("/v1/futu/quote?symbol=" + encodeURIComponent(symbol));
+    clearError(errorEl);
+    renderQuote(s2c, symbol);
+  } catch (err) {
+    document.getElementById("quote-card").hidden = true;
+    showError(errorEl, err);
+  }
+}
 
 function toRFC3339(dateValue) {
   return dateValue === "" ? "" : dateValue + "T00:00:00Z";
@@ -135,6 +161,7 @@ function initDataPage() {
   barsForm.addEventListener("submit", async (event) => {
     event.preventDefault();
     const symbol = barsForm.symbol.value.trim();
+    loadQuote(symbol); /* independent of the bars fetch: each shows its own error */
     const timeframe = barsForm.timeframe.value.trim();
     const params = new URLSearchParams();
     params.set("symbol", symbol);

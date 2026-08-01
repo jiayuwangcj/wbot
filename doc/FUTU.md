@@ -177,6 +177,8 @@ $ wbot futu quote -symbol HK.00700
 
 网关地址暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；config.yaml 的 `futu` 配置接入待后续切片。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
 
+**serve 代理**（产品组体验意见 7，2026-08-02）：`wbot serve` 提供 `GET /v1/futu/quote?symbol=HK.00700` 实时报价代理——浏览器不能直连 22222（CORS/安全），serve 代订阅+取快照并透传 s2c（复用本客户端，限频池内置）。网关地址取环境变量 `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`）；数据页 bars 表单提交同时刷新报价卡。契约见 [[API]]。
+
 ## 8. `wbot ingest futu`：K 线落库（⑪-c，2026-08-01 实测）
 
 `wbot ingest futu` 经 REST 22222 拉取 K 线写入 bars 表，复用 `RunIngestion` / `RunEveryResilient` 管道（ON CONFLICT 幂等、-every 调度韧性，见 [[DATA_PIPELINE]]）：

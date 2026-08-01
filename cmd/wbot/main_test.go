@@ -591,9 +591,22 @@ func (serveFakeBacktestExecutor) RunOne(context.Context, string, string, map[str
 	}, nil
 }
 
+// serveFakeFutuQuoter is a scriptable FutuQuoter for serveMux tests.
+type serveFakeFutuQuoter struct {
+	s2c json.RawMessage
+	err error
+}
+
+func (f serveFakeFutuQuoter) Quote(_ context.Context, _ string) (json.RawMessage, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.s2c, nil
+}
+
 func serveMuxForTest() http.Handler {
 	meta := httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:8080"}
-	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{})
+	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{}, serveFakeFutuQuoter{s2c: json.RawMessage(`{"basic_qot_list":[{"cur_price":475.2}]}`)})
 }
 
 // TestServeMuxBacktestExecuteRoute: POST /v1/backtests routes to the execute
@@ -621,6 +634,34 @@ func TestServeMuxBacktestExecuteRoute(t *testing.T) {
 	rec = serveGet(t, top, "/v1/backtests")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /v1/backtests = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestServeMuxFutuQuoteRoute(t *testing.T) {
+	top := serveMuxForTest()
+	rec := serveGet(t, top, "/v1/futu/quote?symbol=HK.00700")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("quote = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "basic_qot_list") || !strings.Contains(rec.Body.String(), "475.2") {
+		t.Fatalf("quote body missing passthrough fields: %s", rec.Body)
+	}
+	// Missing symbol through the real mux: 400 with the {code,message,action} body.
+	rec = serveGet(t, top, "/v1/futu/quote")
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing symbol = %d; want 400 (body %s)", rec.Code, rec.Body)
+	}
+	// Non-GET: 405.
+	rec = httptest.NewRecorder()
+	top.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/futu/quote?symbol=HK.00700", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /v1/futu/quote = %d; want 405 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestServeHelpMentionsFutuQuote(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "/v1/futu/quote") {
+		t.Fatalf("serve help missing /v1/futu/quote: %q", out)
 	}
 }
 
@@ -763,7 +804,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	// Serve wiring with real DB stores (same as runServe).
 	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
 		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
-		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database))
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter())
 
 	rec := serveGet(t, top, "/v1/backtests?symbol="+symbol)
 	if rec.Code != http.StatusOK {
@@ -863,7 +904,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 	// API POST: same fixture, same strategy → identical metrics/params.
 	top := serveMux(httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:0"},
 		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
-		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database))
+		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter())
 	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
 		strings.NewReader(`{"symbol":"`+symbol+`","strategy":"buy-hold"}`))
 	rec := httptest.NewRecorder()
