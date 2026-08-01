@@ -88,20 +88,6 @@ func toBacktestDetail(r backtest.ResultRecord) backtestDetailJSON {
 	return d
 }
 
-// errorJSON is the backtest endpoints' error body: {code, message, action}
-// (new convention from draft 2026-08-02 S1; S5 adopts it across the API).
-type errorJSON struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Action  string `json:"action"`
-}
-
-func writeErrorBody(w http.ResponseWriter, status int, e errorJSON) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(e)
-}
-
 // BacktestsHandler serves GET /v1/backtests (list, filters symbol/strategy/
 // limit, newest first) and GET /v1/backtests/{id} (detail with equity_curve
 // and trades; 404 when the id has no row).

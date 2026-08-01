@@ -2,6 +2,7 @@
   --bg: #f6f7f9;
   --fg: #1f2328;
   --accent: #0969da;
+  --accent-2: #eb6834;
   --border: #d0d7de;
   --muted: #656d76;
 }
@@ -186,6 +187,33 @@ th {
 
 #curve-readout {
   margin: 0.5rem 0 0;
+}
+
+#compare-canvas {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend-swatch {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 2px;
 }
 
 main.full {

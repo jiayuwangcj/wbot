@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/config"
 	"github.com/jiayu/wbot/internal/ingest"
 )
 
@@ -284,5 +286,54 @@ func TestHealthMethodNotAllowed(t *testing.T) {
 	Handler(&fakeStore{}).ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d; want 405 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+// assertErrorContract checks the API-wide error body {code,message,action,error}.
+func assertErrorContract(t *testing.T, rec *httptest.ResponseRecorder, wantCode string) {
+	t.Helper()
+	var errBody errorJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil {
+		t.Fatalf("error body %q not JSON: %v", rec.Body, err)
+	}
+	if errBody.Code != wantCode || errBody.Message == "" || errBody.Action == "" || errBody.Error == "" {
+		t.Fatalf("error body = %+v; want code %q with message/action/error", errBody, wantCode)
+	}
+	if errBody.Error != errBody.Message {
+		t.Fatalf("error alias %q != message %q", errBody.Error, errBody.Message)
+	}
+}
+
+// TestLegacyErrorBodiesCarryCodeAndAction rolls the {code,message,action}
+// convention out to the pre-backtests endpoints (error kept as legacy alias).
+func TestLegacyErrorBodiesCarryCodeAndAction(t *testing.T) {
+	makeReq := func(method, path, body string) *http.Request {
+		t.Helper()
+		return httptest.NewRequest(method, path, strings.NewReader(body))
+	}
+	tests := []struct {
+		name     string
+		handler  http.Handler
+		req      *http.Request
+		wantCode string
+	}{
+		{"bars missing symbol", Handler(&fakeStore{}), makeReq(http.MethodGet, "/v1/bars", ""), "invalid_request"},
+		{"bars bad time", Handler(&fakeStore{}), makeReq(http.MethodGet, "/v1/bars?symbol=DEMO.US&timeframe=1d&from=nope", ""), "invalid_request"},
+		{"bars store error", Handler(&fakeStore{err: errors.New("db down")}), makeReq(http.MethodGet, "/v1/bars?symbol=DEMO.US&timeframe=1d", ""), "internal_error"},
+		{"runs store error", Handler(&fakeStore{err: errors.New("db down")}), makeReq(http.MethodGet, "/v1/runs", ""), "internal_error"},
+		{"health db down", Handler(&fakeStore{err: errors.New("db down")}), makeReq(http.MethodGet, "/v1/health", ""), "dependency_failed"},
+		{"bars method not allowed", Handler(&fakeStore{}), makeReq(http.MethodPost, "/v1/bars", "{}"), "method_not_allowed"},
+		{"unknown path", Handler(&fakeStore{}), makeReq(http.MethodGet, "/v1/nope", ""), "not_found"},
+		{"admin status unknown path", AdminHandler(testMeta(), &fakePinger{}), makeReq(http.MethodGet, "/v1/admin/nope", ""), "not_found"},
+		{"admin cluster query error", ClusterHandler(testMeta(), &fakeClusterStore{runsErr: errors.New("db down")}), makeReq(http.MethodGet, "/v1/admin/cluster", ""), "internal_error"},
+		{"admin config unknown key", ConfigHandler(&fakeConfigStore{setErr: config.ErrUnknownKey}), makeReq(http.MethodPut, "/v1/admin/config/nope", `{"value":"x"}`), "not_found"},
+		{"watchlist bad params", WatchlistHandler(&fakeWatchlistStore{}), makeReq(http.MethodPut, "/v1/watchlist/HK.00700", `{"strategy":"nope"}`), "invalid_request"},
+		{"watchlist delete missing", WatchlistHandler(&fakeWatchlistStore{}), makeReq(http.MethodDelete, "/v1/watchlist/NOPE", ""), "not_found"},
+		{"backtests 404", BacktestsHandler(&fakeBacktestStore{getErr: backtest.ErrResultNotFound}), makeReq(http.MethodGet, "/v1/backtests/42", ""), "not_found"},
+	}
+	for _, tt := range tests {
+		rec := httptest.NewRecorder()
+		tt.handler.ServeHTTP(rec, tt.req)
+		assertErrorContract(t, rec, tt.wantCode)
 	}
 }

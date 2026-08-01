@@ -434,3 +434,78 @@ func TestAppJSEquityCurveDrawing(t *testing.T) {
 		t.Fatal("app.js references an external chart library")
 	}
 }
+
+func TestResultsCompareElements(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/results.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`id="compare"`,
+		`id="compare-btn"`,
+		`id="compare-hint"`,
+		`id="compare-table"`,
+		`id="compare-table-empty"`,
+		`id="compare-canvas"`,
+		`id="compare-empty"`,
+		`id="compare-legend"`,
+		`id="compare-curve-wrap"`,
+		`id="compare-back"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("results.html missing %q", want)
+		}
+	}
+}
+
+func TestAppJSCompareView(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		"row-check",
+		"compareSelection",
+		"Promise.all",
+		"drawMultiCurve",
+		"drawCurvePlot",
+		"compare-legend",
+		"compare-btn",
+		"runLabel",
+		"CURVE_ALT",
+		"Select exactly two runs to compare.",
+		"series.find((s) => s.points.length > 0)", /* P1: empty first series (legacy run) must not crash the label loop */
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	/* P1: compare section is revealed before drawing, so render/fetch errors stay visible. */
+	rcStart := strings.Index(js, "function renderCompare")
+	reveal := strings.Index(js[rcStart:], "compare.hidden = false")
+	draw := strings.Index(js[rcStart:], "drawMultiCurve")
+	if reveal == -1 || draw == -1 || reveal > draw {
+		t.Fatalf("renderCompare must reveal the compare section before drawing")
+	}
+}
+
+func TestDataPageCoverageHint(t *testing.T) {
+	html, err := fs.ReadFile(webFiles, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(html), `id="bars-coverage"`) {
+		t.Fatalf("index.html missing bars-coverage element: %s", html)
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"bars_coverage", "barsCoverage", "Data coverage"} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js missing coverage logic %q", want)
+		}
+	}
+}
