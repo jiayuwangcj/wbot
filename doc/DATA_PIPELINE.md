@@ -32,6 +32,14 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 
 集成测（`internal/db`、`internal/ingest`）在未设 `WBOT_PG_DSN` 时自动 skip；设了则跑真实迁移与落库。
 
+## Provider 抽象（数据源注册表）
+
+`internal/ingest/provider.go` 提供按名注册的数据源工厂：`ingest.Register(Provider{Name, New})` 注册、`ingest.NewProvider(name, Config)` 构造 `Source`。内建注册 `mock` / `file` / `url` 三个 provider，构造出的 source 与直接实例化 `mockSource`/`FileSource`/`HTTPSource` 行为完全一致（注册表单测含行为等价断言）。
+
+- **CLI**：`wbot ingest mock|file|url` 各支持 `-provider <name>`，默认按子命令推断（mock→mock、file→file、url→url）；未注册的 provider 名 → 报错退出 2。
+- **配置承载**：`Config` 为 `map[string]string`，只透传非敏感选项（如 `path`、`url`）；**凭证/token 不放入 Config、不入 `ingestion_runs`**——provider 自行从环境变量（或 `~/.wbot/config.yaml` 渲染出的 env）读取（[[PRIVACY]]）。
+- **接新数据源**：实现 `Source` 并 `Register` 一个 provider 即可被 CLI 选用；真实行情源接入为后续 Issue（见 `doc/issues/draft-2026-07-31-ingest-provider-abstraction.md`）。
+
 ## 调度方式选择
 
 | 方式 | 适用 |
@@ -49,7 +57,7 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 
 ## 相关实现
 
-- `internal/ingest/`：`Source` 接口（mock/file/http）、`RunIngestion`、`RunEvery`/`RunEveryResilient`、`ValidateBars`、`RecentRuns`
+- `internal/ingest/`：`Source` 接口（mock/file/http）、`Provider` 注册表（provider.go）、`RunIngestion`、`RunEvery`/`RunEveryResilient`、`ValidateBars`、`RecentRuns`
 - `internal/db/migrations/`：`001_ingestion_runs.sql`、`002_bars.sql`
 - 任务轨迹：`doc/tasks/2026-04-18-wbot-ingest-cli.md` 起，至 `doc/tasks/2026-07-31-ingest-time-range.md` 止
 
