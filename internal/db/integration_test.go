@@ -26,23 +26,30 @@ func TestMigrateUpIntegration(t *testing.T) {
 	if err := MigrateUp(database); err != nil {
 		t.Fatal("second MigrateUp should be idempotent", err)
 	}
-	var n int
-	err = database.QueryRow(`
+	for _, tbl := range []string{"ingestion_runs", "bars", "option_quotes", "backtest_results", "watchlist"} {
+		var n int
+		err := database.QueryRow(`
 SELECT COUNT(*) FROM information_schema.tables
-WHERE table_schema = current_schema() AND table_name = 'ingestion_runs'`).Scan(&n)
+WHERE table_schema = current_schema() AND table_name = $1`, tbl).Scan(&n)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n != 1 {
+			t.Fatalf("table %s missing: count=%d", tbl, n)
+		}
+	}
+
+	// bars carries the data-standard columns (doc/DATA_STANDARD.md) with the
+	// PK extended by adjust+source so rehab variants coexist.
+	var pk string
+	err = database.QueryRow(`
+SELECT pg_get_constraintdef(oid) FROM pg_constraint
+WHERE conname = 'bars_pkey'`).Scan(&pk)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 1 {
-		t.Fatalf("ingestion_runs missing: count=%d", n)
-	}
-	err = database.QueryRow(`
-SELECT COUNT(*) FROM information_schema.tables
-WHERE table_schema = current_schema() AND table_name = 'bars'`).Scan(&n)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("bars missing: count=%d", n)
+	wantPK := "PRIMARY KEY (symbol, timeframe, ts, adjust, source)"
+	if pk != wantPK {
+		t.Fatalf("bars PK = %q; want %q", pk, wantPK)
 	}
 }

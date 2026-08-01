@@ -111,3 +111,36 @@ func TestIngestUsageListsFutu(t *testing.T) {
 		t.Fatalf("ingest usage missing futu: %s", stderr)
 	}
 }
+
+func TestIngestFutuOptionDispatch(t *testing.T) {
+	tests := []struct {
+		name string
+		argv []string
+		want int
+	}{
+		{"help", []string{"wbot", "ingest", "futu-option", "-h"}, 0},
+		{"no symbol", []string{"wbot", "ingest", "futu-option"}, 2},
+		{"bad symbol", []string{"wbot", "ingest", "futu-option", "-symbol", "00700"}, 2},
+		{"bad adjust", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700", "-adjust", "bogus"}, 2},
+		{"bad days", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700", "-days", "0"}, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := run(tt.argv); got != tt.want {
+				t.Fatalf("run(%v) = %d; want %d", tt.argv, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIngestFutuOptionUsageMentionsAdjust(t *testing.T) {
+	_, stderr, code := captureRun(t, []string{"wbot", "ingest", "futu-option", "-h"})
+	if code != 0 {
+		t.Fatalf("run() = %d; want 0", code)
+	}
+	for _, want := range []string{"-days", "-expiries", "-adjust", "fwd", "Cache-first"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("ingest futu-option usage missing %q: %s", want, stderr)
+		}
+	}
+}

@@ -15,11 +15,11 @@ import (
 
 func TestRunIngestion_validation(t *testing.T) {
 	ctx := context.Background()
-	err := RunIngestion(ctx, nil, "mock", domain.Symbol("X.US"), "1d", time.Time{}, time.Time{}, mockSource{})
+	err := RunIngestion(ctx, nil, "mock", domain.Symbol("X.US"), "1d", "none", "mock", time.Time{}, time.Time{}, mockSource{})
 	if err == nil {
 		t.Fatal("expected error for nil db")
 	}
-	err = RunIngestion(ctx, nil, "mock", domain.Symbol("X.US"), "1d", time.Time{}, time.Time{}, nil)
+	err = RunIngestion(ctx, nil, "mock", domain.Symbol("X.US"), "1d", "none", "mock", time.Time{}, time.Time{}, nil)
 	if err == nil {
 		t.Fatal("expected error for nil source")
 	}
@@ -49,7 +49,7 @@ func TestRunIngestion_fromAfterTo(t *testing.T) {
 	ctx := context.Background()
 	from := time.Date(2024, 6, 3, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
-	err := RunIngestion(ctx, stubDB(), "mock", domain.Symbol("X.US"), "1d", from, to, mockSource{})
+	err := RunIngestion(ctx, stubDB(), "mock", domain.Symbol("X.US"), "1d", "none", "mock", from, to, mockSource{})
 	if err == nil {
 		t.Fatal("expected error for from after to")
 	}

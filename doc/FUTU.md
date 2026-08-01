@@ -289,3 +289,24 @@ wbot futu order -symbol HK.00700 -side buy -qty 100 -env real -live-confirm -acc
 | `wbot futu order -env sim -symbol HK.00700 -side buy -qty 100 -price 1.0` | 模拟盘真实下单成功（order_id=8947461567535334561，限价 1.0 永不成交的纸面挂单，验证全链路；实盘写链路只以 dry-run 验证，真单需老板在场） |
 
 已知限制：下单前需交易解锁（TradePassword）——实盘解锁密码**不存储**（[[PRIVACY]] 红线），故实盘下单即使过护栏也会在网关侧因未解锁被拒；这是纵深防御而非缺陷。模拟盘挂单可用富途 App/未来切片撤单。
+## 10. `wbot ingest futu-option`：期权链 + 复权标准（2026-08-01 实测）
+
+期权落库：`option_quotes` 表（migration 003），缓存优先（[[DATA_STANDARD]]）：
+
+```bash
+wbot ingest futu-option -symbol HK.00700 [-days 7] [-expiries 1] [-adjust fwd|none] [-addr ...] [-dsn ...]
+```
+
+流程：拉期权到期日 → 期权链（最近 `-expiries` 个到期、全部行权价）→ 每个合约近 `-days` 天日 K 落 `option_quotes`（`strike/expiry/option_type/underlying` 冗余）；正股日 K 落 `bars`（复用 ⑪-c 管道）；symbol 注册进 `watchlist`。**缓存语义**：二次运行先查 DB，`option_quotes`/`bars` 已覆盖窗口即打印行数跳过拉取（不碰网络）；`-force` 显式绕过缓存重拉（ON CONFLICT 幂等）。`-adjust` 映射 `rehab_type`（0=不复权 1=前复权 2=后复权），默认 `fwd` 前复权（回测用）。实测坑（2026-08-01）：网关缓存未热时链上合约可能 `security not found in cache`——该合约跳过并计入 `skipped=`，不中断整次拉取（网关重启后先 `ingest futu` 或等待 stock list sync 完成可减少 skipped）。
+
+### 期权 REST 契约（实测路径）
+
+| 动作 | 请求 | 说明 |
+| --- | --- | --- |
+| 到期日 | `POST /api/option-expiration-date` | `{"owner":{"market":1,"code":"00700"}}`；s2c `date_list[]`：`strike_time`("YYYY-MM-DD")/`strike_timestamp`(epoch)/`option_expiry_date_distance`(天，负=已到期)/`cycle` |
+| 期权链 | `POST /api/option-chain` | `{"owner":{...},"begin_time":"2026-08-07","end_time":"2026-08-28"}`（YYYY-MM-DD 到期窗口，含两端）；s2c `option_chain[]`：按 `strike_time` 分组，`option[]` 每项含 `call`/`put` 两臂，臂内 `basic.security.code`（如 `TCH260807C335000`，前缀+到期+Call/Put+行权价×1000）、`basic.lot_size`、`option_ex_data.strike_price`/`type`（1=call 2=put） |
+| 合约 K 线 | `POST /api/history-kline` | 复用 ⑪-c：`{"security":{"market":1,"code":"TCH260807C335000"},"kl_type":2,...}`，免订阅 |
+
+`option-quote`（combo）实测：body `{"multi_legs":[{"security":{"market":1,"code":"..."},"side":1,"qty_ratio":1}]}`，s2c `option_quote_list[]` 含 `iv/delta/gamma/vega/theta/rho/open_interest/days_to_expiry`；**一次仅一个合约**（多腿=组合报价非批量），快照限频 1 次/3s——`implied_vol` 列保留可空，v1 管道不填充（逐合约 IV 拉取成本高，P3 排期）。
+
+实测（HK.00700，2026-08-01）：到期日 9 个（`2026-07-31` 已到期 distance=-1 … `2027-06-29`）；链窗口 `[2026-08-07, 2026-08-28]` 返回 2 组 × 48 对（call+put）；合约日 K 正常（未成交深虚值合约 volume=0 属真实数据）。

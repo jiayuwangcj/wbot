@@ -95,7 +95,7 @@ func TestHistoryKlineSuccess(t *testing.T) {
 
 	from := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 7, 31, 23, 59, 59, 0, time.UTC)
-	bars, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, from, to)
+	bars, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, 0, from, to)
 	if err != nil {
 		t.Fatalf("HistoryKline() error: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestHistoryKlinePagination(t *testing.T) {
 	})
 	defer srv.Close()
 
-	bars, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, time.Time{}, time.Time{})
+	bars, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, 0, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("HistoryKline() error: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestHistoryKlineHTTPError(t *testing.T) {
 	})
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, time.Time{}, time.Time{})
+	_, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, 0, time.Time{}, time.Time{})
 	if err == nil || !strings.Contains(err.Error(), "502") || !strings.Contains(err.Error(), "backend down") {
 		t.Fatalf("HistoryKline() error = %v; want 502 backend down", err)
 	}
@@ -184,7 +184,7 @@ func TestHistoryKlineBusinessError(t *testing.T) {
 	})
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, time.Time{}, time.Time{})
+	_, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, 0, time.Time{}, time.Time{})
 	if err == nil || !strings.Contains(err.Error(), "no permission for market") {
 		t.Fatalf("HistoryKline() error = %v; want ret_msg surfaced", err)
 	}
@@ -210,7 +210,7 @@ func TestHistoryKline429RetryThenSuccess(t *testing.T) {
 	})
 	defer srv.Close()
 
-	bars, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, time.Time{}, time.Time{})
+	bars, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, 0, time.Time{}, time.Time{})
 	if err != nil {
 		t.Fatalf("HistoryKline() error: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestHistoryKline429Exhausted(t *testing.T) {
 	})
 	defer srv.Close()
 
-	_, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, time.Time{}, time.Time{})
+	_, err := NewClient(srv.URL).HistoryKline(context.Background(), "HK.00700", 2, 0, time.Time{}, time.Time{})
 	if err == nil || !strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "rate limited") {
 		t.Fatalf("HistoryKline() error = %v; want 429 rate limited after retries", err)
 	}
@@ -240,10 +240,47 @@ func TestHistoryKline429Exhausted(t *testing.T) {
 func TestHistoryKlineBadInput(t *testing.T) {
 	fastLimits(t)
 	c := NewClient("http://127.0.0.1:1")
-	if _, err := c.HistoryKline(context.Background(), "00700", 2, time.Time{}, time.Time{}); err == nil {
+	if _, err := c.HistoryKline(context.Background(), "00700", 2, 0, time.Time{}, time.Time{}); err == nil {
 		t.Fatal("HistoryKline(bad symbol) = nil error; want error")
 	}
-	if _, err := c.HistoryKline(context.Background(), "HK.00700", 0, time.Time{}, time.Time{}); err == nil {
+	if _, err := c.HistoryKline(context.Background(), "HK.00700", 0, 0, time.Time{}, time.Time{}); err == nil {
 		t.Fatal("HistoryKline(kl_type 0) = nil error; want error")
+	}
+}
+
+func TestParseAdjust(t *testing.T) {
+	tests := []struct {
+		in      string
+		rehab   int
+		adjust  string
+		wantErr bool
+	}{
+		{"none", 0, "none", false},
+		{"fwd", 1, "fwd", false},
+		{"back", 2, "back", false},
+		{"FWD", 1, "fwd", false},
+		{"K_FWD", 1, "fwd", false},
+		{"0", 0, "none", false},
+		{"1", 1, "fwd", false},
+		{"2", 2, "back", false},
+		{"", 0, "none", false},
+		{"adj", 0, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			rehab, adj, err := ParseAdjust(tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("ParseAdjust(%q) = nil error; want error", tt.in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseAdjust(%q) error: %v", tt.in, err)
+			}
+			if rehab != tt.rehab || adj != tt.adjust {
+				t.Fatalf("ParseAdjust(%q) = (%d, %q); want (%d, %q)", tt.in, rehab, adj, tt.rehab, tt.adjust)
+			}
+		})
 	}
 }

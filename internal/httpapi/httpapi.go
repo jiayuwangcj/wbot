@@ -23,7 +23,7 @@ const (
 
 // Store is the read-only data surface the API serves.
 type Store interface {
-	QueryBars(ctx context.Context, symbol string, timeframe string, from, to time.Time, limit int) ([]ingest.Bar, error)
+	QueryBars(ctx context.Context, symbol string, timeframe string, adjust string, from, to time.Time, limit int) ([]ingest.Bar, error)
 	RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error)
 	RunStatusCounts(ctx context.Context) (ingest.RunCounts, error)
 	BarCoverage(ctx context.Context) ([]ingest.BarCoverage, error)
@@ -39,8 +39,8 @@ type dbStore struct {
 	db *sql.DB
 }
 
-func (s dbStore) QueryBars(ctx context.Context, symbol string, timeframe string, from, to time.Time, limit int) ([]ingest.Bar, error) {
-	return ingest.QueryBars(ctx, s.db, symbol, timeframe, from, to, limit)
+func (s dbStore) QueryBars(ctx context.Context, symbol string, timeframe string, adjust string, from, to time.Time, limit int) ([]ingest.Bar, error) {
+	return ingest.QueryBars(ctx, s.db, symbol, timeframe, adjust, from, to, limit)
 }
 
 func (s dbStore) RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error) {
@@ -118,6 +118,11 @@ func Handler(store Store) http.Handler {
 			writeError(w, http.StatusBadRequest, "missing query parameter: timeframe")
 			return
 		}
+		// Default fwd (前复权) matches the ingest/backtest default (doc/DATA_STANDARD.md).
+		adjust := strings.TrimSpace(q.Get("adjust"))
+		if adjust == "" {
+			adjust = "fwd"
+		}
 		from, err := parseTime("from", q.Get("from"))
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -136,7 +141,7 @@ func Handler(store Store) http.Handler {
 				return
 			}
 		}
-		bars, err := store.QueryBars(r.Context(), symbol, timeframe, from, to, limit)
+		bars, err := store.QueryBars(r.Context(), symbol, timeframe, adjust, from, to, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return

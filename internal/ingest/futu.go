@@ -12,9 +12,11 @@ import (
 
 // FutuSource pulls OHLCV bars from the futu-opend-rs gateway REST
 // /api/history-kline (no subscription; paged). The timeframe argument follows
-// the ingest convention (1m..1mo; futu K_* names are also accepted).
+// the ingest convention (1m..1mo; futu K_* names are also accepted); Adjust
+// (none/fwd/back, empty = none) maps to the gateway rehab_type (DATA_STANDARD).
 type FutuSource struct {
 	Client *futu.Client
+	Adjust string
 }
 
 // Bars fetches bars in [from, to], skipping blank bars and out-of-range rows.
@@ -29,7 +31,11 @@ func (s FutuSource) Bars(ctx context.Context, symbol domain.Symbol, timeframe st
 	if err != nil {
 		return nil, fmt.Errorf("ingest: futu source: %w", err)
 	}
-	kbars, err := s.Client.HistoryKline(ctx, string(symbol), klType, from, to)
+	rehabType, _, err := futu.ParseAdjust(s.Adjust)
+	if err != nil {
+		return nil, fmt.Errorf("ingest: futu source: %w", err)
+	}
+	kbars, err := s.Client.HistoryKline(ctx, string(symbol), klType, rehabType, from, to)
 	if err != nil {
 		return nil, fmt.Errorf("ingest: futu source: %w", err)
 	}

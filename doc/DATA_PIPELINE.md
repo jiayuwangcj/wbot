@@ -9,6 +9,8 @@
 | `wbot ingest mock` | 插入一条 mock 拉取 + 3 条示例 bars（demo 源） |
 | `wbot ingest file -file <path>` | 从 JSON 文件拉取 bars（每元素 `{"ts":RFC3339,"open","high","low","close","volume"}`） |
 | `wbot ingest url -url <url>` | 从 HTTP(S) URL 拉取同格式 JSON bars |
+| `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust fwd\|none` 默认 fwd） |
+| `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §10、[[DATA_STANDARD]]） |
 | `wbot ingest status` | 只读列出最近 `ingestion_runs`（`-limit` 可调） |
 
 通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-every`（间隔重复）、`-from`/`-to`（RFC3339 时间范围，零值=不限）。
@@ -16,7 +18,8 @@
 ## 行为保证
 
 - **校验**：落库前 `ValidateBars` 拒绝非法 OHLC/时间序数据（见 `internal/ingest`）。
-- **可重复**：bars 以 `(symbol, timeframe, ts)` 唯一，重复写入 `ON CONFLICT DO NOTHING`。
+- **数据标准**：bars/option_quotes 带 `adjust`（none/fwd/back）与 `source`（平台）列，PK 含二者，不同复权/平台数据共存可对比（[[DATA_STANDARD]]）。
+- **可重复**：bars 以 `(symbol, timeframe, ts, adjust, source)` 唯一，重复写入 `ON CONFLICT DO NOTHING`；`ingest futu-option` 二次运行命中 DB 缓存直接跳过拉取。
 - **失败容忍**：`-every` 模式下单轮失败打日志继续，不终止整个调度；单次模式（无 `-every`）失败即退出非零。
 - **事务**：一次拉取 = 一条 `ingestion_runs`（running → succeeded/failed）+ 全部 bars，同一事务。
 

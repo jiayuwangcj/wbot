@@ -67,6 +67,7 @@ func TestRun(t *testing.T) {
 		{"backtest bad strategy", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "nope"}, 2},
 		{"backtest bad maxdrawdown high", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "1.5"}, 2},
 		{"backtest bad maxdrawdown neg", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "-0.1"}, 2},
+		{"backtest save with file", []string{"wbot", "backtest", "-file", "/dev/null", "-save"}, 2},
 		{"serve help", []string{"wbot", "serve", "-h"}, 0},
 		{"configyaml help", []string{"wbot", "configyaml", "-h"}, 0},
 		{"configyaml missing file", []string{"wbot", "configyaml", "-file", "/nonexistent/config.yaml"}, 1},
@@ -96,6 +97,7 @@ func TestRunRequiresDSN(t *testing.T) {
 		{"ingest file no dsn", []string{"wbot", "ingest", "file", "-file", "/dev/null"}, 2},
 		{"ingest url no dsn", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json"}, 2},
 		{"ingest futu no dsn", []string{"wbot", "ingest", "futu", "-symbol", "HK.00700", "-timeframe", "K_DAY"}, 2},
+		{"ingest futu-option no dsn", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700"}, 2},
 		{"ingest status no dsn", []string{"wbot", "ingest", "status"}, 2},
 		{"ingest bars no dsn", []string{"wbot", "ingest", "bars"}, 2},
 		{"ingest bars json no dsn", []string{"wbot", "ingest", "bars", "-json"}, 2},
@@ -332,7 +334,7 @@ func freeTCPPort(t *testing.T) int {
 // serveFakeStore is a no-data httpapi.Store for serve-mux tests (no DB needed).
 type serveFakeStore struct{}
 
-func (serveFakeStore) QueryBars(context.Context, string, string, time.Time, time.Time, int) ([]ingest.Bar, error) {
+func (serveFakeStore) QueryBars(context.Context, string, string, string, time.Time, time.Time, int) ([]ingest.Bar, error) {
 	return nil, nil
 }
 

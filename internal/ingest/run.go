@@ -11,8 +11,9 @@ import (
 )
 
 // RunIngestion records a run, writes src bars in one transaction, then marks it succeeded.
+// adjust (none/fwd/back) and dataSource (platform: futu/...) follow doc/DATA_STANDARD.md.
 // details: doc/DATA_PIPELINE.md
-func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol domain.Symbol, timeframe string, from, to time.Time, src Source) error {
+func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol domain.Symbol, timeframe, adjust, dataSource string, from, to time.Time, src Source) error {
 	if db == nil {
 		return errors.New("ingest: nil db")
 	}
@@ -27,6 +28,12 @@ func RunIngestion(ctx context.Context, db *sql.DB, runSource string, symbol doma
 	}
 	if runSource == "" {
 		return errors.New("ingest: empty source")
+	}
+	if adjust == "" {
+		return errors.New("ingest: empty adjust")
+	}
+	if dataSource == "" {
+		return errors.New("ingest: empty data source")
 	}
 	if !from.IsZero() && !to.IsZero() && from.After(to) {
 		return errors.New("ingest: from after to")
@@ -60,12 +67,12 @@ RETURNING id`, runSource).Scan(&runID)
 	}
 
 	const insertBar = `
-INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-ON CONFLICT (symbol, timeframe, ts) DO NOTHING`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (symbol, timeframe, ts, adjust, source) DO NOTHING`
 	for _, b := range bars {
 		_, err = tx.ExecContext(ctx, insertBar,
-			string(symbol), timeframe, b.Ts, b.Open, b.High, b.Low, b.Close, b.Volume)
+			string(symbol), timeframe, b.Ts, b.Open, b.High, b.Low, b.Close, b.Volume, adjust, dataSource)
 		if err != nil {
 			return fmt.Errorf("ingest: insert bar: %w", err)
 		}

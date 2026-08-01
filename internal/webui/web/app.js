@@ -103,6 +103,7 @@ function initDataPage() {
     const params = new URLSearchParams();
     params.set("symbol", barsForm.symbol.value.trim());
     params.set("timeframe", barsForm.timeframe.value.trim());
+    params.set("adjust", "fwd"); /* 数据标准默认前复权 (doc/DATA_STANDARD.md) */
     const from = toRFC3339(barsForm.from.value);
     const to = toRFC3339(barsForm.to.value);
     if (from !== "") params.set("from", from);

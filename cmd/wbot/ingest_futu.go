@@ -27,6 +27,7 @@ func runIngestFutu(prog string, argv []string) int {
 	source := fs.String("source", "cli-futu", "ingestion source label")
 	symbol := fs.String("symbol", "", "market-qualified symbol (e.g. HK.00700)")
 	timeframe := fs.String("timeframe", "", "futu K-line name: K_1M K_5M K_15M K_30M K_60M K_DAY K_WEEK K_MONTH (ingest names 1m..1mo also accepted)")
+	adjust := fs.String("adjust", futu.AdjustFwd, "adjustment: fwd (前复权, default) or none; maps to futu rehab_type (doc/DATA_STANDARD.md)")
 	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = full history")
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = now (includes the forming bar)")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
@@ -64,6 +65,11 @@ func runIngestFutu(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
 		return 2
 	}
+	_, adjustName, err := futu.ParseAdjust(*adjust)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
+		return 2
+	}
 	fromT, err := parseRangeTime("-from", strings.TrimSpace(*from))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
@@ -75,7 +81,7 @@ func runIngestFutu(prog string, argv []string) int {
 		return 2
 	}
 
-	src := ingest.FutuSource{Client: futu.NewClient(*addr)}
+	src := ingest.FutuSource{Client: futu.NewClient(*addr), Adjust: adjustName}
 	s := domain.Symbol(sym)
 	if *dryRun {
 		bars, err := src.Bars(context.Background(), s, ingestTF, fromT, toT)
@@ -87,8 +93,8 @@ func runIngestFutu(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "ingest futu: dry-run: no bars (symbol=%s timeframe=%s)\n", sym, ingestTF)
 			return 1
 		}
-		fmt.Printf("ingest futu: dry-run: %d bars, %s .. %s (symbol=%s timeframe=%s)\n",
-			len(bars), bars[0].Ts.Format(time.RFC3339), bars[len(bars)-1].Ts.Format(time.RFC3339), sym, ingestTF)
+		fmt.Printf("ingest futu: dry-run: %d bars, %s .. %s (symbol=%s timeframe=%s adjust=%s)\n",
+			len(bars), bars[0].Ts.Format(time.RFC3339), bars[len(bars)-1].Ts.Format(time.RFC3339), sym, ingestTF, adjustName)
 		return 0
 	}
 
@@ -114,11 +120,11 @@ func runIngestFutu(prog string, argv []string) int {
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
 	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
-		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), s, ingestTF, fromT, toT, src); err != nil {
+		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), s, ingestTF, adjustName, "futu", fromT, toT, src); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "ingest futu: ok (source=%s symbol=%s timeframe=%s)\n",
-			strings.TrimSpace(*source), sym, ingestTF)
+		fmt.Fprintf(os.Stderr, "ingest futu: ok (source=%s symbol=%s timeframe=%s adjust=%s)\n",
+			strings.TrimSpace(*source), sym, ingestTF, adjustName)
 		return nil
 	}, func(err error) {
 		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)

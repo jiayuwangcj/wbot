@@ -101,7 +101,7 @@ func TestRunFileIngestionIntegration(t *testing.T) {
 	source := "file-ingest-test"
 	symbol := domain.Symbol("FILE.US")
 	tf := "1d"
-	if err := RunIngestion(ctx, database, source, symbol, tf, time.Time{}, time.Time{}, FileSource{Path: path}); err != nil {
+	if err := RunIngestion(ctx, database, source, symbol, tf, "none", "file", time.Time{}, time.Time{}, FileSource{Path: path}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -150,7 +150,7 @@ func TestRunFutuIngestionIntegration(t *testing.T) {
 	symbol := domain.Symbol("US.FUTU")
 	tf := "1d"
 	src := FutuSource{Client: futu.NewClient(srv.URL)}
-	if err := RunIngestion(ctx, database, source, symbol, tf, time.Time{}, time.Time{}, src); err != nil {
+	if err := RunIngestion(ctx, database, source, symbol, tf, "none", "futu", time.Time{}, time.Time{}, src); err != nil {
 		t.Fatal(err)
 	}
 
@@ -165,7 +165,7 @@ SELECT COUNT(*) FROM bars WHERE symbol = $1 AND timeframe = $2`, string(symbol),
 	}
 
 	// Second run with identical bars must not fail (ON CONFLICT DO NOTHING).
-	if err := RunIngestion(ctx, database, source, symbol, tf, time.Time{}, time.Time{}, src); err != nil {
+	if err := RunIngestion(ctx, database, source, symbol, tf, "none", "futu", time.Time{}, time.Time{}, src); err != nil {
 		t.Fatal(err)
 	}
 	err = database.QueryRow(`
@@ -324,7 +324,7 @@ func TestQueryBarsIntegration(t *testing.T) {
 	}
 
 	// Full range: all 3 bars, ts ascending.
-	bars, err := QueryBars(ctx, database, string(symbol), tf, time.Time{}, time.Time{}, 10)
+	bars, err := QueryBars(ctx, database, string(symbol), tf, "none", time.Time{}, time.Time{}, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestQueryBarsIntegration(t *testing.T) {
 	// Closed range [middle ts, last ts]: 2 bars, both endpoints included.
 	from := bars[1].Ts
 	to := bars[2].Ts
-	got, err := QueryBars(ctx, database, string(symbol), tf, from, to, 10)
+	got, err := QueryBars(ctx, database, string(symbol), tf, "none", from, to, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestQueryBarsIntegration(t *testing.T) {
 	}
 
 	// limit=1: only the first bar.
-	got, err = QueryBars(ctx, database, string(symbol), tf, time.Time{}, time.Time{}, 1)
+	got, err = QueryBars(ctx, database, string(symbol), tf, "none", time.Time{}, time.Time{}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

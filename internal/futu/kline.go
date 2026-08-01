@@ -46,6 +46,39 @@ func ParseTimeframe(s string) (klType int, ingestTF string, err error) {
 	return 0, "", fmt.Errorf("unsupported timeframe %q (want K_1M K_5M K_15M K_30M K_60M K_DAY K_WEEK K_MONTH)", s)
 }
 
+// Adjust names per doc/DATA_STANDARD.md; futu rehab_type: 0=none 1=fwd 2=back.
+const (
+	AdjustNone = "none"
+	AdjustFwd  = "fwd"
+	AdjustBack = "back"
+)
+
+var rehabByName = map[string]int{AdjustNone: 0, AdjustFwd: 1, AdjustBack: 2}
+
+// ParseAdjust maps the standard adjust name (none/fwd/back, doc/DATA_STANDARD.md)
+// to the gateway rehab_type; empty means none; numeric gateway values pass through.
+func ParseAdjust(s string) (rehabType int, adjust string, err error) {
+	name := strings.ToLower(strings.TrimSpace(s))
+	if name == "" {
+		return 0, AdjustNone, nil
+	}
+	if r, ok := rehabByName[name]; ok {
+		return r, name, nil
+	}
+	if r, ok := rehabByName[strings.TrimPrefix(name, "k_")]; ok {
+		return r, strings.TrimPrefix(name, "k_"), nil
+	}
+	switch name {
+	case "0":
+		return 0, AdjustNone, nil
+	case "1":
+		return 1, AdjustFwd, nil
+	case "2":
+		return 2, AdjustBack, nil
+	}
+	return 0, "", fmt.Errorf("unsupported adjust %q (want none, fwd or back)", s)
+}
+
 // KBar is one K-line row: bar start instant (UTC) plus OHLCV.
 type KBar struct {
 	Ts      time.Time
@@ -79,16 +112,20 @@ type klinePage struct {
 var futuLoc = time.FixedZone("futu+08", 8*3600)
 
 // HistoryKline fetches K-lines covering [from, to]; zero from defaults to
-// 2000-01-01 and zero to to now+24h (covers the forming bar). No subscription
-// is needed. Pages are spaced ≥ BatchGap apart and first pages pass the
-// official 10-per-30s gate; HTTP 429 retries with backoff inside post().
-func (c *Client) HistoryKline(ctx context.Context, symbol string, klType int, from, to time.Time) ([]KBar, error) {
+// 2000-01-01 and zero to to now+24h (covers the forming bar). rehabType maps
+// to the gateway rehab_type (0=none 1=fwd 2=back, doc/DATA_STANDARD.md). No
+// subscription is needed. Pages are spaced ≥ BatchGap apart and first pages
+// pass the official 10-per-30s gate; HTTP 429 retries with backoff in post().
+func (c *Client) HistoryKline(ctx context.Context, symbol string, klType, rehabType int, from, to time.Time) ([]KBar, error) {
 	market, code, err := ParseSymbol(symbol)
 	if err != nil {
 		return nil, err
 	}
 	if klType < 1 {
 		return nil, fmt.Errorf("bad kl_type %d", klType)
+	}
+	if rehabType < 0 || rehabType > 2 {
+		return nil, fmt.Errorf("bad rehab_type %d", rehabType)
 	}
 	if from.IsZero() {
 		from = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -99,7 +136,7 @@ func (c *Client) HistoryKline(ctx context.Context, symbol string, klType int, fr
 	body := map[string]any{
 		"security":   map[string]any{"market": market, "code": code},
 		"kl_type":    klType,
-		"rehab_type": 0, // 不复权
+		"rehab_type": rehabType,
 		"begin_time": from.In(futuLoc).Format("2006-01-02 15:04:05"),
 		"end_time":   to.In(futuLoc).Format("2006-01-02 15:04:05"),
 		"max_count":  MaxKlinePage,
