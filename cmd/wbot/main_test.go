@@ -77,6 +77,11 @@ func TestRun(t *testing.T) {
 		{"backtest bad maxdrawdown high", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "1.5"}, 2},
 		{"backtest bad maxdrawdown neg", []string{"wbot", "backtest", "-file", "/dev/null", "-max-drawdown", "-0.1"}, 2},
 		{"backtest save with file", []string{"wbot", "backtest", "-file", "/dev/null", "-save"}, 2},
+		{"backtest multi with file", []string{"wbot", "backtest", "-file", "/dev/null", "-symbols", "A.US,B.US"}, 2},
+		{"backtest multi duplicate symbol", []string{"wbot", "backtest", "-dsn", "postgres://x", "-symbols", "A.US,A.US"}, 2},
+		{"backtest multi empty entry", []string{"wbot", "backtest", "-dsn", "postgres://x", "-symbols", "A.US,,B.US"}, 2},
+		{"backtest multi option strategy", []string{"wbot", "backtest", "-dsn", "postgres://x", "-symbols", "A.US,B.US", "-strategy", "covered-call"}, 2},
+		{"backtest multi save unsupported", []string{"wbot", "backtest", "-dsn", "postgres://x", "-symbols", "A.US,B.US", "-save"}, 2},
 		{"watchlist no sub", []string{"wbot", "watchlist"}, 2},
 		{"watchlist help", []string{"wbot", "watchlist", "-h"}, 0},
 		{"watchlist bad sub", []string{"wbot", "watchlist", "nope"}, 2},
@@ -217,6 +222,107 @@ func TestConfigYAMLOutput(t *testing.T) {
 	want := "FUTU_LOGIN_ACCOUNT=acc-default\nFUTU_LOGIN_REGION=sh\n"
 	if out != want {
 		t.Fatalf("output = %q; want %q", out, want)
+	}
+}
+
+func TestParseSymbolList(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    []string
+		wantErr string
+	}{
+		{"", nil, ""},
+		{"A.US", []string{"A.US"}, ""},
+		{" A.US , B.US ", []string{"A.US", "B.US"}, ""},
+		{"A.US,,B.US", nil, "empty symbol entry"},
+		{"A.US,A.US", nil, "duplicate symbol A.US"},
+	}
+	for _, tt := range tests {
+		t.Run("in="+tt.in, func(t *testing.T) {
+			got, err := parseSymbolList(tt.in)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("parseSymbolList(%q) err = %v; want containing %q", tt.in, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseSymbolList(%q) err = %v; want nil", tt.in, err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseSymbolList(%q) = %v; want %v", tt.in, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("parseSymbolList(%q) = %v; want %v", tt.in, got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestBacktestMultiSymbolIntegration: full CLI multi-symbol path against real
+// PG — two symbols with shifted windows seeded, `-symbols` prints the combined
+// summary plus per-symbol lines, and one-symbol `-symbols` stays on the
+// single-symbol path (skipped without WBOT_PG_DSN).
+func TestBacktestMultiSymbolIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	const symA, symB = "MULTIA.US", "MULTIB.US"
+	if _, err := database.Exec(`DELETE FROM bars WHERE symbol IN ($1, $2)`, symA, symB); err != nil {
+		t.Fatal(err)
+	}
+	day := func(i int) time.Time { return time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC) }
+	seed := func(symbol string, start int, closes []float64) {
+		for i, c := range closes {
+			if _, err := database.Exec(`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(start+i), c); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// A spans d1..d4, B starts a day later: intersection = d2,d3,d4.
+	seed(symA, 0, []float64{100, 110, 121, 133.1})
+	seed(symB, 1, []float64{200, 220, 242})
+
+	argv := []string{"wbot", "backtest", "-dsn", dsn, "-symbols", symA + "," + symB,
+		"-timeframe", "1d", "-adjust", "none", "-strategy", "buy-hold"}
+	// A: 5000 @110 -> 5000*133.1/110 = 6050; B: 5000 @200 -> 5000*242/200 = 6050.
+	out := captureRunOutput(t, argv)
+	for _, want := range []string{
+		"final_equity=12100", "total_return=0.21", "bars=3 symbols=2",
+		symA + ": final_equity=6050", symB + ": final_equity=6050",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output %q; want containing %q", out, want)
+		}
+	}
+	// Determinism: a second run prints the identical summary.
+	if out2 := captureRunOutput(t, argv); out2 != out {
+		t.Fatalf("runs differ: %q vs %q", out2, out)
+	}
+	// One-symbol -symbols is the single-symbol path (all-in over the full window).
+	outSingle := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", dsn, "-symbols", symA,
+		"-timeframe", "1d", "-adjust", "none", "-strategy", "buy-hold"})
+	if strings.Contains(outSingle, "symbols=") {
+		t.Fatalf("single-symbol -symbols output %q; want single-symbol summary", outSingle)
+	}
+	for _, want := range []string{"final_equity=13310", "total_return=0.331", "bars=4"} {
+		if !strings.Contains(outSingle, want) {
+			t.Fatalf("single output %q; want containing %q", outSingle, want)
+		}
 	}
 }
 

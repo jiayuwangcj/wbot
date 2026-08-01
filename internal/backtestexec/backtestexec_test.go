@@ -90,3 +90,30 @@ func TestRunRejectsMissingInputs(t *testing.T) {
 		}
 	}
 }
+
+// RunMulti's validation surface is unit-testable without a DB; the query/run
+// path is covered by the cmd/wbot integration test (real PostgreSQL).
+func TestRunMultiRejects(t *testing.T) {
+	tests := []struct {
+		name    string
+		o       Options
+		symbols []string
+		wantErr string
+	}{
+		{"empty symbols", Options{Strategy: "hold"}, nil, "empty symbols"},
+		{"no strategy", Options{}, []string{"A.US"}, "strategy is required"},
+		{"unknown strategy", Options{Strategy: "nope"}, []string{"A.US"}, "unknown template"},
+		{"option strategy", Options{Strategy: "covered-call"}, []string{"A.US"}, "needs option_quotes"},
+		{"hold rejects params", Options{Strategy: "hold", Params: map[string]any{"a": 1}}, []string{"A.US"}, "no params"},
+		{"nil db", Options{Strategy: "hold"}, []string{"A.US"}, "nil db"},
+		{"empty symbol", Options{Strategy: "hold"}, []string{""}, "empty symbol"},
+		{"duplicate symbol", Options{Strategy: "hold"}, []string{"A.US", "A.US"}, "duplicate symbol"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := RunMulti(context.Background(), nil, tt.o, tt.symbols); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("RunMulti(%+v, %v) err = %v; want containing %q", tt.o, tt.symbols, err, tt.wantErr)
+			}
+		})
+	}
+}
