@@ -591,6 +591,50 @@ func TestAppJSCompareView(t *testing.T) {
 	}
 }
 
+func TestDataPageAccountBlock(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`id="account-card"`,
+		`id="account-error"`,
+		`id="account-refresh"`,
+		`id="account-power"`,
+		`id="account-total-assets"`,
+		`id="account-cash"`,
+		`id="account-market-val"`,
+		`id="account-available-cash"`,
+		`id="positions-table"`,
+		`id="positions-empty"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+}
+
+func TestAppJSQueriesFutuAccountAPI(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`"/v1/futu/account`,
+		"snap.funds.total_assets",
+		"snap.funds.available_cash",
+		"positions-table",
+		"loadAccount",
+		"account-refresh",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 func TestDataPageCoverageHint(t *testing.T) {
 	html, err := fs.ReadFile(webFiles, "web/index.html")
 	if err != nil {
