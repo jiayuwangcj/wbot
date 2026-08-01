@@ -79,7 +79,10 @@ func applyMigration(db *sql.DB, name string, sqlText string) error {
 	if _, err := tx.Exec(sqlText); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO schema_migrations (name) VALUES ($1)`, name); err != nil {
+	// ON CONFLICT: concurrent MigrateUp (parallel test packages on one dev DB,
+	// CI serializes with -p 1) may both see the migration unapplied; the loser
+	// records nothing and commits the idempotent DDL anyway.
+	if _, err := tx.Exec(`INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT (name) DO NOTHING`, name); err != nil {
 		return err
 	}
 	return tx.Commit()
