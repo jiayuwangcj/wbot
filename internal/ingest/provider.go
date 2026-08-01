@@ -36,7 +36,7 @@ func Register(p Provider) {
 func NewProvider(name string, cfg Config) (Source, error) {
 	p, ok := registry[name]
 	if !ok {
-		return nil, fmt.Errorf("ingest: provider %q: not registered", name)
+		return nil, fmt.Errorf("ingest: provider %q: not registered (available: mock, file, url)", name)
 	}
 	return p.New(cfg)
 }
