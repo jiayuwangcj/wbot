@@ -1,6 +1,6 @@
 # FutuOpenD gateway — connection point for `wbot futu` (see doc/FUTU.md).
-#   tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env && docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml up -d
-# Credentials render from ~/.wbot/config.yaml only, never stored here.
+#   umask 077 && tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env && docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml up -d
+# Credentials render from ~/.wbot/config.yaml only; the derived .env holds them too (600, umask 077).
 services:
   futu-opend:
     image: ostai/futuopend:9.4.5418   # pinned; ostai also publishes `latest`

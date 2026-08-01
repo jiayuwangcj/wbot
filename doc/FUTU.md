@@ -32,6 +32,7 @@ futu:
 渲染为 dotenv 再交给 compose（`wbot configyaml` 输出纯 `KEY=VALUE` 行，经 `tools/config-to-env.sh` 薄封装）：
 
 ```bash
+umask 077    # 或渲染后 chmod 600 ~/.wbot/.env：派生文件含凭证，> 按 umask 落盘（默认 0644 过宽）
 tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env    # --env-file 格式（无 export 前缀）
 docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml up -d
 ```
@@ -39,12 +40,13 @@ docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml up -d
 要点：
 
 - MD5 必须对密码明文计算且**不含换行**：`echo -n '<明文>' | md5sum`（`echo` 漏写 `-n` 会算出错误散列）；MD5 本身等同凭证，同样只进 config.yaml / 环境变量
+- 派生 env 文件 `~/.wbot/.env` 含展开后的凭证值（如 MD5），权限须 600：渲染前 `umask 077`，或渲染后 `chmod 600 ~/.wbot/.env`
 - 任何 compose 操作前先渲染 env 文件（`FUTU_LOGIN_REGION` 不设时默认 `sh`）
 
 ## 2. 拉取与启动
 
 ```bash
-tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env
+umask 077 && tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env   # 派生文件含凭证，落盘即 600
 docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml pull     # 首次拉取 ostai/futuopend:9.4.5418
 docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml up -d    # 后台启动
 docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml logs -f futu-opend
@@ -92,7 +94,7 @@ docker compose -f configs/docker-compose.futu.yml config
 # => Error: required variable FUTU_LOGIN_ACCOUNT is missing a value: ...
 
 # 状态二：已渲染 env 文件（值可为占位，无需真实凭证）→ 正常渲染
-tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env
+umask 077 && tools/config-to-env.sh ~/.wbot/config.yaml > ~/.wbot/.env
 docker compose --env-file ~/.wbot/.env -f configs/docker-compose.futu.yml config
 ```
 

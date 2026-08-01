@@ -26,6 +26,7 @@ futu:
 
 - 解析实现：`internal/configyaml`；`wbot configyaml` / `tools/config-to-env.sh` 输出纯 `KEY=VALUE` 行（供 `docker compose --env-file` 或 shell source）；嵌套路径扁平为 UPPER_SNAKE（`futu.login_account` → `FUTU_LOGIN_ACCOUNT`）
 - 示例模板：`tools/config.yaml.example`（只含占位，可安全入库）；真实文件权限须 0600，渲染工具校验不通过即报错
+- 派生 env 文件（如 `~/.wbot/.env`）含展开后的凭证值，同样须 600：渲染前 `umask 077` 或渲染后 `chmod 600`（`>` 按 umask 默认 0644 落盘，过宽）
 - 与 ⑥-B 管理配置并存、分工不同：`~/.wbot/wbot.conf`（JSON，admin API 读写，见 [[API]]）是运行时配置；本文件是部署级凭证注入层（链路见 [[FUTU]]）
 
 ## 各角色
