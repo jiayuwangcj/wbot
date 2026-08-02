@@ -16,7 +16,7 @@
 #   FUTU_GATEWAY_URL   — futu REST gateway (http://<bridge-ip>:22222)
 #   FUTU_PROTO_ADDR    — futu proto endpoint (<bridge-ip>:11111)
 #
-# Requires: go, docker (for address discovery), curl.
+# Requires: go, docker (for address discovery), curl, python3 (CLI url 供数).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -207,6 +207,35 @@ if [[ "$smoke" == "1" ]]; then
 	check "GET /v1/account/snapshots" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/account/snapshots")"
 	check "GET /v1/admin/status" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/admin/status")"
 	check "GET /v1/admin/config" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/admin/config")"
+
+	# CLI 三维补漏(2026-08-03, ACCEPTANCE.md 纪律②对账): ingest file/url/status/bars
+	# 三维零覆盖。file/url 写 PG、status/bars 读 PG,归 dev-up(verify 零依赖、
+	# accept 走 HTTP 面,均不覆盖 CLI 面)。url 用 python3 http.server 就地供数。
+	cli_fixture="$devdir/cli-bars.json"
+	cat > "$cli_fixture" <<'EOF'
+[{"ts":"2026-07-01T00:00:00Z","open":100,"high":105,"low":99,"close":103,"volume":1000},
+ {"ts":"2026-07-02T00:00:00Z","open":103,"high":110,"low":102,"close":108,"volume":2000}]
+EOF
+	# 注: ①ingest file/url 无 -adjust 参数,落库恒 adjust=none;ingest bars 默认
+	# -adjust fwd,查询须显式 -adjust none 才能命中(2026-08-03 实测)。
+	# ②ingest bars 按会话时区渲染(+08 本机),grep 日期前缀而非 UTC Z 后缀。
+	"$bin" ingest file -dsn "$WBOT_PG_DSN" -symbol CLI.US -timeframe 1d -file "$cli_fixture" >/dev/null || true
+	check "ingest file→bars 落库 (CLI.US)" 1 "$("$bin" ingest bars -dsn "$WBOT_PG_DSN" -symbol CLI.US -timeframe 1d -adjust none 2>&1 | grep -c '2026-07-01' || true)"
+	url_port=18089
+	python3 -m http.server "$url_port" --directory "$devdir" >/dev/null 2>&1 &
+	url_pid=$!
+	sleep 0.5
+	"$bin" ingest url -dsn "$WBOT_PG_DSN" -symbol CLIURL.US -timeframe 1d -url "http://127.0.0.1:$url_port/cli-bars.json" >/dev/null || true
+	url_rc=$?
+	kill "$url_pid" 2>/dev/null || true
+	wait "$url_pid" 2>/dev/null || true
+	if [[ "$url_rc" -eq 0 ]]; then
+		got_url="$("$bin" ingest bars -dsn "$WBOT_PG_DSN" -symbol CLIURL.US -timeframe 1d -adjust none 2>&1 | grep -c '2026-07-01' || true)"
+	else
+		got_url="0"
+	fi
+	check "ingest url→bars 落库 (CLIURL.US)" 1 "$got_url"
+	check "ingest status 列最近 runs" 0 "$( "$bin" ingest status -dsn "$WBOT_PG_DSN" 2>&1 | grep -qE 'cli-mock|cli-file|cli-url' && echo 0 || echo 1 )"
 
 	echo
 	if [[ "$failed" == "0" ]]; then

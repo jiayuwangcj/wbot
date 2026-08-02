@@ -5,7 +5,7 @@
 | 层 | 入口 | 覆盖 | 何时跑 |
 | --- | --- | --- | --- |
 | 单测 + 静态 | `scripts/verify.sh`（= CI `test` job） | 全部 Go 包单测、gofmt、契约测试 + 零依赖 accept（paper/agent-federation） | 每次提交前；CI 自动 |
-| 本地全链冒烟 | `scripts/dev-up.sh`（16 项） | `wbot serve` 全部 DB 本地 HTTP 端点（health/runs/bars/account/snapshots/admin·status/config/watchlist 等） | 每次 dev 环境启动 |
+| 本地全链冒烟 | `scripts/dev-up.sh`（19 项） | `wbot serve` 全部 DB 本地 HTTP 端点（health/runs/bars/account/snapshots/admin·status/config/watchlist 等）+ CLI ingest file/url/status/bars 三维补漏 | 每次 dev 环境启动 |
 | 逐端点 e2e | `scripts/accept-*.sh`（12 个，126 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
 
 **原则**：dev-up 只冒烟不逐端点验收；accept 脚本只覆盖不冒烟的部分（如 futu 系依赖网关，刻意不入 dev-up，由 accept 覆盖）。CLI 面按「verify.sh 有无冒烟 + dev-up 有无覆盖 + accept 有无脚本」三维对账（#47/#49/#50 经验）。
