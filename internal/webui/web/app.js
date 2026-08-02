@@ -1052,6 +1052,64 @@ function renderResultsList(items, onOpen) {
   }
   empty.hidden = true;
   table.hidden = false;
+  /* 排序重绘后恢复详情选中高亮(selectResultsRow 按 dataset.id 匹配)。 */
+  if (openDetailId !== null) selectResultsRow(openDetailId);
+}
+
+/* 回测结果表表头排序(券商回测面板惯例):点击表头按列排序,同列再点
+   切换升/降序,箭头指示当前排序;数字列按数值、字符串列按字典序。 */
+const RESULTS_SORT_KEYS = {
+  id: (i) => i.id,
+  strategy: (i) => i.strategy,
+  symbol: (i) => i.symbol,
+  equity: (i) => metricOf(i, "equity") ?? -Infinity,
+  total_return: (i) => metricOf(i, "total_return") ?? -Infinity,
+  max_drawdown: (i) => metricOf(i, "max_drawdown") ?? -Infinity,
+  bars: (i) => metricOf(i, "bars") ?? -Infinity,
+  created_at: (i) => i.created_at,
+};
+
+let resultsSortKey = null;
+let resultsSortDir = 1; /* 1 = 升序, -1 = 降序 */
+
+function sortResults(items) {
+  if (!resultsSortKey || !RESULTS_SORT_KEYS[resultsSortKey]) return items;
+  const get = RESULTS_SORT_KEYS[resultsSortKey];
+  return items.slice().sort((a, b) => {
+    const va = get(a);
+    const vb = get(b);
+    if (va === vb) return 0;
+    if (typeof va === "string") return resultsSortDir * String(va).localeCompare(String(vb));
+    return resultsSortDir * (va - vb);
+  });
+}
+
+function renderSortIndicators() {
+  const ths = document.querySelectorAll("#results-table th[data-sort]");
+  for (const th of ths) {
+    const base = th.dataset.label || th.textContent.replace(/[↑↓↕]/g, "").trim();
+    th.dataset.label = base;
+    th.textContent = base + (th.dataset.sort === resultsSortKey
+      ? (resultsSortDir === 1 ? " ↑" : " ↓")
+      : " ↕");
+  }
+}
+
+function initResultsSorting(render) {
+  const ths = document.querySelectorAll("#results-table th[data-sort]");
+  for (const th of ths) {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (resultsSortKey === key) {
+        resultsSortDir = -resultsSortDir;
+      } else {
+        resultsSortKey = key;
+        resultsSortDir = 1;
+      }
+      renderSortIndicators();
+      render();
+    });
+  }
 }
 
 function showMetric(id, v, formatter) {
@@ -1132,7 +1190,10 @@ function selectResultsRow(id) {
   }
 }
 
+let openDetailId = null;
+
 function openDetail(id) {
+  openDetailId = id;
   selectResultsRow(id);
   fetchJSON("/v1/backtests/" + id).then((d) => {
     clearError(document.getElementById("detail-error"));
@@ -1386,9 +1447,13 @@ function initResultsPage() {
   const listError = document.getElementById("results-error");
   if (!listError) return;
   setupBacktestRunForm();
+  let resultsItems = [];
+  const render = () => renderResultsList(sortResults(resultsItems), (item) => openDetail(item.id));
   loadJSON("/v1/backtests?limit=50", listError, (items) => {
-    renderResultsList(items, (item) => openDetail(item.id));
+    resultsItems = items;
+    render();
   });
+  initResultsSorting(render);
   document.getElementById("detail-back").addEventListener("click", () => {
     document.getElementById("detail").hidden = true;
     document.getElementById("list").scrollIntoView();
