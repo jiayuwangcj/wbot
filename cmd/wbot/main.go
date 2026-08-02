@@ -1360,9 +1360,10 @@ func runIngestFreshness(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest freshness [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Checks data freshness per symbol×timeframe: prints each combination's\n")
-		fmt.Fprintf(os.Stderr, "max_ts, age and status (fresh / stale / unknown); exits 1 when any\n")
-		fmt.Fprintf(os.Stderr, "combination is stale, 0 otherwise (no data → unknown, exit 0).\n\n")
+		fmt.Fprintf(os.Stderr, "Checks data freshness per symbol×timeframe (bars) plus per underlying\n")
+		fmt.Fprintf(os.Stderr, "(option quotes): prints each combination's max_ts, age and status\n")
+		fmt.Fprintf(os.Stderr, "(fresh / stale / unknown); exits 1 when any combination is stale,\n")
+		fmt.Fprintf(os.Stderr, "0 otherwise (no data → unknown, exit 0).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -1425,6 +1426,27 @@ func runIngestFreshness(prog string, argv []string) int {
 	}
 	if len(entries) == 0 {
 		fmt.Println("unknown: no bars data")
+	}
+	// 期权数据并入同一判定(草稿非目标项):按 underlying×source 聚合,
+	// 阈值 MaxAgeForOptions(4h),-max-age 全局覆盖;stale 同样使 exit 1。
+	opts, err := ingest.QueryOptionFreshness(context.Background(), database, now)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest freshness: %v\n", err)
+		return 1
+	}
+	for _, o := range opts {
+		threshold := ingest.MaxAgeForOptions
+		if *maxAge > 0 {
+			threshold = *maxAge
+		}
+		status := ingest.JudgeFreshness(o.MaxTs, now, threshold)
+		if status == ingest.Stale {
+			anyStale = true
+		}
+		fmt.Printf("%s option %s %ds %s\n", o.Underlying, o.MaxTs.Format(time.RFC3339), o.AgeSeconds, status)
+	}
+	if len(entries) == 0 && len(opts) == 0 {
+		fmt.Println("unknown: no bars or option data")
 	}
 	if anyStale {
 		fmt.Fprintf(os.Stderr, "ingest freshness: stale data found\n")

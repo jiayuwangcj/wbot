@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strconv"
 	"strings"
 	"time"
@@ -98,6 +99,55 @@ func QueryFreshness(ctx context.Context, db *sql.DB, now time.Time) ([]Freshness
 			Symbol: c.Symbol, Timeframe: c.Timeframe, Adjust: c.Adjust,
 			MaxTs: c.MaxTs, AgeSeconds: int64(age.Seconds()),
 		})
+	}
+	return out, nil
+}
+
+// MaxAgeForOptions is the default staleness threshold for option quotes
+// (option_quotes, no timeframe): intraday market data, fresh within 4 hours
+// (freshness draft extension; -max-age overrides globally).
+const MaxAgeForOptions = 4 * time.Hour
+
+// OptionFreshness is one underlying×source combination's option_quotes
+// max_ts age at a query's now.
+type OptionFreshness struct {
+	Underlying string
+	Source     string
+	MaxTs      time.Time // zero when the underlying has no quotes
+	AgeSeconds int64     // whole seconds between MaxTs and now (0 for future timestamps)
+}
+
+// QueryOptionFreshness computes max_ts ages for every underlying×source
+// combination in option_quotes against now; underlyings without quotes are
+// absent (no data → unknown semantics, same as bars).
+func QueryOptionFreshness(ctx context.Context, db *sql.DB, now time.Time) ([]OptionFreshness, error) {
+	if db == nil {
+		return nil, errors.New("nil db")
+	}
+	rows, err := db.QueryContext(ctx, `
+SELECT underlying, source, MAX(ts) AS max_ts
+FROM option_quotes
+GROUP BY underlying, source
+ORDER BY underlying, source`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []OptionFreshness{}
+	for rows.Next() {
+		var f OptionFreshness
+		if err := rows.Scan(&f.Underlying, &f.Source, &f.MaxTs); err != nil {
+			return nil, err
+		}
+		age := now.Sub(f.MaxTs)
+		if age < 0 {
+			age = 0
+		}
+		f.AgeSeconds = int64(age.Seconds())
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

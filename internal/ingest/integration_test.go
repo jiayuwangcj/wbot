@@ -429,3 +429,69 @@ VALUES ($1, '1d', $2, 100, 101, 99, 100.5, 100, 'none', 'futu')`, sym, ts); err 
 		t.Fatalf("fresh judge with 24h = %q; want fresh", got)
 	}
 }
+
+// TestQueryOptionFreshnessIntegration: option_quotes joins the same staleness
+// judgment — per underlying×source max_ts ages; default option threshold
+// (4h) classifies fresh (2h old) vs stale (100h old).
+func TestQueryOptionFreshnessIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	const freshU = "ZZOPTFRESH.US"
+	const staleU = "ZZOPTSTALE.US"
+	for _, u := range []string{freshU, staleU} {
+		if _, err := database.Exec(`DELETE FROM option_quotes WHERE underlying = $1`, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insert := func(u string, ts time.Time) {
+		if _, err := database.Exec(`
+INSERT INTO option_quotes (symbol, underlying, option_type, strike, expiry, ts, open, high, low, close, volume, implied_vol, adjust, source)
+VALUES ($1, $1, 'call', 100, '2026-12-31', $2, 10, 11, 9, 10.5, 100, NULL, 'none', 'futu')`, u, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	insert(freshU, now.Add(-2*time.Hour))   // default 4h → fresh
+	insert(staleU, now.Add(-100*time.Hour)) // default 4h → stale
+
+	opts, err := QueryOptionFreshness(ctx, database, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(u string) *OptionFreshness {
+		for i := range opts {
+			if opts[i].Underlying == u {
+				return &opts[i]
+			}
+		}
+		t.Fatalf("option freshness missing %s (got %+v)", u, opts)
+		return nil
+	}
+	fresh := find(freshU)
+	if fresh.AgeSeconds != 7200 || fresh.Source != "futu" || !fresh.MaxTs.Equal(now.Add(-2*time.Hour)) {
+		t.Fatalf("fresh option entry = %+v; want age 7200s at %v source futu", fresh, now.Add(-2*time.Hour))
+	}
+	if got := JudgeFreshness(fresh.MaxTs, now, MaxAgeForOptions); got != Fresh {
+		t.Fatalf("fresh option judge = %q; want fresh", got)
+	}
+	stale := find(staleU)
+	if got := JudgeFreshness(stale.MaxTs, now, MaxAgeForOptions); got != Stale {
+		t.Fatalf("stale option judge = %q; want stale", got)
+	}
+	// -max-age style override: 1000000h flips the stale entry to fresh.
+	if got := JudgeFreshness(stale.MaxTs, now, 1000000*time.Hour); got != Fresh {
+		t.Fatalf("stale option judge with 1000000h = %q; want fresh", got)
+	}
+}

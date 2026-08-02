@@ -1394,4 +1394,43 @@ VALUES ($1, '1d', $2, 100, 101, 99, 100.5, 100, 'none', 'futu')`, sym, ts); err 
 	if l := statusLine(code, out, freshSym); !strings.HasSuffix(l, " stale") {
 		t.Fatalf("-max-age 1h: fresh symbol line %q; want suffix ' stale'", l)
 	}
+
+	// Option quotes join the same judgment: fresh option row (2h old, 4h
+	// threshold) under the global 1000000h override; stale option row (100h
+	// old) under the default → exit 1.
+	const optFreshU = "ZZOPTCLIFRESH.US"
+	const optStaleU = "ZZOPTCLISTALE.US"
+	for _, u := range []string{optFreshU, optStaleU} {
+		if _, err := database.Exec(`DELETE FROM option_quotes WHERE underlying = $1`, u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	optInsert := func(u string, ts time.Time) {
+		if _, err := database.Exec(`
+INSERT INTO option_quotes (symbol, underlying, option_type, strike, expiry, ts, open, high, low, close, volume, implied_vol, adjust, source)
+VALUES ($1, $1, 'call', 100, '2026-12-31', $2, 10, 11, 9, 10.5, 100, NULL, 'none', 'futu')`, u, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	optNow := time.Now().UTC().Truncate(time.Second)
+	optInsert(optFreshU, optNow.Add(-2*time.Hour))
+	optInsert(optStaleU, optNow.Add(-100*time.Hour))
+
+	code, out = runOutput([]string{"wbot", "ingest", "freshness", "-dsn", dsn})
+	if code != 1 {
+		t.Fatalf("option stale: exit = %d; want 1 (output %q)", code, out)
+	}
+	if l := statusLine(code, out, optStaleU); !strings.HasSuffix(l, " stale") {
+		t.Fatalf("stale option line %q; want suffix ' stale'", l)
+	}
+	code, out = runOutput([]string{"wbot", "ingest", "freshness", "-dsn", dsn, "-max-age", "1000000h"})
+	if code != 0 {
+		t.Fatalf("option -max-age 1000000h: exit = %d; want 0 (output %q)", code, out)
+	}
+	if l := statusLine(code, out, optFreshU); !strings.HasSuffix(l, " fresh") {
+		t.Fatalf("fresh option line %q; want suffix ' fresh'", l)
+	}
+	if l := statusLine(code, out, optStaleU); !strings.HasSuffix(l, " fresh") {
+		t.Fatalf("-max-age 1000000h option line %q; want suffix ' fresh'", l)
+	}
 }
