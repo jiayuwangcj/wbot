@@ -791,7 +791,7 @@ func (serveFakeWatchlistStore) Delete(context.Context, string) (bool, error) { r
 // serveFakeBacktestStore is a no-data httpapi.BacktestStore for serve-mux tests.
 type serveFakeBacktestStore struct{}
 
-func (serveFakeBacktestStore) List(context.Context, string, string, int) ([]backtest.ResultRecord, error) {
+func (serveFakeBacktestStore) List(context.Context, string, string, int, string, bool) ([]backtest.ResultRecord, error) {
 	return nil, nil
 }
 func (serveFakeBacktestStore) Get(context.Context, int64) (*backtest.ResultRecord, error) {
