@@ -26,48 +26,48 @@
     <p id="cluster-error" class="notice error" hidden></p>
     <div id="cluster-cards" class="node-grid" hidden>
       <article class="node-card">
-        <h3><span id="cluster-process-badge" class="badge"></span> Process</h3>
+        <h3><span id="cluster-process-badge" class="badge"></span> 进程</h3>
         <dl>
-          <dt>Version</dt><dd id="cluster-process-version"></dd>
+          <dt>版本</dt><dd id="cluster-process-version"></dd>
           <dt>PID</dt><dd id="cluster-process-pid"></dd>
-          <dt>Uptime</dt><dd id="cluster-process-uptime"></dd>
-          <dt>Listen addr</dt><dd id="cluster-process-listen"></dd>
+          <dt>运行时长</dt><dd id="cluster-process-uptime"></dd>
+          <dt>监听地址</dt><dd id="cluster-process-listen"></dd>
         </dl>
       </article>
       <article class="node-card">
-        <h3><span id="cluster-db-badge" class="badge"></span> Database</h3>
+        <h3><span id="cluster-db-badge" class="badge"></span> 数据库</h3>
         <dl>
-          <dt>State</dt><dd id="cluster-db-state"></dd>
-          <dt>Latency</dt><dd id="cluster-db-latency"></dd>
+          <dt>状态</dt><dd id="cluster-db-state"></dd>
+          <dt>延迟</dt><dd id="cluster-db-latency"></dd>
         </dl>
       </article>
       <article class="node-card">
-        <h3><span id="cluster-pipeline-badge" class="badge"></span> Pipeline</h3>
+        <h3><span id="cluster-pipeline-badge" class="badge"></span> 数据管道</h3>
         <dl>
-          <dt>Running</dt><dd id="cluster-pipeline-running"></dd>
-          <dt>Succeeded</dt><dd id="cluster-pipeline-succeeded"></dd>
-          <dt>Failed</dt><dd id="cluster-pipeline-failed"></dd>
+          <dt>运行中</dt><dd id="cluster-pipeline-running"></dd>
+          <dt>成功</dt><dd id="cluster-pipeline-succeeded"></dd>
+          <dt>失败</dt><dd id="cluster-pipeline-failed"></dd>
         </dl>
       </article>
       <article class="node-card">
-        <h3><span id="cluster-data-badge" class="badge"></span> Data plane</h3>
+        <h3><span id="cluster-data-badge" class="badge"></span> 数据平面</h3>
         <dl>
-          <dt>Cached series</dt><dd id="cluster-data-series"></dd>
-          <dt>Stale series</dt><dd id="cluster-data-stale"></dd>
-          <dt>Newest bar</dt><dd id="cluster-data-newest"></dd>
+          <dt>缓存序列</dt><dd id="cluster-data-series"></dd>
+          <dt>过期序列</dt><dd id="cluster-data-stale"></dd>
+          <dt>最新 K 线</dt><dd id="cluster-data-newest"></dd>
         </dl>
       </article>
     </div>
   </section>
   <section id="config">
-    <h2>Config</h2>
-    <p class="notice">Metadata only: config values are never shown.</p>
+    <h2>配置</h2>
+    <p class="notice">仅元数据:配置值永不展示。</p>
     <p id="config-error" class="notice error" hidden></p>
-    <p id="config-empty" class="notice" hidden>No config keys.</p>
+    <p id="config-empty" class="notice" hidden>无配置键。</p>
     <div class="table-scroll">
       <table id="config-table" hidden>
         <thead>
-          <tr><th>Key</th><th>Group</th><th>Set</th><th>Updated at</th></tr>
+          <tr><th>键</th><th>分组</th><th>已设置</th><th>更新时间</th></tr>
         </thead>
         <tbody></tbody>
       </table>
