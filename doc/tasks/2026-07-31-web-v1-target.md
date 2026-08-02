@@ -2,7 +2,7 @@
 
 - **id**: `2026-07-31-web-v1-target`
 - **created**: `2026-07-31`
-- **updated**: `2026-07-31`
+- **updated**: `2026-08-02`
 
 ## Goal
 
@@ -47,8 +47,9 @@
 ## State
 
 - **status**: `running`
-- **last step**: 2026-08-01 切片⑧⑨ 完成（Web 前端 ①-③ 合入 #45/#49/#50，/ui/ 上线）；切片⑪-a（OpenD compose）合入 #48。
+- **last step**: 2026-08-02 ⑪-b/c 完成（富途 Go 客户端+数据管道 PR #58-#61）；⑫ 策略模块（covered-call/cash-secured-put #69）、watchlist 调参（#68）、Web 全链可用（#45-#90）；⑧⑨ 完成；8-02 凌晨 20 个 PR（#71-#90：策略工作台/多 symbol 回测/导出/新鲜度监控/富途账户与期权 Web）全部合入，vdaily-20260802 已从 main 重建并部署（~/.wbot/releases/daily-20260802/，校验 OK）。
 
 ## Next
 
-- 切片 ⑪-b（富途 Go 客户端）：等老板富途账号/密码（discussions/21）+ go.mod 升级决策；⑪-c 数据管道依赖 ⑪-b 实测；⑩ Schwab/IBKR 降级挂起；本地联调巡检（operator：本地 PG + serve + /ui/ 页面验证）。
+- ⑩ Schwab/IBKR paper：降级挂起（凭证 blocked，discussions/21）；富途实盘下单 Web 化需老板确认（doc/FUTU.md 交易安全策略）。
+- 产品组下一批草稿（doc/issues/2026-08-02-* 已全部交付）：批量导出/图表报告、新鲜度告警推送（等老板通知 token）、自动补拉。
