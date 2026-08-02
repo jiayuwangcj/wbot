@@ -33,7 +33,7 @@ scripts/verify.sh   # 提交前全量校验：单测 + gofmt + race/staticcheck 
 scripts/dev-up.sh   # 本地全链冒烟：PG + serve，19 项
 ```
 
-逐端点验收：`scripts/accept-*.sh`（12 个脚本，126 项检查；零依赖对与 PG 依赖对已在 CI 自动跑），索引见 `doc/ACCEPTANCE.md`。
+逐端点验收：`scripts/accept-*.sh`（12 个脚本，135 项检查；零依赖对与 PG 依赖对已在 CI 自动跑），索引见 `doc/ACCEPTANCE.md`。
 
 ## 协作规则（v0）
 
