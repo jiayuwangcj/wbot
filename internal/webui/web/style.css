@@ -448,6 +448,26 @@ td.num-down {
   margin: 0.75rem 0;
 }
 
+/* 资产曲线 hover 读数(富途/IB 账户曲线惯例):跟随鼠标的数值标签,
+   主题变量联动,不拦截鼠标事件(pointer-events: none 防闪烁)。 */
+#summary-curve-wrap {
+  position: relative;
+}
+
+.curve-tooltip {
+  position: absolute;
+  padding: 0.3rem 0.55rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: var(--fg);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 10;
+}
+
 .metric-value.up {
   color: var(--ok);
 }

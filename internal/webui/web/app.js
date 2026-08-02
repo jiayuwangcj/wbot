@@ -232,6 +232,26 @@ function renderSummaryCurve() {
   const last = new Date(pts[pts.length - 1].captured_at);
   setText(range, fmtClock(first) + " → " + fmtClock(last) + " · " + pts.length + " 点");
   drawSparkline(canvas, pts.map((p) => p.total_assets));
+  attachCurveHover(canvas, pts);
+}
+
+/* 资产曲线 hover 读数(富途/IB 账户曲线惯例):鼠标移到曲线附近显示
+   该快照时刻与总资产;移出隐藏。x 坐标按比例映射到最近数据点。 */
+function attachCurveHover(canvas, pts) {
+  const tip = document.getElementById("summary-curve-tip");
+  if (!tip) return;
+  canvas.onmousemove = (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const idx = Math.max(0, Math.min(pts.length - 1,
+      Math.round((x / rect.width) * (pts.length - 1))));
+    const p = pts[idx];
+    tip.textContent = fmtTime(p.captured_at) + " · " + fmtAccountMoney(p.total_assets);
+    tip.hidden = false;
+    tip.style.left = Math.min(x + 10, rect.width - tip.offsetWidth - 4) + "px";
+    tip.style.top = Math.max(0, rect.height - tip.offsetHeight - 8) + "px";
+  };
+  canvas.onmouseleave = () => { tip.hidden = true; };
 }
 
 function renderAccounts() {
