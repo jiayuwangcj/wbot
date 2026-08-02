@@ -291,6 +291,18 @@ wbot futu order -symbol HK.00700 -side buy -qty 100 -env real -live-confirm -acc
 | `wbot futu order -env sim -symbol HK.00700 -side buy -qty 100 -price 1.0` | 模拟盘真实下单成功（order_id=8947461567535334561，限价 1.0 永不成交的纸面挂单，验证全链路；实盘写链路只以 dry-run 验证，真单需老板在场） |
 
 已知限制：下单前需交易解锁（TradePassword）——实盘解锁密码**不存储**（[[PRIVACY]] 红线），故实盘下单即使过护栏也会在网关侧因未解锁被拒；这是纵深防御而非缺陷。模拟盘挂单可用富途 App/未来切片撤单。
+
+### 资金快照持久化 `wbot ingest account`（2026-08-03 实测）
+
+与 `wbot futu funds` 同一 OpenD protobuf funds 查询（TCP 11111，只读，安全面相同）的**落库孪生命令**：每次运行把资金快照写入 `account_snapshots`（migration 004：env/acc_id/total_assets/cash/market_val/frozen_cash/power/captured_at，UNIQUE env+acc_id+captured_at 幂等）。Dashboard 资产曲线与 `GET /v1/account/snapshots` 读这张表；调度见 [[DATA_PIPELINE]]「账户资产快照」章（cron 示例，分钟取 7 错峰）。
+
+```bash
+wbot ingest account [-env sim|real] [-acc-id X] [-addr 127.0.0.1:11111] [-dsn] [-every 1h]
+```
+
+- `-env`/`-acc-id`/`-addr` 语义同 §9 交易命令；`-env real` 同样只读快照（无写面）；`-every` 应用内循环与外部 cron 二选一
+- 实测（2026-08-03，网关 futu-opend-rs 1.5.0）：sim 盘 acc 1907141 total_assets=1198286.82——与上表 `wbot futu funds` 实测记录一致（同一 funds 数据线，一查一存）
+- 账户快照与 `ingestion_runs` 隔离（账户数据非行情历史，[[PRIVACY]]）
 ## 10. `wbot ingest futu-option`：期权链 + 复权标准（2026-08-01 实测）
 
 期权落库：`option_quotes` 表（migration 003），缓存优先（[[DATA_STANDARD]]）：
