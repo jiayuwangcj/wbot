@@ -193,6 +193,32 @@ func TestCacheRevalidation(t *testing.T) {
 	}
 }
 
+// TestFavicon pins the browser-tab icon contract: favicon.svg is served as
+// image/svg+xml (stamped + no-cache like every other asset), and all five
+// HTML pages link it, so browsers stop hitting the API catch-all with a
+// /favicon.ico request that returns a JSON 404.
+func TestFavicon(t *testing.T) {
+	rec := serveGet(t, "/favicon.svg")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "image/svg+xml") {
+		t.Fatalf("content-type = %q; want image/svg+xml prefix", ct)
+	}
+}
+
+func TestFaviconLinkedOnAllPages(t *testing.T) {
+	for _, name := range []string{"index", "watchlist", "results", "data", "admin"} {
+		html, err := fs.ReadFile(webFiles, "web/"+name+".html")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(html), `<link rel="icon" href="/ui/favicon.svg" type="image/svg+xml">`) {
+			t.Errorf("%s.html missing favicon link tag", name)
+		}
+	}
+}
+
 func TestMissingFileIs404(t *testing.T) {
 	rec := serveGet(t, "/nope.txt")
 	if rec.Code != http.StatusNotFound {
