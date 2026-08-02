@@ -76,6 +76,25 @@ r_row="$(docker exec -i wbot-pg-ci-test psql -U postgres -d wbot_test -tA -c "SE
 node -e "process.exit(Number(process.argv[1]) > 0 ? 0 : 1)" "$r_row"
 check "real 最新快照 total_assets>0" 0 "$?"
 
+# 6. -every loop (DATA_PIPELINE 资产快照「应用内循环」模式): periodic
+# snapshots + SIGINT-graceful exit. kill -INT + wait yields the process's
+# own exit code (timeout(1) always reports 124 once its timer fires, even
+# on graceful exit). At -every 2s the loop snaps immediately then every
+# 2s — 6s of runtime adds >= 2 rows.
+e_before="$(docker exec -i wbot-pg-ci-test psql -U postgres -d wbot_test -tA -c "SELECT count(*) FROM account_snapshots WHERE env='simulate'")"
+"$bin" ingest account "${addr_args[@]}" -dsn "$dsn" -every 2s >/dev/null 2>&1 &
+lp=$!
+sleep 6
+kill -INT "$lp"
+wait "$lp"; code=$?
+check "-every 循环 SIGINT 优雅退出 → exit 0" 0 "$code"
+e_after="$(docker exec -i wbot-pg-ci-test psql -U postgres -d wbot_test -tA -c "SELECT count(*) FROM account_snapshots WHERE env='simulate'")"
+node -e "
+const b = Number(process.argv[1]), a = Number(process.argv[2]);
+process.exit(a >= b + 2 ? 0 : 1);
+" "$e_before" "$e_after"
+check "-every 2s × 6s 期间快照 +≥2(before $e_before → after $e_after)" 0 "$?"
+
 echo
 if [[ "$failed" == "0" ]]; then
   printf '  \033[32mALL %d CHECKS PASSED\033[0m\n' "$pass"
