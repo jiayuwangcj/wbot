@@ -1584,7 +1584,7 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/v1/futu/quote", httpapi.FutuQuoteHandler(fquoter))
 	top.Handle("/v1/futu/account", httpapi.FutuAccountHandler(facc))
 	top.Handle("/v1/futu/orders", httpapi.FutuOrdersHandler(forder))
-	top.Handle("/v1/futu/options", httpapi.FutuOptionsHandler(fchain))
+	top.Handle("/v1/futu/options", httpapi.FutuOptionsHandler(fchain, store))
 	// DB-backed account snapshot series (资产曲线; written by `wbot ingest account`).
 	top.Handle("/v1/account/snapshots", httpapi.AccountSnapshotsHandler(store))
 	// One-shot bar ingestion (Data 页「补数据」; same pipeline as `wbot ingest futu`).

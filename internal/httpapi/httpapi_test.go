@@ -84,6 +84,10 @@ func (f *fakeStore) AccountSnapshots(context.Context, string, int) ([]ingest.Acc
 	return []ingest.AccountSnapshotRow{}, nil
 }
 
+func (f *fakeStore) LatestOptionQuote(context.Context, string) (*ingest.OptionQuoteRow, error) {
+	return nil, nil
+}
+
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)

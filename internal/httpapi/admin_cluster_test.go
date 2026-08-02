@@ -31,6 +31,10 @@ type fakeClusterStore struct {
 
 func (f *fakeClusterStore) Ping(context.Context) error { return f.pingErr }
 
+func (f *fakeClusterStore) LatestOptionQuote(context.Context, string) (*ingest.OptionQuoteRow, error) {
+	return nil, nil
+}
+
 func (f *fakeClusterStore) RecentRuns(_ context.Context, limit int) ([]ingest.RunStatus, error) {
 	f.queryCalls++
 	f.gotLimit = limit

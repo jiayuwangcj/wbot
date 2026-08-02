@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/futu"
+	"github.com/jiayu/wbot/internal/ingest"
 )
 
 // gatewayLog captures the last /api/option-chain request body (window check).
@@ -304,5 +305,88 @@ func TestFutuOptionsLiveGateway(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "expirations") {
 		t.Fatalf("live options body missing expirations: %s", rec.Body)
+	}
+}
+
+// fakePremier serves a canned latest option quote per contract symbol.
+type fakePremier struct {
+	row       *ingest.OptionQuoteRow
+	err       error
+	gotSymbol string
+}
+
+func (f *fakePremier) LatestOptionQuote(_ context.Context, symbol string) (*ingest.OptionQuoteRow, error) {
+	f.gotSymbol = symbol
+	return f.row, f.err
+}
+
+// TestFutuOptionsPremiumClose: with a premier, each contract carries the stored
+// daily-close premium (P3a, doc/FUTU.md §10) plus its data timestamp.
+func TestFutuOptionsPremiumClose(t *testing.T) {
+	ts := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	prem := &fakePremier{row: &ingest.OptionQuoteRow{
+		Symbol: "TCH260807C335000", Close: 12.34, Ts: ts,
+	}}
+	h := FutuOptionsHandler(&fakeFutuChainer{}, prem)
+	rec := get(t, h, "/v1/futu/options?symbol=HK.00700")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var out struct {
+		Contracts []optionContractJSON `json:"contracts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(out.Contracts) == 0 {
+		t.Fatal("no contracts")
+	}
+	got := out.Contracts[0]
+	if got.PremiumClose == nil || *got.PremiumClose != 12.34 {
+		t.Fatalf("premium_close = %v; want 12.34", got.PremiumClose)
+	}
+	if got.PremiumCloseTs == nil || *got.PremiumCloseTs != "2026-08-01T00:00:00Z" {
+		t.Fatalf("premium_close_ts = %v; want 2026-08-01T00:00:00Z", got.PremiumCloseTs)
+	}
+	if !strings.Contains(prem.gotSymbol, "TCH260807") {
+		t.Fatalf("premier queried %q; want contract symbol", prem.gotSymbol)
+	}
+}
+
+// TestFutuOptionsPremiumCloseMissing: no stored quote → premium fields omitted.
+func TestFutuOptionsPremiumCloseMissing(t *testing.T) {
+	h := FutuOptionsHandler(&fakeFutuChainer{}, &fakePremier{}) // row == nil
+	rec := get(t, h, "/v1/futu/options?symbol=HK.00700")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "premium_close") {
+		t.Fatalf("body carries premium_close without stored data: %s", rec.Body)
+	}
+}
+
+// TestFutuOptionsPremiumCloseQueryError: a premier query failure must not fail
+// the chain — the premium is a decoration.
+func TestFutuOptionsPremiumCloseQueryError(t *testing.T) {
+	h := FutuOptionsHandler(&fakeFutuChainer{}, &fakePremier{err: errors.New("db down")})
+	rec := get(t, h, "/v1/futu/options?symbol=HK.00700")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "premium_close") {
+		t.Fatalf("body carries premium_close on query error: %s", rec.Body)
+	}
+}
+
+// TestFutuOptionsPremiumCloseNilPremier: pure-gateway mode (no premier) still
+// serves the chain without premium fields.
+func TestFutuOptionsPremiumCloseNilPremier(t *testing.T) {
+	h := FutuOptionsHandler(&fakeFutuChainer{})
+	rec := get(t, h, "/v1/futu/options?symbol=HK.00700")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "premium_close") {
+		t.Fatalf("body carries premium_close in pure-gateway mode: %s", rec.Body)
 	}
 }
