@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Acceptance: `wbot ingest account` snapshot (S-account-snapshot).
-# Verifies the CLI queries funds over the gateway protobuf API (sim env,
-# read-only) and appends rows to account_snapshots — the data layer of the
-# 资产曲线. Repeated runs must append exactly one row each (ON CONFLICT
-# keeps same-instant repeats at rows=0); the table lives in PG, asserted via
-# docker exec psql (same pattern as accept-bars-refill.sh).
+# Verifies the CLI queries funds over the gateway protobuf API (sim and
+# real env, both read-only) and appends rows to account_snapshots — the
+# data layer of the 资产曲线. Repeated runs must append exactly one row
+# each (ON CONFLICT keeps same-instant repeats at rows=0); the table lives
+# in PG, asserted via docker exec psql (same pattern as accept-bars-refill.sh).
 #
 # Usage: scripts/accept-account-snapshot.sh [wbot-binary] [dsn] [proto-addr]
 #   wbot-binary: path to the wbot binary (default: ~/.wbot/dev/wbot)
@@ -55,6 +55,26 @@ const [ta, cash, mv, pw] = process.argv[1].split('|').map(Number);
 process.exit(ta > 0 && cash >= 0 && mv >= 0 && pw >= 0 ? 0 : 1);
 " "$row"
 check "最新快照数值合理(total_assets>0, cash/market_val/power ≥0)" 0 "$?"
+
+# 5. Real env snapshot: same read-only funds query, real account, rows+1.
+# (Real account id is resolved by -env real; the write side is read-only —
+# same safety surface as `wbot futu funds -env real`, see FUTU.md §9.)
+r_before="$(docker exec -i wbot-pg-ci-test psql -U postgres -d wbot_test -tA -c "SELECT count(*) FROM account_snapshots WHERE env='real'")"
+out="$("$bin" ingest account -env real "${addr_args[@]}" -dsn "$dsn" 2>&1)"; code=$?
+check "ingest account -env real 真实快照 → exit 0" 0 "$code"
+case "$out" in
+  *"ingest account: snapshot acc_id="*env=real*rows=1*) check "real 快照输出 acc_id/env=real + rows=1" 0 0 ;;
+  *) check "real 快照输出 acc_id/env=real + rows=1 (got: $out)" 0 1 ;;
+esac
+r_after="$(docker exec -i wbot-pg-ci-test psql -U postgres -d wbot_test -tA -c "SELECT count(*) FROM account_snapshots WHERE env='real'")"
+node -e "
+const b = Number(process.argv[1]), a = Number(process.argv[2]);
+process.exit(a === b + 1 && a > 0 ? 0 : 1);
+" "$r_before" "$r_after"
+check "数据落库:real 快照 rows +1(before $r_before → after $r_after)" 0 "$?"
+r_row="$(docker exec -i wbot-pg-ci-test psql -U postgres -d wbot_test -tA -c "SELECT total_assets FROM account_snapshots WHERE env='real' ORDER BY captured_at DESC LIMIT 1")"
+node -e "process.exit(Number(process.argv[1]) > 0 ? 0 : 1)" "$r_row"
+check "real 最新快照 total_assets>0" 0 "$?"
 
 echo
 if [[ "$failed" == "0" ]]; then

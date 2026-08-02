@@ -35,12 +35,18 @@ check "bad env → 400 (got $code)" 400 "$code"
 code="$(curl -s -o /dev/null -w '%{http_code}' "$base/v1/account/snapshots?limit=0")"
 check "bad limit → 400 (got $code)" 400 "$code"
 
-# 3. Real env: no snapshots yet (ingest account only ever wrote simulate) → empty points.
+# 3. Real env: rows written by the CLI script (accept-account-snapshot.sh
+#    step 5) — must serve chronological points with sane values.
+body="$(curl -s -m 5 "$base/v1/account/snapshots?env=real")"
 node -e "
 const j = JSON.parse(process.argv[1]);
-process.exit(j.env === 'real' && j.points.length === 0 ? 0 : 1);
-" "$(curl -s -m 5 "$base/v1/account/snapshots?env=real")"
-check "env=real → 空 points" 0 "$?"
+if (j.env !== 'real' || !Array.isArray(j.points) || j.points.length < 1) process.exit(1);
+for (let i = 1; i < j.points.length; i++) {
+  if (j.points[i].captured_at < j.points[i-1].captured_at) process.exit(1);
+}
+process.exit(j.points[0].total_assets > 0 ? 0 : 1);
+" "$body"
+check "env=real → 有数据 + 时间递增 + total_assets>0(需先跑 accept-account-snapshot.sh)" 0 "$?"
 
 # 4. Growth: a new `ingest account` snapshot adds exactly one point.
 # (node console.log 可能给数字加 ANSI 色码,捕获后剥离再比较。)
