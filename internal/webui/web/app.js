@@ -76,9 +76,14 @@ function setText(id, text) {
 function appendRow(tbody, cells) {
   const tr = document.createElement("tr");
   for (const cell of cells) {
-    const td = document.createElement("td");
-    td.textContent = cell;
-    tr.appendChild(td);
+    /* 单元格可为字符串或预构建的 td 元素(如 side-buy 语义色列)。
+       此前对元素走 textContent 赋值会被字符串化成
+       "[object HTMLTableDataCellElement]",导致带 class 的列渲染失效。 */
+    tr.appendChild(cell instanceof Node ? cell : (() => {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      return td;
+    })());
   }
   tbody.appendChild(tr);
 }
@@ -252,6 +257,19 @@ function numCell(v, fmt) {
   return td;
 }
 
+/* 动态枚举值中文化(2026-08-02):方向 buy/sell、runs 状态值由 API 返回
+   英文,展示转中文;未知值原样透传。 */
+const SIDE_ZH = {buy: "买入", sell: "卖出"};
+const STATUS_ZH = {succeeded: "成功", failed: "失败", running: "运行中"};
+
+function sideZh(v) {
+  return SIDE_ZH[String(v).toLowerCase()] || v;
+}
+
+function statusZh(v) {
+  return STATUS_ZH[v] || v;
+}
+
 function renderOrders(snap) {
   const table = document.getElementById("orders-table");
   const empty = document.getElementById("orders-empty");
@@ -263,7 +281,7 @@ function renderOrders(snap) {
   empty.hidden = true;
   renderTable("orders-table", snap.orders.map((o) => {
     const sideTd = document.createElement("td");
-    sideTd.textContent = o.side;
+    sideTd.textContent = sideZh(o.side);
     sideTd.className = o.side.toLowerCase() === "buy" ? "side-buy" : "side-sell";
     return [o.create_time, o.symbol, sideTd, o.status, o.qty, o.price, o.fill_qty];
   }));
@@ -298,7 +316,7 @@ async function loadDashboard() {
 }
 
 function renderRuns(runs) {
-  renderTable("runs-table", runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "运行中" : r.finished_at]));
+  renderTable("runs-table", runs.map((r) => [r.id, r.source, statusZh(r.status), r.started_at, r.finished_at === null ? "运行中" : r.finished_at]));
 }
 
 /* Dashboard 自动轮询(券商面板实时性):30s 刷新账户快照;页面隐藏时暂停
@@ -1049,7 +1067,12 @@ function renderTradesTable(trades) {
   const empty = document.getElementById("trades-empty");
   const hint = document.getElementById("trades-limit-hint");
   const showAll = document.getElementById("trades-show-all");
-  const rows = trades.map((t) => [t.ts, t.action, t.symbol, t.size, t.price, t.cash_after]);
+  const rows = trades.map((t) => {
+    const actionTd = document.createElement("td");
+    actionTd.textContent = sideZh(t.action);
+    actionTd.className = String(t.action).toLowerCase() === "buy" ? "side-buy" : "side-sell";
+    return [t.ts, actionTd, t.symbol, t.size, t.price, t.cash_after];
+  });
   if (rows.length === 0) {
     table.hidden = true;
     empty.hidden = false;

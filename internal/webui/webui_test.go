@@ -1020,6 +1020,41 @@ func TestNumCellSemanticColor(t *testing.T) {
 	}
 }
 
+// TestEnumLocalizationJS: 动态枚举值中文化契约(2026-08-02):静态 HTML 文案
+// 已中文化,JS 动态渲染的方向 buy/sell 与 runs 状态仍为英文,此切片加
+// sideZh/statusZh 映射并接入三处渲染点;顺带修复 appendRow 对预构建 td
+// 元素的字符串化 bug(2a15758 引入:sideTd 元素渲染成 "[object ...]",
+// 订单方向列颜色从未生效)。
+func TestEnumLocalizationJS(t *testing.T) {
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		`const SIDE_ZH = {buy: "买入", sell: "卖出"}`,
+		`const STATUS_ZH = {succeeded: "成功", failed: "失败", running: "运行中"}`,
+		`function sideZh(v)`,
+		`function statusZh(v)`,
+		`|| v`, // 未知值原样透传,不误译
+		// 三处接入点:订单方向 / 回测 trades 方向 / runs 状态
+		"sideTd.textContent = sideZh(o.side)",
+		`actionTd.textContent = sideZh(t.action)`,
+		"statusZh(r.status)",
+		// appendRow 元素支持(修复字符串化 bug)
+		"cell instanceof Node ? cell",
+		`String(t.action).toLowerCase() === "buy" ? "side-buy" : "side-sell"`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	// 订单方向 class 判断仍在(本地化不影响语义色)
+	if !strings.Contains(s, `sideTd.className = o.side.toLowerCase() === "buy" ? "side-buy" : "side-sell"`) {
+		t.Fatal("app.js lost renderOrders side class assignment")
+	}
+}
+
 // TestBarsCoverageRemoved: bars 区块已随 Dashboard 改造迁出(老板 2026-08-02),
 // 旧覆盖度提示逻辑移除 — 查看缓存数据的功能现由独立「数据」页承担(data.html,
 // coverage-table + drill-in),Admin cluster 页仍有 freshness 覆盖表。
