@@ -437,13 +437,13 @@ function freshnessCell(b) {
     td.textContent = "无数据";
     td.classList.add("freshness-unknown");
   } else {
-    td.textContent = "fresh";
+    td.textContent = "正常";
   }
   return td;
 }
 
 function renderConfig(keys) {
-  renderTable("config-table", keys.map((c) => [c.key, c.group, c.set ? "yes" : "no", c.updated_at === null ? "not set" : c.updated_at]));
+  renderTable("config-table", keys.map((c) => [c.key, c.group, c.set ? "是" : "否", c.updated_at === null ? "未设置" : c.updated_at]));
 }
 
 function initAdminPage() {
@@ -619,7 +619,7 @@ function renderParamFields(strategy, values, fieldsetId) {
   const fields = document.getElementById(fieldsetId || "param-fields");
   fields.replaceChildren();
   const legend = document.createElement("legend");
-  legend.textContent = "Parameters";
+  legend.textContent = "参数";
   fields.appendChild(legend);
   if (!strategy) return;
   for (const p of strategy.params) {
@@ -693,12 +693,12 @@ function renderWatchlist(items, onEdit, onDelete) {
     const edit = document.createElement("button");
     edit.type = "button";
     edit.className = "link";
-    edit.textContent = "Edit";
+    edit.textContent = "编辑";
     edit.addEventListener("click", () => onEdit(item));
     const del = document.createElement("button");
     del.type = "button";
     del.className = "link danger";
-    del.textContent = "Delete";
+    del.textContent = "删除";
     del.addEventListener("click", () => onDelete(item));
     actions.appendChild(edit);
     actions.appendChild(del);
@@ -1361,10 +1361,10 @@ function runLabel(r) {
 }
 
 const COMPARE_METRICS = [
-  ["equity", "Equity", fmtMoney],
-  ["total_return", "Total return", fmtPct],
-  ["max_drawdown", "Max drawdown", fmtPct],
-  ["bars", "Bars", String]
+  ["equity", "期末权益", fmtMoney],
+  ["total_return", "总收益率", fmtPct],
+  ["max_drawdown", "最大回撤", fmtPct],
+  ["bars", "K 线数", String]
 ];
 
 function renderCompareLegend(runs, colors) {
@@ -1393,7 +1393,7 @@ function renderCompare(runs) {
   const headRow = table.tHead.rows[0];
   headRow.replaceChildren();
   const metricHead = document.createElement("th");
-  metricHead.textContent = "Metric";
+  metricHead.textContent = "指标";
   headRow.appendChild(metricHead);
   for (let i = 0; i < runs.length; i++) {
     const th = document.createElement("th");
@@ -1405,7 +1405,7 @@ function renderCompare(runs) {
   for (const [key, label, fmt] of COMPARE_METRICS) {
     appendRow(tbody, [label].concat(runs.map((r) => fmtMetric(metricOf(r, key), fmt))));
   }
-  appendRow(tbody, ["Params"].concat(runs.map((r) => JSON.stringify(r.params || {}))));
+  appendRow(tbody, ["参数"].concat(runs.map((r) => JSON.stringify(r.params || {}))));
   document.getElementById("compare-table-empty").hidden = true;
   table.hidden = false;
   document.getElementById("compare-curve-wrap").hidden = false;

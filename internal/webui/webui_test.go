@@ -924,6 +924,64 @@ func TestUICopyLocalized(t *testing.T) {
 	}
 }
 
+// TestAdminPageChinese: admin 页中文化死角收尾契约(2026-08-02):集群
+// 节点卡(进程/数据库/数据管道/数据平面)与配置节全部中文,防回退英文。
+func TestAdminPageChinese(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		"进程", "数据库", "数据管道", "数据平面",
+		"版本", "运行时长", "监听地址", "状态", "延迟",
+		"运行中", "成功", "失败",
+		"缓存序列", "过期序列", "最新 K 线",
+		"配置", "仅元数据", "无配置键",
+		"键", "分组", "已设置", "更新时间",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("admin.html missing %q", want)
+		}
+	}
+	/* 不再允许静态英文标签残留 */
+	for _, gone := range []string{">Process<", ">Version<", ">Uptime<", ">Listen addr<",
+		">Running<", ">Succeeded<", ">Failed<", ">Cached series<", ">Stale series<",
+		">Newest bar<", ">Metadata only<", ">No config keys.<", ">Updated at<"} {
+		if strings.Contains(html, gone) {
+			t.Fatalf("admin.html still has English residue %q", gone)
+		}
+	}
+}
+
+// TestJSChineseResidue: JS 动态渲染英文残留收尾契约(2026-08-02):
+// freshness 状态、config 键值、参数字段 legend、观察列表操作按钮、
+// 对比视图指标标签全部中文化。
+func TestJSChineseResidue(t *testing.T) {
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		`td.textContent = "正常"`,                       // freshnessCell
+		`c.set ? "是" : "否"`,                          // renderConfig
+		`c.updated_at === null ? "未设置" : c.updated_at`,
+		`legend.textContent = "参数"`,                    // renderParamFields
+		`edit.textContent = "编辑"`,                     // renderWatchlist
+		`del.textContent = "删除"`,
+		`"期末权益", fmtMoney`,                          // COMPARE_METRICS
+		`"总收益率", fmtPct`,
+		`"最大回撤", fmtPct`,
+		`metricHead.textContent = "指标"`,                // renderCompare
+		`appendRow(tbody, ["参数"].concat`,               // renderCompare params 行
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 // TestDashboardAccountBlock: Dashboard 的账户区块(聚合卡 + 子账户表 + 持仓表)。
 func TestDashboardAccountBlock(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/index.html")

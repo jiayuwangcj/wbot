@@ -23,16 +23,16 @@
     <h2>启动回测</h2>
     <p class="notice">选择策略与参数,回测将用已缓存行情同步执行(约数秒)。</p>
     <form id="backtest-form">
-      <label>Symbol <input type="text" id="run-symbol" name="symbol" placeholder="HK.00700 / US.AAPL"></label>
+      <label>代码 <input type="text" id="run-symbol" name="symbol" placeholder="HK.00700 / US.AAPL"></label>
       <label class="check">
         <input type="checkbox" id="run-watchlist" name="watchlist">
         使用观察列表全部标的
       </label>
-      <label>Strategy
+      <label>策略
         <select name="strategy" id="run-strategy-select" required></select>
       </label>
       <fieldset id="run-param-fields">
-        <legend>Parameters</legend>
+        <legend>参数</legend>
       </fieldset>
       <button type="submit" id="run-btn">运行回测</button>
     </form>
@@ -70,7 +70,7 @@
       <p id="curve-readout" class="notice" hidden></p>
     </div>
     <div id="detail-extra" hidden>
-      <h3>Trades</h3>
+      <h3>交易记录</h3>
       <p id="trades-empty" class="notice" hidden>未记录交易。</p>
       <div class="table-scroll">
         <table id="trades-table" hidden>
@@ -82,7 +82,7 @@
       </div>
       <p id="trades-limit-hint" class="notice" hidden></p>
       <button type="button" id="trades-show-all" class="link" hidden>显示全部</button>
-      <h3>Params</h3>
+      <h3>参数</h3>
       <pre id="detail-params"></pre>
     </div>
     <button type="button" id="detail-back" class="link">返回列表</button>
@@ -92,7 +92,7 @@
     <p id="compare-error" class="notice error" hidden></p>
     <div class="table-scroll">
       <table id="compare-table" hidden>
-        <thead><tr><th>Metric</th></tr></thead>
+        <thead><tr><th>指标</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
