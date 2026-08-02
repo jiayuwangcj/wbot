@@ -60,5 +60,6 @@
 
 ✅ **已完成并合入**：A `GET /v1/futu/account`（FutuAccounter 窄接口
 + 503/400 映射 + 集成测 skip）、B 数据页账户卡片 + 持仓表、API.md
-+ serve -h 同步均已落地。闭环记录见
-`doc/tasks/2026-08-02-futu-account-web.md`。
++ serve -h 同步均已落地。闭环记录见 PR #86（本体）、
+`doc/tasks/2026-08-03-account-curve.md`（资产曲线）、
+`doc/tasks/2026-08-03-futu-serve-proxies.md`（serve 代理注册表）。

@@ -58,4 +58,5 @@
 
 ✅ **已完成并合入**：A `GET /v1/backtests/{id}/export`（csv/json +
 下载头）、B CLI `backtest -export`、API.md/BACKTEST.md 同步均已
-落地。闭环记录见 `doc/tasks/2026-08-02-backtest-export.md`。
+落地。闭环记录见 PR #87（本体）、`doc/tasks/2026-08-02-backtest-export-ui.md`
+（Web 导出入口）。
