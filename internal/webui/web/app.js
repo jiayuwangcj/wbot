@@ -1511,7 +1511,19 @@ function initResultsPage() {
   setupBacktestRunForm();
   let resultsItems = [];
   const resultsSorter = makeTableSorter("results-table", RESULTS_SORT_KEYS);
-  const render = () => renderResultsList(resultsSorter.sortItems(resultsItems), (item) => openDetail(item.id));
+  /* 本地过滤(代码/策略包含匹配)+ 服务端全局排序组合:过滤在已加载
+     50 条上做,排序保持跨页语义。 */
+  const filterInput = document.getElementById("results-filter");
+  const emptyEl = document.getElementById("results-empty");
+  const EMPTY_DEFAULT = emptyEl.textContent;
+  const applyFilter = () => {
+    const q = filterInput.value.trim().toLowerCase();
+    const list = q === "" ? resultsItems : resultsItems.filter((it) =>
+      String(it.symbol).toLowerCase().includes(q) || String(it.strategy).toLowerCase().includes(q));
+    emptyEl.textContent = q === "" ? EMPTY_DEFAULT : "无匹配「" + q + "」的回测结果。";
+    renderResultsList(resultsSorter.sortItems(list), (item) => openDetail(item.id));
+  };
+  filterInput.addEventListener("input", applyFilter);
   /* 跨页排序:表头点击 → 服务端按全局数据重排(sort/order 参数),本地
      sortItems 仅兜底。无排序参数时保持 API 最新优先顺序。 */
   const loadSorted = () => {
@@ -1519,7 +1531,7 @@ function initResultsPage() {
     const q = st.key ? "&sort=" + st.key + "&order=" + (st.dir === 1 ? "asc" : "desc") : "";
     loadJSON("/v1/backtests?limit=50" + q, listError, (items) => {
       resultsItems = items;
-      render();
+      applyFilter();
     });
   };
   resultsSorter.render = loadSorted;
