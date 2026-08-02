@@ -210,17 +210,17 @@ jobs:
         run: go test ./internal/db/... ./internal/ingest/... ./internal/backtest/... ./internal/httpapi/... ./cmd/wbot/ -count=1 -race -p 1
 
       # Remote PG-backed acceptance: seed with local mock bars (same as
-      # dev-up), start serve, run the backtest/watchlist/option-freshness
-      # accept scripts. Seed is idempotent (ON CONFLICT upsert); backtest
-      # accept uses BTEXEC.US, watchlist accept uses its own ACCEPT.US and
-      # cleans up, option-freshness uses ACCOPT* and cleans up.
+      # dev-up), start serve, run the backtest/watchlist/freshness accept
+      # scripts. Seed is idempotent (ON CONFLICT upsert); backtest accept
+      # uses BTEXEC.US, watchlist accept uses its own ACCEPT.US and cleans
+      # up, freshness scripts use ACCOPT*/ACCCLUS* and clean up.
       # 2026-08-03: "submit-time acceptance" remote gate for PG-dependent
       # scripts (the zero-dependency pair runs in the test job instead).
-      - name: Install postgresql-client (option-freshness seeding)
+      - name: Install postgresql-client (acceptance seeding)
         if: needs.check-skip.outputs.skip != 'true'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends postgresql-client
 
-      - name: Remote PG-backed acceptance (backtest + watchlist + option-freshness)
+      - name: Remote PG-backed acceptance (backtest + watchlist + freshness)
         if: needs.check-skip.outputs.skip != 'true'
         env:
           WBOT_PG_DSN: postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable
@@ -245,6 +245,9 @@ jobs:
           # Freshness gate on seeded data: mock bars (2024-06) are stale, so
           # the default-threshold run must exit 1 and -max-age must override.
           scripts/accept-option-freshness.sh "$bin" "$WBOT_PG_DSN"
+          # Cluster options_freshness: seeds its own ACCCLUS* rows and
+          # asserts fresh/stale statuses against the running serve.
+          scripts/accept-options-cluster.sh http://127.0.0.1:8080 "$WBOT_PG_DSN"
 
   # Deterministic Markdown summary only (shell). No LLM APIs.
   ci-summary:
