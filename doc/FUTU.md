@@ -177,7 +177,16 @@ $ wbot futu quote -symbol HK.00700
 
 网关地址暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；config.yaml 的 `futu` 配置接入待后续切片。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
 
-**serve 代理**（产品组体验意见 7，2026-08-02）：`wbot serve` 提供 `GET /v1/futu/quote?symbol=HK.00700` 实时报价代理——浏览器不能直连 22222（CORS/安全），serve 代订阅+取快照并透传 s2c（复用本客户端，限频池内置）。网关地址取环境变量 `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`）；数据页 bars 表单提交同时刷新报价卡。契约见 [[API]]。
+**serve 代理**（产品组体验意见 7，2026-08-02 起）：浏览器不能直连网关（loopback，CORS/安全），`wbot serve` 代浏览器访问富途网关（复用本客户端，限频池内置）。四个只读代理：
+
+| 端点 | 行为 | 网关地址 |
+| --- | --- | --- |
+| `GET /v1/futu/quote?symbol=HK.00700` | 实时报价——代订阅+取快照并透传 s2c；数据页 bars 表单提交同时刷新报价卡 | REST `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`） |
+| `GET /v1/futu/account` | 资金+持仓只读（`env`/`acc_id` 参数，默认 `sim` 模拟盘，`real` 实盘只读查询） | proto `FUTU_PROTO_ADDR`（默认 `127.0.0.1:11111`） |
+| `GET /v1/futu/orders` | 订单列表只读（`env`/`acc_id`/`pending`，默认仅挂单） | proto `FUTU_PROTO_ADDR` |
+| `GET /v1/futu/options?symbol=HK.00700[&expiry=YYYY-MM-DD]` | 期权链代理——到期日列表 + 单到期 call/put 链（权利金 P3 排期，见下） | REST `FUTU_GATEWAY_URL` |
+
+account/orders 走 OpenD protobuf（11111，与 CLI `wbot futu funds|position` 同客户端同安全策略），quote/options 走 REST（22222）；契约见 [[API]]（quote/account/orders/options 各节）。
 
 ## 8. `wbot ingest futu`：K 线落库（⑪-c，2026-08-01 实测）
 
