@@ -20,11 +20,11 @@ const backtestsPath = "/v1/backtests"
 // BacktestStore is the backtest results surface the /v1/backtests endpoints
 // need (independent of Store: list summaries + one run's full trace).
 type BacktestStore interface {
-	// List returns up to limit summaries; q non-empty contains-matches
-	// (ILIKE) symbol OR strategy; sortKey "" keeps newest first, a
-	// whitelisted key (backtest.ValidSortKey) orders by that column
+	// List returns up to limit summaries starting at offset; q non-empty
+	// contains-matches (ILIKE) symbol OR strategy; sortKey "" keeps newest
+	// first, a whitelisted key (backtest.ValidSortKey) orders by that column
 	// (desc=true → DESC, else ASC).
-	List(ctx context.Context, symbol, strategy, q string, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error)
+	List(ctx context.Context, symbol, strategy, q string, offset, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error)
 	Get(ctx context.Context, id int64) (*backtest.ResultRecord, error)
 }
 
@@ -37,8 +37,8 @@ type backtestStore struct {
 	db *sql.DB
 }
 
-func (s backtestStore) List(ctx context.Context, symbol, strategy, q string, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error) {
-	return backtest.ListResults(ctx, s.db, symbol, strategy, q, limit, sortKey, desc)
+func (s backtestStore) List(ctx context.Context, symbol, strategy, q string, offset, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error) {
+	return backtest.ListResults(ctx, s.db, symbol, strategy, q, offset, limit, sortKey, desc)
 }
 
 func (s backtestStore) Get(ctx context.Context, id int64) (*backtest.ResultRecord, error) {
@@ -93,6 +93,15 @@ func BacktestsHandler(store BacktestStore) http.Handler {
 			}
 			limit = n
 		}
+		offset := 0
+		if s := q.Get("offset"); s != "" {
+			n, err := strconv.Atoi(s)
+			if err != nil || n < 0 {
+				writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: fmt.Sprintf("invalid offset %q; want a non-negative integer", s), Action: "check the offset value and retry"})
+				return
+			}
+			offset = n
+		}
 		// sort: whitelisted key (backtest.ValidSortKey), order ∈ {asc, desc}
 		// (default asc). No sort keeps the historical newest-first order.
 		sortKey := strings.TrimSpace(q.Get("sort"))
@@ -112,7 +121,7 @@ func BacktestsHandler(store BacktestStore) http.Handler {
 				return
 			}
 		}
-		recs, err := store.List(r.Context(), strings.TrimSpace(q.Get("symbol")), strings.TrimSpace(q.Get("strategy")), strings.TrimSpace(q.Get("q")), limit, sortKey, desc)
+		recs, err := store.List(r.Context(), strings.TrimSpace(q.Get("symbol")), strings.TrimSpace(q.Get("strategy")), strings.TrimSpace(q.Get("q")), offset, limit, sortKey, desc)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "httpapi: backtests: list: %v\n", err)
 			writeErrorBody(w, http.StatusInternalServerError, errorJSON{Code: "internal_error", Message: "internal error", Action: "check server logs and retry"})

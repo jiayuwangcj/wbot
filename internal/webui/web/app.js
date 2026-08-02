@@ -1649,15 +1649,45 @@ function initResultsPage() {
   /* 跨页排序/搜索:表头点击或搜索词 → 服务端按全库数据重排
      (sort/order/q 参数),本地 sortItems 仅兜底。无排序参数时保持
      API 最新优先顺序。 */
+  const PAGE_SIZE = 50;
+  const moreWrap = document.getElementById("results-more-wrap");
+  const moreBtn = document.getElementById("results-more");
+  const updateMoreState = () => {
+    /* 满页(50 的倍数)才可能有下一页 → 显示「加载更多」;搜索/尾页
+       不满页或空列表时隐藏。 */
+    moreWrap.hidden = resultsItems.length === 0 || resultsItems.length % PAGE_SIZE !== 0;
+  };
+  moreBtn.addEventListener("click", () => {
+    const st = resultsSorter.state;
+    const params = [];
+    if (st.key) params.push("sort=" + st.key + "&order=" + (st.dir === 1 ? "asc" : "desc"));
+    const q = filterInput.value.trim();
+    if (q) params.push("q=" + encodeURIComponent(q));
+    params.push("offset=" + resultsItems.length);
+    moreBtn.disabled = true;
+    moreBtn.textContent = "加载中…";
+    fetchJSON("/v1/backtests?limit=" + PAGE_SIZE + "&" + params.join("&"))
+      .then((items) => {
+        resultsItems = resultsItems.concat(items);
+        applyFilter();
+        updateMoreState();
+      })
+      .catch((err) => showError(listError, err))
+      .finally(() => {
+        moreBtn.disabled = false;
+        moreBtn.textContent = "加载更多";
+      });
+  });
   const loadSorted = () => {
     const st = resultsSorter.state;
     const params = [];
     if (st.key) params.push("sort=" + st.key + "&order=" + (st.dir === 1 ? "asc" : "desc"));
     const q = filterInput.value.trim();
     if (q) params.push("q=" + encodeURIComponent(q));
-    loadJSON("/v1/backtests?limit=50" + (params.length === 0 ? "" : "&" + params.join("&")), listError, (items) => {
+    loadJSON("/v1/backtests?limit=" + PAGE_SIZE + (params.length === 0 ? "" : "&" + params.join("&")), listError, (items) => {
       resultsItems = items;
       applyFilter();
+      updateMoreState();
     });
   };
   resultsSorter.render = loadSorted;

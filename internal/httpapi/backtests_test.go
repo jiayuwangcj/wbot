@@ -27,14 +27,15 @@ type fakeBacktestStore struct {
 	gotSymbol   string
 	gotStrategy string
 	gotQ        string
+	gotOffset   int
 	gotLimit    int
 	gotSortKey  string
 	gotDesc     bool
 	gotID       int64
 }
 
-func (f *fakeBacktestStore) List(_ context.Context, symbol, strategy, q string, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error) {
-	f.gotSymbol, f.gotStrategy, f.gotQ, f.gotLimit, f.gotSortKey, f.gotDesc = symbol, strategy, q, limit, sortKey, desc
+func (f *fakeBacktestStore) List(_ context.Context, symbol, strategy, q string, offset, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error) {
+	f.gotSymbol, f.gotStrategy, f.gotQ, f.gotOffset, f.gotLimit, f.gotSortKey, f.gotDesc = symbol, strategy, q, offset, limit, sortKey, desc
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -70,15 +71,15 @@ func sampleRecord(id int64) backtest.ResultRecord {
 
 func TestBacktestsList(t *testing.T) {
 	fake := &fakeBacktestStore{recs: []backtest.ResultRecord{sampleRecord(7), sampleRecord(8)}}
-	rec := get(t, BacktestsHandler(fake), "/v1/backtests?symbol=DEMO.US&strategy=buy-hold&q=DE%20M&limit=2")
+	rec := get(t, BacktestsHandler(fake), "/v1/backtests?symbol=DEMO.US&strategy=buy-hold&q=DE%20M&offset=10&limit=2")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content-type = %q; want application/json", ct)
 	}
-	if fake.gotSymbol != "DEMO.US" || fake.gotStrategy != "buy-hold" || fake.gotQ != "DE M" || fake.gotLimit != 2 {
-		t.Fatalf("filters = (%q, %q, %q, %d); want (DEMO.US, buy-hold, \"DE M\", 2)", fake.gotSymbol, fake.gotStrategy, fake.gotQ, fake.gotLimit)
+	if fake.gotSymbol != "DEMO.US" || fake.gotStrategy != "buy-hold" || fake.gotQ != "DE M" || fake.gotOffset != 10 || fake.gotLimit != 2 {
+		t.Fatalf("filters = (%q, %q, %q, offset %d, %d); want (DEMO.US, buy-hold, \"DE M\", 10, 2)", fake.gotSymbol, fake.gotStrategy, fake.gotQ, fake.gotOffset, fake.gotLimit)
 	}
 	var got []backtestSummaryJSON
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
@@ -157,6 +158,25 @@ func TestBacktestsListInvalidLimit(t *testing.T) {
 			t.Fatalf("limit=%s status = %d; want 400 (body %s)", limit, rec.Code, rec.Body)
 		}
 		assertErrorShape(t, rec, "invalid_request")
+	}
+}
+
+func TestBacktestsListInvalidOffset(t *testing.T) {
+	for _, offset := range []string{"-1", "abc", "1.5"} {
+		rec := get(t, BacktestsHandler(&fakeBacktestStore{}), "/v1/backtests?offset="+offset)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("offset=%s status = %d; want 400 (body %s)", offset, rec.Code, rec.Body)
+		}
+		assertErrorShape(t, rec, "invalid_request")
+	}
+	// offset=0 与缺省等价,走成功路径。
+	fake := &fakeBacktestStore{}
+	rec := get(t, BacktestsHandler(fake), "/v1/backtests?offset=0")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("offset=0 status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if fake.gotOffset != 0 {
+		t.Fatalf("offset=0 passthrough = %d; want 0", fake.gotOffset)
 	}
 }
 

@@ -1358,6 +1358,8 @@ func TestResultsSortingJS(t *testing.T) {
 		`data-sort="created_at"`,
 		"title=\"点击按此列排序\"",
 		`id="results-filter"`,
+		`id="results-more"`,
+		"搜索代码/策略(全库",
 	} {
 		if !strings.Contains(string(html), want) {
 			t.Fatalf("results.html missing %q", want)
@@ -1391,6 +1393,12 @@ func TestResultsSortingJS(t *testing.T) {
 		`"无匹配「" + q + "」的回测结果。"`,
 		"params.push(\"sort=\" + st.key + \"&order=\" + (st.dir === 1 ? \"asc\" : \"desc\"))",
 		"params.push(\"q=\" + encodeURIComponent(q))",
+		// 分页:满页(50 倍数)显示「加载更多」,offset=已加载条数追加
+		"const PAGE_SIZE = 50",
+		"moreWrap.hidden = resultsItems.length === 0 || resultsItems.length % PAGE_SIZE !== 0",
+		"params.push(\"offset=\" + resultsItems.length)",
+		"resultsItems = resultsItems.concat(items)",
+		"moreBtn.textContent = \"加载中…\"",
 		"openDetailId",
 		"if (openDetailId !== null) selectResultsRow(openDetailId)",
 	} {
