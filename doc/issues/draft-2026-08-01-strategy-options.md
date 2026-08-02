@@ -144,5 +144,5 @@
 ✅ **已完成并合入**：⑫-a option-chain 客户端 + `ingest futu-option`、
 ⑫-b `internal/strategy/options.go`（covered-call / cash-secured-put）、
 ⑫-c migration 003 + watchlist CRUD + `backtest -from-watchlist`、
-⑫-d HK.00700 端到端均已落地。闭环记录见
-`doc/tasks/2026-08-01-strategy-options.md`。
+⑫-d HK.00700 端到端均已落地。闭环记录见 PR #68/#69（⑫-c/⑫-b）、
+`doc/tasks/2026-08-03-options-ingest-button.md`（⑫-a ingest futu-option）。

@@ -46,4 +46,5 @@
 
 ✅ **已完成并合入**：`POST /v1/backtests` 同步执行端点 + results/
 watchlist 页一键回测按钮 + 真 PG 集成测均已落地。闭环记录见
-`doc/tasks/2026-08-02-oneclick-backtest.md`。
+PR #75（服务端端点）、`doc/tasks/2026-08-02-watchlist-backtest.md`
+（watchlist 页一键回测按钮）。

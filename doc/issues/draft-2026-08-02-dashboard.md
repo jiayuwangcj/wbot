@@ -48,5 +48,6 @@
 
 ✅ **已完成并合入**：Data 页改 Dashboard（账户聚合卡片 + 订单状态
 + Paper/实盘标识 + 视觉优化 + 30s 自动轮询 + 新鲜度打点）已落地。
-闭环记录见 `doc/tasks/2026-08-02-dashboard.md`、
+闭环记录见 PR #86（账户卡片）、`doc/tasks/2026-08-02-dashboard-autorefresh.md`
+（30s 自动轮询）、`doc/tasks/2026-08-03-account-curve.md`（资产曲线）、
 `doc/tasks/2026-08-02-devup-auto-restart.md` 等。
