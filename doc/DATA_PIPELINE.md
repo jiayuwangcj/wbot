@@ -74,7 +74,7 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 `wbot ingest freshness [-dsn] [-max-age <dur>]` 按 symbol×timeframe×adjust 列出 bars 表各组合的 `max_ts`、年龄（秒）与状态，**并附加期权区块**（按 underlying×source 聚合 option_quotes 的 `max_ts`），作为「数据停更」的观察闭环（与 `ingest status` 互补：status 看拉取任务成败，freshness 看数据是否新鲜）。
 
 - **三态**：`fresh`（max_ts 年龄 ≤ 阈值，等于阈值算 fresh）、`stale`（超过阈值）、`unknown`（无数据）。
-- **阈值**：bars 默认按 timeframe 映射——3 × 名义 bar 间隔，下限 10 分钟（`1d` → 3 天、`1m` → 10 分钟、`5m` → 15 分钟、`1w` → 21 天、`1mo` → 90 天）；无法解析的 timeframe 回退 24h。**期权默认 4h**（日内行情数据，`MaxAgeForOptions`）。`-max-age`（如 `-max-age 24h`）对 bars 与期权全局覆盖。
+- **阈值**：bars 默认按 timeframe 映射——3 × 名义 bar 间隔，下限 10 分钟（`1d` → 3 天、`1m` → 10 分钟、`5m` → 15 分钟、`1w` → 21 天、`1mo` → 90 天）；无法解析的 timeframe 回退 24h。**期权默认 4h**（日内行情数据，`MaxAgeForOptions`）。`-max-age`（如 `-max-age 24h`）对 bars 与期权全局覆盖；**负值拒绝**（`-max-age must not be negative`，exit 2，2026-08-03）。
 - **退出码**：任一 stale（bars 或期权）→ `1`；全 fresh / 无数据 unknown → `0`；参数错误 → `2`。cron 门禁示例：
 
 ```cron
