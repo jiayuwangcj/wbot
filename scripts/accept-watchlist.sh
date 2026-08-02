@@ -66,6 +66,15 @@ check "remove 输出 watchlist: removed $sym" \
 "$bin" watchlist remove -dsn "$dsn" -symbol "$sym" >/dev/null 2>&1
 check "remove 不存在 → exit 1 (got $?)" 1 "$?"
 
+# 7b. buy-hold: 无 params 策略可 add(引擎一等策略,模板注册表放行;
+#     2026-08-03 修复:此前 buy-hold PUT/add 400,dev-up 种子被 || true 静默吞掉)。
+out="$( "$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy buy-hold 2>&1 )"
+rc=$?
+check "add buy-hold(无 params)exit 0 (got $rc)" 0 "$rc"
+check "add buy-hold 输出无 params 段" \
+  1 "$(echo "$out" | grep -cE "^watchlist: $sym strategy=buy-hold params=\{\}$")"
+"$bin" watchlist remove -dsn "$dsn" -symbol "$sym" >/dev/null 2>&1
+
 # 8. 清理验证: HTTP 读面不再含该条目(grep 计数 0 = 不含)。
 check "清理后 HTTP /v1/watchlist 不含 $sym" \
   0 "$(curl -s -m 5 "$base/v1/watchlist" | grep -c "\"symbol\":\"$sym\"")"

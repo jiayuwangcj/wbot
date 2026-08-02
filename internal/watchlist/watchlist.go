@@ -49,6 +49,10 @@ func Templates() []Template {
 		{Name: "fee_per_contract", Type: "number", Default: 0.0, Description: "每合约费用"},
 	}
 	return []Template{
+		// buy-hold 是引擎一等策略(backtestexec 直接支持,无 params);
+		// watchlist 作为「回测计划列表」收录它,使 from_watchlist 回测
+		// 模式在无期权数据的环境(本地 mock)也可整表跑通。
+		{Name: "buy-hold", Description: "买入持有：不调仓", Params: nil},
 		{Name: "covered-call", Description: "备兑看涨：持有正股 + 卖出看涨", Params: cc},
 		{Name: "cash-secured-put", Description: "现金担保看跌：卖出看跌、现金担保", Params: cc},
 	}

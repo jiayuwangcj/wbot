@@ -67,6 +67,17 @@ getd="$(curl -s -m 10 "$base/v1/backtests/$pid")"
 check "POST 201 body == GET /v1/backtests/{id} 字节一致" \
   1 "$([[ "$post" == "$getd" ]] && echo 1 || echo 0)"
 
+# 4b. 回测 watchlist 模式: POST from_watchlist → 201 + runs 数组
+#     (2026-08-03 修复前 dev-up 种子 buy-hold 被 || true 吞掉,watchlist
+#     表实为空 → 此步 422 empty_watchlist;buy-hold 入模板后整表可跑)。
+wl="$(curl -s -m 60 -X POST "$base/v1/backtests" -H 'Content-Type: application/json' \
+  -d '{"from_watchlist":true}')"
+code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 -X POST "$base/v1/backtests" \
+  -H 'Content-Type: application/json' -d '{"from_watchlist":true}')"
+check "POST from_watchlist → 201 (got $code)" 201 "$code"
+check "from_watchlist runs 数组非空且每条 buy-hold" \
+  1 "$(echo "$wl" | node -e "const j=JSON.parse(require('fs').readFileSync(0)); process.exit(Array.isArray(j.runs) && j.runs.length >= 1 && j.runs.every(r => r.strategy === 'buy-hold') ? 0 : 1)" 2>/dev/null && echo 1 || echo 0)"
+
 # 5. GET /v1/backtests/{id}/export CSV: mime + 双节头行。
 csv="$(curl -s -m 10 "$base/v1/backtests/$id/export")"
 mime="$(curl -s -o /dev/null -w '%{content_type}' -m 10 "$base/v1/backtests/$id/export")"
@@ -78,7 +89,7 @@ echo "$csv" | grep -q '^equity_curve$' && echo "$csv" | grep -q '^ts,equity$' \
 check "export csv 双节(equity_curve/trades)头行" 1 "$head_ok"
 
 # 6. 等价②: CLI -export csv 与 HTTP export 字节一致(roundtrip)。
-cli_csv="$("$bin" backtest -export "$id" -format csv 2>/dev/null)"
+cli_csv="$("$bin" backtest -dsn "$dsn" -export "$id" -format csv 2>/dev/null)"
 check "CLI -export csv == GET export 字节一致" \
   1 "$([[ "$cli_csv" == "$csv" ]] && echo 1 || echo 0)"
 
@@ -88,12 +99,12 @@ check "export?format=json == GET detail 字节一致" \
   1 "$([[ "$json_http" == "$body" ]] && echo 1 || echo 0)"
 
 # 8. 等价④: CLI -export json 与 HTTP export json 字节一致。
-cli_json="$("$bin" backtest -export "$id" -format json 2>/dev/null)"
+cli_json="$("$bin" backtest -dsn "$dsn" -export "$id" -format json 2>/dev/null)"
 check "CLI -export json == GET export?format=json 字节一致" \
   1 "$([[ "$cli_json" == "$json_http" ]] && echo 1 || echo 0)"
 
 # 9. CLI -export 不存在的 id → exit 1。
-"$bin" backtest -export 99999999 >/dev/null 2>&1
+"$bin" backtest -dsn "$dsn" -export 99999999 >/dev/null 2>&1
 check "CLI -export 99999999 → exit 1 (got $?)" 1 "$?"
 
 # 10. 错误契约: 非法 id → 400;不存在 → 404。
