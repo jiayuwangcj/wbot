@@ -695,7 +695,7 @@ function collectParams(strategy, form) {
   return {params: params};
 }
 
-function renderWatchlist(items, onEdit, onDelete) {
+function renderWatchlist(items, onEdit, onDelete, onBacktest) {
   const table = document.getElementById("watchlist-table");
   const empty = document.getElementById("watchlist-empty");
   const tbody = table.tBodies[0];
@@ -718,12 +718,18 @@ function renderWatchlist(items, onEdit, onDelete) {
     edit.className = "link";
     edit.textContent = "编辑";
     edit.addEventListener("click", () => onEdit(item));
+    const run = document.createElement("button");
+    run.type = "button";
+    run.className = "link";
+    run.textContent = "回测";
+    run.addEventListener("click", () => onBacktest(item));
     const del = document.createElement("button");
     del.type = "button";
     del.className = "link danger";
     del.textContent = "删除";
     del.addEventListener("click", () => onDelete(item));
     actions.appendChild(edit);
+    actions.appendChild(run);
     actions.appendChild(del);
     tr.appendChild(actions);
     tbody.appendChild(tr);
@@ -786,9 +792,25 @@ function initWatchlistPage() {
     });
   }
 
+  /* 一键回测:POST /v1/backtests(该标的绑定的策略与参数),成功后带
+     hash 跳到 results 页打开详情(配置→回测→看结果闭环)。 */
+  function runBacktest(item) {
+    const body = {symbol: item.symbol, strategy: item.strategy};
+    if (item.params) body.params = item.params;
+    fetchJSON("/v1/backtests", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    }).then((res) => {
+      location.href = "/ui/results.html#bt-" + res.id;
+    }).catch((err) => {
+      showError(formError, err.message);
+    });
+  }
+
   function loadWatchlist() {
     loadJSON("/v1/watchlist", listError, (items) => {
-      renderWatchlist(items, beginEdit, deleteItem);
+      renderWatchlist(items, beginEdit, deleteItem, runBacktest);
     });
   }
 
@@ -1562,6 +1584,9 @@ function initResultsPage() {
       renderCurve(curveIndex);
     }
   });
+  /* 一键回测跳入(watchlist 页 #bt-<id>):直接打开该回测详情。 */
+  const bt = location.hash.match(/^#bt-(\d+)$/);
+  if (bt) openDetail(Number(bt[1]));
 }
 
 /* 策略页策略说明卡(/v1/strategies schema):名称 + 描述 + 每参数
