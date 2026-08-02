@@ -403,9 +403,14 @@ function renderConfig(keys) {
 }
 
 function initAdminPage() {
-  if (!document.getElementById("cluster-error")) return;
-  loadJSON("/v1/admin/cluster", document.getElementById("cluster-error"), renderCluster);
-  loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
+  const clusterError = document.getElementById("cluster-error");
+  if (!clusterError) return;
+  const loadAll = () => {
+    loadJSON("/v1/admin/cluster", clusterError, renderCluster);
+    loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
+  };
+  loadAll();
+  document.getElementById("admin-refresh").addEventListener("click", loadAll);
 }
 
 /* Data page: cached-bars coverage (/v1/admin/cluster) with drill-in to
@@ -665,9 +670,14 @@ function initWatchlistPage() {
   if (!form) return;
   const strategySelect = document.getElementById("strategy-select");
   const formError = document.getElementById("watchlist-form-error");
+  const formOk = document.getElementById("watchlist-form-ok");
   const listError = document.getElementById("watchlist-error");
   let strategies = [];
   let editingSymbol = null;
+
+  function hideOk() {
+    formOk.hidden = true;
+  }
 
   function strategyByName(name) {
     for (const s of strategies) {
@@ -702,6 +712,7 @@ function initWatchlistPage() {
           strategySelect.value = card.dataset.strategy;
           renderParamFields(currentStrategy());
           clearError(formError);
+          hideOk();
           document.getElementById("editor").scrollIntoView();
         });
       }
@@ -720,6 +731,7 @@ function initWatchlistPage() {
     strategySelect.value = item.strategy;
     renderParamFields(currentStrategy(), item.params);
     clearError(formError);
+    hideOk();
     document.getElementById("editor").scrollIntoView();
   }
 
@@ -731,7 +743,7 @@ function initWatchlistPage() {
   }
 
   async function deleteItem(item) {
-    if (!confirm("Remove " + item.symbol + " from the watchlist?")) return;
+    if (!confirm("从观察列表移除 " + item.symbol + "?")) return;
     try {
       await fetchJSON("/v1/watchlist/" + encodeURIComponent(item.symbol), {method: "DELETE"});
       loadWatchlist();
@@ -740,7 +752,10 @@ function initWatchlistPage() {
     }
   }
 
-  strategySelect.addEventListener("change", () => renderParamFields(currentStrategy()));
+  strategySelect.addEventListener("change", () => {
+    renderParamFields(currentStrategy());
+    hideOk();
+  });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const symbol = form.symbol.value.trim();
@@ -765,9 +780,12 @@ function initWatchlistPage() {
         body: JSON.stringify({strategy: strategy.name, params: collected.params})
       });
       clearError(formError);
+      formOk.textContent = "已保存 " + symbol + "(" + strategy.name + ")。";
+      formOk.hidden = false;
       resetForm();
       loadWatchlist();
     } catch (err) {
+      hideOk();
       showError(formError, err);
     }
   });

@@ -382,6 +382,7 @@ func TestAdminPageSections(t *testing.T) {
 	for _, want := range []string{
 		`<section id="cluster"`,
 		`<section id="config"`,
+		`id="admin-refresh"`,
 		`id="cluster-error"`,
 		`id="config-error"`,
 		`id="config-table"`,
@@ -488,6 +489,7 @@ func TestWatchlistPageElements(t *testing.T) {
 		`id="watchlist-empty"`,
 		`id="watchlist-error"`,
 		`id="watchlist-form-error"`,
+		`id="watchlist-form-ok"`,
 		`/ui/app.js`,
 	} {
 		if !strings.Contains(html, want) {
@@ -735,6 +737,29 @@ func TestAppJSTradesLimitContract(t *testing.T) {
 		`tr.classList.toggle("selected", tr.dataset.id === String(id))`,
 	} {
 		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+// TestInteractionFeedbackJS: 交互反馈补全切片(2026-08-02):watchlist 保存
+// 成功显式反馈(watchlist-form-ok,编辑/切策略/失败时隐藏) + admin 页刷新
+// 按钮重载 cluster/config。
+func TestInteractionFeedbackJS(t *testing.T) {
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`"watchlist-form-ok"`,
+		"formOk.textContent = \"已保存 \" + symbol",
+		"formOk.hidden = false",
+		"hideOk()",
+		`"admin-refresh"`,
+		"document.getElementById(\"admin-refresh\").addEventListener(\"click\", loadAll)",
+		"const loadAll = () => {",
+	} {
+		if !strings.Contains(string(js), want) {
 			t.Fatalf("app.js missing %q", want)
 		}
 	}
