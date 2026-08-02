@@ -964,17 +964,17 @@ func TestJSChineseResidue(t *testing.T) {
 	}
 	s := string(js)
 	for _, want := range []string{
-		`td.textContent = "正常"`,                       // freshnessCell
-		`c.set ? "是" : "否"`,                          // renderConfig
+		`td.textContent = "正常"`, // freshnessCell
+		`c.set ? "是" : "否"`,     // renderConfig
 		`c.updated_at === null ? "未设置" : c.updated_at`,
-		`legend.textContent = "参数"`,                    // renderParamFields
-		`edit.textContent = "编辑"`,                     // renderWatchlist
+		`legend.textContent = "参数"`, // renderParamFields
+		`edit.textContent = "编辑"`,   // renderWatchlist
 		`del.textContent = "删除"`,
-		`"期末权益", fmtMoney`,                          // COMPARE_METRICS
+		`"期末权益", fmtMoney`, // COMPARE_METRICS
 		`"总收益率", fmtPct`,
 		`"最大回撤", fmtPct`,
-		`metricHead.textContent = "指标"`,                // renderCompare
-		`appendRow(tbody, ["参数"].concat`,               // renderCompare params 行
+		`metricHead.textContent = "指标"`,  // renderCompare
+		`appendRow(tbody, ["参数"].concat`, // renderCompare params 行
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing %q", want)
