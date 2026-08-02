@@ -24,7 +24,7 @@
 - [[DATA_STANDARD]]（数据标准：复权/source/时间基准/字段规范）
 - [[FUTU]]（富途 OpenD 容器部署：凭证注入/启动/验证码/常见错误）
 - [[ACCEPTANCE]]（验收体系总表：verify.sh / dev-up 冒烟 / 12 个 accept 脚本 + 覆盖矩阵）
-- [[API]]（`wbot serve` 只读数据接口契约）
+- [[API]]（`wbot serve` HTTP 接口契约）
 - [[BACKTEST]]（v2 回测骨架：命令/指标/约束）
 - [[PLAN_V0]]
 - [[TDD_WORKFLOW]]
