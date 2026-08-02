@@ -242,8 +242,8 @@ func TestClusterFreshnessFields(t *testing.T) {
 // 2h old → fresh, 100h old → stale; old fields stay unchanged.
 func TestClusterOptionFreshnessFields(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
-	freshTs := now.Add(-2 * time.Hour)    // 4h option threshold → fresh
-	staleTs := now.Add(-100 * time.Hour)  // 4h option threshold → stale
+	freshTs := now.Add(-2 * time.Hour)   // 4h option threshold → fresh
+	staleTs := now.Add(-100 * time.Hour) // 4h option threshold → stale
 	store := &fakeClusterStore{
 		coverage: []ingest.BarCoverage{},
 		opts: []ingest.OptionFreshness{

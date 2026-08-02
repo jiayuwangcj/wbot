@@ -62,7 +62,7 @@ type runCountsJSON struct {
 // dataPlaneJSON describes bars coverage per symbol×timeframe plus option
 // freshness per underlying×source.
 type dataPlaneJSON struct {
-	BarsCoverage    []barCoverageJSON      `json:"bars_coverage"`
+	BarsCoverage     []barCoverageJSON     `json:"bars_coverage"`
 	OptionsFreshness []optionFreshnessJSON `json:"options_freshness"`
 }
 
