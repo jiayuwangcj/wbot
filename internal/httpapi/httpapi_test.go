@@ -80,6 +80,10 @@ func (f *fakeStore) Ping(context.Context) error {
 	return f.err
 }
 
+func (f *fakeStore) AccountSnapshots(context.Context, string, int) ([]ingest.AccountSnapshotRow, error) {
+	return []ingest.AccountSnapshotRow{}, nil
+}
+
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
