@@ -881,9 +881,17 @@ function initWatchlistPage() {
 
   function loadWatchlist() {
     loadJSON("/v1/watchlist", listError, (items) => {
-      renderWatchlist(items, beginEdit, deleteItem, runBacktest);
+      watchlistItems = items;
+      renderWatchlist(watchlistSorter.sortItems(items), beginEdit, deleteItem, runBacktest);
     });
   }
+
+  /* 观察列表排序(全站最后一列无排序的表):默认按更新时间降序,新更新在上。 */
+  const watchlistSorter = makeTableSorter("watchlist-table", WATCHLIST_SORT_KEYS);
+  watchlistSorter.render = () => renderWatchlist(watchlistItems, beginEdit, deleteItem, runBacktest);
+  watchlistSorter.state.key = "updated_at";
+  watchlistSorter.state.dir = -1;
+  watchlistSorter.renderIndicators();
 
   function beginEdit(item) {
     editingSymbol = item.symbol;
@@ -1286,8 +1294,16 @@ const COVERAGE_SORT_KEYS = {
   max_ts: (b) => b.max_ts,
 };
 
+/* 观察列表排序:更新时间定长字符串字典序=时间序。 */
+const WATCHLIST_SORT_KEYS = {
+  symbol: (i) => i.symbol,
+  strategy: (i) => i.strategy,
+  updated_at: (i) => i.updated_at,
+};
+
 let positionsSorter = null;
 let ordersSorter = null;
+let watchlistItems = []; /* 最近一次 /v1/watchlist 结果,排序 render 闭包引用 */
 let coverageSorter = null;
 let coverageRows = []; /* 最近一次覆盖表数据:sorter.render 本地重绘用 */
 
