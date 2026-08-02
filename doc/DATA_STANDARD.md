@@ -21,7 +21,8 @@
 
 ## 时间基准
 
-- `ts timestamptz` 一律 **UTC**：网关返回 `+08` 墙钟 + epoch 秒，落库取 epoch 对应的 UTC 瞬时（`time.Unix(...).UTC()`）
+- `ts timestamptz` 落库一律 **UTC**：网关返回 `+08` 墙钟 + epoch 秒，落库取 epoch 对应的 UTC 瞬时（`time.Unix(...).UTC()`）
+- **输出面**（2026-08-03 实测）：CLI 打印与 HTTP JSON 按进程本地时区渲染 RFC3339 偏移——本机 `+08`，如 `2026-08-03T05:14:30+08:00` = UTC `2026-08-02T21:14:30Z`（同一瞬时）。落库值不变，消费方按 RFC3339 解析即可；[[API]] 示例 `Z` 字面仅示意。
 - `expiry`/`strike_time` 为期权到期日（date，无时区）
 - 时间范围查询用 RFC3339 UTC（`-from`/`-to`）
 

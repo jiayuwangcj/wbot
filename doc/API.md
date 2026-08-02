@@ -61,9 +61,11 @@ Query 参数：
 
 ```json
 [
-  {"ts": "2024-06-01T00:00:00Z", "open": 100, "high": 101, "low": 99.5, "close": 100.5, "volume": 1000}
+  {"ts": "2024-06-01T08:00:00+08:00", "open": 100, "high": 101, "low": 99.5, "close": 100.5, "volume": 1000}
 ]
 ```
+
+> **时间字段渲染（2026-08-03 实测校正）**：全部端点（bars/runs/backtests/watchlist/snapshots）的时间字段按 serve 进程本地时区渲染 RFC3339 偏移——本机为 `+08:00`（如上例，= UTC `2024-06-01T00:00:00Z`，同一瞬时）。本文档其余示例的 `Z` 字面仅作 UTC 示意，勿按字面匹配；落库规范见 [[DATA_STANDARD]] 时间基准节。
 
 ## GET /v1/strategies
 
