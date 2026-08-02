@@ -18,7 +18,11 @@ go build -o "$bin" ./cmd/wbot
 "$bin" paper -symbol V.US -side buy >/dev/null
 "$bin" serve -h >/dev/null 2>&1
 "$bin" backtest -h >/dev/null 2>&1
+# 与 ci.yml test job 的 CLI smoke 对齐(2026-08-03 对账补齐):
+# 未注册 provider → exit 2;configyaml 渲染 dotenv。
+"$bin" ingest mock -provider nope >/dev/null 2>&1 && { echo "verify: ingest mock -provider nope should exit non-zero"; exit 1; } || true
 cp tools/config.yaml.example "$tmp/config.yaml"
 chmod 600 "$tmp/config.yaml"
 tools/config-to-env.sh "$tmp/config.yaml" >/dev/null
+"$bin" configyaml -file "$tmp/config.yaml" >/dev/null
 echo "verify: ok"
