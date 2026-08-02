@@ -81,7 +81,8 @@ func (i stampedInfo) ModTime() time.Time { return i.modTime }
 var staticHandler = http.FileServer(http.FS(stampedFS{webRoot, assetModTime}))
 
 // FileServer returns an http.Handler serving the embedded UI (index.html,
-// admin.html, style.css, app.js). Every response carries Cache-Control:
+// watchlist.html, results.html, data.html, admin.html, style.css, app.js,
+// favicon.svg). Every response carries Cache-Control:
 // no-cache plus Last-Modified (binary build time), so browsers revalidate on
 // each load instead of ever serving a stale asset after a rebuild/deploy —
 // and unchanged assets round-trip as cheap 304s.
