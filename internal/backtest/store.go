@@ -99,10 +99,41 @@ RETURNING id`, strategy, symbol, string(paramsJSON), string(metricsJSON), startT
 	return id, nil
 }
 
-// ListResults lists saved runs newest first; symbol/strategy filter when
-// non-empty (empty symbol lists all), limit <= 0 defaults to 50. The list
-// shape is the summary only (no equity_curve/trades).
-func ListResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit int) ([]ResultRecord, error) {
+// sortExprs maps whitelisted sort keys to ORDER BY expressions. Only keys
+// in this map ever reach SQL — the ORDER BY fragment is built from the
+// literal expression, never from caller input. Numeric metric keys cast the
+// JSONB text value; NULLS LAST keeps runs with a missing metric at the
+// bottom in both directions (matches the UI's -Infinity sink semantics).
+var sortExprs = map[string]string{
+	"id":           "id",
+	"strategy":     "strategy",
+	"symbol":       "symbol",
+	"created_at":   "created_at",
+	"equity":       "(metrics->>'equity')::numeric",
+	"total_return": "(metrics->>'total_return')::numeric",
+	"max_drawdown": "(metrics->>'max_drawdown')::numeric",
+	"bars":         "(metrics->>'bars')::int",
+}
+
+// ValidSortKey reports whether key is a whitelisted ListResults sort key.
+func ValidSortKey(key string) bool {
+	_, ok := sortExprs[key]
+	return ok
+}
+
+// SortKeyNames returns the whitelisted sort keys (stable order) for API
+// error messages and docs.
+func SortKeyNames() []string {
+	return []string{"id", "strategy", "symbol", "equity", "total_return", "max_drawdown", "bars", "created_at"}
+}
+
+// ListResults lists saved runs; symbol/strategy filter when non-empty
+// (empty symbol lists all), limit <= 0 defaults to 50. sortKey "" keeps the
+// historical newest-first order (id DESC); a whitelisted sortKey orders by
+// that column instead (desc=false → ASC, desc=true → DESC), metrics NULLS
+// LAST either way. The list shape is the summary only (no
+// equity_curve/trades).
+func ListResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit int, sortKey string, desc bool) ([]ResultRecord, error) {
 	if db == nil {
 		return nil, errors.New("backtest: list results: nil db")
 	}
@@ -126,7 +157,15 @@ FROM backtest_results`
 	if len(conds) > 0 {
 		query += " WHERE " + strings.Join(conds, " AND ")
 	}
-	query += fmt.Sprintf(" ORDER BY id DESC LIMIT $%d", len(args))
+	if expr, ok := sortExprs[sortKey]; ok {
+		dir := "ASC"
+		if desc {
+			dir = "DESC"
+		}
+		query += fmt.Sprintf(" ORDER BY %s %s NULLS LAST LIMIT $%d", expr, dir, len(args))
+	} else {
+		query += fmt.Sprintf(" ORDER BY id DESC LIMIT $%d", len(args))
+	}
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -165,7 +204,7 @@ func LoadResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit
 	if symbol == "" {
 		return nil, errors.New("backtest: load results: empty symbol")
 	}
-	return ListResults(ctx, db, symbol, strategy, limit)
+	return ListResults(ctx, db, symbol, strategy, limit, "", false)
 }
 
 // LoadResult reads one run by id including its equity_curve/trades trace;

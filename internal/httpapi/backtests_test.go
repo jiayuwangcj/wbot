@@ -27,11 +27,13 @@ type fakeBacktestStore struct {
 	gotSymbol   string
 	gotStrategy string
 	gotLimit    int
+	gotSortKey  string
+	gotDesc     bool
 	gotID       int64
 }
 
-func (f *fakeBacktestStore) List(_ context.Context, symbol, strategy string, limit int) ([]backtest.ResultRecord, error) {
-	f.gotSymbol, f.gotStrategy, f.gotLimit = symbol, strategy, limit
+func (f *fakeBacktestStore) List(_ context.Context, symbol, strategy string, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error) {
+	f.gotSymbol, f.gotStrategy, f.gotLimit, f.gotSortKey, f.gotDesc = symbol, strategy, limit, sortKey, desc
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -112,6 +114,38 @@ func TestBacktestsListDefaults(t *testing.T) {
 	}
 	if got := rec.Body.String(); got != "[]\n" && got != "[]" {
 		t.Fatalf("empty list body = %q; want []", got)
+	}
+}
+
+// TestBacktestsListSort: 跨页排序参数契约(2026-08-02):sort 白名单键
+// 透传到 store,order asc/desc 解析;非法 sort/order 400。
+func TestBacktestsListSort(t *testing.T) {
+	fake := &fakeBacktestStore{}
+	get(t, BacktestsHandler(fake), "/v1/backtests?sort=total_return&order=desc")
+	if fake.gotSortKey != "total_return" || !fake.gotDesc {
+		t.Fatalf("sort = (%q, %v); want (total_return, true)", fake.gotSortKey, fake.gotDesc)
+	}
+	fake = &fakeBacktestStore{}
+	get(t, BacktestsHandler(fake), "/v1/backtests?sort=created_at")
+	if fake.gotSortKey != "created_at" || fake.gotDesc {
+		t.Fatalf("sort = (%q, %v); want (created_at, asc default)", fake.gotSortKey, fake.gotDesc)
+	}
+	fake = &fakeBacktestStore{}
+	get(t, BacktestsHandler(fake), "/v1/backtests")
+	if fake.gotSortKey != "" || fake.gotDesc {
+		t.Fatalf("no-sort = (%q, %v); want newest-first passthrough", fake.gotSortKey, fake.gotDesc)
+	}
+	for _, q := range []string{"sort=weird", "sort=id'--", "sort=id&order=sideways", "sort=id&order=DESC2"} {
+		rec := get(t, BacktestsHandler(&fakeBacktestStore{}), "/v1/backtests?"+q)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("q=%s status = %d; want 400 (body %s)", q, rec.Code, rec.Body)
+		}
+		assertErrorShape(t, rec, "invalid_request")
+	}
+	for _, key := range backtest.SortKeyNames() {
+		if !backtest.ValidSortKey(key) {
+			t.Fatalf("SortKeyNames listed %q but ValidSortKey says no", key)
+		}
 	}
 }
 

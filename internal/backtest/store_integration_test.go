@@ -206,7 +206,7 @@ func TestSaveResultValidation(t *testing.T) {
 	if _, err := LoadResults(ctx, &sql.DB{}, "", "", 10); err == nil {
 		t.Fatal("LoadResults(empty symbol) = nil error; want error")
 	}
-	if _, err := ListResults(ctx, nil, "", "", 10); err == nil {
+	if _, err := ListResults(ctx, nil, "", "", 10, "", false); err == nil {
 		t.Fatal("ListResults(nil db) = nil error; want error")
 	}
 	if _, err := LoadResult(ctx, nil, 1); err == nil {

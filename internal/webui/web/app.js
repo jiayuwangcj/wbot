@@ -1066,7 +1066,7 @@ function renderResultsList(items, onOpen) {
 function makeTableSorter(tableId, getters) {
   const ths = document.querySelectorAll("#" + tableId + " th[data-sort]");
   const state = {key: null, dir: 1}; /* dir: 1 升序, -1 降序 */
-  const sorter = {sortItems: null, render: null};
+  const sorter = {state: state, sortItems: null, render: null};
   sorter.sortItems = (items) => {
     if (!state.key || !getters[state.key]) return items;
     const get = getters[state.key];
@@ -1465,11 +1465,18 @@ function initResultsPage() {
   let resultsItems = [];
   const resultsSorter = makeTableSorter("results-table", RESULTS_SORT_KEYS);
   const render = () => renderResultsList(resultsSorter.sortItems(resultsItems), (item) => openDetail(item.id));
-  resultsSorter.render = render;
-  loadJSON("/v1/backtests?limit=50", listError, (items) => {
-    resultsItems = items;
-    render();
-  });
+  /* 跨页排序:表头点击 → 服务端按全局数据重排(sort/order 参数),本地
+     sortItems 仅兜底。无排序参数时保持 API 最新优先顺序。 */
+  const loadSorted = () => {
+    const st = resultsSorter.state;
+    const q = st.key ? "&sort=" + st.key + "&order=" + (st.dir === 1 ? "asc" : "desc") : "";
+    loadJSON("/v1/backtests?limit=50" + q, listError, (items) => {
+      resultsItems = items;
+      render();
+    });
+  };
+  resultsSorter.render = loadSorted;
+  loadSorted();
   document.getElementById("detail-back").addEventListener("click", () => {
     document.getElementById("detail").hidden = true;
     document.getElementById("list").scrollIntoView();

@@ -20,7 +20,10 @@ const backtestsPath = "/v1/backtests"
 // BacktestStore is the backtest results surface the /v1/backtests endpoints
 // need (independent of Store: list summaries + one run's full trace).
 type BacktestStore interface {
-	List(ctx context.Context, symbol, strategy string, limit int) ([]backtest.ResultRecord, error)
+	// List returns up to limit summaries; sortKey "" keeps newest first,
+	// a whitelisted key (backtest.ValidSortKey) orders by that column
+	// (desc=true → DESC, else ASC).
+	List(ctx context.Context, symbol, strategy string, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error)
 	Get(ctx context.Context, id int64) (*backtest.ResultRecord, error)
 }
 
@@ -33,8 +36,8 @@ type backtestStore struct {
 	db *sql.DB
 }
 
-func (s backtestStore) List(ctx context.Context, symbol, strategy string, limit int) ([]backtest.ResultRecord, error) {
-	return backtest.ListResults(ctx, s.db, symbol, strategy, limit)
+func (s backtestStore) List(ctx context.Context, symbol, strategy string, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error) {
+	return backtest.ListResults(ctx, s.db, symbol, strategy, limit, sortKey, desc)
 }
 
 func (s backtestStore) Get(ctx context.Context, id int64) (*backtest.ResultRecord, error) {
@@ -89,7 +92,26 @@ func BacktestsHandler(store BacktestStore) http.Handler {
 			}
 			limit = n
 		}
-		recs, err := store.List(r.Context(), strings.TrimSpace(q.Get("symbol")), strings.TrimSpace(q.Get("strategy")), limit)
+		// sort: whitelisted key (backtest.ValidSortKey), order ∈ {asc, desc}
+		// (default asc). No sort keeps the historical newest-first order.
+		sortKey := strings.TrimSpace(q.Get("sort"))
+		desc := false
+		if sortKey != "" {
+			if !backtest.ValidSortKey(sortKey) {
+				writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: fmt.Sprintf("invalid sort key %q; want one of %s", sortKey, strings.Join(backtest.SortKeyNames(), ", ")), Action: "check the sort value and retry"})
+				return
+			}
+			switch o := strings.ToLower(strings.TrimSpace(q.Get("order"))); o {
+			case "", "asc":
+				desc = false
+			case "desc":
+				desc = true
+			default:
+				writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: fmt.Sprintf("invalid order %q; want asc or desc", o), Action: "check the order value and retry"})
+				return
+			}
+		}
+		recs, err := store.List(r.Context(), strings.TrimSpace(q.Get("symbol")), strings.TrimSpace(q.Get("strategy")), limit, sortKey, desc)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "httpapi: backtests: list: %v\n", err)
 			writeErrorBody(w, http.StatusInternalServerError, errorJSON{Code: "internal_error", Message: "internal error", Action: "check server logs and retry"})

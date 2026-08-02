@@ -1151,10 +1151,11 @@ func TestResultsSortingJS(t *testing.T) {
 		"const RESULTS_SORT_KEYS = {",
 		"total_return: (i) => metricOf(i, \"total_return\") ?? -Infinity",
 		"created_at: (i) => i.created_at",
-		// 接入:results 页 sorter + 排序重绘后恢复选中高亮
+		// 接入:results 页 sorter + 跨页排序重载 + 排序重绘后恢复选中高亮
 		`makeTableSorter("results-table", RESULTS_SORT_KEYS)`,
 		"resultsSorter.sortItems(resultsItems)",
-		"resultsSorter.render = render",
+		"resultsSorter.render = loadSorted",
+		`"&sort=" + st.key + "&order="`,
 		"openDetailId",
 		"if (openDetailId !== null) selectResultsRow(openDetailId)",
 	} {
