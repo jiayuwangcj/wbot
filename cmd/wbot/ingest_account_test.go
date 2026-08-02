@@ -17,6 +17,9 @@ func TestIngestAccountDispatch(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// CI sets WBOT_PG_DSN; the missing-dsn case must see it empty
+			// regardless of the environment (same guard as other ingest CLIs).
+			t.Setenv("WBOT_PG_DSN", "")
 			if got := run(tt.argv); got != tt.want {
 				t.Fatalf("run(%v) = %d; want %d", tt.argv, got, tt.want)
 			}
