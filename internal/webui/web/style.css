@@ -207,6 +207,12 @@ tbody tr:hover {
   background: var(--hover);
 }
 
+/* 回测结果列表选中行:详情视图高亮当前查看的 run,返回时一眼定位。 */
+tr.selected {
+  background: var(--hover);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
 select {
   font: inherit;
   padding: 0.35rem 0.5rem;
