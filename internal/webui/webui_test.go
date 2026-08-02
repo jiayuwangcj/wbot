@@ -526,6 +526,44 @@ func TestWatchlistBacktestJS(t *testing.T) {
 	}
 }
 
+// TestBacktestExportJS: 详情页导出按钮(CSV/JSON),浏览器直接下载服务端
+// 序列化(GET /v1/backtests/{id}/export,与 CLI -export 同一 serializer)。
+func TestBacktestExportJS(t *testing.T) {
+	jsData, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsData)
+	for _, want := range []string{
+		"function wireExport(id) {",
+		`document.getElementById("export-csv").onclick`,
+		`document.getElementById("export-json").onclick`,
+		`location.href = "/v1/backtests/" + id + "/export?format=csv"`,
+		`location.href = "/v1/backtests/" + id + "/export?format=json"`,
+		"wireExport(d.id)",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	htmlData, err := fs.ReadFile(webFiles, "web/results.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlData)
+	for _, want := range []string{
+		`id="detail-export"`,
+		`id="export-csv"`,
+		`id="export-json"`,
+		`>CSV<`,
+		`>JSON<`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("results.html missing %q", want)
+		}
+	}
+}
+
 // TestStrategyCardsSection: options chain 已删(老板 2026-08-02,不需看盘工具),
 // 策略页页首为策略说明卡(/v1/strategies schema 渲染)。
 func TestStrategyCardsSection(t *testing.T) {
