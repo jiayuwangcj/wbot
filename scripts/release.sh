@@ -5,7 +5,7 @@
 #   scripts/release.sh build [--version VER] [--dist DIR]
 #   scripts/release.sh publish [--version VER] [--dist DIR] [--notes FILE | --generate-notes]
 #   scripts/release.sh republish [--version VER] [--dist DIR] [--notes FILE]
-#   scripts/release.sh deploy [--version VER] [--dir DIR]
+#   scripts/release.sh deploy [--version VER] [--dir DIR] [--keep N]
 #
 # Environment:
 #   GH_TOKEN / GITHUB_TOKEN — for gh when publishing non-interactively.
@@ -36,7 +36,7 @@ build | publish | republish | deploy) ;;
 	echo "  publish    — build then gh release create (needs gh + auth)" >&2
 	echo "  republish  — daily builds only (vdaily-*): rebuild, delete old release/tag," >&2
 	echo "               re-tag at HEAD and recreate the release" >&2
-	echo "  deploy     — download release assets, verify SHA256SUMS, unpack wbot into ~/.wbot/releases/" >&2
+	echo "  deploy     — download release assets, verify SHA256SUMS, unpack wbot into ~/.wbot/releases/ (prunes old daily-* deployments, keeping newest 7; --keep N to override)" >&2
 	exit 2
 	;;
 esac
@@ -47,6 +47,7 @@ rel_version=""
 notes_file=""
 generate_notes="0"
 deploy_dir="${HOME}/.wbot/releases"
+keep=7
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -68,6 +69,10 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--dir)
 		deploy_dir="$2"
+		shift 2
+		;;
+	--keep)
+		keep="$2"
 		shift 2
 		;;
 	*)
@@ -262,4 +267,16 @@ if [[ "$cmd" == "deploy" ]]; then
 		rm -f "${archive[0]}"
 		echo "release: deployed wbot to $out (SHA256SUMS verified)"
 	)
+
+	# Prune old daily deployments (name daily-YYYYMMDD sorts chronologically),
+	# keeping the newest $keep; formal v* deployments are never touched.
+	if [[ "$keep" -gt 0 ]]; then
+		mapfile -t dirs < <(find "$deploy_dir" -maxdepth 1 -type d -name 'daily-*' -printf '%f\n' | sort)
+		while (( ${#dirs[@]} > keep )); do
+			old="${deploy_dir}/${dirs[0]}"
+			echo "release: prune $old (keep newest $keep daily deployments)"
+			rm -rf "$old"
+			dirs=("${dirs[@]:1}")
+		done
+	fi
 fi
