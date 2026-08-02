@@ -412,6 +412,22 @@ const AUTO_REFRESH_MS = 30000;
 let autoRefreshTimer = null;
 let autoRefreshFn = null;
 
+/* 刷新按钮忙态(券商面板惯例):点击后禁用 + 「刷新中…」,完成/失败恢复;
+   自动轮询路径不触发(按钮状态只跟手动点击)。 */
+function wrapRefreshClick(id, busyText, fn) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  const idleText = btn.textContent;
+  btn.addEventListener("click", () => {
+    btn.disabled = true;
+    btn.textContent = busyText;
+    Promise.resolve(fn()).finally(() => {
+      btn.disabled = false;
+      btn.textContent = idleText;
+    });
+  });
+}
+
 function startAutoRefresh(fn) {
   if (fn) autoRefreshFn = fn;
   if (autoRefreshTimer) return;
@@ -441,7 +457,7 @@ function initDashboardPage() {
       renderSummaryCurve();
     });
   }
-  refresh.addEventListener("click", loadDashboard);
+  wrapRefreshClick("dash-refresh", "刷新中…", loadDashboard);
   positionsSorter = makeTableSorter("positions-table", POSITIONS_SORT_KEYS);
   positionsSorter.render = renderPositions;
   positionsSorter.state.key = "market_val"; /* 默认按市值降序(券商面板惯例) */
@@ -546,13 +562,12 @@ function renderConfig(keys) {
 function initAdminPage() {
   const clusterError = document.getElementById("cluster-error");
   if (!clusterError) return;
-  const loadAll = () => {
-    loadJSON("/v1/admin/cluster", clusterError, renderCluster);
-    loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
-    stampUpdated("admin-updated");
-  };
+  const loadAll = () => Promise.all([
+    loadJSON("/v1/admin/cluster", clusterError, renderCluster),
+    loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig),
+  ]).then(() => stampUpdated("admin-updated"));
   loadAll();
-  document.getElementById("admin-refresh").addEventListener("click", loadAll);
+  wrapRefreshClick("admin-refresh", "刷新中…", loadAll);
   startAutoRefresh(loadAll); /* cluster/config 为 PG 本地查询,30s 轮询成本低 */
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") stopAutoRefresh();
@@ -868,10 +883,10 @@ function initDataPage() {
     const adjust = document.getElementById("bars-adjust").value;
     if (symbol !== "") loadBars(symbol, timeframe, adjust);
   });
-  document.getElementById("data-refresh").addEventListener("click", () => {
+  wrapRefreshClick("data-refresh", "刷新中…", () => {
     const errEl = document.getElementById("data-error");
     clearError(errEl);
-    loadDataCoverage().catch((err) => showError(errEl, err));
+    return loadDataCoverage().catch((err) => showError(errEl, err));
   });
   coverageSorter = makeTableSorter("coverage-table", COVERAGE_SORT_KEYS);
   coverageSorter.render = () => renderCoverageRows(coverageRows);
