@@ -272,40 +272,65 @@ function initDashboardPage() {
   loadJSON("/v1/runs?limit=10", document.getElementById("runs-error"), renderRuns);
 }
 
-/* Admin page: /v1/admin/status, /v1/admin/cluster, /v1/admin/config (read-only). */
+/* Admin page: /v1/admin/cluster (节点状态概览), /v1/admin/config (read-only). */
 
-function dbState(db) {
-  let state = db.ok ? "ok" : "down";
-  if (typeof db.latency_ms === "number") {
-    state += " (" + db.latency_ms + " ms)";
-  }
-  return state;
+/* setBadge paints a node status pill: ok (正常) / warn (部分异常) /
+   down (故障) / idle (空闲), used by the cluster overview cards. */
+function setBadge(id, text, cls) {
+  const el = document.getElementById(id);
+  el.textContent = text;
+  el.className = "badge " + cls;
 }
 
-function renderStatus(s) {
-  setText("status-version", s.version);
-  setText("status-pid", s.pid);
-  setText("status-started", s.started_at);
-  setText("status-uptime", s.uptime_seconds + " s");
-  setText("status-listen", s.listen_addr);
-  setText("status-db", dbState(s.db));
-  document.getElementById("status-list").hidden = false;
-}
-
+/* renderCluster paints the 4 node cards (Process / Database / Pipeline /
+   Data plane) from /v1/admin/cluster; detailed lists (recent runs, coverage)
+   live on other pages — this is the status overview (老板 2026-08-02 页4). */
 function renderCluster(c) {
   const comps = c.components;
   setText("cluster-process-version", comps.process.version);
   setText("cluster-process-pid", comps.process.pid);
-  setText("cluster-process-started", comps.process.started_at);
-  setText("cluster-process-uptime", comps.process.uptime_seconds + " s");
+  setText("cluster-process-uptime", Math.round(comps.process.uptime_seconds) + " s");
   setText("cluster-process-listen", comps.process.listen_addr);
-  setText("cluster-db-state", dbState(comps.db));
-  setText("cluster-db-latency", typeof comps.db.latency_ms === "number" ? comps.db.latency_ms + " ms" : "n/a");
-  setText("cluster-pipeline-running", comps.pipeline.counts.running);
-  setText("cluster-pipeline-succeeded", comps.pipeline.counts.succeeded);
-  setText("cluster-pipeline-failed", comps.pipeline.counts.failed);
-  renderTable("cluster-pipeline-runs-table", comps.pipeline.recent_runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "running" : r.finished_at]));
-  renderCoverageTable("cluster-coverage-table", comps.data_plane.bars_coverage);
+  setBadge("cluster-process-badge", "运行中", "ok");
+  if (comps.db.ok) {
+    setBadge("cluster-db-badge", "正常", "ok");
+    setText("cluster-db-state", "ok");
+    setText("cluster-db-latency", typeof comps.db.latency_ms === "number" ? comps.db.latency_ms + " ms" : "n/a");
+  } else {
+    setBadge("cluster-db-badge", "故障", "down");
+    setText("cluster-db-state", "down");
+    setText("cluster-db-latency", "n/a");
+  }
+  const counts = comps.pipeline.counts;
+  setText("cluster-pipeline-running", counts.running);
+  setText("cluster-pipeline-succeeded", counts.succeeded);
+  setText("cluster-pipeline-failed", counts.failed);
+  if (counts.failed > 0) {
+    setBadge("cluster-pipeline-badge", "有失败", "warn");
+  } else if (counts.running > 0) {
+    setBadge("cluster-pipeline-badge", "进行中", "ok");
+  } else if (counts.succeeded > 0) {
+    setBadge("cluster-pipeline-badge", "正常", "ok");
+  } else {
+    setBadge("cluster-pipeline-badge", "空闲", "idle");
+  }
+  const cov = comps.data_plane.bars_coverage || [];
+  const stale = cov.filter((b) => b.fresh === "stale").length;
+  const unknown = cov.filter((b) => b.fresh === "unknown").length;
+  setText("cluster-data-series", cov.length);
+  setText("cluster-data-stale", stale + (unknown > 0 ? " (+" + unknown + " 无数据)" : ""));
+  let newest = "";
+  for (const b of cov) {
+    if (b.max_ts && b.max_ts > newest) newest = b.max_ts;
+  }
+  setText("cluster-data-newest", newest === "" ? "无数据" : newest.slice(0, 16));
+  if (stale > 0) {
+    setBadge("cluster-data-badge", "部分过期", "warn");
+  } else if (cov.length === 0) {
+    setBadge("cluster-data-badge", "无数据", "idle");
+  } else {
+    setBadge("cluster-data-badge", "正常", "ok");
+  }
   document.getElementById("cluster-cards").hidden = false;
 }
 
@@ -325,38 +350,12 @@ function freshnessCell(b) {
   return td;
 }
 
-function renderCoverageTable(id, rows) {
-  const table = document.getElementById(id);
-  const empty = document.getElementById(id.replace("-table", "-empty"));
-  const tbody = table.tBodies[0];
-  tbody.replaceChildren();
-  if (rows.length === 0) {
-    table.hidden = true;
-    empty.hidden = false;
-    return;
-  }
-  for (const b of rows) {
-    const tr = document.createElement("tr");
-    for (const cell of [b.symbol, b.timeframe, b.count, b.min_ts, b.max_ts]) {
-      const td = document.createElement("td");
-      td.textContent = cell;
-      tr.appendChild(td);
-    }
-    tr.appendChild(freshnessCell(b));
-    tbody.appendChild(tr);
-  }
-  empty.hidden = true;
-  table.hidden = false;
-}
-
 function renderConfig(keys) {
   renderTable("config-table", keys.map((c) => [c.key, c.group, c.set ? "yes" : "no", c.updated_at === null ? "not set" : c.updated_at]));
 }
 
 function initAdminPage() {
-  const statusError = document.getElementById("status-error");
-  if (!statusError) return;
-  loadJSON("/v1/admin/status", statusError, renderStatus);
+  if (!document.getElementById("cluster-error")) return;
   loadJSON("/v1/admin/cluster", document.getElementById("cluster-error"), renderCluster);
   loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
 }
