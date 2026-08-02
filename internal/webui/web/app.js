@@ -233,7 +233,8 @@ function renderPositions() {
   const table = document.getElementById("positions-table");
   const tbody = table.tBodies[0];
   tbody.replaceChildren();
-  for (const p of snap.positions) {
+  const list = positionsSorter ? positionsSorter.sortItems(snap.positions) : snap.positions;
+  for (const p of list) {
     const tr = document.createElement("tr");
     for (const c of [p.symbol, p.qty, p.avg_cost, p.price, p.market_val]) {
       const td = document.createElement("td");
@@ -352,6 +353,8 @@ function initDashboardPage() {
     });
   }
   refresh.addEventListener("click", loadDashboard);
+  positionsSorter = makeTableSorter("positions-table", POSITIONS_SORT_KEYS);
+  positionsSorter.render = renderPositions;
   loadDashboard();
   loadJSON("/v1/runs?limit=10", document.getElementById("runs-error"), renderRuns);
   startAutoRefresh();
@@ -1056,8 +1059,50 @@ function renderResultsList(items, onOpen) {
   if (openDetailId !== null) selectResultsRow(openDetailId);
 }
 
-/* 回测结果表表头排序(券商回测面板惯例):点击表头按列排序,同列再点
-   切换升/降序,箭头指示当前排序;数字列按数值、字符串列按字典序。 */
+/* 通用表头排序(券商面板惯例):makeTableSorter 绑定表格表头 data-sort
+   键与取值器,点击切换升/降序, ↕/↑/↓ 指示当前排序;sortItems 供渲染
+   前调用(数字列按值、字符串列按字典序,缺失值按 -Infinity 沉底)。
+   回测结果表 / 持仓表复用。 */
+function makeTableSorter(tableId, getters) {
+  const ths = document.querySelectorAll("#" + tableId + " th[data-sort]");
+  const state = {key: null, dir: 1}; /* dir: 1 升序, -1 降序 */
+  const sorter = {sortItems: null, render: null};
+  sorter.sortItems = (items) => {
+    if (!state.key || !getters[state.key]) return items;
+    const get = getters[state.key];
+    return items.slice().sort((a, b) => {
+      const va = get(a);
+      const vb = get(b);
+      if (va === vb) return 0;
+      if (typeof va === "string") return state.dir * String(va).localeCompare(String(vb));
+      return state.dir * (va - vb);
+    });
+  };
+  const renderIndicators = () => {
+    for (const th of ths) {
+      const base = th.dataset.label || th.textContent.replace(/[↑↓↕]/g, "").trim();
+      th.dataset.label = base;
+      th.textContent = base + (th.dataset.sort === state.key
+        ? (state.dir === 1 ? " ↑" : " ↓")
+        : " ↕");
+    }
+  };
+  for (const th of ths) {
+    th.addEventListener("click", () => {
+      const key = th.dataset.sort;
+      if (state.key === key) {
+        state.dir = -state.dir;
+      } else {
+        state.key = key;
+        state.dir = 1;
+      }
+      renderIndicators();
+      if (sorter.render) sorter.render();
+    });
+  }
+  return sorter;
+}
+
 const RESULTS_SORT_KEYS = {
   id: (i) => i.id,
   strategy: (i) => i.strategy,
@@ -1069,48 +1114,18 @@ const RESULTS_SORT_KEYS = {
   created_at: (i) => i.created_at,
 };
 
-let resultsSortKey = null;
-let resultsSortDir = 1; /* 1 = 升序, -1 = 降序 */
+/* 持仓表排序:市值/盈亏按值比较(盈亏缺省按 -Infinity 沉底,富途面板
+   持仓表默认按市值排)。 */
+const POSITIONS_SORT_KEYS = {
+  symbol: (p) => p.symbol,
+  qty: (p) => p.qty,
+  avg_cost: (p) => p.avg_cost,
+  price: (p) => p.price,
+  market_val: (p) => p.market_val,
+  pl: (p) => p.pl ?? -Infinity,
+};
 
-function sortResults(items) {
-  if (!resultsSortKey || !RESULTS_SORT_KEYS[resultsSortKey]) return items;
-  const get = RESULTS_SORT_KEYS[resultsSortKey];
-  return items.slice().sort((a, b) => {
-    const va = get(a);
-    const vb = get(b);
-    if (va === vb) return 0;
-    if (typeof va === "string") return resultsSortDir * String(va).localeCompare(String(vb));
-    return resultsSortDir * (va - vb);
-  });
-}
-
-function renderSortIndicators() {
-  const ths = document.querySelectorAll("#results-table th[data-sort]");
-  for (const th of ths) {
-    const base = th.dataset.label || th.textContent.replace(/[↑↓↕]/g, "").trim();
-    th.dataset.label = base;
-    th.textContent = base + (th.dataset.sort === resultsSortKey
-      ? (resultsSortDir === 1 ? " ↑" : " ↓")
-      : " ↕");
-  }
-}
-
-function initResultsSorting(render) {
-  const ths = document.querySelectorAll("#results-table th[data-sort]");
-  for (const th of ths) {
-    th.addEventListener("click", () => {
-      const key = th.dataset.sort;
-      if (resultsSortKey === key) {
-        resultsSortDir = -resultsSortDir;
-      } else {
-        resultsSortKey = key;
-        resultsSortDir = 1;
-      }
-      renderSortIndicators();
-      render();
-    });
-  }
-}
+let positionsSorter = null;
 
 function showMetric(id, v, formatter) {
   setText(id, fmtMetric(v, formatter));
@@ -1448,12 +1463,13 @@ function initResultsPage() {
   if (!listError) return;
   setupBacktestRunForm();
   let resultsItems = [];
-  const render = () => renderResultsList(sortResults(resultsItems), (item) => openDetail(item.id));
+  const resultsSorter = makeTableSorter("results-table", RESULTS_SORT_KEYS);
+  const render = () => renderResultsList(resultsSorter.sortItems(resultsItems), (item) => openDetail(item.id));
+  resultsSorter.render = render;
   loadJSON("/v1/backtests?limit=50", listError, (items) => {
     resultsItems = items;
     render();
   });
-  initResultsSorting(render);
   document.getElementById("detail-back").addEventListener("click", () => {
     document.getElementById("detail").hidden = true;
     document.getElementById("list").scrollIntoView();

@@ -1084,19 +1084,60 @@ func TestResultsSortingJS(t *testing.T) {
 	}
 	s := string(js)
 	for _, want := range []string{
+		// 通用排序工厂(回测结果表与持仓表复用)
+		"function makeTableSorter(tableId, getters)",
+		"sorter.sortItems = (items)",
+		`(state.dir === 1 ? " ↑" : " ↓")`,
+		"if (sorter.render) sorter.render()",
+		// 回测表取值器
 		"const RESULTS_SORT_KEYS = {",
 		"total_return: (i) => metricOf(i, \"total_return\") ?? -Infinity",
 		"created_at: (i) => i.created_at",
-		"function sortResults(items)",
-		"function renderSortIndicators()",
-		"function initResultsSorting(render)",
-		"let resultsSortKey = null",
-		"resultsSortDir = -resultsSortDir",
-		`(resultsSortDir === 1 ? " ↑" : " ↓")`,
-		// 排序重绘后恢复选中高亮
+		// 接入:results 页 sorter + 排序重绘后恢复选中高亮
+		`makeTableSorter("results-table", RESULTS_SORT_KEYS)`,
+		"resultsSorter.sortItems(resultsItems)",
+		"resultsSorter.render = render",
 		"openDetailId",
 		"if (openDetailId !== null) selectResultsRow(openDetailId)",
-		"initResultsSorting(render)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+// TestPositionsSortingJS: 持仓表表头排序契约(2026-08-02):index.html
+// 表头 data-sort 键 + POSITIONS_SORT_KEYS 取值器 + renderPositions 渲染
+// 前经 sortItems(市值/盈亏按值比较,盈亏缺失沉底)。
+func TestPositionsSortingJS(t *testing.T) {
+	html, err := fs.ReadFile(webFiles, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`data-sort="symbol"`,
+		`data-sort="qty"`,
+		`data-sort="avg_cost"`,
+		`data-sort="price"`,
+		`data-sort="market_val"`,
+		`data-sort="pl"`,
+	} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		"const POSITIONS_SORT_KEYS = {",
+		"pl: (p) => p.pl ?? -Infinity",
+		"let positionsSorter = null",
+		`makeTableSorter("positions-table", POSITIONS_SORT_KEYS)`,
+		"positionsSorter.render = renderPositions",
+		"positionsSorter ? positionsSorter.sortItems(snap.positions) : snap.positions",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing %q", want)
