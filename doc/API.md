@@ -9,7 +9,8 @@
 | 路径 | 行为 |
 | --- | --- |
 | `GET /` | 301 → `/ui/`（精确根匹配 `GET /{$}`；行为变化：原为 JSON 404） |
-| `GET /ui/` | 数据页 `index.html`（bars/runs 查询骨架 + 实时报价卡 + 账户卡/持仓表；bars 查询结果显示覆盖范围，来自 `/v1/admin/cluster` 的 `bars_coverage` 或查询结果首末 ts；bars 表单提交同时刷新报价卡，复用其 symbol 输入，走 `/v1/futu/quote`；账户卡/持仓表加载时与「Refresh」按钮走 `/v1/futu/account`） |
+| `GET /ui/` | Dashboard（`index.html`，2026-08-02 起）：账户资产卡（总资产/现金/市值/购买力/可用资金，`/v1/futu/account`）+ 资产曲线（`/v1/account/snapshots`，悬停/触摸读数）+ 子账户明细/持仓/当前订单（`/v1/futu/account`、`/v1/futu/orders`）+ 最近入库（`/v1/runs`）；Paper/Live 环境切换联动 |
+| `GET /ui/data.html` | 数据页：bars 查询表单（symbol/timeframe/adjust，`/v1/bars`）+ 缓存覆盖总览（`/v1/admin/cluster` `bars_coverage`）+ 期权新鲜度表（`options_freshness`）+ 补数据/拉取期权链按钮（`POST /v1/ingest`，kind=bars/option）+ 行情明细（周期 tab 切换、涨跌幅、`/v1/bars`） |
 | `GET /ui/watchlist.html` | 关注标的页（watchlist CRUD + 策略参数表单，slice 12-c） |
 | `GET /ui/results.html` | 回测结果页：列表（可勾选 2 条对比）/ 详情 / 对比视图（指标并排 + equity 曲线叠加，S5） |
 | `GET /ui/admin.html` | 管理页（status/cluster/config 只读，slice 8-3） |
