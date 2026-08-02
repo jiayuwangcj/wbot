@@ -11,8 +11,9 @@
 | `wbot ingest url -url <url>` | 从 HTTP(S) URL 拉取同格式 JSON bars |
 | `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust fwd\|none` 默认 fwd） |
 | `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §10、[[DATA_STANDARD]]） |
+| `wbot ingest account` | 经 OpenD protobuf（只读 funds 查询）把账户资金快照写入 `account_snapshots`（资产曲线数据层；见下文 §账户资产快照、[[FUTU]] §9） |
 | `wbot ingest status` | 只读列出最近 `ingestion_runs`（`-limit` 可调） |
-| `wbot ingest freshness` | 数据新鲜度检查：各 symbol×timeframe 的 max_ts 年龄与三态状态；**任一 stale → exit 1**（可接 cron 门禁） |
+| `wbot ingest freshness` | 数据新鲜度检查：各 symbol×timeframe 的 max_ts 年龄与三态状态 + 期权区块（underlying×source）；**任一 stale → exit 1**（可接 cron 门禁） |
 
 通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-every`（间隔重复）、`-from`/`-to`（RFC3339 时间范围，零值=不限）。
 
@@ -87,6 +88,6 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 - `internal/ingest/`：`Source` 接口（mock/file/http）、`Provider` 注册表（provider.go）、`RunIngestion`、`RunEvery`/`RunEveryResilient`、`ValidateBars`、`RecentRuns`
 - `internal/db/migrations/`：`001_ingestion_runs.sql`、`002_bars.sql`、`004_account_snapshots.sql`
 - `internal/ingest/account.go`：`QueryAccountSnapshots`（资产曲线查询）
-- 任务轨迹：`doc/tasks/2026-04-18-wbot-ingest-cli.md` 起，至 `doc/tasks/2026-07-31-ingest-time-range.md` 止
+- 任务轨迹：`doc/tasks/2026-04-18-wbot-ingest-cli.md` 起；后续 ingest 闭环：`2026-07-31-ingest-time-range.md`（-from/-to）、`2026-08-02-ingest-mock-rangeflags.md`（mock 范围参数）、`2026-08-02-ingest-refill.md`（bars 补数据）、`2026-08-03-options-ingest-button.md`（期权链拉取）、`2026-08-03-futu-ingest-account-doc.md`（资金快照文档）、`2026-08-03-ci-option-freshness.md`（freshness 验收远程化）
 
 关联：[[ROADMAP]] [[README]]
