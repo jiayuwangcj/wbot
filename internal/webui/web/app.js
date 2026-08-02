@@ -1245,6 +1245,7 @@ function renderDetail(d) {
   document.getElementById("metric-cards").hidden = false;
   document.getElementById("curve-wrap").hidden = false;
   document.getElementById("detail-extra").hidden = false;
+  wireExport(d.id);
   renderTradesTable(d.trades || []);
   document.getElementById("detail-params").textContent = d.params ? JSON.stringify(d.params, null, 2) : "{}";
   curvePoints = d.equity_curve || [];
@@ -1263,6 +1264,17 @@ function showDetailError(err) {
   const detail = document.getElementById("detail");
   detail.hidden = false;
   detail.scrollIntoView();
+}
+
+/* 导出:浏览器直接下载服务端序列化(与 `wbot backtest -export` 同一
+   serializer,CSV/JSON 契约一致)。点击后 attachment 下载,页面不跳转。 */
+function wireExport(id) {
+  document.getElementById("export-csv").onclick = () => {
+    location.href = "/v1/backtests/" + id + "/export?format=csv";
+  };
+  document.getElementById("export-json").onclick = () => {
+    location.href = "/v1/backtests/" + id + "/export?format=json";
+  };
 }
 
 /* 详情视图高亮列表中当前查看的行(选中态),返回列表时一眼定位。 */
