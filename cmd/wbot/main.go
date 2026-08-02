@@ -993,13 +993,17 @@ func runIngestMock(prog string, argv []string) int {
 	source := fs.String("source", "cli-mock", "ingestion source label")
 	symbol := fs.String("symbol", "DEMO.US", "instrument symbol")
 	timeframe := fs.String("timeframe", "1d", "bar timeframe (e.g. 1d)")
+	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = unbounded")
+	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
 	provider := fs.String("provider", "mock", "ingest provider name")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest mock [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Runs a sample ingestion (mock bars) into PostgreSQL.\n")
-		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT).\n\n")
+		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT).\n")
+		fmt.Fprintf(os.Stderr, "With -from/-to, the range is validated before ingestion (the mock feed is fixed\n")
+		fmt.Fprintf(os.Stderr, "demo data and keeps all bars; empty = unbounded).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -1011,6 +1015,17 @@ func runIngestMock(prog string, argv []string) int {
 		fs.SetOutput(os.Stderr)
 		fs.Usage()
 		return 0
+	}
+
+	fromT, err := parseRangeTime("-from", strings.TrimSpace(*from))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest mock: %v\n", err)
+		return 2
+	}
+	toT, err := parseRangeTime("-to", strings.TrimSpace(*to))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest mock: %v\n", err)
+		return 2
 	}
 
 	src, err := ingest.NewProvider(ingestProviderName(*provider, "mock"), nil)
@@ -1044,7 +1059,7 @@ func runIngestMock(prog string, argv []string) int {
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
 	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
-		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), "none", "mock", time.Time{}, time.Time{}, src); err != nil {
+		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), "none", "mock", fromT, toT, src); err != nil {
 			return err
 		}
 		fmt.Fprintf(os.Stderr, "ingest mock: ok (source=%s symbol=%s timeframe=%s)\n", strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe))
