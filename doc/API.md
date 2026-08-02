@@ -18,6 +18,8 @@
 
 UI 页面不请求、不渲染任何配置值（PRIVACY 红线，见 [[PRIVACY]]）。API 路径（`/v1/*`）不受 `/ui/` 影响；其余未知路径仍为 JSON 404。
 
+**安全边界**（2026-08-03 补充）：serve 默认仅绑定 loopback（`-listen` 默认 `127.0.0.1:8080`），**无鉴权设计**——admin/config 写面、watchlist/backtests/ingest 写面与 futu 只读代理（资金/持仓）均无认证。默认形态只应被本机浏览器访问；如需远程访问须自置反向代理 + 认证（否则写面可被任意操作），且 futu 代理通道涉及账户数据（[[PRIVACY]]）。
+
 ## GET /v1/runs
 
 最近 ingestion runs（`ingestion_runs` 表）。
