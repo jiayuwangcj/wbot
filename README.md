@@ -20,7 +20,7 @@
 - 市场：港股/美股，现货 + 期权（后续实现）
 - 交易接入：富途 / IBKR 抽象层（后续实现）
 - 存储：PostgreSQL（后续可扩展）
-- 日志：`zerolog`
+- 日志：`zerolog`（当前 std log/fmt 输出；结构化日志随 v3 执行路径阶段按需收紧，见 `doc/ROADMAP.md`）
 - Web：后端 Go API，前端 React 打包后 `go:embed` 内嵌（后续实现）
 - 外部通知：Telegram / Discord（后续实现）
 
