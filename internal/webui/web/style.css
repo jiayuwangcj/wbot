@@ -333,6 +333,67 @@ td.side-sell {
   }
 }
 
+/* Admin 集群节点状态概览(老板 2026-08-02 页4):4 张节点卡 + 状态徽章,
+   不展示过细列表(recent runs / coverage 表已移入其他页)。 */
+.node-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+@media (min-width: 1024px) {
+  .node-grid {
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  }
+}
+
+.node-card {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.node-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.badge {
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.badge.ok {
+  background: #dafbe1;
+  color: #1a7f37;
+  border: 1px solid #aceebb;
+}
+
+.badge.warn {
+  background: #fff8c5;
+  color: #9a6700;
+  border: 1px solid #d4a72c;
+}
+
+.badge.down {
+  background: #ffebe9;
+  color: #cf222e;
+  border: 1px solid #ffc9c7;
+}
+
+.badge.idle {
+  background: var(--bg);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
 /* 策略页(老板 2026-08-02):策略说明卡 — 名称/描述/参数含义,点击联动表单。 */
 .strategy-cards {
   display: grid;

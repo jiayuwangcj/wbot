@@ -331,6 +331,9 @@ func TestAppJSQuoteRemovedFromUI(t *testing.T) {
 	}
 }
 
+// TestAdminPageSections: 页4 集群节点状态概览(老板 2026-08-02) — 4 张节点卡
+// (Process/Database/Pipeline/Data plane) 各带状态徽章;过细列表
+// (recent runs、coverage 表)与冗余 status 区已移除。
 func TestAdminPageSections(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/admin.html")
 	if err != nil {
@@ -338,33 +341,40 @@ func TestAdminPageSections(t *testing.T) {
 	}
 	html := string(data)
 	for _, want := range []string{
-		`<section id="status"`,
 		`<section id="cluster"`,
 		`<section id="config"`,
-		`id="status-error"`,
 		`id="cluster-error"`,
 		`id="config-error"`,
 		`id="config-table"`,
 		`id="cluster-cards"`,
-		`id="cluster-pipeline-runs-table"`,
-		`id="cluster-pipeline-runs-empty"`,
-		`id="cluster-coverage-table"`,
-		`id="cluster-coverage-empty"`,
+		`id="cluster-process-badge"`,
+		`id="cluster-db-badge"`,
+		`id="cluster-pipeline-badge"`,
+		`id="cluster-data-badge"`,
+		`id="cluster-data-series"`,
+		`id="cluster-data-stale"`,
+		`id="cluster-data-newest"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin.html missing %q", want)
 		}
 	}
+	for _, gone := range []string{`<section id="status"`, "cluster-pipeline-runs-table", "cluster-coverage-table"} {
+		if strings.Contains(html, gone) {
+			t.Fatalf("admin.html must not contain %q (过细列表已移除)", gone)
+		}
+	}
 }
 
-// TestAdminPageFreshness: the cluster data-plane table carries a Freshness
-// column, and app.js renders the stale/unknown markers (数据过期 / 无数据).
+// TestAdminPageFreshness: 页4 概览将新鲜度收进 Data plane 节点卡
+// (stale 序列计数 + 徽章);freshness 行标记逻辑仍在 app.js(freshnessCell,
+// 数据页逐行渲染用),样式保留。
 func TestAdminPageFreshness(t *testing.T) {
 	html, err := fs.ReadFile(webFiles, "web/admin.html")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"<th>Freshness</th>", `id="cluster-coverage-table"`} {
+	for _, want := range []string{`id="cluster-data-stale"`, `id="cluster-data-badge"`} {
 		if !strings.Contains(string(html), want) {
 			t.Fatalf("admin.html missing %q", want)
 		}
@@ -379,7 +389,8 @@ func TestAdminPageFreshness(t *testing.T) {
 		"freshness-unknown",
 		"数据过期",
 		"无数据",
-		"renderCoverageTable",
+		"freshnessCell",
+		"cluster-data-stale",
 	} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("app.js missing freshness logic %q", want)
@@ -389,7 +400,7 @@ func TestAdminPageFreshness(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"td.freshness-stale", "td.freshness-unknown"} {
+	for _, want := range []string{"td.freshness-stale", "td.freshness-unknown", ".badge.warn", ".badge.down"} {
 		if !strings.Contains(string(css), want) {
 			t.Fatalf("style.css missing freshness style %q", want)
 		}
@@ -565,10 +576,14 @@ func TestAppJSQueriesAdminAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	js := string(data)
-	for _, want := range []string{`"/v1/admin/status`, `"/v1/admin/cluster`, `"/v1/admin/config`} {
+	/* 页4 概览化后 status 端点不再单独拉取(节点信息并入 cluster 卡) */
+	for _, want := range []string{`"/v1/admin/cluster`, `"/v1/admin/config`} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
+	}
+	if strings.Contains(js, `"/v1/admin/status`) {
+		t.Fatal("app.js must not query /v1/admin/status (页4: 并入 cluster 概览)")
 	}
 }
 

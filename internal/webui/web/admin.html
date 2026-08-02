@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,65 +17,44 @@
     <a href="/ui/admin.html">Admin</a>
   </nav>
 </header>
-<main>
-  <section id="status">
-    <h2>Status</h2>
-    <p id="status-error" class="notice error" hidden></p>
-    <dl id="status-list" hidden>
-      <dt>Version</dt><dd id="status-version"></dd>
-      <dt>PID</dt><dd id="status-pid"></dd>
-      <dt>Started at</dt><dd id="status-started"></dd>
-      <dt>Uptime</dt><dd id="status-uptime"></dd>
-      <dt>Listen addr</dt><dd id="status-listen"></dd>
-      <dt>DB</dt><dd id="status-db"></dd>
-    </dl>
-  </section>
+<main class="full">
   <section id="cluster">
-    <h2>Cluster</h2>
+    <h2>集群节点状态</h2>
+    <p class="notice">serve 进程 / PostgreSQL / 行情管道 / 数据平面 各节点总览;详细 bars 覆盖见「数据」页。</p>
     <p id="cluster-error" class="notice error" hidden></p>
-    <div id="cluster-cards" class="cards" hidden>
-      <div class="card">
-        <h3>Process</h3>
+    <div id="cluster-cards" class="node-grid" hidden>
+      <article class="node-card">
+        <h3><span id="cluster-process-badge" class="badge"></span> Process</h3>
         <dl>
           <dt>Version</dt><dd id="cluster-process-version"></dd>
           <dt>PID</dt><dd id="cluster-process-pid"></dd>
-          <dt>Started at</dt><dd id="cluster-process-started"></dd>
           <dt>Uptime</dt><dd id="cluster-process-uptime"></dd>
           <dt>Listen addr</dt><dd id="cluster-process-listen"></dd>
         </dl>
-      </div>
-      <div class="card">
-        <h3>Database</h3>
+      </article>
+      <article class="node-card">
+        <h3><span id="cluster-db-badge" class="badge"></span> Database</h3>
         <dl>
           <dt>State</dt><dd id="cluster-db-state"></dd>
           <dt>Latency</dt><dd id="cluster-db-latency"></dd>
         </dl>
-      </div>
-      <div class="card">
-        <h3>Pipeline</h3>
-        <p class="notice">Running <span id="cluster-pipeline-running"></span> · Succeeded <span id="cluster-pipeline-succeeded"></span> · Failed <span id="cluster-pipeline-failed"></span></p>
-        <div class="table-scroll">
-          <table id="cluster-pipeline-runs-table" hidden>
-            <thead>
-              <tr><th>ID</th><th>Source</th><th>Status</th><th>Started</th><th>Finished</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <p id="cluster-pipeline-runs-empty" class="notice" hidden>No recent runs.</p>
-      </div>
-      <div class="card">
-        <h3>Data plane</h3>
-        <div class="table-scroll">
-          <table id="cluster-coverage-table" hidden>
-            <thead>
-              <tr><th>Symbol</th><th>Timeframe</th><th>Count</th><th>Min ts</th><th>Max ts</th><th>Freshness</th></tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <p id="cluster-coverage-empty" class="notice" hidden>No bars coverage.</p>
-      </div>
+      </article>
+      <article class="node-card">
+        <h3><span id="cluster-pipeline-badge" class="badge"></span> Pipeline</h3>
+        <dl>
+          <dt>Running</dt><dd id="cluster-pipeline-running"></dd>
+          <dt>Succeeded</dt><dd id="cluster-pipeline-succeeded"></dd>
+          <dt>Failed</dt><dd id="cluster-pipeline-failed"></dd>
+        </dl>
+      </article>
+      <article class="node-card">
+        <h3><span id="cluster-data-badge" class="badge"></span> Data plane</h3>
+        <dl>
+          <dt>Cached series</dt><dd id="cluster-data-series"></dd>
+          <dt>Stale series</dt><dd id="cluster-data-stale"></dd>
+          <dt>Newest bar</dt><dd id="cluster-data-newest"></dd>
+        </dl>
+      </article>
     </div>
   </section>
   <section id="config">
