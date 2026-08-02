@@ -15,4 +15,4 @@
 - PR checks 全绿
 - main 分支启用 auto-merge 规则
 
-关联：[[WORKFLOW_GITHUB_DRIVEN]] [[TDD_WORKFLOW]] [[0001-automation-baseline]] [[README]]
+关联：[[WORKFLOW_GITHUB_DRIVEN]] [[TDD_WORKFLOW]] [[proposals/0001-automation-baseline]] [[README]]

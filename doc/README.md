@@ -29,4 +29,4 @@
 - [[PLAN_V0]]
 - [[TDD_WORKFLOW]]
 - [[GITHUB_SETUP]]
-- [[0001-automation-baseline]]
+- [[proposals/0001-automation-baseline]]

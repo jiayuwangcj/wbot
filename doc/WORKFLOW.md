@@ -57,4 +57,4 @@
 - **路线图**：[[ROADMAP]] 与仓库内 roadmap issue
 - **协作入口帖**：[[pinned_discussion]]
 
-关联：[[README]] [[PLAN_V0]] [[0001-automation-baseline]]
+关联：[[README]] [[PLAN_V0]] [[proposals/0001-automation-baseline]]
