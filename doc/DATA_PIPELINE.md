@@ -56,6 +56,18 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 
 > 注：示例中的 `$(...)` 由 cron 的 shell 求值；更稳的写法是包一层脚本（参考 `scripts/verify.sh` 的脚本化风格）。`-every` 与外部 cron 二选一即可，不要叠加。
 
+## 账户资产快照（资产曲线）
+
+`wbot ingest account [-env sim|real] [-acc-id <id>] [-addr <proto>] [-dsn] [-every <interval>]` 经 OpenD protobuf（TCP 11111，只读 funds 查询）把账户资金快照写入 `account_snapshots` 表（env/acc_id/total_assets/cash/market_val/frozen_cash/power/captured_at;UNIQUE env+acc_id+captured_at,幂等）。Dashboard 资产曲线与 `GET /v1/account/snapshots` 读这张表。**与 ingestion_runs 隔离**——账户数据非行情历史,两条线不混（[[PRIVACY]]）。
+
+外部 cron 示例（每小时整点快照一次）：
+
+```cron
+7 * * * * wbot ingest account >>"$HOME/.cache/wbot-account.log" 2>&1
+```
+
+> 或 `wbot ingest account -every 1h`（应用内循环,二选一）。分钟取 `7` 避开整点洪峰,与行情拉取任务错开。
+
 ## 数据新鲜度（freshness）
 
 `wbot ingest freshness [-dsn] [-max-age <dur>]` 按 symbol×timeframe×adjust 列出 bars 表各组合的 `max_ts`、年龄（秒）与状态，**并附加期权区块**（按 underlying×source 聚合 option_quotes 的 `max_ts`），作为「数据停更」的观察闭环（与 `ingest status` 互补：status 看拉取任务成败，freshness 看数据是否新鲜）。
@@ -73,7 +85,8 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 ## 相关实现
 
 - `internal/ingest/`：`Source` 接口（mock/file/http）、`Provider` 注册表（provider.go）、`RunIngestion`、`RunEvery`/`RunEveryResilient`、`ValidateBars`、`RecentRuns`
-- `internal/db/migrations/`：`001_ingestion_runs.sql`、`002_bars.sql`
+- `internal/db/migrations/`：`001_ingestion_runs.sql`、`002_bars.sql`、`004_account_snapshots.sql`
+- `internal/ingest/account.go`：`QueryAccountSnapshots`（资产曲线查询）
 - 任务轨迹：`doc/tasks/2026-04-18-wbot-ingest-cli.md` 起，至 `doc/tasks/2026-07-31-ingest-time-range.md` 止
 
 关联：[[ROADMAP]] [[README]]
