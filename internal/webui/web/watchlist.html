@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wbot · Watchlist</title>
+<title>wbot · 策略</title>
 <link rel="stylesheet" href="/ui/style.css">
 </head>
 <body>
@@ -18,8 +18,14 @@
   </nav>
 </header>
 <main>
+  <section id="strategies">
+    <h2>策略说明</h2>
+    <p class="notice">点击策略卡,可在下方表单中选中该策略并添加观察标的。</p>
+    <p id="strategies-error" class="notice error" hidden></p>
+    <div id="strategy-cards" class="strategy-cards"></div>
+  </section>
   <section id="editor">
-    <h2>Add or edit symbol</h2>
+    <h2>编辑观察标的</h2>
     <form id="watchlist-form">
       <label>Symbol <input type="text" name="symbol" placeholder="HK.00700" required></label>
       <label>Strategy
@@ -33,34 +39,13 @@
     <p id="watchlist-form-error" class="notice error" hidden></p>
   </section>
   <section id="list">
-    <h2>Watchlist</h2>
+    <h2>观察列表</h2>
     <p id="watchlist-error" class="notice error" hidden></p>
     <p id="watchlist-empty" class="notice" hidden>No symbols on the watchlist.</p>
     <div class="table-scroll">
       <table id="watchlist-table" hidden>
         <thead>
           <tr><th>Symbol</th><th>Strategy</th><th>Params</th><th>Updated at</th><th></th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </div>
-  </section>
-  <section id="options">
-    <h2>Options chain</h2>
-    <p class="notice">Expiry list and call/put chain for one expiry (Futu gateway, /v1/futu/options).</p>
-    <form id="options-form">
-      <label>Underlying <input type="text" name="options-symbol" placeholder="HK.00700" required></label>
-      <label>Expiry
-        <select id="options-expiry" hidden></select>
-      </label>
-      <button type="submit">Load chain</button>
-    </form>
-    <p id="options-error" class="notice error" hidden></p>
-    <p id="options-empty" class="notice" hidden>No contracts for this expiry.</p>
-    <div class="table-scroll">
-      <table id="options-table" hidden>
-        <thead>
-          <tr><th>Strike</th><th>Call</th><th>Put</th><th>Lot size</th></tr>
         </thead>
         <tbody></tbody>
       </table>

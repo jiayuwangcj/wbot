@@ -39,7 +39,7 @@ func TestServesWatchlistPage(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("content-type = %q; want text/html", ct)
 	}
-	if !strings.Contains(rec.Body.String(), "<title>wbot · Watchlist</title>") {
+	if !strings.Contains(rec.Body.String(), "<title>wbot · 策略</title>") {
 		t.Fatalf("watchlist missing title: %s", rec.Body)
 	}
 }
@@ -446,45 +446,63 @@ func TestWatchlistPageElements(t *testing.T) {
 	}
 }
 
-func TestOptionsChainSectionElements(t *testing.T) {
+// TestStrategyCardsSection: options chain 已删(老板 2026-08-02,不需看盘工具),
+// 策略页页首为策略说明卡(/v1/strategies schema 渲染)。
+func TestStrategyCardsSection(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/watchlist.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(data)
 	for _, want := range []string{
-		`<section id="options"`,
-		`<form id="options-form"`,
-		`name="options-symbol"`,
-		`id="options-expiry"`,
-		`id="options-table"`,
-		`id="options-empty"`,
-		`id="options-error"`,
+		`<section id="strategies"`,
+		`id="strategy-cards"`,
+		`id="strategies-error"`,
+		`class="strategy-cards"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("watchlist.html missing %q", want)
 		}
 	}
+	for _, gone := range []string{`id="options"`, `id="options-form"`, `id="options-table"`, `id="options-expiry"`} {
+		if strings.Contains(html, gone) {
+			t.Fatalf("watchlist.html still contains removed %q (options chain 已删)", gone)
+		}
+	}
 }
 
-func TestAppJSQueriesOptionsAPI(t *testing.T) {
+// TestAppJSOptionsRemoved: UI 不再调用 /v1/futu/options(端点仍在 API 层)。
+func TestAppJSOptionsRemoved(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, gone := range []string{`"/v1/futu/options`, "initOptionsChainPage", "renderOptionChain", "renderOptionExpirySelect"} {
+		if strings.Contains(js, gone) {
+			t.Fatalf("app.js still has options-chain logic %q (已删)", gone)
+		}
+	}
+}
+
+// TestAppJSStrategyCards: 策略卡渲染 + 点击联动编辑表单。
+func TestAppJSStrategyCards(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := string(data)
 	for _, want := range []string{
-		`"/v1/futu/options`,
-		"initOptionsChainPage",
-		"renderOptionChain",
-		"renderOptionExpirySelect",
-		"options-expiry",
-		"data.expirations",
-		"data.contracts",
-		"option_type",
+		"renderStrategyCards",
+		`s.params`,
+		"strategy-card",
+		"dataset.strategy",
+		"strategySelect.value = card.dataset.strategy",
+		"p.default",
+		"p.description",
 	} {
 		if !strings.Contains(js, want) {
-			t.Fatalf("app.js missing %q", want)
+			t.Fatalf("app.js missing strategy-card logic %q", want)
 		}
 	}
 }
@@ -513,6 +531,7 @@ func TestAppJSQueriesWatchlistAPI(t *testing.T) {
 		`method: "PUT"`,
 		`method: "DELETE"`,
 		"initWatchlistPage",
+		"renderStrategyCards",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
