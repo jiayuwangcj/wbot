@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | 单测 + 静态 | `scripts/verify.sh`（= CI `test` job） | 全部 Go 包单测、gofmt、契约测试 + 零依赖 accept（paper/agent-federation） | 每次提交前；CI 自动 |
 | 本地全链冒烟 | `scripts/dev-up.sh`（19 项） | `wbot serve` 全部 DB 本地 HTTP 端点（health/runs/bars/account/snapshots/admin·status/config/watchlist 等）+ CLI ingest file/url/status/bars 三维补漏 | 每次 dev 环境启动 |
-| 逐端点 e2e | `scripts/accept-*.sh`（12 个，126 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
+| 逐端点 e2e | `scripts/accept-*.sh`（12 个，135 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
 
 **原则**：dev-up 只冒烟不逐端点验收；accept 脚本只覆盖不冒烟的部分（如 futu 系依赖网关，刻意不入 dev-up，由 accept 覆盖）。CLI 面按「verify.sh 有无冒烟 + dev-up 有无覆盖 + accept 有无脚本」三维对账（#47/#49/#50 经验）。
 
@@ -20,8 +20,8 @@
 | `accept-bars-refill.sh` | `wbot ingest` bars 补数据端到端（201 + 幂等落库） | 4 | serve + PG。`scripts/accept-bars-refill.sh [base-url]` |
 | `accept-options-ingest.sh` | 期权链拉取端到端（错误契约 + 真实 201 + 幂等） | 4 | serve + PG。`scripts/accept-options-ingest.sh [base-url]` |
 | `accept-options-cluster.sh` | cluster 端点 options_freshness 字段 | 2 | serve + PG。`scripts/accept-options-cluster.sh [base-url] [dsn]` | ✅ db-integration |
-| `accept-account-snapshot.sh` | `wbot ingest account` 快照落库（sim/real 双 env + `-every` 循环优雅退出） | 10 | 网关 OpenD + PG。`scripts/accept-account-snapshot.sh [bin] [dsn] [proto-addr]` |
-| `accept-account-snapshots-api.sh` | GET /v1/account/snapshots（契约/400/real 通道/快照增长） | 4 | serve + PG + 网关。`scripts/accept-account-snapshots-api.sh [base-url] [bin] [dsn] [proto-addr]` |
+| `accept-account-snapshot.sh` | `wbot ingest account` 快照落库（sim/real 双 env + `-every` 循环优雅退出） | 15 | 网关 OpenD + PG。`scripts/accept-account-snapshot.sh [bin] [dsn] [proto-addr]` |
+| `accept-account-snapshots-api.sh` | GET /v1/account/snapshots（契约/400/real 通道/快照增长） | 7 | serve + PG + 网关。`scripts/accept-account-snapshots-api.sh [base-url] [bin] [dsn] [proto-addr]` |
 | `accept-backtest.sh` | backtest 双面（CLI -dsn/-save/-export + GET detail/export；四条字节一致等价 + from_watchlist） | 21 | serve + PG + 种子 bars。`scripts/accept-backtest.sh [base-url] [bin] [dsn] [symbol]` | ✅ db-integration |
 | `accept-watchlist.sh` | `wbot watchlist` CLI（add/remove/list + buy-hold + 写面→读面联动） | 16 | serve + PG。`scripts/accept-watchlist.sh [bin] [dsn] [base-url]` | ✅ db-integration |
 | `accept-futu-data.sh` | futu 数据面 HTTP（quote/orders/account） | 15 | serve + 网关可达。`scripts/accept-futu-data.sh [base-url]` |
