@@ -74,9 +74,10 @@ func (a *futuAccounter) Account(ctx context.Context, env futu.Env, accID uint64)
 	if err != nil && a.tc != nil && isConnError(err) {
 		// The gateway drops proto connections between requests (observed live
 		// 2026-08-02 with opend-rs: "accounts: get acc list failed: connection
-		// closed" on every call after the first until restart). Drop the stale
-		// client, reconnect, and retry once — these queries are read-only.
-		_ = a.tc.Close()
+		// closed" on every call after the first until restart). Abandon the
+		// stale client and retry once — these queries are read-only. Do NOT
+		// Close() it first: gofutuapi's reader goroutine may be inside
+		// tryReconnect/connect() replacing the same net.Conn (not race-safe).
 		a.tc = nil
 		snap, err = a.account(ctx, env, accID)
 	}
