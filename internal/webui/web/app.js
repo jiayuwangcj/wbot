@@ -88,6 +88,25 @@ function appendRow(tbody, cells) {
   tbody.appendChild(tr);
 }
 
+/* 数字列右对齐镜像(2026-08-03): th 声明 class="num" 的列,
+   渲染后给同列 td 加 num(右对齐 + tabular-nums 等宽)。调用点:
+   各手写渲染函数尾部(renderTable 内部自动调用)。 */
+function mirrorNumericColumns(table) {
+  if (!table || !table.tHead) return;
+  const cols = [];
+  const ths = table.tHead.rows[0].cells;
+  for (let i = 0; i < ths.length; i++) {
+    if (ths[i].classList.contains("num")) cols.push(i);
+  }
+  if (cols.length === 0) return;
+  for (const tr of table.tBodies[0].rows) {
+    for (const i of cols) {
+      const td = tr.cells[i];
+      if (td) td.classList.add("num");
+    }
+  }
+}
+
 function renderTable(id, rows) {
   const table = document.getElementById(id);
   const empty = document.getElementById(id.replace("-table", "-empty"));
@@ -103,6 +122,7 @@ function renderTable(id, rows) {
   }
   empty.hidden = true;
   table.hidden = false;
+  mirrorNumericColumns(table);
 }
 
 async function loadJSON(url, errorEl, render) {
@@ -297,6 +317,7 @@ function renderAccounts() {
     tbody.appendChild(tr);
   }
   table.hidden = false;
+  mirrorNumericColumns(table);
 }
 
 function renderPositions() {
@@ -328,6 +349,7 @@ function renderPositions() {
     tbody.appendChild(tr);
   }
   table.hidden = false;
+  mirrorNumericColumns(table);
 }
 
 /* 盈亏/收益率语义色(券商 UI 惯例):正值 --ok 绿、负值 --down 红。
@@ -665,6 +687,7 @@ function renderCoverageRows(rows) {
   }
   empty.hidden = true;
   table.hidden = false;
+  mirrorNumericColumns(table);
 }
 
 /* 期权新鲜度表:按标的×来源展示 option_quotes 最新时间与三态状态
@@ -709,6 +732,7 @@ function renderOptionsFreshness(rows) {
   }
   empty.hidden = true;
   table.hidden = false;
+  mirrorNumericColumns(table);
 }
 
 async function loadDataCoverage() {
@@ -887,6 +911,7 @@ function renderBarsDetail(bars) {
   }
   empty.hidden = true;
   table.hidden = false;
+  mirrorNumericColumns(table);
 }
 
 async function loadBars(symbol, timeframe, adjust) {
@@ -1446,6 +1471,7 @@ function renderResultsList(items, onOpen) {
   }
   empty.hidden = true;
   table.hidden = false;
+  mirrorNumericColumns(table);
   /* 排序重绘后恢复详情选中高亮(selectResultsRow 按 dataset.id 匹配)。 */
   if (openDetailId !== null) selectResultsRow(openDetailId);
 }

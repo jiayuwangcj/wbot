@@ -265,6 +265,13 @@ th {
   background: var(--surface);
 }
 
+/* 数字列右对齐(金融 UI 惯例, 富途/IB/嘉信): th 声明 class="num",
+   JS 渲染时镜像到同列 td; tabular-nums 等宽数字纵向对齐可比。 */
+.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .notice {
   color: var(--muted);
 }
