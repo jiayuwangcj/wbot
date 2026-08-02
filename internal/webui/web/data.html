@@ -82,6 +82,7 @@
         <p id="detail-error" class="notice error" hidden></p>
         <p id="detail-empty" class="notice" hidden>从左侧覆盖表选择,或在上方输入代码后加载。</p>
         <div id="detail-body" hidden>
+          <div id="detail-tabs" class="tabs" role="tablist" aria-label="周期切换"></div>
           <div class="metric-grid" id="detail-metrics">
             <div class="metric-card"><h3>K 线数</h3><p id="detail-count" class="metric-value">—</p></div>
             <div class="metric-card"><h3>首收盘</h3><p id="detail-first" class="metric-value">—</p></div>
@@ -92,7 +93,7 @@
           <div class="table-scroll">
             <table id="bars-table" hidden>
               <thead>
-                <tr><th>时间</th><th>开</th><th>高</th><th>低</th><th>收</th><th>量</th></tr>
+                <tr><th>时间</th><th>开</th><th>高</th><th>低</th><th>收</th><th>涨跌幅</th><th>量</th></tr>
               </thead>
               <tbody></tbody>
             </table>

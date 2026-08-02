@@ -734,3 +734,30 @@ pre {
     min-width: 600px;
   }
 }
+
+/* 行情明细周期 tab(富途 K 线交互参照):一排小按钮,当前周期高亮。 */
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.tabs button {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: 0.2rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.tabs button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-contrast);
+}
+
+.tabs button:not(.active):hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}

@@ -695,6 +695,27 @@ function drawSparkline(canvas, closes) {
   chartCache.set(canvas, draw);
 }
 
+/* 行情明细周期 tab:富途 K 线交互参照——点 tab 即切周期重载,
+   无需回顶部表单。模块级记忆当前 symbol/adjust(loadBars 记录)。 */
+const DETAIL_TIMEFRAMES = ["1m", "5m", "15m", "30m", "60m", "1d", "1w", "1mo"];
+let detailSymbol = "";
+let detailAdjust = "fwd";
+
+function renderDetailTabs(timeframe) {
+  const wrap = document.getElementById("detail-tabs");
+  wrap.replaceChildren();
+  for (const tf of DETAIL_TIMEFRAMES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = tf;
+    b.classList.toggle("active", tf === timeframe);
+    b.addEventListener("click", () => {
+      if (detailSymbol !== "") loadBars(detailSymbol, tf, detailAdjust);
+    });
+    wrap.appendChild(b);
+  }
+}
+
 function renderBarsDetail(bars) {
   const table = document.getElementById("bars-table");
   const empty = document.getElementById("bars-empty");
@@ -718,8 +739,32 @@ function renderBarsDetail(bars) {
   chgEl.classList.toggle("up", chg >= 0);
   chgEl.classList.toggle("down", chg < 0);
   drawSparkline(document.getElementById("detail-sparkline"), bars.map((b) => b.close));
-  for (const b of bars) {
-    appendRow(tbody, [b.ts.slice(0, 16).replace("T", " "), fmtNum(b.open), fmtNum(b.high), fmtNum(b.low), fmtNum(b.close), b.volume]);
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    const row = document.createElement("tr");
+    const cells = [b.ts.slice(0, 16).replace("T", " "), fmtNum(b.open), fmtNum(b.high), fmtNum(b.low), fmtNum(b.close)];
+    for (const cell of cells) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      row.appendChild(td);
+    }
+    /* 涨跌幅:相对前一根(desc 序下数组后一项,即更早一根)。 */
+    const prev = bars[i + 1];
+    const pctEl = document.createElement("td");
+    if (prev) {
+      const pct = (b.close - prev.close) / prev.close;
+      pctEl.textContent = (pct >= 0 ? "+" : "") + (pct * 100).toFixed(2) + "%";
+      pctEl.classList.toggle("up", pct >= 0);
+      pctEl.classList.toggle("down", pct < 0);
+    } else {
+      pctEl.textContent = "—";
+      pctEl.classList.add("muted");
+    }
+    row.appendChild(pctEl);
+    const vol = document.createElement("td");
+    vol.textContent = b.volume;
+    row.appendChild(vol);
+    tbody.appendChild(row);
   }
   empty.hidden = true;
   table.hidden = false;
@@ -730,6 +775,9 @@ async function loadBars(symbol, timeframe, adjust) {
   clearError(errEl);
   const empty = document.getElementById("detail-empty");
   empty.hidden = true;
+  detailSymbol = symbol;
+  detailAdjust = adjust;
+  renderDetailTabs(timeframe);
   document.getElementById("detail-body").hidden = false;
   setText("detail-title", symbol + " · " + timeframe + " · " + adjust);
   document.getElementById("bars-symbol").value = symbol;
