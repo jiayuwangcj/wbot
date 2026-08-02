@@ -116,7 +116,7 @@ func TestServesResultsPage(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("content-type = %q; want text/html", ct)
 	}
-	if !strings.Contains(rec.Body.String(), "<title>wbot · Backtest Results</title>") {
+	if !strings.Contains(rec.Body.String(), "<title>wbot · 回测</title>") {
 		t.Fatalf("results missing title: %s", rec.Body)
 	}
 }
@@ -595,6 +595,14 @@ func TestResultsPageElements(t *testing.T) {
 	}
 	html := string(data)
 	for _, want := range []string{
+		`id="backtest-form"`,
+		`id="run-symbol"`,
+		`id="run-watchlist"`,
+		`id="run-strategy-select"`,
+		`id="run-param-fields"`,
+		`id="run-btn"`,
+		`id="run-error"`,
+		`id="run-ok"`,
 		`id="results-table"`,
 		`id="results-empty"`,
 		`id="results-error"`,
@@ -648,6 +656,35 @@ func TestAppJSQueriesBacktestsAPI(t *testing.T) {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
+	}
+}
+
+// TestBacktestRunFormJS: the 回测页 run form (老板 2026-08-02 页3) posts to
+// /v1/backtests with {symbol, strategy, params} or {from_watchlist: true},
+// then refreshes the list and opens the new single-run detail.
+func TestBacktestRunFormJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`"run-param-fields"`,
+		`{from_watchlist: true}`,
+		`method: "POST"`,
+		`"/v1/backtests"`,
+		"setupBacktestRunForm",
+		"renderParamFields(strategyByName(select.value), null, \"run-param-fields\")",
+		"symbolInput.disabled = watchlistCheck.checked",
+		"openDetail(res.id)",
+		"res.runs",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	if !strings.Contains(js, `{symbol: symbol, strategy: strategy.name, params: collected.params}`) {
+		t.Fatal("app.js run form must build {symbol, strategy, params} body")
 	}
 }
 

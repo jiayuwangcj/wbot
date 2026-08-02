@@ -504,8 +504,10 @@ function initDataPage() {
 
 /* Watchlist page: /v1/watchlist CRUD + /v1/strategies schema-driven param form. */
 
-function renderParamFields(strategy, values) {
-  const fields = document.getElementById("param-fields");
+/* fieldsetId defaults to the watchlist page's #param-fields; the 回测页 run
+   form passes "run-param-fields" to render its own param inputs. */
+function renderParamFields(strategy, values, fieldsetId) {
+  const fields = document.getElementById(fieldsetId || "param-fields");
   fields.replaceChildren();
   const legend = document.createElement("legend");
   legend.textContent = "Parameters";
@@ -714,7 +716,114 @@ function initWatchlistPage() {
   loadWatchlist();
 }
 
-/* Results page: /v1/backtests list + detail with a hand-drawn equity curve. */
+/* Results page: /v1/backtests list + detail with a hand-drawn equity curve,
+   plus the 启动回测 form (POST /v1/backtests, synchronous). */
+
+/* Run form: /v1/strategies schema → strategy select + param fields, then
+   POST /v1/backtests. Single run returns the new result detail (open it);
+   from_watchlist returns {runs: [...]} (refresh the list). */
+function setupBacktestRunForm() {
+  const form = document.getElementById("backtest-form");
+  if (!form) return;
+  const select = document.getElementById("run-strategy-select");
+  const watchlistCheck = document.getElementById("run-watchlist");
+  const symbolInput = document.getElementById("run-symbol");
+  const btn = document.getElementById("run-btn");
+  const errEl = document.getElementById("run-error");
+  const okEl = document.getElementById("run-ok");
+  const listError = document.getElementById("results-error");
+  let strategies = [];
+
+  function strategyByName(name) {
+    for (const s of strategies) {
+      if (s.name === name) return s;
+    }
+    return null;
+  }
+
+  function renderSelect() {
+    select.replaceChildren();
+    for (const s of strategies) {
+      const opt = document.createElement("option");
+      opt.value = s.name;
+      opt.textContent = s.name;
+      select.appendChild(opt);
+    }
+    renderParamFields(strategyByName(select.value), null, "run-param-fields");
+  }
+
+  function refreshList() {
+    loadJSON("/v1/backtests?limit=50", listError, (items) => {
+      renderResultsList(items, (item) => openDetail(item.id));
+    });
+  }
+
+  select.addEventListener("change", () => {
+    renderParamFields(strategyByName(select.value), null, "run-param-fields");
+    clearError(errEl);
+  });
+
+  watchlistCheck.addEventListener("change", () => {
+    symbolInput.disabled = watchlistCheck.checked;
+    clearError(errEl);
+  });
+
+  form.addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    clearError(errEl);
+    okEl.hidden = true;
+    const strategy = strategyByName(select.value);
+    if (!strategy) {
+      showError(errEl, new Error("select a strategy"));
+      return;
+    }
+    let body;
+    if (watchlistCheck.checked) {
+      body = {from_watchlist: true};
+    } else {
+      const symbol = symbolInput.value.trim();
+      if (!symbol) {
+        showError(errEl, new Error("symbol is required (或勾选使用观察列表全部标的)"));
+        return;
+      }
+      const collected = collectParams(strategy, form);
+      if (collected.error) {
+        showError(errEl, new Error(collected.error));
+        return;
+      }
+      body = {symbol: symbol, strategy: strategy.name, params: collected.params};
+    }
+    btn.disabled = true;
+    btn.textContent = "运行中…";
+    try {
+      const res = await fetchJSON("/v1/backtests", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body)
+      });
+      refreshList();
+      if (res.runs) {
+        okEl.hidden = false;
+        okEl.textContent = "完成:" + res.runs.length + " 条回测已保存,见下方列表。";
+        document.getElementById("list").scrollIntoView();
+      } else if (res.id) {
+        okEl.hidden = false;
+        okEl.textContent = "回测 #" + res.id + " 完成,已打开详情。";
+        openDetail(res.id);
+      }
+    } catch (err) {
+      showError(errEl, err);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "运行回测";
+    }
+  });
+
+  loadJSON("/v1/strategies", errEl, (list) => {
+    strategies = list;
+    renderSelect();
+  });
+}
 
 const CURVE_PAD = {top: 12, right: 64, bottom: 26, left: 48};
 
@@ -1100,6 +1209,7 @@ function curveIndexAtX(canvas, clientX) {
 function initResultsPage() {
   const listError = document.getElementById("results-error");
   if (!listError) return;
+  setupBacktestRunForm();
   loadJSON("/v1/backtests?limit=50", listError, (items) => {
     renderResultsList(items, (item) => openDetail(item.id));
   });
