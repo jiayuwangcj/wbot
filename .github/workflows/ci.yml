@@ -149,6 +149,17 @@ jobs:
           chmod 600 "$tmp/config.yaml"
           "$bin" configyaml -file "$tmp/config.yaml" >/dev/null
 
+      # Self-contained acceptance scripts (no network, no DB, no gateway):
+      # local e2e contract checks promoted to remote CI gate so the
+      # "submit-time acceptance" rule has a remote backstop too.
+      # 与 scripts/verify.sh 保持一致(2026-08-03)。
+      - name: Run self-contained acceptance scripts
+        if: needs.check-skip.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          scripts/accept-paper.sh
+          scripts/accept-agent-federation.sh
+
   # PostgreSQL integration (Linux only; see internal/db WBOT_PG_DSN).
   db-integration:
     name: db-integration
