@@ -1000,6 +1000,30 @@ function setupBacktestRunForm() {
     strategies = list;
     renderSelect();
   });
+
+  /* 详情「重新运行」:把该回测的代码/策略/参数填回顶部表单(参数
+     renderParamFields 回填,与 watchlist 编辑同款),滚到表单微调即
+     可重跑——看结果→调参→再跑 的迭代闭环。 */
+  rerunHandler = (d) => {
+    document.getElementById("rerun-btn").onclick = () => {
+      const symbolInput = document.getElementById("run-symbol");
+      document.getElementById("run-watchlist").checked = false;
+      symbolInput.disabled = false;
+      symbolInput.value = d.symbol;
+      const st = strategyByName(d.strategy);
+      if (st) {
+        select.value = d.strategy;
+        renderParamFields(st, d.params, "run-param-fields");
+        clearError(errEl);
+      } else {
+        /* 内部基准策略(如 buy-hold)不在注册表,select 无法回填:
+           保留代码,提示手动选策略。 */
+        showError(errEl, new Error("策略「" + d.strategy + "」不在当前注册表,请手动选择策略。"));
+      }
+      document.getElementById("run").scrollIntoView();
+      symbolInput.focus();
+    };
+  };
 }
 
 const CURVE_PAD = {top: 12, right: 64, bottom: 26, left: 48};
@@ -1256,6 +1280,7 @@ function renderDetail(d) {
   document.getElementById("curve-wrap").hidden = false;
   document.getElementById("detail-extra").hidden = false;
   wireExport(d.id);
+  if (rerunHandler) rerunHandler(d); /* initResultsPage 注入,重新运行表单回填 */
   renderTradesTable(d.trades || []);
   document.getElementById("detail-params").textContent = d.params ? JSON.stringify(d.params, null, 2) : "{}";
   curvePoints = d.equity_curve || [];
@@ -1297,6 +1322,7 @@ function selectResultsRow(id) {
 }
 
 let openDetailId = null;
+let rerunHandler = null; /* 由 initResultsPage 注入:详情「重新运行」回填表单 */
 
 function openDetail(id) {
   openDetailId = id;
