@@ -280,7 +280,8 @@ function renderOrders(snap) {
     return;
   }
   empty.hidden = true;
-  renderTable("orders-table", snap.orders.map((o) => {
+  const list = ordersSorter ? ordersSorter.sortItems(snap.orders) : snap.orders;
+  renderTable("orders-table", list.map((o) => {
     const sideTd = document.createElement("td");
     sideTd.textContent = sideZh(o.side);
     sideTd.className = o.side.toLowerCase() === "buy" ? "side-buy" : "side-sell";
@@ -355,6 +356,8 @@ function initDashboardPage() {
   refresh.addEventListener("click", loadDashboard);
   positionsSorter = makeTableSorter("positions-table", POSITIONS_SORT_KEYS);
   positionsSorter.render = renderPositions;
+  ordersSorter = makeTableSorter("orders-table", ORDERS_SORT_KEYS);
+  ordersSorter.render = loadOrders;
   loadDashboard();
   loadJSON("/v1/runs?limit=10", document.getElementById("runs-error"), renderRuns);
   startAutoRefresh();
@@ -1125,7 +1128,19 @@ const POSITIONS_SORT_KEYS = {
   pl: (p) => p.pl ?? -Infinity,
 };
 
+/* 订单表排序:数量/价格/已成交按值比较(缺失沉底)。 */
+const ORDERS_SORT_KEYS = {
+  create_time: (o) => o.create_time,
+  symbol: (o) => o.symbol,
+  side: (o) => o.side,
+  status: (o) => o.status,
+  qty: (o) => o.qty ?? -Infinity,
+  price: (o) => o.price ?? -Infinity,
+  fill_qty: (o) => o.fill_qty ?? -Infinity,
+};
+
 let positionsSorter = null;
+let ordersSorter = null;
 
 function showMetric(id, v, formatter) {
   setText(id, fmtMetric(v, formatter));
