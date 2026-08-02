@@ -26,7 +26,7 @@
   - `wbot-pg-ci-test` → `192.168.215.5:5432`（库 `wbot_test`，`postgres/postgres`）
   - `futu-opend-rs` → `192.168.215.2`（REST `:22222`，proto `:11111`）
 - **实测 DSN**：`postgres://postgres:postgres@192.168.215.5:5432/wbot_test?sslmode=disable`
-- **一键起环境**：`scripts/dev-up.sh` 自动发现上述地址、起 serve、幂等种子演示数据（回测需 fwd bars）、跑 19 项验收冒烟；serve 重启用 `--force`
+- **一键起环境**：`scripts/dev-up.sh` 自动发现上述地址、起 serve、幂等种子演示数据（回测需 fwd bars）、跑 22 项验收冒烟；serve 重启用 `--force`
 - IP 可能随容器重建变化——一律以 dev-up.sh 的自动发现为准，不要手写进脚本
 
 ## 规则
