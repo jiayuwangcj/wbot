@@ -206,7 +206,7 @@ func TestSaveResultValidation(t *testing.T) {
 	if _, err := LoadResults(ctx, &sql.DB{}, "", "", 10); err == nil {
 		t.Fatal("LoadResults(empty symbol) = nil error; want error")
 	}
-	if _, err := ListResults(ctx, nil, "", "", "", 10, "", false); err == nil {
+	if _, err := ListResults(ctx, nil, "", "", "", 0, 10, "", false); err == nil {
 		t.Fatal("ListResults(nil db) = nil error; want error")
 	}
 	if _, err := LoadResult(ctx, nil, 1); err == nil {
@@ -261,7 +261,7 @@ func TestListResultsQueryIntegration(t *testing.T) {
 		{"no match", "ZZSEARCHNOPE", 0},
 	}
 	for _, tc := range cases {
-		recs, err := ListResults(ctx, database, "", "", tc.q, 0, "", false)
+		recs, err := ListResults(ctx, database, "", "", tc.q, 0, 0, "", false)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -271,7 +271,7 @@ func TestListResultsQueryIntegration(t *testing.T) {
 	}
 
 	// strategy 命中时每条都应包含 q(全库历史记录不算数,只查专属符号)。
-	recs, err := ListResults(ctx, database, "", "", "covered", 0, "", false)
+	recs, err := ListResults(ctx, database, "", "", "covered", 0, 0, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func TestListResultsQueryIntegration(t *testing.T) {
 	}
 
 	// 通配符按字面匹配:% 不应命中所有行。
-	recs, err = ListResults(ctx, database, "", "", "%", 0, "", false)
+	recs, err = ListResults(ctx, database, "", "", "%", 0, 0, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -300,11 +300,44 @@ func TestListResultsQueryIntegration(t *testing.T) {
 	}
 
 	// 与精确过滤组合 + limit。
-	recs, err = ListResults(ctx, database, "ZZSEARCH.US", "", "ZZSEARCH", 1, "", false)
+	recs, err = ListResults(ctx, database, "ZZSEARCH.US", "", "ZZSEARCH", 0, 1, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(recs) != 1 || recs[0].Symbol != "ZZSEARCH.US" {
 		t.Fatalf("combined: got %v; want exactly ZZSEARCH.US", recs)
+	}
+
+	// offset 分页:q 全命中 3 条,页 1 = offset 0 limit 2,页 2 = offset 2
+	// limit 2(返回第 3 条),两页拼接不重不漏;offset 0 与缺省一致。
+	page1, err := ListResults(ctx, database, "", "", "ZZ", 0, 2, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page2, err := ListResults(ctx, database, "", "", "ZZ", 2, 2, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page1) != 2 || len(page2) != 1 {
+		t.Fatalf("pages = (%d, %d); want (2, 1)", len(page1), len(page2))
+	}
+	seen := map[string]bool{}
+	for _, r := range append(page1, page2...) {
+		if seen[r.Symbol] {
+			t.Fatalf("page overlap: %s appears twice", r.Symbol)
+		}
+		seen[r.Symbol] = true
+	}
+	for _, s := range symbols {
+		if !seen[s] {
+			t.Fatalf("pages missing %s", s)
+		}
+	}
+	neg, err := ListResults(ctx, database, "", "", "ZZ", -5, 2, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(neg) != 2 {
+		t.Fatalf("negative offset len = %d; want 2 (clamped to 0)", len(neg))
 	}
 }

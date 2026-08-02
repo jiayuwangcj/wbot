@@ -134,13 +134,17 @@ func escapeLike(s string) string {
 
 // ListResults lists saved runs; symbol/strategy exact filter when non-empty,
 // q performs a contains-match (ILIKE, escaped) over symbol OR strategy,
-// limit <= 0 defaults to 50. sortKey "" keeps the historical newest-first
-// order (id DESC); a whitelisted sortKey orders by that column instead
-// (desc=false → ASC, desc=true → DESC), metrics NULLS LAST either way. The
-// list shape is the summary only (no equity_curve/trades).
-func ListResults(ctx context.Context, db *sql.DB, symbol, strategy, q string, limit int, sortKey string, desc bool) ([]ResultRecord, error) {
+// offset/limit page the result set (offset < 0 → 0, limit <= 0 → 50).
+// sortKey "" keeps the historical newest-first order (id DESC); a
+// whitelisted sortKey orders by that column instead (desc=false → ASC,
+// desc=true → DESC), metrics NULLS LAST either way. The list shape is the
+// summary only (no equity_curve/trades).
+func ListResults(ctx context.Context, db *sql.DB, symbol, strategy, q string, offset, limit int, sortKey string, desc bool) ([]ResultRecord, error) {
 	if db == nil {
 		return nil, errors.New("backtest: list results: nil db")
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	if limit <= 0 {
 		limit = 50
@@ -167,6 +171,8 @@ FROM backtest_results`
 	if len(conds) > 0 {
 		query += " WHERE " + strings.Join(conds, " AND ")
 	}
+	// LIMIT 用当前参数号;offset > 0 才追加参数与 OFFSET 子句
+	// (offset 0 保持历史 SQL 形态)。
 	if expr, ok := sortExprs[sortKey]; ok {
 		dir := "ASC"
 		if desc {
@@ -175,6 +181,10 @@ FROM backtest_results`
 		query += fmt.Sprintf(" ORDER BY %s %s NULLS LAST LIMIT $%d", expr, dir, len(args))
 	} else {
 		query += fmt.Sprintf(" ORDER BY id DESC LIMIT $%d", len(args))
+	}
+	if offset > 0 {
+		args = append(args, offset)
+		query += fmt.Sprintf(" OFFSET $%d", len(args))
 	}
 
 	rows, err := db.QueryContext(ctx, query, args...)
@@ -214,7 +224,7 @@ func LoadResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit
 	if symbol == "" {
 		return nil, errors.New("backtest: load results: empty symbol")
 	}
-	return ListResults(ctx, db, symbol, strategy, "", limit, "", false)
+	return ListResults(ctx, db, symbol, strategy, "", 0, limit, "", false)
 }
 
 // LoadResult reads one run by id including its equity_curve/trades trace;

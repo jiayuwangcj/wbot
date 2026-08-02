@@ -111,6 +111,36 @@ func TestBacktestsIntegration(t *testing.T) {
 		t.Fatalf("q no-match len = %d; want 0", len(nomatch))
 	}
 
+	// offset 分页:再存一条同 symbol 记录,limit=1 时第 1 页与第 2 页
+	// id 不重不漏。
+	if _, err := backtest.SaveResult(ctx, database, "buy-hold", symbol,
+		map[string]any{"cash": 10000.0, "fee": 0.0},
+		&backtest.Result{Equity: 10400, TotalReturn: 0.04, MaxDrawdown: 0.01, Bars: 2},
+		start, end); err != nil {
+		t.Fatal(err)
+	}
+	page1, err := http.Get(srv.URL + "/v1/backtests?symbol=" + symbol + "&limit=1&offset=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page1.Body.Close()
+	var p1 []map[string]any
+	if err := json.NewDecoder(page1.Body).Decode(&p1); err != nil {
+		t.Fatal(err)
+	}
+	page2, err := http.Get(srv.URL + "/v1/backtests?symbol=" + symbol + "&limit=1&offset=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page2.Body.Close()
+	var p2 []map[string]any
+	if err := json.NewDecoder(page2.Body).Decode(&p2); err != nil {
+		t.Fatal(err)
+	}
+	if len(p1) != 1 || len(p2) != 1 || p1[0]["id"] == p2[0]["id"] {
+		t.Fatalf("pages = (%v, %v); want two distinct rows", p1, p2)
+	}
+
 	// Detail: full trace matches what SaveResult wrote.
 	resp, err = http.Get(srv.URL + "/v1/backtests/" + strconv.FormatInt(id, 10))
 	if err != nil {
