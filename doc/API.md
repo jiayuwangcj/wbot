@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`、`/v1/account/snapshots`——资产曲线历史快照，读 `account_snapshots` 表）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/orders` 为订单列表只读代理、`/v1/futu/options` 为期权链代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`、`/v1/account/snapshots`——资产曲线历史快照，读 `account_snapshots` 表）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/orders` 为订单列表只读代理、`/v1/futu/options` 为期权链代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。二进制另有一个独立 HTTP 面由 `wbot master` 提供（agent 联邦注册，占位子系统，见 [[ROADMAP]]），契约见文末「Agent federation」节——与 serve 数据面无交集。
 
 ## Web UI
 
@@ -682,6 +682,23 @@ PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIV
 | 未知路径 / 白名单外 config key / DELETE 不存在的 watchlist 标的 / 不存在的 backtest id | 404 |
 | 方法不允许（非 GET/PUT/DELETE；watchlist 标的路径仅支持 PUT/DELETE） | 405 |
 | POST /v1/backtests：非法参数 422、单进程互斥 busy 409、依赖失败/无数据/超时 503（错误体见上节） | 见上节 |
+
+## Agent federation（`wbot master`）
+
+占位子系统（[[ROADMAP]]：可测占位与 CI smoke，不优先扩张）：`wbot agent -master-url` 经 `httpregister.RemoteFacade` 周期性向 master 登记自身（`poll.Run` 每 interval 一次），供多 agent 联邦互相发现。注册表 **in-memory**（`master.NewMemory`），master 重启即空。错误体为 **纯文本**（`http.Error`），**不接入** S5 `{code, message, action, error}` 统一契约（S5 仅覆盖 serve 数据面）。
+
+| 端点 | 行为 |
+| --- | --- |
+| `POST /v1/register` | body `{"id": string}`（Content-Type 需为 `application/json` 或不设）；200 `{"new": bool}`——首次登记 `new=true`，同 id 重复登记 `false`；405 非 POST；415 Content-Type 非 JSON；400 body 非 JSON |
+| `GET /v1/agents` | 200 `{"agents": [id, ...]}`（当前注册的全部 agent id）；405 非 GET |
+
+未知路径 404。客户端（`internal/httpregister.Client`）对 503 重试（`RetryMax` 可配，默认 0 不重试；400 不重试）。
+
+```bash
+wbot master -listen 127.0.0.1:8090 &   # in-memory registry
+curl -s -X POST http://127.0.0.1:8090/v1/register -H 'Content-Type: application/json' -d '{"id":"demo"}'
+curl -s http://127.0.0.1:8090/v1/agents
+```
 
 ## 本地验证
 
