@@ -633,6 +633,16 @@ function initWatchlistPage() {
     loadJSON("/v1/strategies", formError, (list) => {
       strategies = list;
       renderStrategySelect();
+      renderStrategyCards(list);
+      const cards = document.querySelectorAll(".strategy-card");
+      for (const card of cards) {
+        card.addEventListener("click", () => {
+          strategySelect.value = card.dataset.strategy;
+          renderParamFields(currentStrategy());
+          clearError(formError);
+          document.getElementById("editor").scrollIntoView();
+        });
+      }
     });
   }
 
@@ -1121,75 +1131,40 @@ function initResultsPage() {
   });
 }
 
-/* Options chain: /v1/futu/options — expiry dropdown + call/put table per expiry. */
+/* 策略页策略说明卡(/v1/strategies schema):名称 + 描述 + 每参数
+   「默认值 = 参数名 · 含义」,点击卡片联动下方编辑表单。 */
 
-function renderOptionExpirySelect(expirations, selected) {
-  const sel = document.getElementById("options-expiry");
-  sel.replaceChildren();
-  for (const e of expirations) {
-    const opt = document.createElement("option");
-    opt.value = e.date;
-    opt.textContent = e.date + (e.distance_days >= 0 ? " (" + e.distance_days + "d)" : " (expired)");
-    sel.appendChild(opt);
-  }
-  if (selected !== "") sel.value = selected;
-  sel.hidden = false;
-}
-
-function renderOptionChain(data) {
-  renderOptionExpirySelect(data.expirations, data.expiry);
-  const byStrike = new Map();
-  for (const c of data.contracts) {
-    let row = byStrike.get(c.strike);
-    if (!row) {
-      row = {strike: c.strike, call: "—", put: "—", lot: "—"};
-      byStrike.set(c.strike, row);
+function renderStrategyCards(list) {
+  const wrap = document.getElementById("strategy-cards");
+  if (!wrap) return;
+  wrap.replaceChildren();
+  for (const s of list) {
+    const card = document.createElement("article");
+    card.className = "strategy-card";
+    card.dataset.strategy = s.name;
+    const h3 = document.createElement("h3");
+    h3.textContent = s.name;
+    card.appendChild(h3);
+    const desc = document.createElement("p");
+    desc.className = "strategy-desc";
+    desc.textContent = s.description || "";
+    card.appendChild(desc);
+    const dl = document.createElement("dl");
+    for (const p of s.params) {
+      const dt = document.createElement("dt");
+      dt.textContent = p.name + " = " + (p.default === undefined || p.default === null ? "—" : p.default);
+      const dd = document.createElement("dd");
+      dd.textContent = p.description || "";
+      dl.appendChild(dt);
+      dl.appendChild(dd);
     }
-    if (c.option_type === "call") row.call = c.symbol;
-    else if (c.option_type === "put") row.put = c.symbol;
-    row.lot = c.lot_size;
+    card.appendChild(dl);
+    wrap.appendChild(card);
   }
-  const strikes = [...byStrike.keys()].sort((a, b) => a - b);
-  renderTable("options-table", strikes.map((s) => {
-    const row = byStrike.get(s);
-    return [row.strike, row.call, row.put, row.lot];
-  }));
-}
-
-async function loadOptionChain(symbol, expiry) {
-  const errorEl = document.getElementById("options-error");
-  if (!errorEl) return;
-  let url = "/v1/futu/options?symbol=" + encodeURIComponent(symbol);
-  if (expiry !== "") url += "&expiry=" + encodeURIComponent(expiry);
-  try {
-    const data = await fetchJSON(url);
-    clearError(errorEl);
-    renderOptionChain(data);
-  } catch (err) {
-    document.getElementById("options-table").hidden = true;
-    showError(errorEl, err);
-  }
-}
-
-function initOptionsChainPage() {
-  const form = document.getElementById("options-form");
-  if (!form) return;
-  const select = document.getElementById("options-expiry");
-  let symbol = "";
-  form.addEventListener("submit", (ev) => {
-    ev.preventDefault();
-    symbol = form.elements["options-symbol"].value.trim();
-    if (symbol === "") return;
-    loadOptionChain(symbol, "");
-  });
-  select.addEventListener("change", () => {
-    if (symbol !== "") loadOptionChain(symbol, select.value);
-  });
 }
 
 initDashboardPage();
 initAdminPage();
 initWatchlistPage();
-initOptionsChainPage();
 initDataPage();
 initResultsPage();
