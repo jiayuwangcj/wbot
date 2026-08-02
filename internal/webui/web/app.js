@@ -1621,8 +1621,9 @@ function initResultsPage() {
   setupBacktestRunForm();
   let resultsItems = [];
   const resultsSorter = makeTableSorter("results-table", RESULTS_SORT_KEYS);
-  /* 本地过滤(代码/策略包含匹配)+ 服务端全局排序组合:过滤在已加载
-     50 条上做,排序保持跨页语义。 */
+  /* 过滤:输入防抖(250ms)后走服务端全库搜索(q 参数,ILIKE 包含匹配),
+     清空恢复最近列表;applyFilter 仅做已加载数据的即时反馈,权威结果
+     以服务端为准。排序保持跨页语义。 */
   const filterInput = document.getElementById("results-filter");
   const emptyEl = document.getElementById("results-empty");
   const EMPTY_DEFAULT = emptyEl.textContent;
@@ -1633,13 +1634,28 @@ function initResultsPage() {
     emptyEl.textContent = q === "" ? EMPTY_DEFAULT : "无匹配「" + q + "」的回测结果。";
     renderResultsList(resultsSorter.sortItems(list), (item) => openDetail(item.id));
   };
-  filterInput.addEventListener("input", applyFilter);
-  /* 跨页排序:表头点击 → 服务端按全局数据重排(sort/order 参数),本地
-     sortItems 仅兜底。无排序参数时保持 API 最新优先顺序。 */
+  let filterTimer = null;
+  filterInput.addEventListener("input", () => {
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => {
+      if (filterInput.value.trim() === "") {
+        loadSorted();
+      } else {
+        applyFilter();
+        loadSorted();
+      }
+    }, 250);
+  });
+  /* 跨页排序/搜索:表头点击或搜索词 → 服务端按全库数据重排
+     (sort/order/q 参数),本地 sortItems 仅兜底。无排序参数时保持
+     API 最新优先顺序。 */
   const loadSorted = () => {
     const st = resultsSorter.state;
-    const q = st.key ? "&sort=" + st.key + "&order=" + (st.dir === 1 ? "asc" : "desc") : "";
-    loadJSON("/v1/backtests?limit=50" + q, listError, (items) => {
+    const params = [];
+    if (st.key) params.push("sort=" + st.key + "&order=" + (st.dir === 1 ? "asc" : "desc"));
+    const q = filterInput.value.trim();
+    if (q) params.push("q=" + encodeURIComponent(q));
+    loadJSON("/v1/backtests?limit=50" + (params.length === 0 ? "" : "&" + params.join("&")), listError, (items) => {
       resultsItems = items;
       applyFilter();
     });

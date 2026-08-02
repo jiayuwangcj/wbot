@@ -82,6 +82,35 @@ func TestBacktestsIntegration(t *testing.T) {
 		t.Fatalf("list[0] = %v; want id %d with equity 10500", list[0], id)
 	}
 
+	// List with q: contains-match over symbol/strategy (ILIKE, 大小写不敏感)。
+	resp, err = http.Get(srv.URL + "/v1/backtests?q=" + symbol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("q list status = %d; want 200", resp.StatusCode)
+	}
+	var qlist []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&qlist); err != nil {
+		t.Fatal(err)
+	}
+	if len(qlist) != 1 {
+		t.Fatalf("q list len = %d; want 1 (body %v)", len(qlist), qlist)
+	}
+	resp, err = http.Get(srv.URL + "/v1/backtests?q=__definitely_no_match__")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var nomatch []map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&nomatch); err != nil {
+		t.Fatal(err)
+	}
+	if len(nomatch) != 0 {
+		t.Fatalf("q no-match len = %d; want 0", len(nomatch))
+	}
+
 	// Detail: full trace matches what SaveResult wrote.
 	resp, err = http.Get(srv.URL + "/v1/backtests/" + strconv.FormatInt(id, 10))
 	if err != nil {
