@@ -15,6 +15,7 @@ import (
 	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
 	"github.com/qtopie/gofutuapi/gen/trade/trdgetacclist"
 	"github.com/qtopie/gofutuapi/gen/trade/trdgetfunds"
+	"github.com/qtopie/gofutuapi/gen/trade/trdgetorderlist"
 	"github.com/qtopie/gofutuapi/gen/trade/trdgetpositionlist"
 	"github.com/qtopie/gofutuapi/gen/trade/trdplaceorder"
 	"google.golang.org/protobuf/proto"
@@ -129,6 +130,15 @@ func PositionsBody(env int32, accID uint64, pos []*trdcommon.Position) []byte {
 	b, _ := proto.Marshal(&trdgetpositionlist.Response{RetType: proto.Int32(0), S2C: &trdgetpositionlist.S2C{
 		Header:       Header(env, accID, 1),
 		PositionList: pos,
+	}})
+	return b
+}
+
+// OrdersBody is a trdgetorderlist response with ret_type 0.
+func OrdersBody(env int32, accID uint64, orders []*trdcommon.Order) []byte {
+	b, _ := proto.Marshal(&trdgetorderlist.Response{RetType: proto.Int32(0), S2C: &trdgetorderlist.S2C{
+		Header:    Header(env, accID, 1),
+		OrderList: orders,
 	}})
 	return b
 }
