@@ -477,10 +477,12 @@ function fmtAge(seconds) {
 }
 
 function renderCoverageRows(rows) {
+  coverageRows = rows; /* 供表头排序后本地重绘 */
   const table = document.getElementById("coverage-table");
   const empty = document.getElementById("coverage-empty");
   const tbody = table.tBodies[0];
   tbody.replaceChildren();
+  rows = coverageSorter ? coverageSorter.sortItems(rows) : rows;
   if (rows.length === 0) {
     table.hidden = true;
     empty.hidden = false;
@@ -617,6 +619,11 @@ function initDataPage() {
     clearError(errEl);
     loadDataCoverage().catch((err) => showError(errEl, err));
   });
+  coverageSorter = makeTableSorter("coverage-table", COVERAGE_SORT_KEYS);
+  coverageSorter.render = () => renderCoverageRows(coverageRows);
+  coverageSorter.state.key = "max_ts"; /* 默认按最新 bar 降序,新数据在前 */
+  coverageSorter.state.dir = -1;
+  coverageSorter.renderIndicators();
   loadDataCoverage().catch((err) => showError(document.getElementById("coverage-error"), err));
 }
 
@@ -1146,8 +1153,19 @@ const ORDERS_SORT_KEYS = {
   fill_qty: (o) => o.fill_qty ?? -Infinity,
 };
 
+/* Data 页覆盖表排序:数量按值,日期为定长字符串字典序=时间序。 */
+const COVERAGE_SORT_KEYS = {
+  symbol: (b) => b.symbol,
+  timeframe: (b) => b.timeframe,
+  count: (b) => b.count ?? -Infinity,
+  min_ts: (b) => b.min_ts,
+  max_ts: (b) => b.max_ts,
+};
+
 let positionsSorter = null;
 let ordersSorter = null;
+let coverageSorter = null;
+let coverageRows = []; /* 最近一次覆盖表数据:sorter.render 本地重绘用 */
 
 function showMetric(id, v, formatter) {
   setText(id, fmtMetric(v, formatter));

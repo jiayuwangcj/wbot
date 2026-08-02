@@ -1250,6 +1250,49 @@ func TestOrdersSortingJS(t *testing.T) {
 	}
 }
 
+// TestCoverageSortingJS: Data 页覆盖表排序契约(2026-08-02):data.html 表头
+// data-sort 键 + COVERAGE_SORT_KEYS 取值器 + coverageRows 本地重绘 + 默认
+// 按最新 bar 降序。
+func TestCoverageSortingJS(t *testing.T) {
+	html, err := fs.ReadFile(webFiles, "web/data.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`data-sort="symbol"`,
+		`data-sort="timeframe"`,
+		`data-sort="count"`,
+		`data-sort="min_ts"`,
+		`data-sort="max_ts"`,
+	} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("data.html missing %q", want)
+		}
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		"const COVERAGE_SORT_KEYS = {",
+		"count: (b) => b.count ?? -Infinity",
+		"let coverageSorter = null",
+		"let coverageRows = []",
+		"coverageRows = rows;",
+		`makeTableSorter("coverage-table", COVERAGE_SORT_KEYS)`,
+		"coverageSorter.render = () => renderCoverageRows(coverageRows)",
+		"coverageSorter ? coverageSorter.sortItems(rows) : rows",
+		`coverageSorter.state.key = "max_ts"`,
+		"coverageSorter.state.dir = -1",
+		"coverageSorter.renderIndicators()",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 // TestBarsCoverageRemoved: bars 区块已随 Dashboard 改造迁出(老板 2026-08-02),
 // 旧覆盖度提示逻辑移除 — 查看缓存数据的功能现由独立「数据」页承担(data.html,
 // coverage-table + drill-in),Admin cluster 页仍有 freshness 覆盖表。
