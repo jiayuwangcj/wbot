@@ -50,6 +50,12 @@
 
 ## Plan（可勾选）
 
-- [ ] A：`GET /v1/backtests/{id}/export`（csv/json 序列化 + 下载头 + 404/兼容语义）+ httptest
-- [ ] B：CLI `backtest -export`（复用 LoadResults）+ 集成测 roundtrip
-- [ ] API.md + BACKTEST.md + serve/backtest -h + verify/CI 绿
+- [x] A：`GET /v1/backtests/{id}/export`（csv/json 序列化 + 下载头 + 404/兼容语义）+ httptest
+- [x] B：CLI `backtest -export`（复用 LoadResults）+ 集成测 roundtrip
+- [x] API.md + BACKTEST.md + serve/backtest -h + verify/CI 绿
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：A `GET /v1/backtests/{id}/export`（csv/json +
+下载头）、B CLI `backtest -export`、API.md/BACKTEST.md 同步均已
+落地。闭环记录见 `doc/tasks/2026-08-02-backtest-export.md`。

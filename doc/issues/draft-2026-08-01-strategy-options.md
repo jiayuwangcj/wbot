@@ -124,10 +124,10 @@
 
 ## Plan（可勾选）
 
-- [ ] ⑫-a：`internal/futu` option-chain/option-expiration-date 客户端 + `OptionChainLimit` 限频 + CLI `wbot futu option-chain` + `internal/options` BS 模拟 + doc/FUTU.md §9 实测记录
-- [ ] ⑫-b：`internal/backtest` 期权腿扩展（Action/State/到期结算/腿数据）+ `internal/strategy` 模板注册表（covered-call / cash-secured-put）+ 确定性单测
-- [ ] ⑫-c：migration 003 + `internal/watchlist` 查询 + `httpapi/watchlist.go`（/v1/strategies、/v1/watchlist CRUD）+ CLI `wbot watchlist` + `backtest -from-watchlist` + API.md
-- [ ] ⑫-d：HK.00700 端到端（真实 + BS 模拟两态）+ 模拟盘只读 smoke + 集成测 skip 策略 + CI 保持绿
+- [x] ⑫-a：`internal/futu` option-chain/option-expiration-date 客户端 + `OptionChainLimit` 限频 + CLI `wbot futu option-chain` + `internal/options` BS 模拟 + doc/FUTU.md §9 实测记录
+- [x] ⑫-b：`internal/backtest` 期权腿扩展（Action/State/到期结算/腿数据）+ `internal/strategy` 模板注册表（covered-call / cash-secured-put）+ 确定性单测
+- [x] ⑫-c：migration 003 + `internal/watchlist` 查询 + `httpapi/watchlist.go`（/v1/strategies、/v1/watchlist CRUD）+ CLI `wbot watchlist` + `backtest -from-watchlist` + API.md
+- [x] ⑫-d：HK.00700 端到端（真实 + BS 模拟两态）+ 模拟盘只读 smoke + 集成测 skip 策略 + CI 保持绿
 
 ## 仓库内链回
 
@@ -138,3 +138,11 @@
 - 复用模式：`internal/futu/`（client/kline/ratelimit + 测试）、`internal/httpapi/admin*.go`（独立 handler + 独立接口模式）、`internal/ingest`（RunIngestion/QueryBars/ON CONFLICT）、`internal/db/migrations/`（001/002）
 - 期权接口参考：futuapi.com REST 参考（option-chain 3209 / option-expiration-date 3224 / option-quote 3255 / option-volatility 3250 / risk-free-rate 20231）、openapi.futunn.com Qot_GetOptionChain（owner + 30 天窗口、过期链不可查、HK 期权代码格式、10 req/30s）
 - 需求源：老板 2026-08-01 指令（策略 + 测试标的 HK.00700）+ 2026-08-01 扩展（watchlist 完整形态）；老板待办汇总：discussions/21（HK 期权权限确认）
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：⑫-a option-chain 客户端 + `ingest futu-option`、
+⑫-b `internal/strategy/options.go`（covered-call / cash-secured-put）、
+⑫-c migration 003 + watchlist CRUD + `backtest -from-watchlist`、
+⑫-d HK.00700 端到端均已落地。闭环记录见
+`doc/tasks/2026-08-01-strategy-options.md`。

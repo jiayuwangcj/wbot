@@ -36,12 +36,18 @@
 
 ## Plan（可勾选）
 
-- [ ] `internal/backtest`：State/Strategy/Result 类型与单元测
-- [ ] `Runner` 主循环 + 绩效计算（总收益/最大回撤）与单元测
-- [ ] CLI `wbot backtest`（`-file`/`-dsn` 输入）+ main_test 参数用例
-- [ ] 文档：`doc/` 新页或 `doc/DATA_PIPELINE.md` 链接回测用法
+- [x] `internal/backtest`：State/Strategy/Result 类型与单元测
+- [x] `Runner` 主循环 + 绩效计算（总收益/最大回撤）与单元测
+- [x] CLI `wbot backtest`（`-file`/`-dsn` 输入）+ main_test 参数用例
+- [x] 文档：`doc/` 新页或 `doc/DATA_PIPELINE.md` 链接回测用法
 
 ## 仓库内链回
 
 - 数据输入：`internal/ingest`（`Source`、`QueryBars`、`ingest bars -json`）
 - 任务轨迹：`doc/tasks/2026-07-31-ingest-bars-json-export.md`（v1 收尾）
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：`internal/backtest`（State/Strategy/Result/
+Runner + 绩效）、CLI `wbot backtest`（-file/-dsn）、文档均已落地。
+闭环记录见 `doc/tasks/2026-07-31-backtest-*.md` 系列。

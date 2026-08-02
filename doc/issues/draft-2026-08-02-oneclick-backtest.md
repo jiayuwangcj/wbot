@@ -38,6 +38,12 @@
 
 ## Plan（可勾选）
 
-- [ ] POST /v1/backtests 端点（互斥/超时/错误映射）+ httptest 契约测
-- [ ] Web 按钮（results/watchlist 页）+ 页面断言
-- [ ] API.md + serve -h + 真 PG 集成测 + verify/CI 绿
+- [x] POST /v1/backtests 端点（互斥/超时/错误映射）+ httptest 契约测
+- [x] Web 按钮（results/watchlist 页）+ 页面断言
+- [x] API.md + serve -h + 真 PG 集成测 + verify/CI 绿
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：`POST /v1/backtests` 同步执行端点 + results/
+watchlist 页一键回测按钮 + 真 PG 集成测均已落地。闭环记录见
+`doc/tasks/2026-08-02-oneclick-backtest.md`。

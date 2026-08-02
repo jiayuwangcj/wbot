@@ -46,3 +46,10 @@
 
 - 需求源：老板 2026-08-02 反馈（运维脚本沉淀）；RELEASE_DAILY.md（每日流程）、AUTO_ADVANCE（operator 巡检）
 - 现状：`scripts/release.sh`（build/publish）、`internal/httpapi/futu_account.go`/`futu_quote.go`/`futu_options.go`、`configs/docker-compose*.yml`、`~/.wbot/releases/daily-20260802/`
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：A `scripts/dev-up.sh`（自动发现 PG/网关地址 +
+md5 变化自动重启）、B `scripts/release.sh republish`、C
+FUTU_GATEWAY_URL 双语义（REST `http://` / proto 裸 host:port）均已
+落地。闭环记录见 `doc/tasks/2026-08-02-devup-auto-restart.md`。
