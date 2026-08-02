@@ -22,7 +22,9 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-listen=":8080"
+# 仅绑 loopback(2026-08-03, 安全边界收敛): 默认形态无鉴权,不暴露
+# 到局域网; API.md「安全边界」段同声明。base_url/port 提取兼容两格式。
+listen="127.0.0.1:8080"
 devdir="${HOME}/.wbot/dev"
 bin="${devdir}/wbot"
 log="${devdir}/serve.log"
@@ -103,7 +105,8 @@ new_sum="$(md5sum "$bin" | cut -d' ' -f1)"
 
 # --- 3. serve ---------------------------------------------------------------
 
-base_url="http://127.0.0.1:$(echo "$listen" | sed 's/^://')"
+port="$(echo "$listen" | sed 's/.*://')"
+base_url="http://127.0.0.1:${port}"
 already_up=0
 if curl -sf -o /dev/null "${base_url}/v1/admin/cluster" 2>/dev/null; then
 	already_up=1
@@ -120,7 +123,7 @@ if [[ "$already_up" == "1" && "$force" == "0" ]]; then
 	fi
 fi
 if [[ "$already_up" == "1" && "$force" == "1" ]]; then
-	port="$(echo "$listen" | sed 's/^://')"
+	port="$(echo "$listen" | sed 's/.*://')"
 	pids="$(ss -tlnp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" | grep -oP 'pid=\K[0-9]+' | sort -u)"
 	for p in $pids; do
 		kill "$p" && say "stopped old serve (pid $p)"
