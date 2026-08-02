@@ -14,7 +14,7 @@
 | `GET /ui/watchlist.html` | 关注标的页（watchlist CRUD + 策略参数表单） |
 | `GET /ui/results.html` | 回测结果页：列表（可勾选 2 条对比）/ 详情 / 对比视图（指标并排 + equity 曲线叠加，S5） |
 | `GET /ui/admin.html` | 管理页（status/cluster 只读 + config 写面：config-set-form 键下拉 → PUT /v1/admin/config/{key}，值不渲染回显） |
-| `GET /ui/*` | 其余静态资源（`style.css`、`app.js`；不存在 → 404） |
+| `GET /ui/*` | 其余静态资源（`style.css`、`app.js`、`favicon.svg`；不存在 → 404） |
 
 UI 页面不请求、不渲染任何配置值（PRIVACY 红线，见 [[PRIVACY]]）。API 路径（`/v1/*`）不受 `/ui/` 影响；其余未知路径仍为 JSON 404。
 
