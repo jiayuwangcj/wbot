@@ -141,6 +141,17 @@ function fmtTime(iso) {
   return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
 }
 
+/* 数据新鲜度:auto-refresh 页每次成功刷新后打点「更新于 HH:MM:SS」,
+   让用户一眼判断数据是否陈旧(券商面板惯例;也验证轮询还活着)。 */
+function fmtClock(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds());
+}
+function stampUpdated(id) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = "更新于 " + fmtClock(new Date());
+}
+
 let dashEnv = "sim"; /* 当前明细视图(聚合卡/持仓/订单) */
 const snapByEnv = {sim: null, real: null};
 const errByEnv = {sim: null, real: null};
@@ -325,6 +336,7 @@ async function loadDashboard() {
     el.textContent = "Futu 网关不可用:模拟盘与实盘均查询失败(" + errByEnv.sim + ")。请检查网关容器状态后刷新。";
     el.hidden = false;
   }
+  stampUpdated("dash-updated");
 }
 
 function renderRuns(runs) {
@@ -473,6 +485,7 @@ function initAdminPage() {
   const loadAll = () => {
     loadJSON("/v1/admin/cluster", clusterError, renderCluster);
     loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
+    stampUpdated("admin-updated");
   };
   loadAll();
   document.getElementById("admin-refresh").addEventListener("click", loadAll);
@@ -538,6 +551,7 @@ function renderCoverageRows(rows) {
 async function loadDataCoverage() {
   const data = await fetchJSON("/v1/admin/cluster");
   renderCoverageRows(data.components.data_plane.bars_coverage || []);
+  stampUpdated("data-updated");
 }
 
 /* 补数据:POST /v1/ingest 经网关拉取该标的行情(与 `wbot ingest futu`
