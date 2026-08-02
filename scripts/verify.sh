@@ -1,11 +1,31 @@
 #!/usr/bin/env bash
-# Local pre-push checks aligned with CI (tests/vet + built binary CLI smoke).
+# Local pre-push checks ≡ CI test job (gofmt/test/vet/race/staticcheck +
+# binary CLI smoke + zero-dependency accept). README.md 本地开发节以此为门。
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+# gofmt（与 ci.yml test job "Check gofmt" 步骤一致）
+files=$(git ls-files '*.go')
+if [ -n "$files" ]; then
+  bad=$(gofmt -l $files)
+  if [ -n "$bad" ]; then
+    echo "gofmt needed on:"
+    echo "$bad"
+    exit 1
+  fi
+fi
+
 go test ./... -count=1
 go vet ./...
+go test -race ./... -count=1
+
+# staticcheck（与 ci.yml test job "Run staticcheck" 步骤一致；@latest 同 CI）
+if ! command -v staticcheck >/dev/null 2>&1; then
+  echo "verify: staticcheck not found — run: go install honnef.co/go/tools/cmd/staticcheck@latest" >&2
+  exit 1
+fi
+staticcheck ./...
 
 bin="$(mktemp)"
 tmp="$(mktemp -d)"
