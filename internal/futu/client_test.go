@@ -141,6 +141,40 @@ func TestQuoteSuccess(t *testing.T) {
 	}
 }
 
+func TestQuoteCodeFirstSymbol(t *testing.T) {
+	fastLimits(t)
+	var subBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/subscribe":
+			b, _ := io.ReadAll(r.Body)
+			subBody = string(b)
+			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{}}`)
+		case "/api/quote":
+			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{"basic_qot_list":[]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	if _, err := NewClient(srv.URL).Quote(context.Background(), "00700.HK"); err != nil {
+		t.Fatalf("Quote(code-first) error: %v", err)
+	}
+	var sub map[string]any
+	if err := json.Unmarshal([]byte(subBody), &sub); err != nil {
+		t.Fatalf("subscribe body %q: %v", subBody, err)
+	}
+	// code-first input must be normalized to canonical MARKET.CODE for the gateway
+	if symbols := sub["symbols"].([]any); len(symbols) != 1 || symbols[0] != "HK.00700" {
+		t.Fatalf("subscribe symbols = %v; want [HK.00700]", symbols)
+	}
+}
+
 func TestQuoteHTTPError(t *testing.T) {
 	fastLimits(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,10 +268,18 @@ func TestParseSymbol(t *testing.T) {
 		{"SH.600000", 21, "600000", false, ""},
 		{"SZ.000001", 22, "000001", false, ""},
 		{"hk.00700", 1, "00700", false, ""}, // case-insensitive prefix
+		// CODE.MARKET suffix form (code-first, common in CN/HK tooling)
+		{"00700.HK", 1, "00700", false, ""},
+		{"AAPL.US", 11, "AAPL", false, ""},
+		{"SAVE.US", 11, "SAVE", false, ""}, // demo data form (cash-secured-put)
+		{"600000.SH", 21, "600000", false, ""},
+		{"000001.sz", 22, "000001", false, ""}, // case-insensitive suffix
 		{"00700", 0, "", true, "MARKET.CODE"},
 		{"HK.", 0, "", true, "MARKET.CODE"},
 		{"XX.00700", 0, "", true, "unsupported market"},
+		{"00700.XX", 0, "", true, "unsupported market"},
 		{"HK.00700.MORE", 0, "", true, "MARKET.CODE"},
+		{"US.US", 11, "US", false, ""}, // ambiguous: market-first wins
 	}
 	for _, tt := range tests {
 		t.Run(tt.symbol, func(t *testing.T) {

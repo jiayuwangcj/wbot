@@ -95,7 +95,9 @@ func (c *Client) Quote(ctx context.Context, symbol string) (json.RawMessage, err
 		return nil, err
 	}
 	if _, err := c.post(ctx, "/api/subscribe", map[string]any{
-		"symbols":          []string{symbol},
+		// canonical MARKET.CODE (code-first input like "00700.HK" is rejected
+		// by the gateway's string parser — 实测 2026-08-02)
+		"symbols":          []string{marketPrefix(market) + code},
 		"sub_types":        []int{1}, // SubType_Basic
 		"is_sub_or_un_sub": true,
 	}); err != nil {
@@ -113,17 +115,23 @@ func (c *Client) Quote(ctx context.Context, symbol string) (json.RawMessage, err
 	return s2c, nil
 }
 
-// ParseSymbol splits "HK.00700" into the Futu market enum and bare code.
+// ParseSymbol splits "HK.00700" (MARKET.CODE) or "00700.HK" (CODE.MARKET,
+// the code-first form common in CN/HK tooling and used by demo data) into the
+// Futu market enum and bare code. Resolution is market-first: when both sides
+// could be a market (e.g. "US.US") the prefix wins.
 func ParseSymbol(symbol string) (int, string, error) {
 	pre, code, ok := strings.Cut(symbol, ".")
 	if !ok || code == "" || strings.Contains(code, ".") {
 		return 0, "", fmt.Errorf("bad symbol %q (want MARKET.CODE e.g. HK.00700)", symbol)
 	}
-	market, ok := marketCode[strings.ToUpper(pre)]
-	if !ok {
-		return 0, "", fmt.Errorf("unsupported market %q (want HK/US/SH/SZ)", pre)
+	if market, ok := marketCode[strings.ToUpper(pre)]; ok {
+		return market, code, nil
 	}
-	return market, code, nil
+	// CODE.MARKET suffix form: prefix is not a market, try the suffix.
+	if market, ok := marketCode[strings.ToUpper(code)]; ok {
+		return market, pre, nil
+	}
+	return 0, "", fmt.Errorf("unsupported market %q (want HK/US/SH/SZ)", pre)
 }
 
 // get performs a GET (rate-limited by QuoteLimit) and returns the trimmed body.
