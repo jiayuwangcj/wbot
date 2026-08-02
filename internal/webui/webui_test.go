@@ -1055,6 +1055,55 @@ func TestEnumLocalizationJS(t *testing.T) {
 	}
 }
 
+// TestResultsSortingJS: 回测结果表表头排序契约(2026-08-02):表头 th
+// 带 data-sort 键、RESULTS_SORT_KEYS 取值器覆盖全部数值/字符串列、
+// 点击切换升/降序、箭头指示、排序重绘后恢复详情选中高亮。
+func TestResultsSortingJS(t *testing.T) {
+	html, err := fs.ReadFile(webFiles, "web/results.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`data-sort="id"`,
+		`data-sort="strategy"`,
+		`data-sort="symbol"`,
+		`data-sort="equity"`,
+		`data-sort="total_return"`,
+		`data-sort="max_drawdown"`,
+		`data-sort="bars"`,
+		`data-sort="created_at"`,
+		"title=\"点击按此列排序\"",
+	} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("results.html missing %q", want)
+		}
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		"const RESULTS_SORT_KEYS = {",
+		"total_return: (i) => metricOf(i, \"total_return\") ?? -Infinity",
+		"created_at: (i) => i.created_at",
+		"function sortResults(items)",
+		"function renderSortIndicators()",
+		"function initResultsSorting(render)",
+		"let resultsSortKey = null",
+		"resultsSortDir = -resultsSortDir",
+		`(resultsSortDir === 1 ? " ↑" : " ↓")`,
+		// 排序重绘后恢复选中高亮
+		"openDetailId",
+		"if (openDetailId !== null) selectResultsRow(openDetailId)",
+		"initResultsSorting(render)",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 // TestBarsCoverageRemoved: bars 区块已随 Dashboard 改造迁出(老板 2026-08-02),
 // 旧覆盖度提示逻辑移除 — 查看缓存数据的功能现由独立「数据」页承担(data.html,
 // coverage-table + drill-in),Admin cluster 页仍有 freshness 覆盖表。
