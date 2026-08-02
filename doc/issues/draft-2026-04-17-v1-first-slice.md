@@ -33,12 +33,18 @@
 
 ## Plan（可勾选）
 
-- [ ] domain 包与测试
-- [ ] agent/master 骨架与测试
-- [ ] CLI 入口与测试（可用 `os/exec` 测 `-h` 或 version，若过重则只测 domain/agent/master）
+- [x] domain 包与测试
+- [x] agent/master 骨架与测试
+- [x] CLI 入口与测试（可用 `os/exec` 测 `-h` 或 version，若过重则只测 domain/agent/master）
 
 ## 仓库内链回
 
 - 路线图：[`doc/ROADMAP.md`](https://github.com/jiayuwangcj/wbot/blob/main/doc/ROADMAP.md)
 - 自动推进说明：[`doc/AUTO_ADVANCE.md`](https://github.com/jiayuwangcj/wbot/blob/main/doc/AUTO_ADVANCE.md)
 - 本草稿源文件（复制后可删本段）：`doc/issues/draft-2026-04-17-v1-first-slice.md`
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：本切片即工程起点（domain/agent/master/CLI），
+最早一批 PR 落地；后续演进见 `doc/tasks/2026-04-18-wbot-ingest-cli.md`
+等任务轨迹。

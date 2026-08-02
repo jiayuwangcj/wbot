@@ -52,6 +52,13 @@
 
 ## Plan（可勾选）
 
-- [ ] A：`internal/httpapi/futu_account.go`（FutuAccounter 窄接口 + 代理端点 + 503/400 映射）+ httptest + 集成测 skip 策略
-- [ ] B：index.html 账户卡片 + 持仓表 + 页面断言
-- [ ] API.md + serve -h + verify/CI 绿
+- [x] A：`internal/httpapi/futu_account.go`（FutuAccounter 窄接口 + 代理端点 + 503/400 映射）+ httptest + 集成测 skip 策略
+- [x] B：index.html 账户卡片 + 持仓表 + 页面断言
+- [x] API.md + serve -h + verify/CI 绿
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：A `GET /v1/futu/account`（FutuAccounter 窄接口
++ 503/400 映射 + 集成测 skip）、B 数据页账户卡片 + 持仓表、API.md
++ serve -h 同步均已落地。闭环记录见
+`doc/tasks/2026-08-02-futu-account-web.md`。

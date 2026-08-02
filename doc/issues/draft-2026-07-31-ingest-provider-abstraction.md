@@ -34,11 +34,18 @@
 
 ## Plan（可勾选）
 
-- [ ] `provider.go` 注册表 + `mock/file/url` 内建注册与单测
-- [ ] CLI `-provider` 接线（保持旧命令行为）+ main_test 用例（未注册名 → 2）
-- [ ] 文档：`doc/DATA_PIPELINE.md` 补 Provider 一节
+- [x] `provider.go` 注册表 + `mock/file/url` 内建注册与单测
+- [x] CLI `-provider` 接线（保持旧命令行为）+ main_test 用例（未注册名 → 2）
+- [x] 文档：`doc/DATA_PIPELINE.md` 补 Provider 一节
 
 ## 仓库内链回
 
 - 设计背景：`doc/DATA_PIPELINE.md`、`internal/ingest/`（bar.go/run.go/file.go/http.go/mock.go）
 - 任务轨迹：`doc/tasks/2026-07-31-ingest-time-range.md`（前置已完成）
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：`internal/ingest/provider.go` 注册表 +
+`mock/file/url` 内建注册、CLI `-provider`（未注册名退出 2）、
+`doc/DATA_PIPELINE.md`「Provider 抽象」一节均已落地。真实行情源
+接入仍为非目标（待凭证）。

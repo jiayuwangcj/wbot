@@ -81,10 +81,10 @@
 
 ## Plan（可勾选）
 
-- [ ] ⑥-A：`internal/httpapi/admin.go` 进程/DB 状态端点 + 注入方式 + 单测/集成测 + API.md
-- [ ] ⑥-B：`internal/config` 包（tmpdir 单测）+ config 端点 + 泄漏断言测试 + API.md
-- [ ] ⑥-C：ingest bars 覆盖查询 + cluster 端点 + 单测/集成测 + API.md
-- [ ] serve 帮助文本/`main_test` 同步；`scripts/verify.sh` 与 CI 保持绿；reviewer PRIVACY 扫描（值不进 diff）
+- [x] ⑥-A：`internal/httpapi/admin.go` 进程/DB 状态端点 + 注入方式 + 单测/集成测 + API.md
+- [x] ⑥-B：`internal/config` 包（tmpdir 单测）+ config 端点 + 泄漏断言测试 + API.md
+- [x] ⑥-C：ingest bars 覆盖查询 + cluster 端点 + 单测/集成测 + API.md
+- [x] serve 帮助文本/`main_test` 同步；`scripts/verify.sh` 与 CI 保持绿；reviewer PRIVACY 扫描（值不进 diff）
 
 ## 仓库内链回
 
@@ -93,3 +93,11 @@
 - 契约：`doc/API.md`；红线：`doc/PRIVACY.md`（~/.wbot/）
 - 前置切片轨迹：`doc/tasks/2026-07-31-httpapi-serve.md`、`doc/tasks/2026-07-31-miniapp-health.md`
 - 前端路线：`doc/ROADMAP.md` v4（go:embed Web UI）；需求源：discussions/10、discussions/21
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：⑥-A `GET /v1/admin/status`、⑥-B `GET/PUT
+/v1/admin/config`、⑥-C `GET /v1/admin/cluster`(bars 覆盖 + 新鲜度
+字段)均已实现并有 API.md 契约。闭环记录见
+`doc/tasks/2026-07-31-admin-status.md`、
+`doc/tasks/2026-07-31-admin-cluster.md`。

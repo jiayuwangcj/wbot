@@ -43,3 +43,10 @@
 
 - 需求源：老板 2026-08-02 Data 页指令；[[2026-07-31-web-v1-target]]（⑫ 策略模块 Web 化）
 - 现状：`internal/webui/web/index.html`、`internal/httpapi/futu_account.go`、`internal/futu/trade.go`（GetOrderList 可用）
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：Data 页改 Dashboard（账户聚合卡片 + 订单状态
++ Paper/实盘标识 + 视觉优化 + 30s 自动轮询 + 新鲜度打点）已落地。
+闭环记录见 `doc/tasks/2026-08-02-dashboard.md`、
+`doc/tasks/2026-08-02-devup-auto-restart.md` 等。

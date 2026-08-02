@@ -35,5 +35,11 @@ watchlist 调参目前**全在 CLI**（`wbot watchlist add -strategy covered-cal
 
 ## Plan（可勾选）
 
-- [ ] watchlist.html + app.js 工作台逻辑（列表/增删/策略下拉/参数表单动态渲染/就地校验）
-- [ ] 页面断言测试 + httptest 回归 + verify/CI 绿
+- [x] watchlist.html + app.js 工作台逻辑（列表/增删/策略下拉/参数表单动态渲染/就地校验）
+- [x] 页面断言测试 + httptest 回归 + verify/CI 绿
+
+## 状态（2026-08-03）
+
+✅ **已完成并合入**：watchlist.html + app.js 工作台（列表/增删/策略
+下拉/参数表单动态渲染/就地校验/表排序）均已落地。闭环记录见
+`doc/tasks/2026-08-02-watchlist-*.md`。
