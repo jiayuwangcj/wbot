@@ -10,6 +10,7 @@
 - [[AUTO_ADVANCE]]（根循环摘要 + 与 CI / 停机的说明）
 - [[CRON_CONTINUE]]（外部 cron 守护续跑：cron-claude-continue.sh 用法与 /loop 关系）
 - [[CI_REPORT]]（Actions Summary：无 LLM 的确定性报告）
+- [[RELEASE_DAILY]]（日构建与本地部署：0 点后阻碍清零 → daily tag → 运维部署）
 - [`doc/issues/`](issues/)（Issue/Discussion 待发草稿）
 - [[tasks/README]]
 - [[GITHUB_MCP]]
@@ -20,6 +21,7 @@
 - [[GITHUB_DISCUSSION_OPS]]
 - [[ROADMAP]]
 - [[DATA_PIPELINE]]（数据管道 v1：命令/行为/调度方式）
+- [[DATA_STANDARD]]（数据标准：复权/source/时间基准/字段规范）
 - [[FUTU]]（富途 OpenD 容器部署：凭证注入/启动/验证码/常见错误）
 - [[ACCEPTANCE]]（验收体系总表：verify.sh / dev-up 冒烟 / 12 个 accept 脚本 + 覆盖矩阵）
 - [[API]]（`wbot serve` 只读数据接口契约）
