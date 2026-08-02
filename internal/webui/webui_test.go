@@ -1160,6 +1160,7 @@ func TestResultsSortingJS(t *testing.T) {
 		`data-sort="bars"`,
 		`data-sort="created_at"`,
 		"title=\"点击按此列排序\"",
+		`id="results-filter"`,
 	} {
 		if !strings.Contains(string(html), want) {
 			t.Fatalf("results.html missing %q", want)
@@ -1180,10 +1181,14 @@ func TestResultsSortingJS(t *testing.T) {
 		"const RESULTS_SORT_KEYS = {",
 		"total_return: (i) => metricOf(i, \"total_return\") ?? -Infinity",
 		"created_at: (i) => i.created_at",
-		// 接入:results 页 sorter + 跨页排序重载 + 排序重绘后恢复选中高亮
+		// 接入:results 页 sorter + 本地过滤(先 filter 后 sort)+ 跨页排序重载
 		`makeTableSorter("results-table", RESULTS_SORT_KEYS)`,
-		"resultsSorter.sortItems(resultsItems)",
+		"resultsSorter.sortItems(list)",
 		"resultsSorter.render = loadSorted",
+		"const applyFilter = () => {",
+		"String(it.symbol).toLowerCase().includes(q)",
+		"filterInput.addEventListener(\"input\", applyFilter)",
+		`"无匹配「" + q + "」的回测结果。"`,
 		`"&sort=" + st.key + "&order="`,
 		"openDetailId",
 		"if (openDetailId !== null) selectResultsRow(openDetailId)",
