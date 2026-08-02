@@ -356,6 +356,9 @@ function initDashboardPage() {
   refresh.addEventListener("click", loadDashboard);
   positionsSorter = makeTableSorter("positions-table", POSITIONS_SORT_KEYS);
   positionsSorter.render = renderPositions;
+  positionsSorter.state.key = "market_val"; /* 默认按市值降序(券商面板惯例) */
+  positionsSorter.state.dir = -1;
+  positionsSorter.renderIndicators();
   ordersSorter = makeTableSorter("orders-table", ORDERS_SORT_KEYS);
   ordersSorter.render = loadOrders;
   loadDashboard();
@@ -1103,6 +1106,7 @@ function makeTableSorter(tableId, getters) {
       if (sorter.render) sorter.render();
     });
   }
+  sorter.renderIndicators = renderIndicators; /* 暴露:init 默认排序时同步表头指示 */
   return sorter;
 }
 
@@ -1121,10 +1125,10 @@ const RESULTS_SORT_KEYS = {
    持仓表默认按市值排)。 */
 const POSITIONS_SORT_KEYS = {
   symbol: (p) => p.symbol,
-  qty: (p) => p.qty,
-  avg_cost: (p) => p.avg_cost,
-  price: (p) => p.price,
-  market_val: (p) => p.market_val,
+  qty: (p) => p.qty ?? -Infinity,
+  avg_cost: (p) => p.avg_cost ?? -Infinity,
+  price: (p) => p.price ?? -Infinity,
+  market_val: (p) => p.market_val ?? -Infinity,
   pl: (p) => p.pl ?? -Infinity,
 };
 
