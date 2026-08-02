@@ -283,7 +283,7 @@ func runServe(prog string, argv []string) int {
 	// meta must carry the bound address: with -listen 127.0.0.1:0 the port exists only after Listen.
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
 	store := httpapi.NewDBStore(database)
-	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOrderer(), httpapi.NewFutuOptionChainer())
+	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOrderer(), httpapi.NewFutuOptionChainer(), httpapi.NewIngestRunner(database))
 	srv := &http.Server{Handler: top}
 
 	go func() {
@@ -1531,7 +1531,7 @@ func runIngestBars(prog string, argv []string) int {
 // serveMux assembles serve's top-level routes: admin API, watchlist API,
 // backtest results API (read + execute), Futu quote/account/options proxies,
 // data API, embedded Web UI.
-func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore, bstore httpapi.BacktestStore, bexec httpapi.BacktestExecutor, fquoter httpapi.FutuQuoter, facc httpapi.FutuAccounter, forder httpapi.FutuOrderer, fchain httpapi.FutuOptionChainer) *http.ServeMux {
+func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore, bstore httpapi.BacktestStore, bexec httpapi.BacktestExecutor, fquoter httpapi.FutuQuoter, facc httpapi.FutuAccounter, forder httpapi.FutuOrderer, fchain httpapi.FutuOptionChainer, irunner httpapi.IngestRunner) *http.ServeMux {
 	top := http.NewServeMux()
 	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, pinger))
 	// Exact pattern wins over the /v1/admin/ subtree, so cluster/config keep their own handler muxes.
@@ -1561,6 +1561,8 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/v1/futu/account", httpapi.FutuAccountHandler(facc))
 	top.Handle("/v1/futu/orders", httpapi.FutuOrdersHandler(forder))
 	top.Handle("/v1/futu/options", httpapi.FutuOptionsHandler(fchain))
+	// One-shot bar ingestion (Data 页「补数据」; same pipeline as `wbot ingest futu`).
+	top.Handle("/v1/ingest", httpapi.IngestHandler(irunner))
 	// Longest pattern wins: GET /{$} beats the / catch-all; other methods still reach the API's JSON 404.
 	top.Handle("GET /{$}", http.RedirectHandler("/ui/", http.StatusMovedPermanently))
 	top.Handle("/ui/", http.StripPrefix("/ui/", webui.FileServer()))
