@@ -15,6 +15,7 @@ function initTheme() {
     document.documentElement.dataset.theme = theme;
     btn.textContent = theme === "dark" ? "☀️" : "🌙";
     btn.setAttribute("aria-label", theme === "dark" ? "切换到浅色主题" : "切换到深色主题");
+    redrawCharts(); /* 主题切换后立即重绘图表(颜色随 token 走) */
   };
   apply(saved || (media.matches ? "dark" : "light"));
   btn.addEventListener("click", () => {
@@ -430,29 +431,42 @@ function fmtNum(v) {
   return Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 });
 }
 
-function drawSparkline(canvas, closes) {
-  const width = canvas.clientWidth || 600;
-  const height = canvas.clientHeight || 120;
-  const dpr = window.devicePixelRatio || 1;
-  canvas.width = width * dpr;
-  canvas.height = height * dpr;
-  const ctx = canvas.getContext("2d");
-  ctx.scale(dpr, dpr);
-  ctx.clearRect(0, 0, width, height);
-  if (closes.length < 2) return;
-  let min = Infinity, max = -Infinity;
-  for (const c of closes) { min = Math.min(min, c); max = Math.max(max, c); }
-  const span = max - min || 1;
-  const pad = 4;
-  ctx.strokeStyle = closes[closes.length - 1] >= closes[0] ? "#1a7f37" : "#cf222e";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let i = 0; i < closes.length; i++) {
-    const x = pad + (i / (closes.length - 1)) * (width - 2 * pad);
-    const y = pad + (1 - (closes[i] - min) / span) * (height - 2 * pad);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+/* 图表重绘缓存 (UI 主题化): 记录每张 canvas 的最后绘制参数, 主题切换时
+   立即重绘, 无需刷新页面 (initTheme 的 apply 后调用 redrawCharts). */
+const chartCache = new Map();
+
+function redrawCharts() {
+  for (const [canvas, draw] of chartCache) {
+    if (canvas.isConnected) draw();
   }
-  ctx.stroke();
+}
+
+function drawSparkline(canvas, closes) {
+  const draw = () => {
+    const width = canvas.clientWidth || 600;
+    const height = canvas.clientHeight || 120;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = width * dpr;
+    canvas.height = height * dpr;
+    const ctx = canvas.getContext("2d");
+    ctx.scale(dpr, dpr);
+    ctx.clearRect(0, 0, width, height);
+    if (closes.length < 2) return;
+    let min = Infinity, max = -Infinity;
+    for (const c of closes) { min = Math.min(min, c); max = Math.max(max, c); }
+    const span = max - min || 1;
+    const pad = 4;
+    ctx.strokeStyle = closes[closes.length - 1] >= closes[0] ? (cssVar("--ok") || "#1a7f37") : (cssVar("--down") || "#cf222e");
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < closes.length; i++) {
+      const x = pad + (i / (closes.length - 1)) * (width - 2 * pad);
+      const y = pad + (1 - (closes[i] - min) / span) * (height - 2 * pad);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  };
+  chartCache.set(canvas, draw);
 }
 
 function renderBarsDetail(bars) {
@@ -854,11 +868,12 @@ function cssVar(name) {
   return raw ? raw.trim() : null;
 }
 
-/* palette from style.css vars, hex fallbacks */
-const CURVE_LINE = cssVar("--accent") || "#0969da";
-const CURVE_ALT = cssVar("--accent-2") || "#eb6834";
-const CURVE_GRID = cssVar("--border") || "#d0d7de";
-const CURVE_TEXT = cssVar("--muted") || "#656d76";
+/* palette from style.css vars, hex fallbacks; resolved at draw time so a
+   theme switch repaints correctly (see redrawCharts). */
+const CURVE_LINE = () => cssVar("--accent") || "#0969da";
+const CURVE_ALT = () => cssVar("--accent-2") || "#eb6834";
+const CURVE_GRID = () => cssVar("--border") || "#d0d7de";
+const CURVE_TEXT = () => cssVar("--muted") || "#656d76";
 
 function fmtMoney(v) {
   return Number(v).toLocaleString("en-US", {maximumFractionDigits: 0});
@@ -1037,8 +1052,8 @@ function drawCurvePlot(canvas, series, hover) {
   const x = (ts) => (span === 0 ? CURVE_PAD.left + w / 2 : CURVE_PAD.left + ((ts - tsMin) / span) * w);
   const y = (v) => CURVE_PAD.top + (1 - (v - lo) / (hi - lo)) * h;
   ctx.lineWidth = 1;
-  ctx.strokeStyle = CURVE_GRID;
-  ctx.fillStyle = CURVE_TEXT;
+  ctx.strokeStyle = CURVE_GRID();
+  ctx.fillStyle = CURVE_TEXT();
   ctx.font = "10px system-ui, sans-serif";
   ctx.textAlign = "right";
   ctx.textBaseline = "middle";
@@ -1076,7 +1091,7 @@ function drawCurvePlot(canvas, series, hover) {
     ctx.arc(x(Date.parse(pts[last].ts)), y(pts[last].equity), 4, 0, 2 * Math.PI);
     ctx.fillStyle = s.color;
     ctx.fill();
-    ctx.fillStyle = CURVE_TEXT;
+    ctx.fillStyle = CURVE_TEXT();
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     ctx.fillText(fmtMoney(pts[last].equity), x(Date.parse(pts[last].ts)) + 10, y(pts[last].equity));
@@ -1084,14 +1099,14 @@ function drawCurvePlot(canvas, series, hover) {
   if (hover === null || hover === undefined) return;
   const hp = series[0].points[hover];
   ctx.lineWidth = 1;
-  ctx.strokeStyle = CURVE_GRID;
+  ctx.strokeStyle = CURVE_GRID();
   ctx.beginPath();
   ctx.moveTo(x(Date.parse(hp.ts)), CURVE_PAD.top);
   ctx.lineTo(x(Date.parse(hp.ts)), CURVE_PAD.top + h);
   ctx.stroke();
   ctx.beginPath();
   ctx.arc(x(Date.parse(hp.ts)), y(hp.equity), 4, 0, 2 * Math.PI);
-  ctx.fillStyle = CURVE_LINE;
+  ctx.fillStyle = CURVE_LINE();
   ctx.fill();
   ctx.strokeStyle = "#fff";
   ctx.lineWidth = 2;
@@ -1108,7 +1123,9 @@ function drawEquityCurve(points, hoverIdx) {
   }
   canvas.hidden = false;
   empty.hidden = true;
-  drawCurvePlot(canvas, [{points: points, color: CURVE_LINE}], hoverIdx);
+  const draw = () => drawCurvePlot(canvas, [{points: points, color: CURVE_LINE()}], hoverIdx);
+  chartCache.set(canvas, draw);
+  draw();
 }
 
 function drawMultiCurve(series, canvasId) {
@@ -1121,7 +1138,9 @@ function drawMultiCurve(series, canvasId) {
   }
   canvas.hidden = false;
   empty.hidden = true;
-  drawCurvePlot(canvas, series, null);
+  const draw = () => drawCurvePlot(canvas, series, null);
+  chartCache.set(canvas, draw);
+  draw();
 }
 
 /* Compare view: side-by-side metrics + overlaid equity curves with legend. */
@@ -1158,7 +1177,7 @@ function renderCompare(runs) {
   const compare = document.getElementById("compare");
   compare.hidden = false;
   compare.scrollIntoView();
-  const colors = [CURVE_LINE, CURVE_ALT];
+  const colors = [CURVE_LINE(), CURVE_ALT()];
   const table = document.getElementById("compare-table");
   const headRow = table.tHead.rows[0];
   headRow.replaceChildren();
