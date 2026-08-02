@@ -144,6 +144,22 @@ th {
   color: #cf222e;
 }
 
+.notice.ok {
+  color: #1a7f37;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+label.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--fg);
+}
+
 /* Freshness column: stale rows alert in red, unknown rows muted (data freshness
    monitor, doc/DATA_PIPELINE.md). */
 td.freshness-stale {
