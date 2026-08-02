@@ -175,7 +175,7 @@ $ wbot futu quote -symbol HK.00700
 
 **错误处理**：网关不可达 → `futu: status: ... connection refused`（exit 1）；HTTP 4xx/5xx → 输出状态码与 `{"error": ...}` 内容；业务错误（`ret_type != 0`）→ 输出 `ret_msg`。market 前缀支持 `HK./US./SH./SZ.`，其余报错（exit 2）。
 
-网关地址暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；config.yaml 的 `futu` 配置接入待后续切片。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
+网关地址 CLI 直跑暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；compose/serve 场景的 `futu` 配置经 config.yaml 注入——`configyaml` 渲染 + `tools/config-to-env.sh` → env（见 §1），serve 代理地址见下表的 `FUTU_GATEWAY_URL`/`FUTU_PROTO_ADDR`。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
 
 **serve 代理**（产品组体验意见 7，2026-08-02 起）：浏览器不能直连网关（loopback，CORS/安全），`wbot serve` 代浏览器访问富途网关（复用本客户端，限频池内置）。四个只读代理：
 
