@@ -7,15 +7,25 @@
 1. **0 点后**（北京时间）：PM 组 manager 评审阻碍性工作（CI 红 / 阻断合入 bug / 解除 blocked 的最小改动）——高优先级完成，不因成本时段顺延
 2. **阻碍性工作清零后**：主会话/operator 发布日构建：
    ```bash
-   scripts/release.sh publish --version daily-YYYYMMDD   # 如 daily-20260801
+   scripts/release.sh publish --version daily-YYYYMMDD   # 首次发布，如 daily-20260801
+   scripts/release.sh republish --version daily-YYYYMMDD # 当日已有 tag 时：重打 tag 到 HEAD 并替换 release
    ```
-   （release.sh 自动 cross-build 到 `dist/` 并创建 GitHub Release + tag；环境变量 `GH_TOKEN="$(env -u GITHUB_TOKEN gh auth token)"`）
-3. **运维组 operator 部署**：下载/获取日版本产物 → 部署到本地发布目录：
+   （release.sh 自动 cross-build 到 `dist/` 并创建 GitHub Release + tag；环境变量 `GH_TOKEN="$(env -u GITHUB_TOKEN gh auth token)"`。republish 仅接受 `vdaily-*` 版本，正式版走新版本号）
+3. **运维组 operator 部署**（scripted，自动下载 linux_amd64 产物 → 校验 SHA256SUMS（仅校验已下载条目，SHA256SUMS 全量含 5 平台）→ 解压到发布目录）：
+   ```bash
+   scripts/release.sh deploy --version daily-YYYYMMDD
+   # -> ~/.wbot/releases/daily-YYYYMMDD/wbot   (tar.gz 已删，SHA256SUMS 留存)
    ```
-   ~/.wbot/releases/daily-YYYYMMDD/
-   ```
-   （解压 tar.gz/zip、校验 SHA256SUMS、放置 `wbot` 二进制与示例配置；部署细节按实际环境补充）
 4. **留痕**：日构建 tag/URL 与部署结果记录到进度贴（discussions/9）或当日任务记录
+
+## 本地部署环境（OrbStack，2026-08-02 实测）
+
+- **容器地址**：宿主机端口未绑定，须经 OrbStack bridge 容器 IP 直连：
+  - `wbot-pg-ci-test` → `192.168.215.5:5432`（库 `wbot_test`，`postgres/postgres`）
+  - `futu-opend-rs` → `192.168.215.2`（REST `:22222`，proto `:11111`）
+- **实测 DSN**：`postgres://postgres:postgres@192.168.215.5:5432/wbot_test?sslmode=disable`
+- **一键起环境**：`scripts/dev-up.sh` 自动发现上述地址、起 serve、幂等种子演示数据（回测需 fwd bars）、跑 10 项验收 smoke；serve 重启用 `--force`
+- IP 可能随容器重建变化——一律以 dev-up.sh 的自动发现为准，不要手写进脚本
 
 ## 规则
 
