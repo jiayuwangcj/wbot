@@ -482,7 +482,7 @@ Query 参数：
 | `env` | 否 | `sim` | 交易环境：`sim`（模拟盘，默认）\| `real`（实盘只读查询；非法值 → 400） |
 | `acc_id` | 否 | 该环境第一个账户 | 账户 ID（uint64；非法 → 400） |
 
-网关地址：环境变量 `FUTU_GATEWAY_URL`（与 quote 代理同源；本端点默认 `127.0.0.1:11111` 即 OpenD protobuf 端口）。连接管理：serve 进程内**包级复用**一条 TradeClient 连接（互斥串行；网关自动重连）。
+网关地址：环境变量 `FUTU_PROTO_ADDR`（独立于 quote/options 的 `FUTU_GATEWAY_URL`——REST 22222 与 proto 11111 双地址部署；默认 `127.0.0.1:11111` 即 OpenD protobuf 端口）。连接管理：serve 进程内**包级复用**一条 TradeClient 连接（互斥串行；网关自动重连）。
 
 响应 `200`（字段白名单，不泄漏账户/订单元数据；`positions` 空时为空数组）：
 
@@ -521,7 +521,7 @@ Query 参数：
 | `symbol` | 是 | market 限定 symbol，如 `HK.00700`（前缀支持 `HK./US./SH./SZ.`，非法 → 400） |
 | `expiry` | 否 | 链到期日 `YYYY-MM-DD`（格式非法 → 400）；缺省为最近未来到期日（`distance_days` ≥ 0 最小者），全部已到期时 `contracts` 为空数组 |
 
-网关地址：环境变量 `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`，同 quote/account 代理）。
+网关地址：环境变量 `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`，同 quote 代理；account 端点另用 `FUTU_PROTO_ADDR`）。
 
 响应 `200`：
 

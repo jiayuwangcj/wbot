@@ -131,11 +131,13 @@ func symbolFor(p *trdcommon.Position) string {
 	return p.GetCode()
 }
 
-// FutuAccountAddr returns the gateway proto address: $FUTU_GATEWAY_URL or the
-// OpenD default loopback 11111 (doc/FUTU.md). The quote proxy reads the same
-// env var (its default is the REST port 22222); the proto client dials 11111.
+// FutuAccountAddr returns the gateway proto address: $FUTU_PROTO_ADDR or the
+// OpenD default loopback 11111 (doc/FUTU.md). The proto client dials TCP 11111;
+// the REST quote/options proxies read $FUTU_GATEWAY_URL (REST 22222) instead —
+// the two transports are configured independently, so a REST gateway URL must
+// not be fed to the proto dialer.
 func FutuAccountAddr() string {
-	if v := strings.TrimSpace(os.Getenv("FUTU_GATEWAY_URL")); v != "" {
+	if v := strings.TrimSpace(os.Getenv("FUTU_PROTO_ADDR")); v != "" {
 		return v
 	}
 	return futu.DefaultProtoAddr

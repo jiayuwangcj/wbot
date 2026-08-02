@@ -81,6 +81,25 @@ func TestFutuAccountPassthrough(t *testing.T) {
 	}
 }
 
+// TestFutuAccountAddrEnv: the proto address comes from $FUTU_PROTO_ADDR and is
+// independent of $FUTU_GATEWAY_URL (the REST transport's var) — the dual-
+// semantic bug where the REST URL was fed to the proto dialer.
+func TestFutuAccountAddrEnv(t *testing.T) {
+	if v := os.Getenv("FUTU_PROTO_ADDR"); v != "" {
+		t.Cleanup(func() { os.Setenv("FUTU_PROTO_ADDR", v) })
+	} else {
+		t.Cleanup(func() { os.Unsetenv("FUTU_PROTO_ADDR") })
+	}
+	t.Setenv("FUTU_GATEWAY_URL", "http://192.168.215.2:22222") // REST addr must not leak into proto
+	if got := FutuAccountAddr(); got != futu.DefaultProtoAddr {
+		t.Fatalf("addr without FUTU_PROTO_ADDR = %q; want default %q", got, futu.DefaultProtoAddr)
+	}
+	t.Setenv("FUTU_PROTO_ADDR", "192.168.215.2:11111")
+	if got := FutuAccountAddr(); got != "192.168.215.2:11111" {
+		t.Fatalf("addr with FUTU_PROTO_ADDR = %q; want the var value", got)
+	}
+}
+
 func TestFutuAccountEnvAndAccID(t *testing.T) {
 	f := &fakeFutuAccounter{}
 	rec := get(t, FutuAccountHandler(f), "/v1/futu/account?env=real&acc_id=281756478875559548")
