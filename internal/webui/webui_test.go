@@ -335,6 +335,7 @@ func TestDashboardPageContract(t *testing.T) {
 		`id="summary-curve-wrap"`,
 		`id="summary-canvas"`,
 		`id="summary-curve-range"`,
+		`id="summary-curve-tip"`,
 		`id="accounts-table"`,
 		`id="positions-table"`,
 		`id="orders-table"`,
@@ -1375,6 +1376,9 @@ func TestAppJSQueriesFutuAccountAPI(t *testing.T) {
 		"loadSnapSeries",
 		"renderSummaryCurve",
 		"drawSparkline(canvas, pts.map((p) => p.total_assets))",
+		"attachCurveHover",
+		"canvas.onmousemove",
+		`fmtTime(p.captured_at) + " · " + fmtAccountMoney(p.total_assets)`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
