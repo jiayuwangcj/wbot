@@ -24,6 +24,7 @@ import (
 	"github.com/jiayu/wbot/internal/configyaml"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
+	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/httpapi"
 	"github.com/jiayu/wbot/internal/httpregister"
 	"github.com/jiayu/wbot/internal/ingest"
@@ -997,13 +998,15 @@ func runIngestMock(prog string, argv []string) int {
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
 	provider := fs.String("provider", "mock", "ingest provider name")
+	adjust := fs.String("adjust", "none", "adjustment: none|fwd|back (doc/DATA_STANDARD.md)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest mock [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Runs a sample ingestion (mock bars) into PostgreSQL.\n")
 		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT).\n")
 		fmt.Fprintf(os.Stderr, "With -from/-to, the range is validated before ingestion (the mock feed is fixed\n")
-		fmt.Fprintf(os.Stderr, "demo data and keeps all bars; empty = unbounded).\n\n")
+		fmt.Fprintf(os.Stderr, "demo data and keeps all bars; empty = unbounded).\n")
+		fmt.Fprintf(os.Stderr, "With -adjust fwd, seeds 前复权 bars so the 回测页 can run (回测默认 fwd).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -1058,11 +1061,16 @@ func runIngestMock(prog string, argv []string) int {
 	sym := domain.Symbol(*symbol)
 	ctx, cancel := ingestRepeatCtx(*every)
 	defer cancel()
+	_, adjustName, err := futu.ParseAdjust(*adjust)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ingest mock: %v\n", err)
+		return 2
+	}
 	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
-		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), "none", "mock", fromT, toT, src); err != nil {
+		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), adjustName, "mock", fromT, toT, src); err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stderr, "ingest mock: ok (source=%s symbol=%s timeframe=%s)\n", strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe))
+		fmt.Fprintf(os.Stderr, "ingest mock: ok (source=%s symbol=%s timeframe=%s adjust=%s)\n", strings.TrimSpace(*source), sym, strings.TrimSpace(*timeframe), adjustName)
 		return nil
 	}, func(err error) {
 		fmt.Fprintf(os.Stderr, "ingest mock: %v\n", err)

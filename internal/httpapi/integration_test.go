@@ -32,7 +32,7 @@ func TestHandlerIntegration(t *testing.T) {
 
 	ctx := context.Background()
 	source := "httpapi-test"
-	if err := ingest.RunMockIngestion(ctx, database, source, domain.Symbol("DEMO.US"), "1d"); err != nil {
+	if err := ingest.RunMockIngestion(ctx, database, source, domain.Symbol("DEMO.US"), "1d", "none"); err != nil {
 		t.Fatal(err)
 	}
 

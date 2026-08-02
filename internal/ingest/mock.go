@@ -20,8 +20,12 @@ func (mockSource) Bars(_ context.Context, _ domain.Symbol, _ string, _, _ time.T
 	}, nil
 }
 
-// RunMockIngestion runs RunIngestion with the fixed mockSource (adjust=none,
-// source=mock); intended for wiring tests.
-func RunMockIngestion(ctx context.Context, db *sql.DB, source string, symbol domain.Symbol, timeframe string) error {
-	return RunIngestion(ctx, db, source, symbol, timeframe, "none", "mock", time.Time{}, time.Time{}, mockSource{})
+// RunMockIngestion runs RunIngestion with the fixed mockSource (source=mock,
+// adjust passed through — default none; dev-up.sh seeds fwd demo bars so the
+// 回测页 has runnable data); intended for wiring tests and demo seeding.
+func RunMockIngestion(ctx context.Context, db *sql.DB, source string, symbol domain.Symbol, timeframe, adjust string) error {
+	if adjust == "" {
+		adjust = "none"
+	}
+	return RunIngestion(ctx, db, source, symbol, timeframe, adjust, "mock", time.Time{}, time.Time{}, mockSource{})
 }
