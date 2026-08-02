@@ -43,6 +43,11 @@
           <div class="metric-card"><h3>购买力</h3><p id="summary-power" class="metric-value">—</p></div>
           <div class="metric-card"><h3>可用资金</h3><p id="summary-available-cash" class="metric-value">—</p></div>
         </div>
+        <div id="summary-curve-wrap" hidden>
+          <h3 class="subsection">资产曲线 <span id="summary-curve-range" class="section-tag"></span></h3>
+          <canvas id="summary-canvas" class="sparkline" tabindex="0" role="img" aria-label="账户资产曲线(总资产历史快照)"></canvas>
+          <p id="summary-curve-empty" class="notice" hidden>暂无历史快照;可运行 <code>wbot ingest account</code> 开始记录(支持 -every 定时)。</p>
+        </div>
       </section>
 
       <section id="accounts">
