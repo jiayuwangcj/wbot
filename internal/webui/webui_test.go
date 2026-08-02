@@ -498,6 +498,34 @@ func TestWatchlistPageElements(t *testing.T) {
 	}
 }
 
+// TestWatchlistBacktestJS: watchlist 行「回测」按钮契约(2026-08-02):
+// POST /v1/backtests(该标的绑定策略与参数)→ hash 跳 results 页打开
+// 详情(配置→回测→看结果闭环)。
+func TestWatchlistBacktestJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		"function renderWatchlist(items, onEdit, onDelete, onBacktest) {",
+		`run.textContent = "回测"`,
+		"() => onBacktest(item)",
+		"function runBacktest(item) {",
+		`body = {symbol: item.symbol, strategy: item.strategy}`,
+		"if (item.params) body.params = item.params",
+		`method: "POST"`,
+		"location.href = \"/ui/results.html#bt-\" + res.id",
+		"renderWatchlist(items, beginEdit, deleteItem, runBacktest)",
+		`location.hash.match(/^#bt-(\d+)$/)`,
+		"openDetail(Number(bt[1]))",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 // TestStrategyCardsSection: options chain 已删(老板 2026-08-02,不需看盘工具),
 // 策略页页首为策略说明卡(/v1/strategies schema 渲染)。
 func TestStrategyCardsSection(t *testing.T) {
