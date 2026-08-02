@@ -33,7 +33,7 @@
 
 | 子系统 | CLI | HTTP | 说明 |
 | --- | --- | --- | --- |
-| serve | — | dev-up 16 + 各 accept | DB 本地端点 dev-up 冒烟；futu 系 accept-futu-data |
+| serve | — | dev-up 19 + 各 accept | DB 本地端点 dev-up 冒烟；futu 系 accept-futu-data |
 | ingest | accept-bars-refill / accept-options-ingest / accept-account-snapshot | 同上（POST /v1/ingest） | 含 `-every` 循环 |
 | futu | accept-futu-cli 21 | accept-futu-data 15 | order 只测 -dry-run 与校验/红线拒绝路径，**绝不下真单**（写操作 + 账户状态变更，刻意无自动脚本） |
 | backtest | accept-backtest 21 | 同上（GET detail/export） | 四条字节一致等价 + from_watchlist 实测 |
