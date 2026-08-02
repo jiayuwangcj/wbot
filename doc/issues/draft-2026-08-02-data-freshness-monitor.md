@@ -54,6 +54,13 @@
 
 ## Plan（可勾选）
 
-- [ ] A：freshness 判定 + `ingest freshness` CLI + 单测/集成测
-- [ ] B：cluster bars_coverage 新字段 + 向后兼容断言 + API.md
-- [ ] C：admin.html stale/unknown 标注 + 页面断言 + verify/CI 绿
+- [x] A：freshness 判定 + `ingest freshness` CLI + 单测/集成测
+- [x] B：cluster bars_coverage 新字段 + 向后兼容断言 + API.md
+- [x] C：admin.html stale/unknown 标注 + 页面断言 + verify/CI 绿
+
+## 状态（2026-08-02）
+
+✅ **已完成并合入**：PR #88（主体三切片）+ #90（review P3：负 `-max-age`
+拒绝）。闭环记录见 `doc/tasks/2026-08-02-data-freshness-monitor.md`
+（补归档）。非目标项（告警推送/自动补拉/option_quotes 并入/趋势图）
+仍开放。
