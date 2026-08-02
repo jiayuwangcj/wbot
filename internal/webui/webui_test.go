@@ -526,6 +526,43 @@ func TestWatchlistBacktestJS(t *testing.T) {
 	}
 }
 
+// TestRerunJS: 详情「重新运行」——回填表单(symbol/strategy/params)后
+// 滚动到表单,参数迭代闭环。
+func TestRerunJS(t *testing.T) {
+	jsData, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsData)
+	for _, want := range []string{
+		"let rerunHandler = null",
+		"if (rerunHandler) rerunHandler(d)",
+		`rerunHandler = (d) => {`,
+		`document.getElementById("rerun-btn").onclick`,
+		"symbolInput.value = d.symbol",
+		"const st = strategyByName(d.strategy)",
+		"select.value = d.strategy",
+		`renderParamFields(st, d.params, "run-param-fields")`,
+		`document.getElementById("run").scrollIntoView()`,
+		"symbolInput.focus()",
+		`策略「" + d.strategy + "」不在当前注册表,请手动选择策略。`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	htmlData, err := fs.ReadFile(webFiles, "web/results.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(htmlData), `id="rerun-btn"`) {
+		t.Fatal("results.html missing rerun-btn")
+	}
+	if !strings.Contains(string(htmlData), ">重新运行<") {
+		t.Fatal("results.html missing 重新运行 label")
+	}
+}
+
 // TestActiveNavJS: 导航当前页高亮(setActiveNav,按 pathname 匹配 active
 // 类;index 页 /ui/ 与 /ui/index.html 同页归一)。
 func TestActiveNavJS(t *testing.T) {
