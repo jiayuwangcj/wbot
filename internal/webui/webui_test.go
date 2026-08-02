@@ -1377,7 +1377,9 @@ func TestAppJSQueriesFutuAccountAPI(t *testing.T) {
 		"renderSummaryCurve",
 		"drawSparkline(canvas, pts.map((p) => p.total_assets))",
 		"attachCurveHover",
-		"canvas.onmousemove",
+		`canvas.addEventListener("mousemove"`,
+		`canvas.addEventListener("touchstart"`,
+		`canvas.addEventListener("touchend"`,
 		`fmtTime(p.captured_at) + " · " + fmtAccountMoney(p.total_assets)`,
 	} {
 		if !strings.Contains(js, want) {

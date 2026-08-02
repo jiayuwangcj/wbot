@@ -235,14 +235,15 @@ function renderSummaryCurve() {
   attachCurveHover(canvas, pts);
 }
 
-/* 资产曲线 hover 读数(富途/IB 账户曲线惯例):鼠标移到曲线附近显示
-   该快照时刻与总资产;移出隐藏。x 坐标按比例映射到最近数据点。 */
+/* 资产曲线读数(富途/IB 账户曲线惯例):鼠标悬停/触摸显示该快照时刻与
+   总资产,移出/松手隐藏。x 坐标按比例映射到最近数据点;touch 即触即显
+   (移动端无 hover 概念),preventDefault 让读数优先于页面滚动。 */
 function attachCurveHover(canvas, pts) {
   const tip = document.getElementById("summary-curve-tip");
   if (!tip) return;
-  canvas.onmousemove = (e) => {
+  const showTip = (clientX) => {
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
+    const x = clientX - rect.left;
     const idx = Math.max(0, Math.min(pts.length - 1,
       Math.round((x / rect.width) * (pts.length - 1))));
     const p = pts[idx];
@@ -251,7 +252,12 @@ function attachCurveHover(canvas, pts) {
     tip.style.left = Math.min(x + 10, rect.width - tip.offsetWidth - 4) + "px";
     tip.style.top = Math.max(0, rect.height - tip.offsetHeight - 8) + "px";
   };
-  canvas.onmouseleave = () => { tip.hidden = true; };
+  const hideTip = () => { tip.hidden = true; };
+  canvas.addEventListener("mousemove", (e) => showTip(e.clientX));
+  canvas.addEventListener("mouseleave", hideTip);
+  canvas.addEventListener("touchstart", (e) => { e.preventDefault(); showTip(e.touches[0].clientX); }, {passive: false});
+  canvas.addEventListener("touchmove", (e) => { e.preventDefault(); showTip(e.touches[0].clientX); }, {passive: false});
+  canvas.addEventListener("touchend", hideTip);
 }
 
 function renderAccounts() {
