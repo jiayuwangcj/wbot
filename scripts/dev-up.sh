@@ -197,6 +197,14 @@ if [[ "$smoke" == "1" ]]; then
 	check "GET /v1/backtests?limit=1" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/backtests?limit=1")"
 	check "GET /v1/admin/cluster" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/admin/cluster")"
 	check "POST /v1/backtests (回测可跑)" 201 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base_url/v1/backtests" -H 'Content-Type: application/json' -d '{"symbol":"BTEXEC.US","strategy":"buy-hold"}')"
+	# DB-local 端点补齐(2026-08-03): 与网关无关,dev-up 种子数据后应恒 200;
+	# futu 系端点依赖网关,由 scripts/accept-*.sh 覆盖,不入 dev-up。
+	check "GET /v1/health" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/health")"
+	check "GET /v1/runs" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/runs")"
+	check "GET /v1/bars (DEMO.US 1d)" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/bars?symbol=DEMO.US&timeframe=1d")"
+	check "GET /v1/account/snapshots" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/account/snapshots")"
+	check "GET /v1/admin/status" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/admin/status")"
+	check "GET /v1/admin/config" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/admin/config")"
 
 	echo
 	if [[ "$failed" == "0" ]]; then
