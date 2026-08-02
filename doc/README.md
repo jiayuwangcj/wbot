@@ -21,6 +21,7 @@
 - [[ROADMAP]]
 - [[DATA_PIPELINE]]（数据管道 v1：命令/行为/调度方式）
 - [[FUTU]]（富途 OpenD 容器部署：凭证注入/启动/验证码/常见错误）
+- [[ACCEPTANCE]]（验收体系总表：verify.sh / dev-up 冒烟 / 12 个 accept 脚本 + 覆盖矩阵）
 - [[API]]（`wbot serve` 只读数据接口契约）
 - [[BACKTEST]]（v2 回测骨架：命令/指标/约束）
 - [[PLAN_V0]]
