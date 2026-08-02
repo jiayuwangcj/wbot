@@ -298,7 +298,7 @@ async function loadDashboard() {
 }
 
 function renderRuns(runs) {
-  renderTable("runs-table", runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "running" : r.finished_at]));
+  renderTable("runs-table", runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "运行中" : r.finished_at]));
 }
 
 function initDashboardPage() {
@@ -750,7 +750,7 @@ function initWatchlistPage() {
     }
     const strategy = currentStrategy();
     if (!strategy) {
-      showError(formError, new Error("select a strategy"));
+      showError(formError, new Error("请选择策略"));
       return;
     }
     const collected = collectParams(strategy, form);
@@ -834,7 +834,7 @@ function setupBacktestRunForm() {
     okEl.hidden = true;
     const strategy = strategyByName(select.value);
     if (!strategy) {
-      showError(errEl, new Error("select a strategy"));
+      showError(errEl, new Error("请选择策略"));
       return;
     }
     let body;
@@ -923,7 +923,7 @@ function toggleCompareSelection(id, checked) {
   const btn = document.getElementById("compare-btn");
   const hint = document.getElementById("compare-hint");
   if (checked && compareSelection.length >= 2) {
-    hint.textContent = "Select exactly two runs to compare.";
+    hint.textContent = "请选择恰好两条回测进行对比。";
     hint.hidden = false;
     return false;
   }
@@ -985,7 +985,7 @@ function renderResultsList(items, onOpen) {
     const open = document.createElement("button");
     open.type = "button";
     open.className = "link";
-    open.textContent = "Detail";
+    open.textContent = "详情";
     open.addEventListener("click", () => onOpen(item));
     actions.appendChild(open);
     tr.appendChild(actions);
@@ -1277,7 +1277,7 @@ async function openCompare() {
   const hint = document.getElementById("compare-hint");
   const errorEl = document.getElementById("compare-error");
   if (compareSelection.length !== 2) {
-    hint.textContent = "Select exactly two runs to compare.";
+    hint.textContent = "请选择恰好两条回测进行对比。";
     hint.hidden = false;
     return;
   }

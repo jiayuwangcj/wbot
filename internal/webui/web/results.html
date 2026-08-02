@@ -42,40 +42,40 @@
   <section id="list">
     <h2>回测结果</h2>
     <p id="results-error" class="notice error" hidden></p>
-    <p id="results-empty" class="notice" hidden>No backtest results yet. Run one above or via wbot backtest -save.</p>
+    <p id="results-empty" class="notice" hidden>暂无回测结果。可在上方运行,或使用 wbot backtest -save 导入。</p>
     <div class="table-scroll">
       <table id="results-table" hidden>
         <thead>
-          <tr><th></th><th>ID</th><th>Strategy</th><th>Symbol</th><th>Equity</th><th>Return</th><th>Max drawdown</th><th>Bars</th><th>Created at</th><th></th></tr>
+          <tr><th></th><th>ID</th><th>策略</th><th>代码</th><th>权益</th><th>收益</th><th>最大回撤</th><th>K 线</th><th>创建时间</th><th></th></tr>
         </thead>
         <tbody></tbody>
       </table>
     </div>
     <p id="compare-hint" class="notice" hidden></p>
-    <button type="button" id="compare-btn" disabled>Compare selected runs</button>
+    <button type="button" id="compare-btn" disabled>对比所选回测</button>
   </section>
   <section id="detail" hidden>
-    <h2>Backtest <span id="detail-id"></span></h2>
+    <h2>回测详情 <span id="detail-id"></span></h2>
     <p id="detail-error" class="notice error" hidden></p>
     <div id="metric-cards" class="cards" hidden>
-      <div class="card"><h3>Final equity</h3><p id="metric-equity" class="metric-value"></p></div>
-      <div class="card"><h3>Total return</h3><p id="metric-total-return" class="metric-value"></p></div>
-      <div class="card"><h3>Max drawdown</h3><p id="metric-max-drawdown" class="metric-value"></p></div>
-      <div class="card"><h3>Bars</h3><p id="metric-bars" class="metric-value"></p></div>
+      <div class="card"><h3>期末权益</h3><p id="metric-equity" class="metric-value"></p></div>
+      <div class="card"><h3>总收益率</h3><p id="metric-total-return" class="metric-value"></p></div>
+      <div class="card"><h3>最大回撤</h3><p id="metric-max-drawdown" class="metric-value"></p></div>
+      <div class="card"><h3>K 线数</h3><p id="metric-bars" class="metric-value"></p></div>
     </div>
     <div id="curve-wrap" class="curve-wrap" hidden>
-      <h3>Equity curve</h3>
+      <h3>权益曲线</h3>
       <canvas id="equity-canvas" width="800" height="300" tabindex="0" role="img" aria-label="Equity curve"></canvas>
-      <p id="curve-empty" class="notice" hidden>No equity curve for this run (older data).</p>
+      <p id="curve-empty" class="notice" hidden>该回测无权益曲线(旧数据)。</p>
       <p id="curve-readout" class="notice" hidden></p>
     </div>
     <div id="detail-extra" hidden>
       <h3>Trades</h3>
-      <p id="trades-empty" class="notice" hidden>No trades recorded.</p>
+      <p id="trades-empty" class="notice" hidden>未记录交易。</p>
       <div class="table-scroll">
         <table id="trades-table" hidden>
           <thead>
-            <tr><th>Time</th><th>Action</th><th>Symbol</th><th>Size</th><th>Price</th><th>Cash after</th></tr>
+            <tr><th>时间</th><th>方向</th><th>代码</th><th>数量</th><th>价格</th><th>剩余现金</th></tr>
           </thead>
           <tbody></tbody>
         </table>
@@ -85,10 +85,10 @@
       <h3>Params</h3>
       <pre id="detail-params"></pre>
     </div>
-    <button type="button" id="detail-back" class="link">Back to list</button>
+    <button type="button" id="detail-back" class="link">返回列表</button>
   </section>
   <section id="compare" hidden>
-    <h2>Compare runs</h2>
+    <h2>对比回测</h2>
     <p id="compare-error" class="notice error" hidden></p>
     <div class="table-scroll">
       <table id="compare-table" hidden>
@@ -96,14 +96,14 @@
         <tbody></tbody>
       </table>
     </div>
-    <p id="compare-table-empty" class="notice" hidden>Select exactly two runs to compare.</p>
+    <p id="compare-table-empty" class="notice" hidden>请选择恰好两条回测进行对比。</p>
     <div id="compare-curve-wrap" class="curve-wrap" hidden>
-      <h3>Equity curves</h3>
+      <h3>权益曲线叠加</h3>
       <canvas id="compare-canvas" width="800" height="300" role="img" aria-label="Equity curves overlay"></canvas>
-      <p id="compare-empty" class="notice" hidden>No equity curves to overlay (older data).</p>
+      <p id="compare-empty" class="notice" hidden>无权益曲线可叠加(旧数据)。</p>
       <div id="compare-legend" class="legend"></div>
     </div>
-    <button type="button" id="compare-back" class="link">Back to list</button>
+    <button type="button" id="compare-back" class="link">返回列表</button>
   </section>
 </main>
 <script src="/ui/app.js"></script>

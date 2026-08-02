@@ -847,7 +847,7 @@ func TestAppJSCompareView(t *testing.T) {
 		"compare-btn",
 		"runLabel",
 		"CURVE_ALT",
-		"Select exactly two runs to compare.",
+		"请选择恰好两条回测进行对比。",
 		"series.find((s) => s.points.length > 0)", /* P1: empty first series (legacy run) must not crash the label loop */
 	} {
 		if !strings.Contains(js, want) {
@@ -860,6 +860,42 @@ func TestAppJSCompareView(t *testing.T) {
 	draw := strings.Index(js[rcStart:], "drawMultiCurve")
 	if reveal == -1 || draw == -1 || reveal > draw {
 		t.Fatalf("renderCompare must reveal the compare section before drawing")
+	}
+}
+
+// TestUICopyLocalized: UI 文案中文化切片(2026-08-02):用户可见文案统一中文,
+// 关键交互文案(空状态/按钮/错误提示)断言在位,防回退为英文。
+func TestUICopyLocalized(t *testing.T) {
+	for _, path := range []string{"web/results.html", "web/watchlist.html", "web/index.html"} {
+		data, err := fs.ReadFile(webFiles, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "暂无") {
+			t.Fatalf("%s missing localized empty-state copy", path)
+		}
+	}
+	data, err := fs.ReadFile(webFiles, "web/results.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"暂无回测结果", "对比所选回测", "未记录交易", "该回测无权益曲线",
+		"请选择恰好两条回测进行对比", "回测详情", "期末权益", "最大回撤", "权益曲线",
+		"返回列表",
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("results.html missing %q", want)
+		}
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"请选择策略", "运行中", "详情"} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js missing %q", want)
+		}
 	}
 }
 
