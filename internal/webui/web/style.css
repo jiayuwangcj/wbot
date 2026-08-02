@@ -235,6 +235,10 @@ button:active {
 
 .table-scroll {
   overflow-x: auto;
+  /* 长表限高 + 表头 sticky(2026-08-03, 富途/IB 桌面端惯例): 滚动时表头
+     跟随, 数据页 K 线表补数据后数百行不迷失列名。短表不受影响。 */
+  max-height: 65vh;
+  overflow-y: auto;
 }
 
 table {
@@ -253,6 +257,12 @@ td {
 th {
   color: var(--muted);
   font-weight: 600;
+  /* sticky 表头背景须不透明(var(--surface)= section 卡片背景),
+     否则滚动内容穿透表头 */
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
 }
 
 .notice {
