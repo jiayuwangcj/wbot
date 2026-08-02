@@ -86,133 +86,190 @@ async function loadJSON(url, errorEl, render) {
   }
 }
 
-/* Data page: /v1/bars on form submit, /v1/runs on load,
-   /v1/futu/quote on submit too (live quote, reuses the symbol input). */
+/* Dashboard page (老板 2026-08-02: Data 页改 Dashboard): 账户聚合 + 子账户明细
+   + 订单状态。模拟盘默认(安全红线);实盘只读。bars/quote 区块已删除。 */
 
-function renderQuote(s2c, symbol) {
-  const q = (s2c.basic_qot_list && s2c.basic_qot_list[0]) || null;
-  if (!q) throw new Error("no quote returned for " + symbol);
-  setText("quote-last", q.cur_price);
-  setText("quote-open", q.open_price);
-  setText("quote-high", q.high_price);
-  setText("quote-low", q.low_price);
-  setText("quote-volume", q.volume);
-  setText("quote-time", q.update_time);
-  document.getElementById("quote-card").hidden = false;
+const FUTU_ENVS = [
+  {key: "sim", label: "Paper 模拟盘"},
+  {key: "real", label: "实盘 Live"},
+];
+
+function envLabel(key) {
+  return key === "real" ? "实盘" : "模拟盘";
 }
-
-async function loadQuote(symbol) {
-  const errorEl = document.getElementById("quote-error");
-  if (!errorEl) return;
-  try {
-    const s2c = await fetchJSON("/v1/futu/quote?symbol=" + encodeURIComponent(symbol));
-    clearError(errorEl);
-    renderQuote(s2c, symbol);
-  } catch (err) {
-    document.getElementById("quote-card").hidden = true;
-    showError(errorEl, err);
-  }
-}
-
-/* Futu paper account: /v1/futu/account funds card + positions table (read-only). */
 
 function fmtAccountMoney(v) {
   return Number(v).toLocaleString("en-US", {maximumFractionDigits: 2});
 }
 
-function renderAccount(snap) {
-  setText("account-power", fmtAccountMoney(snap.funds.power));
-  setText("account-total-assets", fmtAccountMoney(snap.funds.total_assets));
-  setText("account-cash", fmtAccountMoney(snap.funds.cash));
-  setText("account-market-val", fmtAccountMoney(snap.funds.market_val));
-  setText("account-available-cash", fmtAccountMoney(snap.funds.available_cash));
-  document.getElementById("account-card").hidden = false;
+let dashEnv = "sim"; /* 当前明细视图(聚合卡/持仓/订单) */
+const snapByEnv = {sim: null, real: null};
+const errByEnv = {sim: null, real: null};
+
+/* 子账户:sim + real 各查一次;失败只影响该行,双失败时顶部横幅提示。 */
+async function loadEnvSnap(env) {
+  try {
+    snapByEnv[env] = await fetchJSON("/v1/futu/account?env=" + env);
+    errByEnv[env] = null;
+  } catch (err) {
+    snapByEnv[env] = null;
+    errByEnv[env] = err;
+  }
+}
+
+function renderBadge() {
+  const paper = dashEnv === "sim";
+  const badge = document.getElementById("env-badge");
+  badge.className = "env-badge " + (paper ? "paper" : "real");
+  badge.textContent = paper ? "PAPER · 模拟盘" : "REAL · 实盘";
+  for (const btn of [document.getElementById("env-paper"), document.getElementById("env-real")]) {
+    btn.classList.toggle("active", btn.id === (paper ? "env-paper" : "env-real"));
+  }
+  for (const tag of ["summary-env", "positions-env", "orders-env"]) {
+    document.getElementById(tag).textContent = envLabel(dashEnv);
+  }
+}
+
+function renderSummary() {
+  const errorEl = document.getElementById("summary-error");
+  const cards = document.getElementById("summary-cards");
+  if (errByEnv[dashEnv]) {
+    cards.hidden = true;
+    showError(errorEl, errByEnv[dashEnv]);
+    return;
+  }
+  clearError(errorEl);
+  const f = snapByEnv[dashEnv].funds;
+  setText("summary-total-assets", fmtAccountMoney(f.total_assets));
+  setText("summary-cash", fmtAccountMoney(f.cash));
+  setText("summary-market-val", fmtAccountMoney(f.market_val));
+  setText("summary-power", fmtAccountMoney(f.power));
+  setText("summary-available-cash", fmtAccountMoney(f.available_cash));
+  cards.hidden = false;
+}
+
+function renderAccounts() {
+  const table = document.getElementById("accounts-table");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  for (const env of FUTU_ENVS) {
+    const tr = document.createElement("tr");
+    const snap = snapByEnv[env.key];
+    const err = errByEnv[env.key];
+    if (snap) {
+      const cells = [env.label, snap.acc_id,
+        fmtAccountMoney(snap.funds.total_assets), fmtAccountMoney(snap.funds.cash),
+        fmtAccountMoney(snap.funds.market_val), fmtAccountMoney(snap.funds.available_cash),
+        fmtAccountMoney(snap.funds.power), String(snap.positions.length), "可用"];
+      for (const c of cells) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      }
+    } else {
+      for (const c of [env.label, "—", "—", "—", "—", "—", "—", "—"]) {
+        const td = document.createElement("td");
+        td.textContent = c;
+        tr.appendChild(td);
+      }
+      const td = document.createElement("td");
+      if (err) {
+        td.textContent = "不可用";
+        td.className = "state-down";
+        td.title = String(err);
+      } else {
+        td.textContent = "加载中";
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.hidden = false;
+}
+
+function renderPositions() {
+  const snap = snapByEnv[dashEnv];
+  const errorEl = document.getElementById("positions-error");
+  const empty = document.getElementById("positions-empty");
+  if (errByEnv[dashEnv]) {
+    showError(errorEl, errByEnv[dashEnv]);
+    return;
+  }
+  clearError(errorEl);
+  if (!snap || snap.positions.length === 0) {
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
   renderTable("positions-table", snap.positions.map((p) => [p.symbol, p.qty, p.avg_cost, p.price, p.market_val, p.pl]));
 }
 
-async function loadAccount() {
-  const errorEl = document.getElementById("account-error");
+function renderOrders(snap) {
+  const table = document.getElementById("orders-table");
+  const empty = document.getElementById("orders-empty");
+  if (snap.orders.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  renderTable("orders-table", snap.orders.map((o) => {
+    const sideTd = document.createElement("td");
+    sideTd.textContent = o.side;
+    sideTd.className = o.side.toLowerCase() === "buy" ? "side-buy" : "side-sell";
+    return [o.create_time, o.symbol, sideTd, o.status, o.qty, o.price, o.fill_qty];
+  }));
+}
+
+async function loadOrders() {
+  const errorEl = document.getElementById("orders-error");
   if (!errorEl) return;
   try {
-    const snap = await fetchJSON("/v1/futu/account");
+    const snap = await fetchJSON("/v1/futu/orders?env=" + dashEnv);
     clearError(errorEl);
-    renderAccount(snap);
+    renderOrders(snap);
   } catch (err) {
-    document.getElementById("account-card").hidden = true;
+    document.getElementById("orders-table").hidden = true;
+    document.getElementById("orders-empty").hidden = true;
     showError(errorEl, err);
   }
 }
 
-function toRFC3339(dateValue) {
-  return dateValue === "" ? "" : dateValue + "T00:00:00Z";
-}
-
-function renderBars(bars) {
-  renderTable("bars-table", bars.map((b) => [b.ts, b.open, b.high, b.low, b.close, b.volume]));
+async function loadDashboard() {
+  await Promise.all([loadEnvSnap("sim"), loadEnvSnap("real")]);
+  renderBadge();
+  renderSummary();
+  renderAccounts();
+  renderPositions();
+  loadOrders();
+  if (errByEnv.sim && errByEnv.real) {
+    const el = document.getElementById("dash-error");
+    el.textContent = "Futu 网关不可用:模拟盘与实盘均查询失败(" + errByEnv.sim + ")。请检查网关容器状态后刷新。";
+    el.hidden = false;
+  }
 }
 
 function renderRuns(runs) {
   renderTable("runs-table", runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "running" : r.finished_at]));
 }
 
-/* Bars coverage hint: /v1/admin/cluster bars_coverage (all adjusts), queried once on load. */
-let barsCoverage = new Map();
-
-function loadBarsCoverage() {
-  fetchJSON("/v1/admin/cluster").then((c) => {
-    for (const cov of (c.components.data_plane.bars_coverage || [])) {
-      barsCoverage.set(cov.symbol + "|" + cov.timeframe, cov);
-    }
-  }).catch(() => {});
-}
-
-function showBarsCoverage(bars, symbol, timeframe) {
-  const el = document.getElementById("bars-coverage");
-  if (!el) return;
-  const cov = barsCoverage.get(symbol + "|" + timeframe);
-  if (cov) {
-    el.textContent = "Data coverage: " + cov.count + " bars · " + cov.min_ts.slice(0, 10) + " → " + cov.max_ts.slice(0, 10) + " (ingested, all adjusts)";
-  } else if (bars.length > 0) {
-    el.textContent = "Query results: " + bars.length + " bars · " + bars[0].ts.slice(0, 10) + " → " + bars[bars.length - 1].ts.slice(0, 10);
-  } else {
-    el.textContent = "";
-    el.hidden = true;
-    return;
+function initDashboardPage() {
+  const paperBtn = document.getElementById("env-paper");
+  if (!paperBtn) return;
+  const refresh = document.getElementById("dash-refresh");
+  const buttons = [paperBtn, document.getElementById("env-real")];
+  for (const btn of buttons) {
+    btn.addEventListener("click", () => {
+      dashEnv = btn.id === "env-real" ? "real" : "sim";
+      renderBadge();
+      renderSummary();
+      renderPositions();
+      loadOrders();
+    });
   }
-  el.hidden = false;
-}
-
-function initDataPage() {
-  const barsForm = document.getElementById("bars-form");
-  if (!barsForm) return;
-  const barsError = document.getElementById("bars-error");
-  loadBarsCoverage();
-  barsForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const symbol = barsForm.symbol.value.trim();
-    loadQuote(symbol); /* independent of the bars fetch: each shows its own error */
-    const timeframe = barsForm.timeframe.value.trim();
-    const params = new URLSearchParams();
-    params.set("symbol", symbol);
-    params.set("timeframe", timeframe);
-    params.set("adjust", "fwd"); /* 数据标准默认前复权 (doc/DATA_STANDARD.md) */
-    const from = toRFC3339(barsForm.from.value);
-    const to = toRFC3339(barsForm.to.value);
-    if (from !== "") params.set("from", from);
-    if (to !== "") params.set("to", to);
-    try {
-      const bars = await fetchJSON("/v1/bars?" + params.toString());
-      clearError(barsError);
-      renderBars(bars);
-      showBarsCoverage(bars, symbol, timeframe);
-    } catch (err) {
-      showError(barsError, err);
-    }
-  });
+  refresh.addEventListener("click", loadDashboard);
+  loadDashboard();
   loadJSON("/v1/runs?limit=10", document.getElementById("runs-error"), renderRuns);
-  loadAccount();
-  const refresh = document.getElementById("account-refresh");
-  if (refresh) refresh.addEventListener("click", loadAccount);
 }
 
 /* Admin page: /v1/admin/status, /v1/admin/cluster, /v1/admin/config (read-only). */
@@ -302,6 +359,147 @@ function initAdminPage() {
   loadJSON("/v1/admin/status", statusError, renderStatus);
   loadJSON("/v1/admin/cluster", document.getElementById("cluster-error"), renderCluster);
   loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
+}
+
+/* Data page: cached-bars coverage (/v1/admin/cluster) with drill-in to
+   /v1/bars?desc=1 (newest bars first). Covers the boss's ask for a dedicated
+   "数据" tab to inspect what data is cached. */
+
+function fmtAge(seconds) {
+  if (seconds < 3600) return Math.max(1, Math.round(seconds / 60)) + " 分钟前";
+  if (seconds < 86400) return Math.round(seconds / 3600) + " 小时前";
+  return Math.round(seconds / 86400) + " 天前";
+}
+
+function renderCoverageRows(rows) {
+  const table = document.getElementById("coverage-table");
+  const empty = document.getElementById("coverage-empty");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  if (rows.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  for (const b of rows) {
+    const tr = document.createElement("tr");
+    tr.classList.add("coverage-row");
+    tr.title = "点击查看 " + b.symbol + " " + b.timeframe + " (" + b.adjust + ")";
+    tr.addEventListener("click", () => loadBars(b.symbol, b.timeframe, b.adjust));
+    const cells = [b.symbol, b.timeframe, b.adjust, b.count, b.min_ts.slice(0, 16), b.max_ts.slice(0, 16), fmtAge(b.max_ts_age_seconds)];
+    for (const cell of cells) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    }
+    tr.appendChild(freshnessCell(b));
+    tbody.appendChild(tr);
+  }
+  empty.hidden = true;
+  table.hidden = false;
+}
+
+async function loadDataCoverage() {
+  const data = await fetchJSON("/v1/admin/cluster");
+  renderCoverageRows(data.components.data_plane.bars_coverage || []);
+}
+
+function fmtNum(v) {
+  return Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+function drawSparkline(canvas, closes) {
+  const width = canvas.clientWidth || 600;
+  const height = canvas.clientHeight || 120;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = width * dpr;
+  canvas.height = height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, width, height);
+  if (closes.length < 2) return;
+  let min = Infinity, max = -Infinity;
+  for (const c of closes) { min = Math.min(min, c); max = Math.max(max, c); }
+  const span = max - min || 1;
+  const pad = 4;
+  ctx.strokeStyle = closes[closes.length - 1] >= closes[0] ? "#1a7f37" : "#cf222e";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < closes.length; i++) {
+    const x = pad + (i / (closes.length - 1)) * (width - 2 * pad);
+    const y = pad + (1 - (closes[i] - min) / span) * (height - 2 * pad);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function renderBarsDetail(bars) {
+  const table = document.getElementById("bars-table");
+  const empty = document.getElementById("bars-empty");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  if (bars.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  /* &desc=1: bars[0] is the newest, bars[len-1] the oldest; stats and the
+     sparkline read chronologically from oldest to newest. */
+  const first = bars[bars.length - 1];
+  const last = bars[0];
+  setText("detail-count", bars.length);
+  setText("detail-first", fmtNum(first.close));
+  setText("detail-last", fmtNum(last.close));
+  const chg = (last.close - first.close) / first.close;
+  const chgEl = document.getElementById("detail-change");
+  chgEl.textContent = (chg >= 0 ? "+" : "") + (chg * 100).toFixed(2) + "%";
+  chgEl.classList.toggle("up", chg >= 0);
+  chgEl.classList.toggle("down", chg < 0);
+  drawSparkline(document.getElementById("detail-sparkline"), bars.map((b) => b.close));
+  for (const b of bars) {
+    appendRow(tbody, [b.ts.slice(0, 16).replace("T", " "), fmtNum(b.open), fmtNum(b.high), fmtNum(b.low), fmtNum(b.close), b.volume]);
+  }
+  empty.hidden = true;
+  table.hidden = false;
+}
+
+async function loadBars(symbol, timeframe, adjust) {
+  const errEl = document.getElementById("detail-error");
+  clearError(errEl);
+  const empty = document.getElementById("detail-empty");
+  empty.hidden = true;
+  document.getElementById("detail-body").hidden = false;
+  setText("detail-title", symbol + " · " + timeframe + " · " + adjust);
+  document.getElementById("bars-symbol").value = symbol;
+  document.getElementById("bars-timeframe").value = timeframe;
+  document.getElementById("bars-adjust").value = adjust;
+  try {
+    const bars = await fetchJSON("/v1/bars?symbol=" + encodeURIComponent(symbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&adjust=" + encodeURIComponent(adjust) + "&limit=100&desc=1");
+    renderBarsDetail(bars);
+  } catch (err) {
+    showError(errEl, err);
+    document.getElementById("bars-table").hidden = true;
+    document.getElementById("bars-empty").hidden = false;
+    document.getElementById("bars-empty").textContent = "加载失败,请检查代码与周期。";
+  }
+}
+
+function initDataPage() {
+  const form = document.getElementById("bars-form");
+  if (!form) return;
+  form.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const symbol = document.getElementById("bars-symbol").value.trim();
+    const timeframe = document.getElementById("bars-timeframe").value;
+    const adjust = document.getElementById("bars-adjust").value;
+    if (symbol !== "") loadBars(symbol, timeframe, adjust);
+  });
+  document.getElementById("data-refresh").addEventListener("click", () => {
+    const errEl = document.getElementById("data-error");
+    clearError(errEl);
+    loadDataCoverage().catch((err) => showError(errEl, err));
+  });
+  loadDataCoverage().catch((err) => showError(document.getElementById("coverage-error"), err));
 }
 
 /* Watchlist page: /v1/watchlist CRUD + /v1/strategies schema-driven param form. */
@@ -989,8 +1187,9 @@ function initOptionsChainPage() {
   });
 }
 
-initDataPage();
+initDashboardPage();
 initAdminPage();
 initWatchlistPage();
 initOptionsChainPage();
+initDataPage();
 initResultsPage();

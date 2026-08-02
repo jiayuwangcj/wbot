@@ -1,82 +1,99 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wbot · Data</title>
+<title>wbot · Dashboard</title>
 <link rel="stylesheet" href="/ui/style.css">
 </head>
 <body>
 <header>
   <h1>wbot</h1>
   <nav>
-    <a href="/ui/">Data</a>
-    <a href="/ui/watchlist.html">Watchlist</a>
-    <a href="/ui/results.html">Results</a>
+    <a href="/ui/">Dashboard</a>
+    <a href="/ui/watchlist.html">策略</a>
+    <a href="/ui/results.html">回测</a>
+    <a href="/ui/data.html">数据</a>
     <a href="/ui/admin.html">Admin</a>
   </nav>
 </header>
 <main>
-  <section id="bars">
-    <h2>Bars</h2>
-    <form id="bars-form">
-      <label>Symbol <input type="text" name="symbol" placeholder="DEMO.US" required></label>
-      <label>Timeframe <input type="text" name="timeframe" placeholder="1d" required></label>
-      <label>From <input type="date" name="from"></label>
-      <label>To <input type="date" name="to"></label>
-      <button type="submit">Query</button>
-    </form>
-    <p id="bars-coverage" class="notice" hidden></p>
-    <p id="bars-error" class="notice error" hidden></p>
-    <p id="bars-empty" class="notice" hidden>No bars found for this query.</p>
-    <div class="table-scroll">
-      <table id="bars-table" hidden>
-        <thead>
-          <tr><th>Time</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Volume</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+  <div class="env-bar">
+    <div class="env-toggle" role="group" aria-label="交易环境">
+      <button type="button" id="env-paper" class="env-btn active">Paper 模拟盘</button>
+      <button type="button" id="env-real" class="env-btn">实盘 Live</button>
     </div>
-  </section>
-  <section id="quote">
-    <h2>Live quote</h2>
-    <p class="notice">Submit the Bars form above and the quote for its symbol appears here (Futu gateway, /v1/futu/quote).</p>
-    <p id="quote-error" class="notice error" hidden></p>
-    <dl id="quote-card" class="quote-card" hidden>
-      <div><dt>Last</dt><dd id="quote-last">—</dd></div>
-      <div><dt>Open</dt><dd id="quote-open">—</dd></div>
-      <div><dt>High</dt><dd id="quote-high">—</dd></div>
-      <div><dt>Low</dt><dd id="quote-low">—</dd></div>
-      <div><dt>Volume</dt><dd id="quote-volume">—</dd></div>
-      <div><dt>Time</dt><dd id="quote-time">—</dd></div>
-    </dl>
-  </section>
-  <section id="account">
-    <h2>Futu account</h2>
-    <p class="notice">Paper account funds and positions, read-only (Futu gateway, /v1/futu/account; simulate env by default).</p>
-    <p id="account-error" class="notice error" hidden></p>
-    <dl id="account-card" class="quote-card" hidden>
-      <div><dt>Power</dt><dd id="account-power">—</dd></div>
-      <div><dt>Total assets</dt><dd id="account-total-assets">—</dd></div>
-      <div><dt>Cash</dt><dd id="account-cash">—</dd></div>
-      <div><dt>Market value</dt><dd id="account-market-val">—</dd></div>
-      <div><dt>Available cash</dt><dd id="account-available-cash">—</dd></div>
-    </dl>
-    <p id="positions-empty" class="notice" hidden>No open positions.</p>
-    <div class="table-scroll">
-      <table id="positions-table" hidden>
-        <thead>
-          <tr><th>Symbol</th><th>Qty</th><th>Avg cost</th><th>Price</th><th>Market value</th><th>P/L</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+    <span id="env-badge" class="env-badge paper">PAPER · 模拟盘</span>
+    <button type="button" id="dash-refresh" class="ghost">Refresh</button>
+  </div>
+
+  <p id="dash-error" class="notice error" hidden></p>
+
+  <div class="dash-grid">
+    <div class="dash-main">
+      <section id="summary">
+        <h2>账户资产 <span id="summary-env" class="section-tag">模拟盘</span></h2>
+        <p id="summary-error" class="notice error" hidden></p>
+        <div class="metric-grid" id="summary-cards" hidden>
+          <div class="metric-card"><h3>总资产</h3><p id="summary-total-assets" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>现金</h3><p id="summary-cash" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>证券市值</h3><p id="summary-market-val" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>购买力</h3><p id="summary-power" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>可用资金</h3><p id="summary-available-cash" class="metric-value">—</p></div>
+        </div>
+      </section>
+
+      <section id="accounts">
+        <h2>子账户明细</h2>
+        <p id="accounts-error" class="notice error" hidden></p>
+        <p id="accounts-empty" class="notice" hidden>暂无账户数据。</p>
+        <div class="table-scroll">
+          <table id="accounts-table" hidden>
+            <thead>
+              <tr><th>环境</th><th>账户 ID</th><th>总资产</th><th>现金</th><th>市值</th><th>可用资金</th><th>购买力</th><th>持仓</th><th>状态</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="positions">
+        <h2>持仓 <span id="positions-env" class="section-tag">模拟盘</span></h2>
+        <p id="positions-error" class="notice error" hidden></p>
+        <p id="positions-empty" class="notice" hidden>当前环境无持仓。</p>
+        <div class="table-scroll">
+          <table id="positions-table" hidden>
+            <thead>
+              <tr><th>代码</th><th>数量</th><th>成本价</th><th>现价</th><th>市值</th><th>盈亏</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
     </div>
-    <button type="button" id="account-refresh">Refresh</button>
-  </section>
+
+    <aside class="dash-side">
+      <section id="orders">
+        <h2>当前订单 <span id="orders-env" class="section-tag">模拟盘</span></h2>
+        <p class="notice">挂单列表（read-only, /v1/futu/orders;模拟盘默认）。</p>
+        <p id="orders-error" class="notice error" hidden></p>
+        <p id="orders-empty" class="notice" hidden>暂无挂单。</p>
+        <div class="table-scroll">
+          <table id="orders-table" hidden>
+            <thead>
+              <tr><th>时间</th><th>代码</th><th>方向</th><th>状态</th><th>数量</th><th>价格</th><th>已成交</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </aside>
+  </div>
+
   <section id="runs">
-    <h2>Recent runs</h2>
+    <h2>最近入库</h2>
     <p id="runs-error" class="notice error" hidden></p>
-    <p id="runs-empty" class="notice" hidden>No ingestion runs yet.</p>
+    <p id="runs-empty" class="notice" hidden>尚无入库记录。</p>
     <div class="table-scroll">
       <table id="runs-table" hidden>
         <thead>

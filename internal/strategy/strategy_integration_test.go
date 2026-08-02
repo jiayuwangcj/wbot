@@ -68,7 +68,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $7, 10, NULL, 'none', 'futu')`,
 		}
 	}
 
-	bars, err := ingest.QueryBars(ctx, database, testSymbol, "1d", "none", time.Time{}, time.Time{}, 10)
+	bars, err := ingest.QueryBars(ctx, database, testSymbol, "1d", "none", time.Time{}, time.Time{}, 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}

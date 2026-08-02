@@ -69,6 +69,7 @@ type dataPlaneJSON struct {
 type barCoverageJSON struct {
 	Symbol          string `json:"symbol"`
 	Timeframe       string `json:"timeframe"`
+	Adjust          string `json:"adjust"`
 	Count           int64  `json:"count"`
 	MinTs           string `json:"min_ts"`
 	MaxTs           string `json:"max_ts"`
@@ -100,7 +101,7 @@ func fillPipelineAndDataPlane(ctx context.Context, c *componentsJSON, store Clus
 			age = 0
 		}
 		c.DataPlane.BarsCoverage = append(c.DataPlane.BarsCoverage, barCoverageJSON{
-			Symbol: cov.Symbol, Timeframe: cov.Timeframe, Count: cov.Count,
+			Symbol: cov.Symbol, Timeframe: cov.Timeframe, Adjust: cov.Adjust, Count: cov.Count,
 			MinTs: cov.MinTs.Format(time.RFC3339), MaxTs: cov.MaxTs.Format(time.RFC3339),
 			MaxTsAgeSeconds: int64(age.Seconds()),
 			Fresh:           string(ingest.JudgeFreshness(cov.MaxTs, now, ingest.MaxAgeForTimeframe(cov.Timeframe))),

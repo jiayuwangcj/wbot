@@ -29,12 +29,19 @@ type fakeStore struct {
 	gotLimit    int
 }
 
-func (f *fakeStore) QueryBars(_ context.Context, symbol, timeframe, adjust string, _, _ time.Time, limit int) ([]ingest.Bar, error) {
+func (f *fakeStore) QueryBars(_ context.Context, symbol, timeframe, adjust string, _, _ time.Time, limit int, desc bool) ([]ingest.Bar, error) {
 	f.gotSymbol = symbol
 	f.gotTimefram = timeframe
 	f.gotLimit = limit
 	if f.err != nil {
 		return nil, f.err
+	}
+	if desc {
+		rev := make([]ingest.Bar, len(f.bars))
+		for i, b := range f.bars {
+			rev[len(f.bars)-1-i] = b
+		}
+		return rev, nil
 	}
 	return f.bars, nil
 }
@@ -110,6 +117,27 @@ func TestBarsOK(t *testing.T) {
 	}
 	if store.gotSymbol != "DEMO.US" || store.gotTimefram != "1d" || store.gotLimit != 5 {
 		t.Fatalf("store got symbol=%q timeframe=%q limit=%d", store.gotSymbol, store.gotTimefram, store.gotLimit)
+	}
+}
+
+func TestBarsDesc(t *testing.T) {
+	ts1 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
+	ts2 := ts1.Add(24 * time.Hour)
+	store := &fakeStore{bars: []ingest.Bar{
+		{Ts: ts1, Open: 100, Close: 100.5},
+		{Ts: ts2, Open: 100.5, Close: 101.25},
+	}}
+	rec := get(t, Handler(store), "/v1/bars?symbol=DEMO.US&timeframe=1d&limit=5&desc=1")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var got []barJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
+	}
+	/* desc=1: newest bar first. */
+	if len(got) != 2 || got[0].Ts != ts2.Format(time.RFC3339) || got[1].Ts != ts1.Format(time.RFC3339) {
+		t.Fatalf("desc order wrong: %+v", got)
 	}
 }
 

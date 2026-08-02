@@ -42,7 +42,7 @@ Query 参数：
 
 ## GET /v1/bars
 
-已落库 OHLCV bars（`bars` 表），按 `(ts)` 升序。
+已落库 OHLCV bars（`bars` 表），默认按 `(ts)` 升序；`desc=1` 时最新在前（尾部窗口，Web UI 数据页用）。
 
 Query 参数：
 
@@ -54,6 +54,7 @@ Query 参数：
 | `from` | 否 | 不限 | RFC3339，闭区间起点 |
 | `to` | 否 | 不限 | RFC3339，闭区间终点 |
 | `limit` | 否 | 100 | 最大条数（<=0 报 400） |
+| `desc` | 否 | 空 | `1` = 最新 N 根优先（`ORDER BY ts DESC`）；默认/其他值 = 升序 |
 
 响应 `200`：
 

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wbot · 数据</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<header>
+  <h1>wbot</h1>
+  <nav>
+    <a href="/ui/">Dashboard</a>
+    <a href="/ui/watchlist.html">策略</a>
+    <a href="/ui/results.html">回测</a>
+    <a href="/ui/data.html">数据</a>
+    <a href="/ui/admin.html">Admin</a>
+  </nav>
+</header>
+<main>
+  <div class="env-bar">
+    <form id="bars-form" class="inline-form">
+      <input type="text" id="bars-symbol" name="symbol" placeholder="代码,如 HK.00700 / US.AAPL" required>
+      <select id="bars-timeframe" name="timeframe">
+        <option value="1m">1m</option>
+        <option value="5m">5m</option>
+        <option value="15m">15m</option>
+        <option value="30m">30m</option>
+        <option value="60m">60m</option>
+        <option value="1d" selected>1d</option>
+        <option value="1w">1w</option>
+        <option value="1mo">1mo</option>
+      </select>
+      <select id="bars-adjust" name="adjust">
+        <option value="fwd" selected>前复权 fwd</option>
+        <option value="none">不复权 none</option>
+        <option value="back">后复权 back</option>
+      </select>
+      <button type="submit">加载 K 线</button>
+    </form>
+    <span class="section-tag">最近 100 根</span>
+    <button type="button" id="data-refresh" class="ghost">刷新覆盖</button>
+  </div>
+
+  <p id="data-error" class="notice error" hidden></p>
+
+  <div class="data-grid">
+    <div class="data-main">
+      <section id="coverage">
+        <h2>已缓存数据</h2>
+        <p class="notice">点击一行查看该标的的行情明细。</p>
+        <p id="coverage-error" class="notice error" hidden></p>
+        <p id="coverage-empty" class="notice" hidden>暂无已缓存行情数据。</p>
+        <div class="table-scroll">
+          <table id="coverage-table" hidden>
+            <thead>
+              <tr><th>代码</th><th>周期</th><th>复权</th><th>数量</th><th>最早</th><th>最新</th><th>年龄</th><th>新鲜度</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <aside class="data-side">
+      <section id="detail">
+        <h2>行情明细 <span id="detail-title" class="section-tag">—</span></h2>
+        <p id="detail-error" class="notice error" hidden></p>
+        <p id="detail-empty" class="notice" hidden>从左侧覆盖表选择,或在上方输入代码后加载。</p>
+        <div id="detail-body" hidden>
+          <div class="metric-grid" id="detail-metrics">
+            <div class="metric-card"><h3>K 线数</h3><p id="detail-count" class="metric-value">—</p></div>
+            <div class="metric-card"><h3>首收盘</h3><p id="detail-first" class="metric-value">—</p></div>
+            <div class="metric-card"><h3>末收盘</h3><p id="detail-last" class="metric-value">—</p></div>
+            <div class="metric-card"><h3>区间涨跌</h3><p id="detail-change" class="metric-value">—</p></div>
+          </div>
+          <canvas id="detail-sparkline" class="sparkline" aria-label="收盘价迷你走势"></canvas>
+          <div class="table-scroll">
+            <table id="bars-table" hidden>
+              <thead>
+                <tr><th>时间</th><th>开</th><th>高</th><th>低</th><th>收</th><th>量</th></tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p id="bars-empty" class="notice" hidden>该周期暂无 K 线。</p>
+        </div>
+      </section>
+    </aside>
+  </div>
+</main>
+<script src="/ui/app.js"></script>
+</body>
+</html>

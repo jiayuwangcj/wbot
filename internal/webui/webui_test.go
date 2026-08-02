@@ -24,7 +24,7 @@ func TestServesIndex(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("content-type = %q; want text/html", ct)
 	}
-	for _, want := range []string{"<title>wbot · Data</title>", `name="viewport"`, "/ui/style.css", "/ui/admin.html", "/ui/app.js"} {
+	for _, want := range []string{"<title>wbot · Dashboard</title>", `name="viewport"`, "/ui/style.css", "/ui/admin.html", "/ui/data.html", "/ui/app.js"} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("index missing %q: %s", want, rec.Body)
 		}
@@ -41,6 +41,70 @@ func TestServesWatchlistPage(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "<title>wbot · Watchlist</title>") {
 		t.Fatalf("watchlist missing title: %s", rec.Body)
+	}
+}
+
+func TestServesDataPage(t *testing.T) {
+	rec := serveGet(t, "/data.html")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "<title>wbot · 数据</title>") {
+		t.Fatalf("data missing title: %s", rec.Body)
+	}
+}
+
+func TestDataPageContract(t *testing.T) {
+	html, err := fs.ReadFile(webFiles, "web/data.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`id="bars-form"`,
+		`id="bars-symbol"`,
+		`id="bars-timeframe"`,
+		`id="coverage-table"`,
+		`id="coverage-empty"`,
+		`id="coverage-error"`,
+		`id="detail-sparkline"`,
+		`id="bars-table"`,
+		`id="bars-empty"`,
+		`id="detail-error"`,
+		`id="data-refresh"`,
+	} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("data.html missing %q", want)
+		}
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"initDataPage",
+		"loadDataCoverage",
+		"loadBars",
+		"drawSparkline",
+		`"/v1/bars?symbol="`,
+		`&desc=1`,
+		`"/v1/admin/cluster"`,
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js missing data-page logic %q", want)
+		}
+	}
+}
+
+// TestDataNavLinks: 数据 页在五个页面导航中互通(老板 2026-08-02 补需求)。
+func TestDataNavLinks(t *testing.T) {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html", "web/data.html"} {
+		data, err := fs.ReadFile(webFiles, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), "/ui/data.html") {
+			t.Fatalf("%s missing data nav link", path)
+		}
 	}
 }
 
@@ -118,7 +182,7 @@ func TestNoExternalURLs(t *testing.T) {
 }
 
 func TestViewportMetaOnAllPages(t *testing.T) {
-	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html", "web/data.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
@@ -146,7 +210,7 @@ func TestResponsiveBreakpoints(t *testing.T) {
 // wrapper so narrow screens scroll in-container instead of overflowing the page.
 func TestTablesInScrollContainers(t *testing.T) {
 	tableRe := regexp.MustCompile(`id="([a-z0-9-]+-table)"`)
-	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html", "web/data.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatal(err)
@@ -202,79 +266,68 @@ func TestMobileBreakpointStyles(t *testing.T) {
 	}
 }
 
-func TestDataPageFormAndTables(t *testing.T) {
+// TestDashboardPageContract: Data 页已改 Dashboard(老板 2026-08-02):bars/quote
+// 区块删除,改为账户聚合 + 子账户明细 + 订单面板 + Paper/实盘徽章。
+func TestDashboardPageContract(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(data)
 	for _, want := range []string{
-		`<form id="bars-form"`,
-		`name="symbol"`,
-		`name="timeframe"`,
-		`name="from"`,
-		`name="to"`,
-		`id="bars-table"`,
+		`id="env-badge"`,
+		`id="env-paper"`,
+		`id="env-real"`,
+		`id="summary-total-assets"`,
+		`id="accounts-table"`,
+		`id="positions-table"`,
+		`id="orders-table"`,
 		`id="runs-table"`,
-		`id="bars-error"`,
-		`id="runs-error"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("index.html missing %q", want)
 		}
 	}
+	for _, gone := range []string{`id="bars-form"`, `id="quote-card"`, `id="bars-table"`} {
+		if strings.Contains(html, gone) {
+			t.Fatalf("index.html still contains removed %q (bars/quote deleted)", gone)
+		}
+	}
 }
 
-func TestAppJSQueriesDataAPI(t *testing.T) {
+func TestAppJSQueriesDashboardAPI(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := string(data)
-	for _, want := range []string{"fetch(", `"/v1/bars`, `"/v1/runs`} {
+	for _, want := range []string{"fetch(", `"/v1/runs`, `"/v1/futu/account?env=`, `"/v1/futu/orders?env=`} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
 	}
-}
-
-func TestDataPageLiveQuoteBlock(t *testing.T) {
-	data, err := fs.ReadFile(webFiles, "web/index.html")
-	if err != nil {
-		t.Fatal(err)
+	/* /v1/bars 属于数据页(initDataPage);Dashboard 初始化块不得触碰 bars。 */
+	start := strings.Index(js, "function initDashboardPage")
+	adminMark := strings.Index(js, "/* Admin page:")
+	if start == -1 || adminMark == -1 || start > adminMark {
+		t.Fatal("cannot locate initDashboardPage block")
 	}
-	html := string(data)
-	for _, want := range []string{
-		`id="quote-card"`,
-		`id="quote-error"`,
-		`id="quote-last"`,
-		`id="quote-open"`,
-		`id="quote-high"`,
-		`id="quote-low"`,
-		`id="quote-volume"`,
-		`id="quote-time"`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("index.html missing %q", want)
-		}
+	dash := js[start:adminMark]
+	if strings.Contains(dash, "/v1/bars") || strings.Contains(dash, "loadBars") {
+		t.Fatal("initDashboardPage block still calls /v1/bars (bars 已移至数据页)")
 	}
 }
 
-func TestAppJSQuotesFutuQuoteAPI(t *testing.T) {
+// TestAppJSQuoteRemovedFromUI: Dashboard 不再内嵌看盘工具(老板:不需要看盘工具);
+// /v1/futu/quote 端点仍在(API 层),但 UI 不再调用。
+func TestAppJSQuoteRemovedFromUI(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := string(data)
-	for _, want := range []string{
-		`"/v1/futu/quote`,
-		"basic_qot_list",
-		"loadQuote",
-		"quote-card",
-	} {
-		if !strings.Contains(js, want) {
-			t.Fatalf("app.js missing %q", want)
-		}
+	if strings.Contains(js, `"/v1/futu/quote`) {
+		t.Fatalf("app.js still calls /v1/futu/quote (看盘工具已从 UI 移除)")
 	}
 }
 
@@ -345,7 +398,7 @@ func TestAdminPageFreshness(t *testing.T) {
 
 func TestTableEmptyConvention(t *testing.T) {
 	tableRe := regexp.MustCompile(`id="([a-z0-9-]+-table)"`)
-	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html", "web/data.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatal(err)
@@ -437,7 +490,7 @@ func TestAppJSQueriesOptionsAPI(t *testing.T) {
 }
 
 func TestWatchlistNavLinks(t *testing.T) {
-	for _, path := range []string{"web/index.html", "web/admin.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/data.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatal(err)
@@ -549,7 +602,7 @@ func TestResultsPageElements(t *testing.T) {
 }
 
 func TestResultsNavLinks(t *testing.T) {
-	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html"} {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html", "web/data.html"} {
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatal(err)
@@ -673,23 +726,24 @@ func TestAppJSCompareView(t *testing.T) {
 	}
 }
 
-func TestDataPageAccountBlock(t *testing.T) {
+// TestDashboardAccountBlock: Dashboard 的账户区块(聚合卡 + 子账户表 + 持仓表)。
+func TestDashboardAccountBlock(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
 	html := string(data)
 	for _, want := range []string{
-		`id="account-card"`,
-		`id="account-error"`,
-		`id="account-refresh"`,
-		`id="account-power"`,
-		`id="account-total-assets"`,
-		`id="account-cash"`,
-		`id="account-market-val"`,
-		`id="account-available-cash"`,
+		`id="summary-error"`,
+		`id="summary-total-assets"`,
+		`id="summary-cash"`,
+		`id="summary-market-val"`,
+		`id="summary-power"`,
+		`id="summary-available-cash"`,
+		`id="accounts-table"`,
 		`id="positions-table"`,
 		`id="positions-empty"`,
+		`id="dash-refresh"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("index.html missing %q", want)
@@ -704,12 +758,13 @@ func TestAppJSQueriesFutuAccountAPI(t *testing.T) {
 	}
 	js := string(data)
 	for _, want := range []string{
-		`"/v1/futu/account`,
+		`"/v1/futu/account?env=`,
 		"snap.funds.total_assets",
 		"snap.funds.available_cash",
 		"positions-table",
-		"loadAccount",
-		"account-refresh",
+		"loadEnvSnap",
+		"loadDashboard",
+		"dash-refresh",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
@@ -717,21 +772,25 @@ func TestAppJSQueriesFutuAccountAPI(t *testing.T) {
 	}
 }
 
-func TestDataPageCoverageHint(t *testing.T) {
+// TestBarsCoverageRemoved: bars 区块已随 Dashboard 改造迁出(老板 2026-08-02),
+// 旧覆盖度提示逻辑移除 — 查看缓存数据的功能现由独立「数据」页承担(data.html,
+// coverage-table + drill-in),Admin cluster 页仍有 freshness 覆盖表。
+func TestBarsCoverageRemoved(t *testing.T) {
 	html, err := fs.ReadFile(webFiles, "web/index.html")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(html), `id="bars-coverage"`) {
-		t.Fatalf("index.html missing bars-coverage element: %s", html)
+	if strings.Contains(string(html), `id="bars-coverage"`) {
+		t.Fatalf("index.html still has bars-coverage (bars 已删除)")
 	}
 	js, err := fs.ReadFile(webFiles, "web/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"bars_coverage", "barsCoverage", "Data coverage"} {
-		if !strings.Contains(string(js), want) {
-			t.Fatalf("app.js missing coverage logic %q", want)
+	/* Admin cluster 页仍有 bars_coverage 表格;被删的是 Dashboard 的查询提示逻辑。 */
+	for _, gone := range []string{"barsCoverage", "showBarsCoverage", "loadBarsCoverage"} {
+		if strings.Contains(string(js), gone) {
+			t.Fatalf("app.js still has Dashboard coverage-hint logic %q (bars 已删除)", gone)
 		}
 	}
 }

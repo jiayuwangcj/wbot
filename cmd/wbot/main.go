@@ -1488,7 +1488,7 @@ func runIngestBars(prog string, argv []string) int {
 		return 1
 	}
 
-	bars, err := ingest.QueryBars(context.Background(), database, strings.TrimSpace(*symbol), strings.TrimSpace(*timeframe), strings.TrimSpace(*adjust), fromT, toT, *limit)
+	bars, err := ingest.QueryBars(context.Background(), database, strings.TrimSpace(*symbol), strings.TrimSpace(*timeframe), strings.TrimSpace(*adjust), fromT, toT, *limit, false)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ingest bars: %v\n", err)
 		return 1

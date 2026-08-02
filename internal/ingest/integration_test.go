@@ -324,7 +324,7 @@ func TestQueryBarsIntegration(t *testing.T) {
 	}
 
 	// Full range: all 3 bars, ts ascending.
-	bars, err := QueryBars(ctx, database, string(symbol), tf, "none", time.Time{}, time.Time{}, 10)
+	bars, err := QueryBars(ctx, database, string(symbol), tf, "none", time.Time{}, time.Time{}, 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -340,7 +340,7 @@ func TestQueryBarsIntegration(t *testing.T) {
 	// Closed range [middle ts, last ts]: 2 bars, both endpoints included.
 	from := bars[1].Ts
 	to := bars[2].Ts
-	got, err := QueryBars(ctx, database, string(symbol), tf, "none", from, to, 10)
+	got, err := QueryBars(ctx, database, string(symbol), tf, "none", from, to, 10, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,7 +352,7 @@ func TestQueryBarsIntegration(t *testing.T) {
 	}
 
 	// limit=1: only the first bar.
-	got, err = QueryBars(ctx, database, string(symbol), tf, "none", time.Time{}, time.Time{}, 1)
+	got, err = QueryBars(ctx, database, string(symbol), tf, "none", time.Time{}, time.Time{}, 1, false)
 	if err != nil {
 		t.Fatal(err)
 	}
