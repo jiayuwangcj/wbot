@@ -5,7 +5,7 @@
 | 层 | 入口 | 覆盖 | 何时跑 |
 | --- | --- | --- | --- |
 | 单测 + 静态 | `scripts/verify.sh`（= CI `test` job） | 全部 Go 包单测、gofmt、契约测试 + 零依赖 accept（paper/agent-federation） | 每次提交前；CI 自动 |
-| 本地全链冒烟 | `scripts/dev-up.sh`（19 项） | `wbot serve` 全部 DB 本地 HTTP 端点（health/runs/bars/account/snapshots/admin·status/config/watchlist 等）+ CLI ingest file/url/status/bars 三维补漏 | 每次 dev 环境启动 |
+| 本地全链冒烟 | `scripts/dev-up.sh`（22 项） | `wbot serve` 全部 DB 本地 HTTP 端点（health/runs/bars/account/snapshots/admin·status/config/watchlist 等）+ CLI ingest file/url/status/bars 三维补漏 | 每次 dev 环境启动 |
 | 逐端点 e2e | `scripts/accept-*.sh`（12 个，135 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
 
 **原则**：dev-up 只冒烟不逐端点验收；accept 脚本只覆盖不冒烟的部分（如 futu 系依赖网关，刻意不入 dev-up，由 accept 覆盖）。CLI 面按「verify.sh 有无冒烟 + dev-up 有无覆盖 + accept 有无脚本」三维对账（#47/#49/#50 经验）。
@@ -33,7 +33,7 @@
 
 | 子系统 | CLI | HTTP | 说明 |
 | --- | --- | --- | --- |
-| serve | — | dev-up 19 + 各 accept | DB 本地端点 dev-up 冒烟；futu 系 accept-futu-data |
+| serve | — | dev-up 22 + 各 accept | DB 本地端点 dev-up 冒烟；futu 系 accept-futu-data |
 | ingest | accept-bars-refill / accept-options-ingest / accept-account-snapshot | 同上（POST /v1/ingest） | 含 `-every` 循环 |
 | futu | accept-futu-cli 21 | accept-futu-data 15 | order 只测 -dry-run 与校验/红线拒绝路径，**绝不下真单**（写操作 + 账户状态变更，刻意无自动脚本） |
 | backtest | accept-backtest 21 | 同上（GET detail/export） | 四条字节一致等价 + from_watchlist 实测 |

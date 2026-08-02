@@ -197,6 +197,13 @@ if [[ "$smoke" == "1" ]]; then
 	check "GET /ui/results.html (回测)" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/ui/results.html")"
 	check "GET /ui/data.html (数据)" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/ui/data.html")"
 	check "GET /ui/admin.html" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/ui/admin.html")"
+	# 静态资源缓存语义(2026-08-03): go:embed 文件零 modtime 会使 FileServer
+	# 不发 Last-Modified、永不 304;webui 以二进制 mtime 打戳 + no-cache,
+	# 浏览器每次重新验证而非全量重下,改前端代码后也绝不拿旧版。
+	check "GET /ui/style.css Cache-Control: no-cache" "no-cache" "$(curl -sI "$base_url/ui/style.css" | grep -i '^cache-control:' | tr -d '\r' | awk '{print $2}')"
+	check "GET /ui/style.css 有 Last-Modified" 1 "$(curl -sI "$base_url/ui/style.css" | grep -ic '^last-modified:')"
+	style_lm="$(curl -sI "$base_url/ui/style.css" | grep -i '^last-modified:' | sed 's/^[Ll]ast-[Mm]odified:[[:space:]]*//' | tr -d '\r')"
+	check "条件请求 304 (style.css)" 304 "$(curl -s -o /dev/null -w '%{http_code}' -H "If-Modified-Since: $style_lm" "$base_url/ui/style.css")"
 	check "GET /v1/strategies" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/strategies")"
 	check "GET /v1/watchlist" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/watchlist")"
 	check "GET /v1/backtests?limit=1" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/backtests?limit=1")"

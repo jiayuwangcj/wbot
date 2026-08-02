@@ -164,6 +164,35 @@ func TestServesStaticAssets(t *testing.T) {
 	}
 }
 
+// TestCacheRevalidation pins the caching contract: embed files report a zero
+// modtime, which would make http.FileServer omit Last-Modified and never emit
+// 304s; webui stamps them with the binary build time and sets Cache-Control:
+// no-cache so browsers revalidate every load (304 when unchanged, fresh
+// assets on the first request after a rebuild).
+func TestCacheRevalidation(t *testing.T) {
+	rec := serveGet(t, "/style.css")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-cache" {
+		t.Fatalf("cache-control = %q; want no-cache", cc)
+	}
+	lm := rec.Header().Get("Last-Modified")
+	if lm == "" {
+		t.Fatal("missing Last-Modified header (zero modtime would disable revalidation)")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/style.css", nil)
+	req.Header.Set("If-Modified-Since", lm)
+	rec2 := httptest.NewRecorder()
+	FileServer().ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusNotModified {
+		t.Fatalf("conditional status = %d; want 304", rec2.Code)
+	}
+	if rec2.Body.Len() != 0 {
+		t.Fatalf("304 body = %d bytes; want empty", rec2.Body.Len())
+	}
+}
+
 func TestMissingFileIs404(t *testing.T) {
 	rec := serveGet(t, "/nope.txt")
 	if rec.Code != http.StatusNotFound {
