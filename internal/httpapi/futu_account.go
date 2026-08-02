@@ -11,13 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/jiayu/wbot/internal/futu"
 	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
@@ -58,111 +56,80 @@ type FutuAccounter interface {
 	Account(ctx context.Context, env futu.Env, accID uint64) (AccountSnapshot, error)
 }
 
-// futuAccounter shares one TradeClient across requests (single process, low
-// query frequency; the gateway auto-reconnects). The mutex serializes queries:
-// gofutuapi's client is not concurrency-safe.
+// futuAccounter backs the account endpoint with the shared protoClient
+// (connection + reconnect management lives there, see futu_client.go).
 type futuAccounter struct {
-	mu   sync.Mutex
-	addr string
-	tc   *futu.TradeClient
+	pc *protoClient
 }
 
 func (a *futuAccounter) Account(ctx context.Context, env futu.Env, accID uint64) (AccountSnapshot, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	snap, err := a.account(ctx, env, accID)
-	if err != nil && a.tc != nil && isConnError(err) {
-		// The gateway drops proto connections between requests (observed live
-		// 2026-08-02 with opend-rs: "accounts: get acc list failed: connection
-		// closed" on every call after the first until restart). Abandon the
-		// stale client and retry once — these queries are read-only. Do NOT
-		// Close() it first: gofutuapi's reader goroutine may be inside
-		// tryReconnect/connect() replacing the same net.Conn (not race-safe).
-		a.tc = nil
-		snap, err = a.account(ctx, env, accID)
-	}
+	var snap AccountSnapshot
+	err := a.pc.do(ctx, func(tc *futu.TradeClient) error {
+		acc, err := tc.Account(ctx, env, accID)
+		if err != nil {
+			return err
+		}
+		funds, err := tc.Funds(ctx, acc)
+		if err != nil {
+			return err
+		}
+		positions, err := tc.Positions(ctx, acc)
+		if err != nil {
+			return err
+		}
+		snap = AccountSnapshot{
+			Env:       futu.EnvName(env),
+			AccID:     acc.GetAccID(),
+			Positions: make([]PositionJSON, 0, len(positions)),
+		}
+		snap.Funds = FundsJSON{
+			Power:         funds.GetPower(),
+			TotalAssets:   funds.GetTotalAssets(),
+			Cash:          funds.GetCash(),
+			MarketVal:     funds.GetMarketVal(),
+			AvailableCash: funds.GetAvailableFunds(), // 可用资金 (proto available_funds)
+		}
+		for _, p := range positions {
+			snap.Positions = append(snap.Positions, PositionJSON{
+				Symbol:    symbolFor(p),
+				Qty:       p.GetQty(),
+				AvgCost:   p.GetCostPrice(),
+				Price:     p.GetPrice(),
+				MarketVal: p.GetVal(),
+				PL:        p.GetPlVal(),
+			})
+		}
+		return nil
+	})
 	return snap, err
 }
 
-// account runs the snapshot query on a.locked client (mutex held by Account).
-func (a *futuAccounter) account(ctx context.Context, env futu.Env, accID uint64) (AccountSnapshot, error) {
-	if a.tc == nil {
-		tc, err := futu.OpenTrade(ctx, a.addr)
-		if err != nil {
-			return AccountSnapshot{}, err
-		}
-		a.tc = tc
-	}
-	acc, err := a.tc.Account(ctx, env, accID)
-	if err != nil {
-		return AccountSnapshot{}, err
-	}
-	funds, err := a.tc.Funds(ctx, acc)
-	if err != nil {
-		return AccountSnapshot{}, err
-	}
-	positions, err := a.tc.Positions(ctx, acc)
-	if err != nil {
-		return AccountSnapshot{}, err
-	}
-	snap := AccountSnapshot{
-		Env:       futu.EnvName(env),
-		AccID:     acc.GetAccID(),
-		Positions: make([]PositionJSON, 0, len(positions)),
-	}
-	snap.Funds = FundsJSON{
-		Power:         funds.GetPower(),
-		TotalAssets:   funds.GetTotalAssets(),
-		Cash:          funds.GetCash(),
-		MarketVal:     funds.GetMarketVal(),
-		AvailableCash: funds.GetAvailableFunds(), // 可用资金 (proto available_funds)
-	}
-	for _, p := range positions {
-		snap.Positions = append(snap.Positions, PositionJSON{
-			Symbol:    symbolFor(p),
-			Qty:       p.GetQty(),
-			AvgCost:   p.GetCostPrice(),
-			Price:     p.GetPrice(),
-			MarketVal: p.GetVal(),
-			PL:        p.GetPlVal(),
-		})
-	}
-	return snap, nil
-}
-
-// symbolFor reconstructs a market-qualified symbol from the TrdMarket enum
-// (1=HK, 2=US, 3=CN) and code; the CN exchange is inferred from the code
-// (6xxxxx = Shanghai, else Shenzhen).
-func symbolFor(p *trdcommon.Position) string {
-	switch p.GetSecMarket() {
+// qualifySymbol reconstructs a market-qualified symbol from the TrdSecMarket
+// enum (1=HK, 2=US, 3=CN) and code; the CN exchange is inferred from the code
+// (6xxxxx = Shanghai, else Shenzhen). Shared by positions and orders.
+func qualifySymbol(market int32, code string) string {
+	switch market {
 	case 1:
-		return "HK." + p.GetCode()
+		return "HK." + code
 	case 2:
-		return "US." + p.GetCode()
+		return "US." + code
 	case 3:
-		if strings.HasPrefix(p.GetCode(), "6") {
-			return "SH." + p.GetCode()
+		if strings.HasPrefix(code, "6") {
+			return "SH." + code
 		}
-		return "SZ." + p.GetCode()
+		return "SZ." + code
 	}
-	return p.GetCode()
+	return code
 }
 
-// FutuAccountAddr returns the gateway proto address: $FUTU_PROTO_ADDR or the
-// OpenD default loopback 11111 (doc/FUTU.md). The proto client dials TCP 11111;
-// the REST quote/options proxies read $FUTU_GATEWAY_URL (REST 22222) instead —
-// the two transports are configured independently, so a REST gateway URL must
-// not be fed to the proto dialer.
-func FutuAccountAddr() string {
-	if v := strings.TrimSpace(os.Getenv("FUTU_PROTO_ADDR")); v != "" {
-		return v
-	}
-	return futu.DefaultProtoAddr
+// symbolFor reconstructs a market-qualified symbol for a position row.
+func symbolFor(p *trdcommon.Position) string {
+	return qualifySymbol(p.GetSecMarket(), p.GetCode())
 }
 
 // NewFutuAccounter returns a FutuAccounter talking to the gateway at FutuAccountAddr().
 func NewFutuAccounter() FutuAccounter {
-	return &futuAccounter{addr: FutuAccountAddr()}
+	return &futuAccounter{pc: newProtoClient()}
 }
 
 // FutuAccountHandler serves GET /v1/futu/account: the browser cannot reach the
@@ -223,22 +190,6 @@ func accountError(err error) (int, string) {
 		return http.StatusServiceUnavailable, "Futu gateway unreachable"
 	}
 	return http.StatusBadGateway, err.Error()
-}
-
-// isConnError reports transport-level failures (dead socket, EOF, refused,
-// reply timeout after the gateway dropped the conn); business errors (bad
-// account, trd_env mismatch) never trigger a reconnect. gofutuapi surfaces a
-// mid-stream drop as "connection closed" or, when its internal reconnect is
-// stuck, "timeout waiting for reply SN N" (observed with opend-rs 2026-08-02).
-func isConnError(err error) bool {
-	var netErr net.Error
-	if errors.As(err, &netErr) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
-		return true
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "connection closed") || strings.Contains(msg, "connection refused") ||
-		strings.Contains(msg, "use of closed network connection") ||
-		strings.Contains(msg, "timeout waiting for reply")
 }
 
 func accountAction(status int) string {

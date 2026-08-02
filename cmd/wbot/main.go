@@ -235,7 +235,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/options option chain; gateway via $FUTU_GATEWAY_URL) and the embedded Web UI (GET / redirects to /ui/).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL) and the embedded Web UI (GET / redirects to /ui/).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -282,7 +282,7 @@ func runServe(prog string, argv []string) int {
 	// meta must carry the bound address: with -listen 127.0.0.1:0 the port exists only after Listen.
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
 	store := httpapi.NewDBStore(database)
-	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOptionChainer())
+	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOrderer(), httpapi.NewFutuOptionChainer())
 	srv := &http.Server{Handler: top}
 
 	go func() {
@@ -1523,7 +1523,7 @@ func runIngestBars(prog string, argv []string) int {
 // serveMux assembles serve's top-level routes: admin API, watchlist API,
 // backtest results API (read + execute), Futu quote/account/options proxies,
 // data API, embedded Web UI.
-func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore, bstore httpapi.BacktestStore, bexec httpapi.BacktestExecutor, fquoter httpapi.FutuQuoter, facc httpapi.FutuAccounter, fchain httpapi.FutuOptionChainer) *http.ServeMux {
+func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Store, wstore httpapi.WatchlistStore, bstore httpapi.BacktestStore, bexec httpapi.BacktestExecutor, fquoter httpapi.FutuQuoter, facc httpapi.FutuAccounter, forder httpapi.FutuOrderer, fchain httpapi.FutuOptionChainer) *http.ServeMux {
 	top := http.NewServeMux()
 	top.Handle("/v1/admin/", httpapi.AdminHandler(meta, pinger))
 	// Exact pattern wins over the /v1/admin/ subtree, so cluster/config keep their own handler muxes.
@@ -1551,6 +1551,7 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	// Futu proxies: browsers cannot reach the gateway (loopback) directly.
 	top.Handle("/v1/futu/quote", httpapi.FutuQuoteHandler(fquoter))
 	top.Handle("/v1/futu/account", httpapi.FutuAccountHandler(facc))
+	top.Handle("/v1/futu/orders", httpapi.FutuOrdersHandler(forder))
 	top.Handle("/v1/futu/options", httpapi.FutuOptionsHandler(fchain))
 	// Longest pattern wins: GET /{$} beats the / catch-all; other methods still reach the API's JSON 404.
 	top.Handle("GET /{$}", http.RedirectHandler("/ui/", http.StatusMovedPermanently))

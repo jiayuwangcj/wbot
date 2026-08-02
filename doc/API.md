@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/options` 为期权链代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/orders` 为订单列表只读代理、`/v1/futu/options` 为期权链代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## Web UI
 
@@ -510,6 +510,44 @@ Query 参数：
 
 响应 `502`（网关已应答但拒绝——如 `env` 无匹配账户、trd_env 不匹配、网关业务错误）：`message` 为网关消息透传（含出错步骤 `accounts`/`funds`/`positions`）。
 
+## GET /v1/futu/orders
+
+订单列表只读代理（Dashboard 订单状态面板）：同 `/v1/futu/account` 的 proto 通道（TCP 11111，共享连接与断线重连，见 `internal/httpapi/futu_client.go`）。**只读端点**：不撤单、不改状态；默认 `sim`，`real` 为只读查询（安全策略见 [[FUTU]]）。
+
+Query 参数：
+
+| 参数 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `env` | 否 | `sim` | 交易环境：`sim`（模拟盘，默认）\| `real`（实盘只读查询；非法值 → 400） |
+| `acc_id` | 否 | 该环境第一个账户 | 账户 ID（uint64；非法 → 400） |
+| `pending` | 否 | `1` | 仅挂单（proto `PendingOrderStatuses` 状态集：Submitted/PartialFilled/Cancelling/Timeout 等）\| `0` = 全部订单 |
+
+响应 `200`（字段白名单；`orders` 空时为空数组）：
+
+```json
+{
+  "env": "simulate",
+  "acc_id": 1907141,
+  "orders": [
+    {"order_id": 88, "symbol": "HK.00700", "name": "TENCENT", "side": "Sell",
+     "status": "OrderStatus_Submitted", "qty": 100, "price": 480.0,
+     "fill_qty": 0, "fill_avg_price": 0, "create_time": "2026-08-02 10:00:00",
+     "update_time": "2026-08-02 10:00:01", "last_err": ""}
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `env` / `acc_id` | 账户环境与账户 ID（标注查询目标，同 account 约定） |
+| `orders[].order_id` / `symbol` / `name` | 订单号 / market 限定代码 / 名称 |
+| `orders[].side` | 方向：`Buy` / `Sell`（TrdSide 枚举名） |
+| `orders[].status` | 状态：OrderStatus 枚举名（`OrderStatus_Submitted` 等） |
+| `orders[].qty` / `price` / `fill_qty` / `fill_avg_price` | 数量 / 委托价 / 已成交数量 / 成交均价 |
+| `orders[].create_time` / `update_time` / `last_err` | 创建/更新时间（YYYY-MM-DD HH:MM:SS）/ 最后错误描述（无错为空） |
+
+响应 `503`（网关不可达）：`action` 同 account；响应 `502`（网关业务错误）：`message` 透传。
+
 ## GET /v1/futu/options
 
 期权链代理（期权链可视化切片）：标的的到期日列表 + 单个到期日的 call/put 链（复用 `internal/futu` 的 `OptionExpirations`/`OptionChain`，快照类限频 1 次/3s 内置，见 [[FUTU]] §8/§10）。浏览器不能直连网关，serve 代浏览器调用。
@@ -574,8 +612,8 @@ PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIV
 | --- | --- |
 | 缺必填参数 / 参数非法（坏时间、limit<=0、空/超长配置值、body 非 JSON、未知策略模板或非法 watchlist 参数） | 400 |
 | 存储查询失败 | 500 |
-| DB ping 失败 / `/v1/futu/quote`、`/v1/futu/account`、`/v1/futu/options` 网关不可达 | 503 |
-| `/v1/futu/quote`、`/v1/futu/account`、`/v1/futu/options` 网关拒绝或业务错误（消息透传） | 502 |
+| DB ping 失败 / `/v1/futu/quote`、`/v1/futu/account`、`/v1/futu/orders`、`/v1/futu/options` 网关不可达 | 503 |
+| `/v1/futu/quote`、`/v1/futu/account`、`/v1/futu/orders`、`/v1/futu/options` 网关拒绝或业务错误（消息透传） | 502 |
 | 未知路径 / 白名单外 config key / DELETE 不存在的 watchlist 标的 / 不存在的 backtest id | 404 |
 | 方法不允许（非 GET/PUT/DELETE；watchlist 标的路径仅支持 PUT/DELETE） | 405 |
 | POST /v1/backtests：非法参数 422、单进程互斥 busy 409、依赖失败/无数据/超时 503（错误体见上节） | 见上节 |
@@ -590,6 +628,8 @@ wbot serve &
 curl -s 'http://127.0.0.1:8080/v1/runs'
 curl -s 'http://127.0.0.1:8080/v1/bars?symbol=DEMO.US&timeframe=1d'
 curl -s 'http://127.0.0.1:8080/v1/admin/cluster'
+curl -s 'http://127.0.0.1:8080/v1/futu/account'
+curl -s 'http://127.0.0.1:8080/v1/futu/orders'
 curl -s 'http://127.0.0.1:8080/v1/futu/options?symbol=HK.00700'
 curl -s 'http://127.0.0.1:8080/v1/futu/options?symbol=HK.00700&expiry=2026-08-07'
 curl -s 'http://127.0.0.1:8080/v1/strategies'

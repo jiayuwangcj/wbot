@@ -217,7 +217,7 @@ func TestFutuAccountProtoGateway(t *testing.T) {
 		return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1)})
 	})
 
-	h := FutuAccountHandler(&futuAccounter{addr: addr})
+	h := FutuAccountHandler(&futuAccounter{pc: newProtoClientAt(addr)})
 	rec := get(t, h, "/v1/futu/account")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
@@ -269,7 +269,7 @@ func TestFutuAccountReconnectAfterDrop(t *testing.T) {
 		return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1)})
 	})
 
-	a := &futuAccounter{addr: addr}
+	a := &futuAccounter{pc: newProtoClientAt(addr)}
 	for i := 0; i < 2; i++ {
 		snap, err := a.Account(context.Background(), futu.EnvSim, 1907141)
 		if err != nil {

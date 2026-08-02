@@ -120,6 +120,24 @@ func (tc *TradeClient) Positions(ctx context.Context, acc *trdcommon.TrdAcc) ([]
 	return positions, nil
 }
 
+// Orders queries the account's order list (read-only; safe for real accounts).
+// With pendingOnly the list is filtered to open/pending states (挂单, the
+// default view); otherwise all orders including filled/cancelled.
+func (tc *TradeClient) Orders(ctx context.Context, acc *trdcommon.TrdAcc, pendingOnly bool) ([]*trdcommon.Order, error) {
+	if err := QuoteLimit.Wait(ctx); err != nil {
+		return nil, err
+	}
+	var statuses []int32
+	if pendingOnly {
+		statuses = gofutuapi.PendingOrderStatuses()
+	}
+	orders, err := tc.cli.GetOrderListForAccount(acc, statuses, true)
+	if err != nil {
+		return nil, fmt.Errorf("orders acc %d: %w", acc.GetAccID(), err)
+	}
+	return orders, nil
+}
+
 // OrderRequest describes an order for PlaceOrder (validated there).
 type OrderRequest struct {
 	Symbol string  // market-qualified code, e.g. HK.00700
