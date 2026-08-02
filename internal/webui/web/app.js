@@ -1643,9 +1643,22 @@ function renderStrategyCards(list) {
   }
 }
 
+/* 导航高亮当前页:按 pathname 匹配 nav 链接加 active 类(/ui/ 直达
+   与 index.html 同页)。 */
+function setActiveNav() {
+  let path = location.pathname.replace(/\/+$/, "");
+  if (path === "/ui/index.html") path = "/ui"; /* /ui/ 与 /ui/index.html 同页 */
+  for (const a of document.querySelectorAll("header nav a")) {
+    let want = new URL(a.getAttribute("href"), location.origin).pathname.replace(/\/+$/, "");
+    if (want === "/ui/index.html") want = "/ui";
+    a.classList.toggle("active", want === path);
+  }
+}
+
 initTheme();
 initDashboardPage();
 initAdminPage();
 initWatchlistPage();
 initDataPage();
 initResultsPage();
+setActiveNav();

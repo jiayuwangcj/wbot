@@ -526,6 +526,34 @@ func TestWatchlistBacktestJS(t *testing.T) {
 	}
 }
 
+// TestActiveNavJS: 导航当前页高亮(setActiveNav,按 pathname 匹配 active
+// 类;index 页 /ui/ 与 /ui/index.html 同页归一)。
+func TestActiveNavJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		"function setActiveNav() {",
+		`new URL(a.getAttribute("href"), location.origin)`,
+		`a.classList.toggle("active", want === path)`,
+		`if (want === "/ui/index.html") want = "/ui"`,
+		"setActiveNav();",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	css, err := fs.ReadFile(webFiles, "web/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), "nav a.active") {
+		t.Fatal("style.css missing nav a.active rule")
+	}
+}
+
 // TestTimeFormattingJS: ISO 时间戳显示层转本地时间(fmtTime),排序仍用
 // 原始字段值不受影响;覆盖表 min/max_ts 不再 slice(0,16) 原样输出。
 func TestTimeFormattingJS(t *testing.T) {

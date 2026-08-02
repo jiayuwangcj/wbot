@@ -111,6 +111,13 @@ nav a {
   text-decoration: none;
 }
 
+/* 当前页高亮(导航 active 态,桌面下划线+字重,移动端同)。 */
+nav a.active {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 /* Theme toggle (UI 主题化): 头部最右, icon 由 app.js 按当前主题切换. */
 #theme-toggle {
   margin-left: auto;
