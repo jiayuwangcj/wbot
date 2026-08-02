@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -69,6 +70,22 @@ type futuAccounter struct {
 func (a *futuAccounter) Account(ctx context.Context, env futu.Env, accID uint64) (AccountSnapshot, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	snap, err := a.account(ctx, env, accID)
+	if err != nil && a.tc != nil && isConnError(err) {
+		// The gateway drops proto connections between requests (observed live
+		// 2026-08-02 with opend-rs: "accounts: get acc list failed: connection
+		// closed" on every call after the first until restart). Abandon the
+		// stale client and retry once — these queries are read-only. Do NOT
+		// Close() it first: gofutuapi's reader goroutine may be inside
+		// tryReconnect/connect() replacing the same net.Conn (not race-safe).
+		a.tc = nil
+		snap, err = a.account(ctx, env, accID)
+	}
+	return snap, err
+}
+
+// account runs the snapshot query on a.locked client (mutex held by Account).
+func (a *futuAccounter) account(ctx context.Context, env futu.Env, accID uint64) (AccountSnapshot, error) {
 	if a.tc == nil {
 		tc, err := futu.OpenTrade(ctx, a.addr)
 		if err != nil {
@@ -206,6 +223,22 @@ func accountError(err error) (int, string) {
 		return http.StatusServiceUnavailable, "Futu gateway unreachable"
 	}
 	return http.StatusBadGateway, err.Error()
+}
+
+// isConnError reports transport-level failures (dead socket, EOF, refused,
+// reply timeout after the gateway dropped the conn); business errors (bad
+// account, trd_env mismatch) never trigger a reconnect. gofutuapi surfaces a
+// mid-stream drop as "connection closed" or, when its internal reconnect is
+// stuck, "timeout waiting for reply SN N" (observed with opend-rs 2026-08-02).
+func isConnError(err error) bool {
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection closed") || strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "timeout waiting for reply")
 }
 
 func accountAction(status int) string {
