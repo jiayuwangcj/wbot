@@ -1,6 +1,6 @@
 # API 契约（只读数据接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/orders` 为订单列表只读代理、`/v1/futu/options` 为期权链代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`、`/v1/account/snapshots`——资产曲线历史快照，读 `account_snapshots` 表）只读，面向微信小程序/Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/orders` 为订单列表只读代理、`/v1/futu/options` 为期权链代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。
 
 ## Web UI
 
@@ -515,6 +515,37 @@ Query 参数：
 响应 `503`（网关不可达，连接失败/超时）：`action` 提示启动网关容器（同 `/v1/futu/quote` 约定）。
 
 响应 `502`（网关已应答但拒绝——如 `env` 无匹配账户、trd_env 不匹配、网关业务错误）：`message` 为网关消息透传（含出错步骤 `accounts`/`funds`/`positions`）。
+
+## GET /v1/account/snapshots
+
+资产曲线数据面（S-account-curve）：读 `account_snapshots` 表（由 `wbot ingest account` 写入——与 `wbot futu funds` 同一 OpenD protobuf funds 查询的落库孪生命令，见 [[DATA_PIPELINE]] 资产快照章、[[FUTU]] §9），返回该环境最近 `limit` 条资金快照（时间递增）。Dashboard 资产曲线用它；与 `/v1/futu/account`（实时网关代理）互补：一查（CLI）一存（表）一读（本端点）。**纯 DB 数据面**：无网关依赖、无凭证（[[PRIVACY]]）。
+
+Query 参数：
+
+| 参数 | 必填 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `env` | 否 | `sim` | 交易环境：`sim`/`simulate`/`paper` → `simulate`，`real` → `real`；非法值 → 400（归一化语义同 `/v1/futu/account`） |
+| `limit` | 否 | `120` | 返回点数（最近 N 条，1..10000；非法 → 400） |
+
+响应 `200`（`points` 无数据时为空数组；`captured_at` 为 RFC3339 UTC）：
+
+```json
+{
+  "env": "simulate",
+  "limit": 120,
+  "points": [
+    {"captured_at": "2026-08-03T01:00:07Z", "total_assets": 1198286.82, "cash": 318666.822, "market_val": 879620}
+  ]
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `env` / `limit` | 归一化后的环境（simulate/real）与本次查询点数 |
+| `points[].captured_at` | 快照时刻（RFC3339 UTC，`points` 内时间递增） |
+| `points[].total_assets` / `cash` / `market_val` | 总资产 / 现金 / 证券市值（来自 `wbot ingest account` 写入行） |
+
+响应 `400`（`invalid_request`：env/limit 非法）、`500`（内部错误，查日志）。非 GET → `405`。无 `503`（不走网关）。
 
 ## GET /v1/futu/orders
 
