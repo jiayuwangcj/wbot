@@ -973,6 +973,8 @@ func runIngest(prog string, argv []string) int {
 		return runIngestFutu(prog, argv[1:])
 	case "futu-option":
 		return runIngestFutuOption(prog, argv[1:])
+	case "account":
+		return runIngestAccount(prog, argv[1:])
 	case "status":
 		return runIngestStatus(prog, argv[1:])
 	case "freshness":
@@ -1651,6 +1653,7 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "  url    Load bars from a JSON URL (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu   Fetch K-lines from the futu-opend-rs gateway (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu-option  Fetch option-chain K-lines + underlying bars, cache-first (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  account  Snapshot account funds into account_snapshots (资产曲线数据层) (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  status Show recent ingestion runs (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  freshness  Check data freshness; exit 1 when any symbol×timeframe is stale (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  bars   Show ingested bars for a symbol/timeframe (-h for flags)\n")
