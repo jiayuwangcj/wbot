@@ -93,8 +93,13 @@ say "dsn=${WBOT_PG_DSN}"
 # --- 2. build ---------------------------------------------------------------
 
 mkdir -p "$devdir"
+old_sum=""
+if [[ -f "$bin" ]]; then
+	old_sum="$(md5sum "$bin" | cut -d' ' -f1)"
+fi
 say "building $bin"
 go build -o "$bin" ./cmd/wbot
+new_sum="$(md5sum "$bin" | cut -d' ' -f1)"
 
 # --- 3. serve ---------------------------------------------------------------
 
@@ -104,9 +109,17 @@ if curl -sf -o /dev/null "${base_url}/v1/admin/cluster" 2>/dev/null; then
 	already_up=1
 fi
 
+# 二进制内容变化(源码改动)且 serve 已 up → 自动重启,免手动 --force
+# (旧行为:serve 一直在跑时复用旧进程,服务端改动验收会误判)。
 if [[ "$already_up" == "1" && "$force" == "0" ]]; then
-	say "serve already up on $listen (use --force to restart)"
-elif [[ "$already_up" == "1" && "$force" == "1" ]]; then
+	if [[ -n "$old_sum" && "$old_sum" != "$new_sum" ]]; then
+		say "rebuilt binary differs from running serve; restarting"
+		force=1
+	else
+		say "serve already up on $listen (use --force to restart)"
+	fi
+fi
+if [[ "$already_up" == "1" && "$force" == "1" ]]; then
 	port="$(echo "$listen" | sed 's/^://')"
 	pids="$(ss -tlnp 2>/dev/null | grep -E "[:.]${port}[[:space:]]" | grep -oP 'pid=\K[0-9]+' | sort -u)"
 	for p in $pids; do
