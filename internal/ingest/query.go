@@ -46,8 +46,9 @@ GROUP BY symbol, timeframe, adjust ORDER BY symbol, timeframe, adjust`)
 	return out, nil
 }
 
-// QueryBars returns a symbol/timeframe/adjust's bars in [from, to] (zero from/to unbounded), ts ascending.
-func QueryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string, adjust string, from, to time.Time, limit int) ([]Bar, error) {
+// QueryBars returns a symbol/timeframe/adjust's bars in [from, to] (zero from/to unbounded),
+// ts ascending; with desc, newest-first (tail-window reads, e.g. the Web UI data page).
+func QueryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string, adjust string, from, to time.Time, limit int, desc bool) ([]Bar, error) {
 	if db == nil {
 		return nil, errors.New("ingest: query bars: nil db")
 	}
@@ -79,9 +80,13 @@ func QueryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string,
 		conds = append(conds, fmt.Sprintf("ts <= $%d", len(args)))
 	}
 	args = append(args, limit)
+	order := "ASC"
+	if desc {
+		order = "DESC"
+	}
 	query := fmt.Sprintf(`
-SELECT ts, open, high, low, close, volume FROM bars WHERE %s ORDER BY ts ASC LIMIT $%d`,
-		strings.Join(conds, " AND "), len(args))
+SELECT ts, open, high, low, close, volume FROM bars WHERE %s ORDER BY ts %s LIMIT $%d`,
+		strings.Join(conds, " AND "), order, len(args))
 
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {

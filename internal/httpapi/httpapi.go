@@ -23,7 +23,7 @@ const (
 
 // Store is the read-only data surface the API serves.
 type Store interface {
-	QueryBars(ctx context.Context, symbol string, timeframe string, adjust string, from, to time.Time, limit int) ([]ingest.Bar, error)
+	QueryBars(ctx context.Context, symbol string, timeframe string, adjust string, from, to time.Time, limit int, desc bool) ([]ingest.Bar, error)
 	RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error)
 	RunStatusCounts(ctx context.Context) (ingest.RunCounts, error)
 	BarCoverage(ctx context.Context) ([]ingest.BarCoverage, error)
@@ -39,8 +39,8 @@ type dbStore struct {
 	db *sql.DB
 }
 
-func (s dbStore) QueryBars(ctx context.Context, symbol string, timeframe string, adjust string, from, to time.Time, limit int) ([]ingest.Bar, error) {
-	return ingest.QueryBars(ctx, s.db, symbol, timeframe, adjust, from, to, limit)
+func (s dbStore) QueryBars(ctx context.Context, symbol string, timeframe string, adjust string, from, to time.Time, limit int, desc bool) ([]ingest.Bar, error) {
+	return ingest.QueryBars(ctx, s.db, symbol, timeframe, adjust, from, to, limit, desc)
 }
 
 func (s dbStore) RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error) {
@@ -141,7 +141,10 @@ func Handler(store Store) http.Handler {
 				return
 			}
 		}
-		bars, err := store.QueryBars(r.Context(), symbol, timeframe, adjust, from, to, limit)
+		// desc=1 returns the newest bars first (tail window); default asc keeps
+		// the historical head, which the backtest UI never uses.
+		desc := q.Get("desc") == "1"
+		bars, err := store.QueryBars(r.Context(), symbol, timeframe, adjust, from, to, limit, desc)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return

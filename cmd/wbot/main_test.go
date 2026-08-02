@@ -758,7 +758,7 @@ func freeTCPPort(t *testing.T) int {
 // serveFakeStore is a no-data httpapi.Store for serve-mux tests (no DB needed).
 type serveFakeStore struct{}
 
-func (serveFakeStore) QueryBars(context.Context, string, string, string, time.Time, time.Time, int) ([]ingest.Bar, error) {
+func (serveFakeStore) QueryBars(context.Context, string, string, string, time.Time, time.Time, int, bool) ([]ingest.Bar, error) {
 	return nil, nil
 }
 
@@ -1020,12 +1020,16 @@ func TestServeMuxUIServesPages(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("/ui/: content-type = %q; want text/html", ct)
 	}
-	if !strings.Contains(rec.Body.String(), "<title>wbot · Data</title>") {
+	if !strings.Contains(rec.Body.String(), "<title>wbot · Dashboard</title>") {
 		t.Fatalf("/ui/ missing title: %s", rec.Body)
 	}
 	rec = serveGet(t, top, "/ui/admin.html")
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<title>wbot · Admin</title>") {
 		t.Fatalf("/ui/admin.html: status = %d body = %s", rec.Code, rec.Body)
+	}
+	rec = serveGet(t, top, "/ui/data.html")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<title>wbot · 数据</title>") {
+		t.Fatalf("/ui/data.html: status = %d body = %s", rec.Code, rec.Body)
 	}
 }
 

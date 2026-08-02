@@ -93,7 +93,7 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 	if err != nil {
 		return nil, err
 	}
-	bars, err := ingest.QueryBars(ctx, db, o.Symbol, o.Timeframe, o.Adjust, o.From, o.To, o.Limit)
+	bars, err := ingest.QueryBars(ctx, db, o.Symbol, o.Timeframe, o.Adjust, o.From, o.To, o.Limit, false)
 	if err != nil {
 		return nil, err
 	}
@@ -163,7 +163,7 @@ func RunMulti(ctx context.Context, db *sql.DB, o Options, symbols []string) (*Mu
 	}
 	series := make([]backtest.SymbolBars, 0, len(symbols))
 	for _, sym := range symbols {
-		bars, err := ingest.QueryBars(ctx, db, sym, o.Timeframe, o.Adjust, o.From, o.To, o.Limit)
+		bars, err := ingest.QueryBars(ctx, db, sym, o.Timeframe, o.Adjust, o.From, o.To, o.Limit, false)
 		if err != nil {
 			return nil, err
 		}
