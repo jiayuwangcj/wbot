@@ -225,7 +225,31 @@ function renderPositions() {
     return;
   }
   empty.hidden = true;
-  renderTable("positions-table", snap.positions.map((p) => [p.symbol, p.qty, p.avg_cost, p.price, p.market_val, p.pl]));
+  const table = document.getElementById("positions-table");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  for (const p of snap.positions) {
+    const tr = document.createElement("tr");
+    for (const c of [p.symbol, p.qty, p.avg_cost, p.price, p.market_val]) {
+      const td = document.createElement("td");
+      td.textContent = c;
+      tr.appendChild(td);
+    }
+    tr.appendChild(numCell(p.pl));
+    tbody.appendChild(tr);
+  }
+  table.hidden = false;
+}
+
+/* 盈亏/收益率语义色(券商 UI 惯例):正值 --ok 绿、负值 --down 红。
+   v 为原始数值(未格式化),着色以原始值为准,显示用可选 fmt 格式化。 */
+function numCell(v, fmt) {
+  const td = document.createElement("td");
+  td.textContent = fmt ? fmt(v) : v;
+  if (typeof v === "number" && !isNaN(v)) {
+    td.className = v > 0 ? "num-up" : v < 0 ? "num-down" : "";
+  }
+  return td;
 }
 
 function renderOrders(snap) {
@@ -937,17 +961,22 @@ function renderResultsList(items, onOpen) {
     });
     pick.appendChild(check);
     tr.appendChild(pick);
-    const cells = [
+    for (const cell of [
       item.id,
       item.strategy,
       item.symbol,
-      fmtMetric(metricOf(item, "equity"), fmtMoney),
-      fmtMetric(metricOf(item, "total_return"), fmtPct),
+      fmtMetric(metricOf(item, "equity"), fmtMoney)
+    ]) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    }
+    tr.appendChild(numCell(metricOf(item, "total_return"), fmtPct));
+    for (const cell of [
       fmtMetric(metricOf(item, "max_drawdown"), fmtPct),
       fmtMetric(metricOf(item, "bars"), String),
       item.created_at
-    ];
-    for (const cell of cells) {
+    ]) {
       const td = document.createElement("td");
       td.textContent = cell;
       tr.appendChild(td);
