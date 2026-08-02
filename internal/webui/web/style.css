@@ -390,6 +390,17 @@ td.side-sell {
   font-weight: 600;
 }
 
+/* 盈亏/收益率语义色(券商 UI 惯例):持仓盈亏、回测收益率正绿负红。 */
+td.num-up {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+td.num-down {
+  color: var(--down);
+  font-weight: 600;
+}
+
 @media (min-width: 1024px) {
   .dash-grid {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);

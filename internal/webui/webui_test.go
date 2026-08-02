@@ -909,6 +909,35 @@ func TestAppJSQueriesFutuAccountAPI(t *testing.T) {
 	}
 }
 
+// TestNumCellSemanticColor: 盈亏/收益率语义色契约(券商 UI 惯例切片):
+// numCell 以原始数值着色(>0 → num-up / <0 → num-down),持仓盈亏与回测
+// 收益率列均走该路径;CSS 提供 td.num-up/td.num-down 三态色。
+func TestNumCellSemanticColor(t *testing.T) {
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"function numCell(v, fmt)",
+		`td.className = v > 0 ? "num-up" : v < 0 ? "num-down" : ""`,
+		"numCell(p.pl)",
+		"numCell(metricOf(item, \"total_return\"), fmtPct)",
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	css, err := fs.ReadFile(webFiles, "web/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"td.num-up", "td.num-down"} {
+		if !strings.Contains(string(css), want) {
+			t.Fatalf("style.css missing %q", want)
+		}
+	}
+}
+
 // TestBarsCoverageRemoved: bars 区块已随 Dashboard 改造迁出(老板 2026-08-02),
 // 旧覆盖度提示逻辑移除 — 查看缓存数据的功能现由独立「数据」页承担(data.html,
 // coverage-table + drill-in),Admin cluster 页仍有 freshness 覆盖表。
