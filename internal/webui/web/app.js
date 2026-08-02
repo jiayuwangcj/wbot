@@ -517,6 +517,18 @@ function renderCoverageRows(rows) {
       tr.appendChild(td);
     }
     tr.appendChild(freshnessCell(b));
+    const action = document.createElement("td");
+    const refill = document.createElement("button");
+    refill.type = "button";
+    refill.className = "link";
+    refill.textContent = "补数据";
+    refill.title = "经网关拉取 " + b.symbol + " " + b.timeframe + "(" + b.adjust + ") 的行情,更新缓存";
+    refill.addEventListener("click", (ev) => {
+      ev.stopPropagation(); /* 不触发行 drill-in */
+      ingestBars(b, refill);
+    });
+    action.appendChild(refill);
+    tr.appendChild(action);
     tbody.appendChild(tr);
   }
   empty.hidden = true;
@@ -526,6 +538,34 @@ function renderCoverageRows(rows) {
 async function loadDataCoverage() {
   const data = await fetchJSON("/v1/admin/cluster");
   renderCoverageRows(data.components.data_plane.bars_coverage || []);
+}
+
+/* 补数据:POST /v1/ingest 经网关拉取该标的行情(与 `wbot ingest futu`
+   同一管线,source=http-api);成功刷新覆盖表与明细,失败显示原因
+   (网关不可达/无数据等,按钮短暂置忙防重复点击)。 */
+async function ingestBars(b, btn) {
+  const errEl = document.getElementById("coverage-error");
+  clearError(errEl);
+  btn.disabled = true;
+  btn.textContent = "拉取中…";
+  try {
+    await fetchJSON("/v1/ingest", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({symbol: b.symbol, timeframe: b.timeframe, adjust: b.adjust})
+    });
+    btn.textContent = "已更新";
+    const [data] = await Promise.all([fetchJSON("/v1/admin/cluster")]);
+    renderCoverageRows(data.components.data_plane.bars_coverage || []);
+    if (document.getElementById("detail").hidden === false && document.getElementById("detail-title").textContent.includes(b.symbol)) {
+      loadBars(b.symbol, b.timeframe, b.adjust); /* 明细视图同步刷新 */
+    }
+  } catch (err) {
+    btn.textContent = "补数据";
+    showError(errEl, err);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function fmtNum(v) {

@@ -526,6 +526,43 @@ func TestWatchlistBacktestJS(t *testing.T) {
 	}
 }
 
+// TestIngestRefillJS: Data 覆盖表行「补数据」按钮——POST /v1/ingest
+// (与 CLI 同一管线),成功后刷新覆盖表,失败错误可见。
+func TestIngestRefillJS(t *testing.T) {
+	jsData, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsData)
+	for _, want := range []string{
+		`refill.textContent = "补数据"`,
+		"ingestBars(b, refill)",
+		"ev.stopPropagation()",
+		`fetchJSON("/v1/ingest"`,
+		`method: "POST"`,
+		`body: JSON.stringify({symbol: b.symbol, timeframe: b.timeframe, adjust: b.adjust})`,
+		"btn.textContent = \"拉取中…\"",
+		"renderCoverageRows(data.components.data_plane.bars_coverage || [])",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	htmlData, err := fs.ReadFile(webFiles, "web/data.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlData)
+	for _, want := range []string{
+		`<th>操作</th>`,
+		"补数据", /* 表头说明文案 */
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("data.html missing %q", want)
+		}
+	}
+}
+
 // TestRerunJS: 详情「重新运行」——回填表单(symbol/strategy/params)后
 // 滚动到表单,参数迭代闭环。
 func TestRerunJS(t *testing.T) {
