@@ -1192,11 +1192,16 @@ func TestPositionsSortingJS(t *testing.T) {
 	s := string(js)
 	for _, want := range []string{
 		"const POSITIONS_SORT_KEYS = {",
+		"market_val: (p) => p.market_val ?? -Infinity",
 		"pl: (p) => p.pl ?? -Infinity",
 		"let positionsSorter = null",
 		`makeTableSorter("positions-table", POSITIONS_SORT_KEYS)`,
 		"positionsSorter.render = renderPositions",
 		"positionsSorter ? positionsSorter.sortItems(snap.positions) : snap.positions",
+		`positionsSorter.state.key = "market_val"`,
+		"positionsSorter.state.dir = -1",
+		"positionsSorter.renderIndicators()",
+		"sorter.renderIndicators = renderIndicators",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing %q", want)
