@@ -925,6 +925,7 @@ function renderResultsList(items, onOpen) {
   }
   for (const item of items) {
     const tr = document.createElement("tr");
+    tr.dataset.id = String(item.id);
     const pick = document.createElement("td");
     const check = document.createElement("input");
     check.type = "checkbox";
@@ -969,6 +970,37 @@ function showMetric(id, v, formatter) {
   setText(id, fmtMetric(v, formatter));
 }
 
+/* 长回测 trades 可能上千条:默认只渲染最近 TRADES_LIMIT 条,避免 DOM 爆炸
+   页面过长;超限时显示提示 + 「显示全部」展开(点击后全量重绘)。 */
+const TRADES_LIMIT = 100;
+
+function renderTradesTable(trades) {
+  const table = document.getElementById("trades-table");
+  const empty = document.getElementById("trades-empty");
+  const hint = document.getElementById("trades-limit-hint");
+  const showAll = document.getElementById("trades-show-all");
+  const rows = trades.map((t) => [t.ts, t.action, t.symbol, t.size, t.price, t.cash_after]);
+  if (rows.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    hint.hidden = true;
+    showAll.hidden = true;
+    return;
+  }
+  const limited = rows.length > TRADES_LIMIT;
+  renderTable("trades-table", limited ? rows.slice(-TRADES_LIMIT) : rows);
+  hint.hidden = !limited;
+  if (limited) {
+    hint.textContent = "共 " + rows.length + " 笔交易,仅显示最近 " + TRADES_LIMIT + " 笔。";
+  }
+  showAll.hidden = !limited;
+  showAll.onclick = () => {
+    renderTable("trades-table", rows);
+    hint.hidden = true;
+    showAll.hidden = true;
+  };
+}
+
 function renderDetail(d) {
   setText("detail-id", d.id);
   showMetric("metric-equity", metricOf(d, "equity"), fmtMoney);
@@ -978,7 +1010,7 @@ function renderDetail(d) {
   document.getElementById("metric-cards").hidden = false;
   document.getElementById("curve-wrap").hidden = false;
   document.getElementById("detail-extra").hidden = false;
-  renderTable("trades-table", (d.trades || []).map((t) => [t.ts, t.action, t.symbol, t.size, t.price, t.cash_after]));
+  renderTradesTable(d.trades || []);
   document.getElementById("detail-params").textContent = d.params ? JSON.stringify(d.params, null, 2) : "{}";
   curvePoints = d.equity_curve || [];
   curveIndex = 0;
@@ -998,7 +1030,17 @@ function showDetailError(err) {
   detail.scrollIntoView();
 }
 
+/* 详情视图高亮列表中当前查看的行(选中态),返回列表时一眼定位。 */
+function selectResultsRow(id) {
+  const tbody = document.querySelector("#results-table tbody");
+  if (!tbody) return;
+  for (const tr of tbody.rows) {
+    tr.classList.toggle("selected", tr.dataset.id === String(id));
+  }
+}
+
 function openDetail(id) {
+  selectResultsRow(id);
   fetchJSON("/v1/backtests/" + id).then((d) => {
     clearError(document.getElementById("detail-error"));
     renderDetail(d);

@@ -672,6 +672,8 @@ func TestResultsPageElements(t *testing.T) {
 		`id="detail-extra"`,
 		`id="trades-table"`,
 		`id="trades-empty"`,
+		`id="trades-limit-hint"`,
+		`id="trades-show-all"`,
 		`id="detail-params"`,
 		`id="detail-back"`,
 		`/ui/app.js`,
@@ -706,6 +708,31 @@ func TestAppJSQueriesBacktestsAPI(t *testing.T) {
 		"initResultsPage",
 		"drawEquityCurve",
 		"showDetailError",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+// TestAppJSTradesLimitContract: 长回测 trades 限量渲染契约(UI 打磨切片):
+// 默认只渲染最近 TRADES_LIMIT 条,超限显示提示 + 「显示全部」;打开详情时
+// 高亮列表中当前行(tr.dataset.id + .selected)。
+func TestAppJSTradesLimitContract(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		"const TRADES_LIMIT = 100",
+		"renderTradesTable",
+		"rows.slice(-TRADES_LIMIT)",
+		`"trades-limit-hint"`,
+		`"trades-show-all"`,
+		"tr.dataset.id = String(item.id)",
+		"selectResultsRow",
+		`tr.classList.toggle("selected", tr.dataset.id === String(id))`,
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
