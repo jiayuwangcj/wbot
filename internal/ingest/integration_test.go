@@ -35,7 +35,7 @@ func TestRunMockIngestionIntegration(t *testing.T) {
 	source := "mock-test"
 	symbol := domain.Symbol("TEST.US")
 	tf := "1d"
-	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+	if err := RunMockIngestion(ctx, database, source, symbol, tf, "none"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,7 +60,7 @@ SELECT status FROM ingestion_runs WHERE source = $1 ORDER BY id DESC LIMIT 1`, s
 	}
 
 	// Second run with identical bars must not fail (ON CONFLICT DO NOTHING).
-	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+	if err := RunMockIngestion(ctx, database, source, symbol, tf, "none"); err != nil {
 		t.Fatal(err)
 	}
 	err = database.QueryRow(`
@@ -196,7 +196,7 @@ func TestRecentRunsIntegration(t *testing.T) {
 	source := "status-test"
 	symbol := domain.Symbol("STATUS.US")
 	tf := "1d"
-	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+	if err := RunMockIngestion(ctx, database, source, symbol, tf, "none"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -241,7 +241,7 @@ func TestRunStatusCountsIntegration(t *testing.T) {
 	source := "counts-test"
 	symbol := domain.Symbol("COUNTS.US")
 	tf := "1d"
-	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+	if err := RunMockIngestion(ctx, database, source, symbol, tf, "none"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -275,7 +275,7 @@ func TestQueryBarCoverageIntegration(t *testing.T) {
 	source := "coverage-test"
 	symbol := domain.Symbol("COVERAGE.US")
 	tf := "1d"
-	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+	if err := RunMockIngestion(ctx, database, source, symbol, tf, "none"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -319,7 +319,7 @@ func TestQueryBarsIntegration(t *testing.T) {
 	source := "bars-query-test"
 	symbol := domain.Symbol("QUERY.US")
 	tf := "1d"
-	if err := RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+	if err := RunMockIngestion(ctx, database, source, symbol, tf, "none"); err != nil {
 		t.Fatal(err)
 	}
 

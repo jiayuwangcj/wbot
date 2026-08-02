@@ -59,6 +59,7 @@ func TestRun(t *testing.T) {
 		{"ingest mock help", []string{"wbot", "ingest", "mock", "-h"}, 0},
 		{"ingest mock bad from", []string{"wbot", "ingest", "mock", "-from", "not-a-time"}, 2},
 		{"ingest mock bad to", []string{"wbot", "ingest", "mock", "-to", "x"}, 2},
+		{"ingest mock bad adjust", []string{"wbot", "ingest", "mock", "-adjust", "splits"}, 2},
 		{"ingest file bad from", []string{"wbot", "ingest", "file", "-file", "/dev/null", "-from", "not-a-time"}, 2},
 		{"ingest file help", []string{"wbot", "ingest", "file", "-h"}, 0},
 		{"ingest file no path", []string{"wbot", "ingest", "file"}, 2},

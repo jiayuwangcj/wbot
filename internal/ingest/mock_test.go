@@ -9,7 +9,7 @@ import (
 
 func TestRunMockIngestion_validation(t *testing.T) {
 	ctx := context.Background()
-	err := RunMockIngestion(ctx, nil, "mock", domain.Symbol("X.US"), "1d")
+	err := RunMockIngestion(ctx, nil, "mock", domain.Symbol("X.US"), "1d", "none")
 	if err == nil {
 		t.Fatal("expected error for nil db")
 	}

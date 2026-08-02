@@ -289,7 +289,7 @@ func TestBarsCachedIntegration(t *testing.T) {
 	from := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
 	to := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	symbol := domain.Symbol("BARSCACHE.US")
-	if err := RunMockIngestion(ctx, database, "barscache-test", symbol, "1d"); err != nil {
+	if err := RunMockIngestion(ctx, database, "barscache-test", symbol, "1d", "none"); err != nil {
 		t.Fatal(err)
 	}
 	// Mock bars sit in 2024-06; the 2026-07 window must be a cache miss.

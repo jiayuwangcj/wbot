@@ -82,7 +82,7 @@ func TestAdminClusterIntegration(t *testing.T) {
 	source := "cluster-test"
 	symbol := domain.Symbol("CLUSTER.US")
 	tf := "1d"
-	if err := ingest.RunMockIngestion(ctx, database, source, symbol, tf); err != nil {
+	if err := ingest.RunMockIngestion(ctx, database, source, symbol, tf, "none"); err != nil {
 		t.Fatal(err)
 	}
 
