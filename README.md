@@ -15,13 +15,13 @@
 ## 项目约束（已确认）
 
 - 主要语言：Go
-- 部署形态：单二进制，支持前台/守护两种运行方式（后续实现）
-- 架构：master/agent，多机部署，agent 主动 HTTPS 轮询 master（后续实现）
-- 市场：港股/美股，现货 + 期权（后续实现）
-- 交易接入：富途 / IBKR 抽象层（后续实现）
+- 部署形态：单二进制，前台 serve（dev-up/日构建脚本以守护方式启动）
+- 架构：master/agent 占位子系统已实现（见 `doc/API.md` Agent federation）；多机 HTTPS 部署待后续
+- 市场：港股/美股，现货 + 期权（已接入，见 `doc/FUTU.md`）
+- 交易接入：富途已接入（见 `doc/FUTU.md`）；IBKR 抽象层待后续
 - 存储：PostgreSQL（后续可扩展）
 - 日志：`zerolog`（当前 std log/fmt 输出；结构化日志随 v3 执行路径阶段按需收紧，见 `doc/ROADMAP.md`）
-- Web：后端 Go API，前端 React 打包后 `go:embed` 内嵌（后续实现）
+- Web：后端 Go API，前端原生 HTML/CSS/JS 经 `go:embed` 内嵌
 - 外部通知：Telegram / Discord（后续实现）
 
 ## 本地开发
