@@ -131,6 +131,16 @@ function fmtAccountMoney(v) {
   return Number(v).toLocaleString("en-US", {maximumFractionDigits: 2});
 }
 
+/* ISO 时间戳 → 本地时间 "YYYY-MM-DD HH:MM"(券商面板惯例;空值/非法值
+   原样兜底,排序不受影响——排序用的是原始字段值,仅显示层转换)。 */
+function fmtTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
 let dashEnv = "sim"; /* 当前明细视图(聚合卡/持仓/订单) */
 const snapByEnv = {sim: null, real: null};
 const errByEnv = {sim: null, real: null};
@@ -285,7 +295,7 @@ function renderOrders(snap) {
     const sideTd = document.createElement("td");
     sideTd.textContent = sideZh(o.side);
     sideTd.className = o.side.toLowerCase() === "buy" ? "side-buy" : "side-sell";
-    return [o.create_time, o.symbol, sideTd, o.status, o.qty, o.price, o.fill_qty];
+    return [fmtTime(o.create_time), o.symbol, sideTd, o.status, o.qty, o.price, o.fill_qty];
   }));
 }
 
@@ -500,7 +510,7 @@ function renderCoverageRows(rows) {
     tr.classList.add("coverage-row");
     tr.title = "点击查看 " + b.symbol + " " + b.timeframe + " (" + b.adjust + ")";
     tr.addEventListener("click", () => loadBars(b.symbol, b.timeframe, b.adjust));
-    const cells = [b.symbol, b.timeframe, b.adjust, b.count, b.min_ts.slice(0, 16), b.max_ts.slice(0, 16), fmtAge(b.max_ts_age_seconds)];
+    const cells = [b.symbol, b.timeframe, b.adjust, b.count, fmtTime(b.min_ts), fmtTime(b.max_ts), fmtAge(b.max_ts_age_seconds)];
     for (const cell of cells) {
       const td = document.createElement("td");
       td.textContent = cell;
@@ -1082,7 +1092,7 @@ function renderResultsList(items, onOpen) {
     for (const cell of [
       fmtMetric(metricOf(item, "max_drawdown"), fmtPct),
       fmtMetric(metricOf(item, "bars"), String),
-      item.created_at
+      fmtTime(item.created_at)
     ]) {
       const td = document.createElement("td");
       td.textContent = cell;
@@ -1213,7 +1223,7 @@ function renderTradesTable(trades) {
     const actionTd = document.createElement("td");
     actionTd.textContent = sideZh(t.action);
     actionTd.className = String(t.action).toLowerCase() === "buy" ? "side-buy" : "side-sell";
-    return [t.ts, actionTd, t.symbol, t.size, t.price, t.cash_after];
+    return [fmtTime(t.ts), actionTd, t.symbol, t.size, t.price, t.cash_after];
   });
   if (rows.length === 0) {
     table.hidden = true;

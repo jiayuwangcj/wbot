@@ -526,6 +526,35 @@ func TestWatchlistBacktestJS(t *testing.T) {
 	}
 }
 
+// TestTimeFormattingJS: ISO 时间戳显示层转本地时间(fmtTime),排序仍用
+// 原始字段值不受影响;覆盖表 min/max_ts 不再 slice(0,16) 原样输出。
+func TestTimeFormattingJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		"function fmtTime(iso) {",
+		`if (!iso) return ""`,
+		"isNaN(d.getTime())",
+		`fmtTime(o.create_time)`,
+		`fmtTime(item.created_at)`,
+		`fmtTime(t.ts)`,
+		`fmtTime(b.min_ts)`,
+		`fmtTime(b.max_ts)`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	for _, gone := range []string{"b.min_ts.slice(0, 16)", "b.max_ts.slice(0, 16)"} {
+		if strings.Contains(s, gone) {
+			t.Fatalf("app.js still slices raw ts %q", gone)
+		}
+	}
+}
+
 // TestBacktestExportJS: 详情页导出按钮(CSV/JSON),浏览器直接下载服务端
 // 序列化(GET /v1/backtests/{id}/export,与 CLI -export 同一 serializer)。
 func TestBacktestExportJS(t *testing.T) {
