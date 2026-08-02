@@ -949,6 +949,27 @@ func TestDashboardAccountBlock(t *testing.T) {
 	}
 }
 
+// TestAutoRefreshJS: Dashboard 自动轮询契约(2026-08-02):30s 定时刷新,
+// visibilitychange 隐藏暂停/可见恢复,避免后台持续打 futu 网关。
+func TestAutoRefreshJS(t *testing.T) {
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"const AUTO_REFRESH_MS = 30000",
+		"function startAutoRefresh",
+		"function stopAutoRefresh",
+		`if (document.visibilityState === "visible") loadDashboard();`,
+		"visibilitychange",
+		`if (document.visibilityState === "hidden") stopAutoRefresh();`,
+	} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 func TestAppJSQueriesFutuAccountAPI(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/app.js")
 	if err != nil {

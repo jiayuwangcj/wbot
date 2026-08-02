@@ -301,6 +301,24 @@ function renderRuns(runs) {
   renderTable("runs-table", runs.map((r) => [r.id, r.source, r.status, r.started_at, r.finished_at === null ? "运行中" : r.finished_at]));
 }
 
+/* Dashboard 自动轮询(券商面板实时性):30s 刷新账户快照;页面隐藏时暂停
+   (visibilitychange),避免后台持续打 futu 网关;手动刷新共存。 */
+const AUTO_REFRESH_MS = 30000;
+
+let autoRefreshTimer = null;
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) return;
+  autoRefreshTimer = setInterval(() => {
+    if (document.visibilityState === "visible") loadDashboard();
+  }, AUTO_REFRESH_MS);
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = null;
+}
+
 function initDashboardPage() {
   const paperBtn = document.getElementById("env-paper");
   if (!paperBtn) return;
@@ -318,6 +336,11 @@ function initDashboardPage() {
   refresh.addEventListener("click", loadDashboard);
   loadDashboard();
   loadJSON("/v1/runs?limit=10", document.getElementById("runs-error"), renderRuns);
+  startAutoRefresh();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") stopAutoRefresh();
+    else startAutoRefresh();
+  });
 }
 
 /* Admin page: /v1/admin/cluster (节点状态概览), /v1/admin/config (read-only). */
