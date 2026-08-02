@@ -489,6 +489,9 @@ func TestWatchlistPageElements(t *testing.T) {
 		`id="strategy-select"`,
 		`id="param-fields"`,
 		`id="watchlist-table"`,
+		`data-sort="symbol"`,
+		`data-sort="strategy"`,
+		`data-sort="updated_at"`,
 		`id="watchlist-empty"`,
 		`id="watchlist-error"`,
 		`id="watchlist-form-error"`,
@@ -519,9 +522,35 @@ func TestWatchlistBacktestJS(t *testing.T) {
 		"if (item.params) body.params = item.params",
 		`method: "POST"`,
 		"location.href = \"/ui/results.html#bt-\" + res.id",
-		"renderWatchlist(items, beginEdit, deleteItem, runBacktest)",
+		"renderWatchlist(watchlistSorter.sortItems(items), beginEdit, deleteItem, runBacktest)",
 		`location.hash.match(/^#bt-(\d+)$/)`,
 		"openDetail(Number(bt[1]))",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+// TestWatchlistSortJS: 观察列表排序契约(2026-08-02): 全站最后一列无
+// 排序的表补齐 makeTableSorter——表头 data-sort(symbol/strategy/
+// updated_at),loadWatchlist 结果经 sortItems 再渲染,默认按更新时间
+// 降序(新更新在上,与全站「新数据在前」惯例一致)。
+func TestWatchlistSortJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		"const WATCHLIST_SORT_KEYS = {",
+		"updated_at: (i) => i.updated_at,",
+		`makeTableSorter("watchlist-table", WATCHLIST_SORT_KEYS)`,
+		"watchlistItems = items;",
+		"watchlistSorter.sortItems(items)",
+		"watchlistSorter.state.key = \"updated_at\";",
+		"watchlistSorter.state.dir = -1;",
+		"watchlistSorter.renderIndicators();",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing %q", want)
