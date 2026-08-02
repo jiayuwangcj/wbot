@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | 单测 + 静态 | `scripts/verify.sh`（= CI `test` job） | 全部 Go 包单测、gofmt、契约测试 + 零依赖 accept（paper/agent-federation） | 每次提交前；CI 自动 |
 | 本地全链冒烟 | `scripts/dev-up.sh`（22 项） | `wbot serve` 全部 DB 本地 HTTP 端点（health/runs/bars/account/snapshots/admin·status/config/watchlist 等）+ CLI ingest file/url/status/bars 三维补漏 | 每次 dev 环境启动 |
-| 逐端点 e2e | `scripts/accept-*.sh`（12 个，135 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
+| 逐端点 e2e | `scripts/accept-*.sh`（12 个，134 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
 
 **原则**：dev-up 只冒烟不逐端点验收；accept 脚本只覆盖不冒烟的部分（如 futu 系依赖网关，刻意不入 dev-up，由 accept 覆盖）。CLI 面按「verify.sh 有无冒烟 + dev-up 有无覆盖 + accept 有无脚本」三维对账（#47/#49/#50 经验）。
 
@@ -42,4 +42,4 @@
 | agent/master | accept-agent-federation 11 | 同上 | 无 PG 依赖 |
 | configyaml / admin | dev-up（admin·status/config） | 同上 | 配置写面「只写不读」语义见 [[PRIVACY]] |
 
-**对账纪律**（每轮 AUTO_ADVANCE 巡检）：① 端点清单 grep 二进制全部 HTTP 面（含独立子命令）对照 API.md；② CLI 子命令按 verify.sh/dev-up/accept 三维核对；③ 验收脚本断言 vs 真实数据分支找零覆盖分支（「验收覆盖扩展」引擎）。经验与盲区案例见各闭环归档（#40-#50）。
+**对账纪律**（每轮 AUTO_ADVANCE 巡检）：① 端点清单 grep 二进制全部 HTTP 面（含独立子命令）对照 API.md；② CLI 子命令按 verify.sh/dev-up/accept 三维核对；③ 验收脚本断言 vs 真实数据分支找零覆盖分支（「验收覆盖扩展」引擎）；④ 总表计数由矩阵行求和派生——先逐脚本 `grep -c 'check "'` 实计、再矩阵求和、最后改总表，**不许手算增量**（#79 曾 126+9=135 误写，实为 126+(15-10)+(7-4)=134，#84 修正）。经验与盲区案例见各闭环归档（#40-#50）。
