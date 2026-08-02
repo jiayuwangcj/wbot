@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/jiayu/wbot/internal/futu"
@@ -233,6 +235,77 @@ func TestFutuAccountProtoGateway(t *testing.T) {
 	if len(got.Positions) != 1 || got.Positions[0].Symbol != "HK.00700" ||
 		got.Positions[0].Price != 475.2 || got.Positions[0].PL != 520 {
 		t.Fatalf("positions = %+v; want HK.00700 row", got.Positions)
+	}
+}
+
+// TestFutuAccountReconnectAfterDrop: the gateway closes the reused proto
+// connection mid-stream (observed live with opend-rs 2026-08-02); the
+// accounter must reconnect and the next call must succeed instead of surfacing
+// "connection closed" forever until process restart.
+func TestFutuAccountReconnectAfterDrop(t *testing.T) {
+	fastFutuLimits(t)
+	var reqs, inits atomic.Int32
+	addr := fakegw.Server(t, func(protoID int32, body []byte) []byte {
+		n := reqs.Add(1)
+		switch protoID {
+		case protoInit:
+			inits.Add(1)
+			return fakegw.InitBody(42)
+		case protoFunds:
+			return fakegw.FundsBody(0, 1907141, &trdcommon.Funds{
+				Power: proto.Float64(1000), TotalAssets: proto.Float64(1000),
+				Cash: proto.Float64(1000), MarketVal: proto.Float64(0),
+				FrozenCash: proto.Float64(0), DebtCash: proto.Float64(0),
+				AvlWithdrawalCash: proto.Float64(0), AvailableFunds: proto.Float64(1000),
+			})
+		case protoPos:
+			return fakegw.PositionsBody(0, 1907141, nil)
+		}
+		// The 5th request is call 2's accounts query on the reused conn:
+		// respond nil so the fake gateway closes it, forcing a reconnect.
+		if n == 5 {
+			return nil
+		}
+		return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1)})
+	})
+
+	a := &futuAccounter{addr: addr}
+	for i := 0; i < 2; i++ {
+		snap, err := a.Account(context.Background(), futu.EnvSim, 1907141)
+		if err != nil {
+			t.Fatalf("call %d after mid-stream drop: %v", i+1, err)
+		}
+		if snap.Funds.TotalAssets != 1000 {
+			t.Fatalf("call %d: funds = %+v; want total_assets 1000", i+1, snap.Funds)
+		}
+	}
+	if inits.Load() < 2 {
+		t.Fatalf("init handshakes = %d; want >= 2 (a reconnect must have happened)", inits.Load())
+	}
+}
+
+// TestIsConnError covers the failure signatures of a dropped proto connection;
+// business errors must never trigger a reconnect.
+func TestIsConnError(t *testing.T) {
+	connErrors := []error{
+		errors.New("accounts: get acc list failed: connection closed"),
+		errors.New("accounts: get acc list failed: timeout waiting for reply SN 5"),
+		errors.New("connect 192.168.215.2:11111: connection refused"),
+		net.ErrClosed,
+		io.EOF,
+	}
+	for _, err := range connErrors {
+		if !isConnError(err) {
+			t.Fatalf("isConnError(%q) = false; want true", err)
+		}
+	}
+	for _, err := range []error{
+		errors.New("no simulate account (trd_env=0) among 3 accounts"),
+		errors.New("account 1907141 not found in simulate env (trd_env mismatch?)"),
+	} {
+		if isConnError(err) {
+			t.Fatalf("isConnError(%q) = true; want false", err)
+		}
 	}
 }
 
