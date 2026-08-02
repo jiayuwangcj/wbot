@@ -127,13 +127,18 @@ func SortKeyNames() []string {
 	return []string{"id", "strategy", "symbol", "equity", "total_return", "max_drawdown", "bars", "created_at"}
 }
 
-// ListResults lists saved runs; symbol/strategy filter when non-empty
-// (empty symbol lists all), limit <= 0 defaults to 50. sortKey "" keeps the
-// historical newest-first order (id DESC); a whitelisted sortKey orders by
-// that column instead (desc=false → ASC, desc=true → DESC), metrics NULLS
-// LAST either way. The list shape is the summary only (no
-// equity_curve/trades).
-func ListResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit int, sortKey string, desc bool) ([]ResultRecord, error) {
+// escapeLike 转义 LIKE 通配符(% _),使 q 按字面包含匹配。
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
+// ListResults lists saved runs; symbol/strategy exact filter when non-empty,
+// q performs a contains-match (ILIKE, escaped) over symbol OR strategy,
+// limit <= 0 defaults to 50. sortKey "" keeps the historical newest-first
+// order (id DESC); a whitelisted sortKey orders by that column instead
+// (desc=false → ASC, desc=true → DESC), metrics NULLS LAST either way. The
+// list shape is the summary only (no equity_curve/trades).
+func ListResults(ctx context.Context, db *sql.DB, symbol, strategy, q string, limit int, sortKey string, desc bool) ([]ResultRecord, error) {
 	if db == nil {
 		return nil, errors.New("backtest: list results: nil db")
 	}
@@ -149,6 +154,11 @@ func ListResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit
 	if strategy != "" {
 		args = append(args, strategy)
 		conds = append(conds, fmt.Sprintf("strategy = $%d", len(args)))
+	}
+	if q != "" {
+		args = append(args, "%"+escapeLike(q)+"%")
+		n := len(args)
+		conds = append(conds, fmt.Sprintf("(symbol ILIKE $%d ESCAPE '\\' OR strategy ILIKE $%d ESCAPE '\\')", n, n))
 	}
 	args = append(args, limit)
 	query := `
@@ -204,7 +214,7 @@ func LoadResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit
 	if symbol == "" {
 		return nil, errors.New("backtest: load results: empty symbol")
 	}
-	return ListResults(ctx, db, symbol, strategy, limit, "", false)
+	return ListResults(ctx, db, symbol, strategy, "", limit, "", false)
 }
 
 // LoadResult reads one run by id including its equity_curve/trades trace;

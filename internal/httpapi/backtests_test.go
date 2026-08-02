@@ -26,14 +26,15 @@ type fakeBacktestStore struct {
 	getErr      error
 	gotSymbol   string
 	gotStrategy string
+	gotQ        string
 	gotLimit    int
 	gotSortKey  string
 	gotDesc     bool
 	gotID       int64
 }
 
-func (f *fakeBacktestStore) List(_ context.Context, symbol, strategy string, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error) {
-	f.gotSymbol, f.gotStrategy, f.gotLimit, f.gotSortKey, f.gotDesc = symbol, strategy, limit, sortKey, desc
+func (f *fakeBacktestStore) List(_ context.Context, symbol, strategy, q string, limit int, sortKey string, desc bool) ([]backtest.ResultRecord, error) {
+	f.gotSymbol, f.gotStrategy, f.gotQ, f.gotLimit, f.gotSortKey, f.gotDesc = symbol, strategy, q, limit, sortKey, desc
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -69,15 +70,15 @@ func sampleRecord(id int64) backtest.ResultRecord {
 
 func TestBacktestsList(t *testing.T) {
 	fake := &fakeBacktestStore{recs: []backtest.ResultRecord{sampleRecord(7), sampleRecord(8)}}
-	rec := get(t, BacktestsHandler(fake), "/v1/backtests?symbol=DEMO.US&strategy=buy-hold&limit=2")
+	rec := get(t, BacktestsHandler(fake), "/v1/backtests?symbol=DEMO.US&strategy=buy-hold&q=DE%20M&limit=2")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content-type = %q; want application/json", ct)
 	}
-	if fake.gotSymbol != "DEMO.US" || fake.gotStrategy != "buy-hold" || fake.gotLimit != 2 {
-		t.Fatalf("filters = (%q, %q, %d); want (DEMO.US, buy-hold, 2)", fake.gotSymbol, fake.gotStrategy, fake.gotLimit)
+	if fake.gotSymbol != "DEMO.US" || fake.gotStrategy != "buy-hold" || fake.gotQ != "DE M" || fake.gotLimit != 2 {
+		t.Fatalf("filters = (%q, %q, %q, %d); want (DEMO.US, buy-hold, \"DE M\", 2)", fake.gotSymbol, fake.gotStrategy, fake.gotQ, fake.gotLimit)
 	}
 	var got []backtestSummaryJSON
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {

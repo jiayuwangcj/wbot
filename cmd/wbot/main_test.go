@@ -232,6 +232,8 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $7, 10, NULL, 'none', 'futu')`,
 // result API (skipped without WBOT_PG_DSN): exported json == GET detail body
 // and exported csv == GET export body, CLI and API from one serializer.
 func TestBacktestExportIntegration(t *testing.T) {
+	// CSV 断言写死 UTC "Z" 格式,固定时区避免本地 TZ 差异。
+	t.Setenv("TZ", "UTC")
 	dsn := os.Getenv("WBOT_PG_DSN")
 	if dsn == "" {
 		t.Skip("WBOT_PG_DSN not set")
@@ -791,7 +793,7 @@ func (serveFakeWatchlistStore) Delete(context.Context, string) (bool, error) { r
 // serveFakeBacktestStore is a no-data httpapi.BacktestStore for serve-mux tests.
 type serveFakeBacktestStore struct{}
 
-func (serveFakeBacktestStore) List(context.Context, string, string, int, string, bool) ([]backtest.ResultRecord, error) {
+func (serveFakeBacktestStore) List(context.Context, string, string, string, int, string, bool) ([]backtest.ResultRecord, error) {
 	return nil, nil
 }
 func (serveFakeBacktestStore) Get(context.Context, int64) (*backtest.ResultRecord, error) {

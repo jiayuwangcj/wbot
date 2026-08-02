@@ -206,7 +206,7 @@ func TestSaveResultValidation(t *testing.T) {
 	if _, err := LoadResults(ctx, &sql.DB{}, "", "", 10); err == nil {
 		t.Fatal("LoadResults(empty symbol) = nil error; want error")
 	}
-	if _, err := ListResults(ctx, nil, "", "", 10, "", false); err == nil {
+	if _, err := ListResults(ctx, nil, "", "", "", 10, "", false); err == nil {
 		t.Fatal("ListResults(nil db) = nil error; want error")
 	}
 	if _, err := LoadResult(ctx, nil, 1); err == nil {
@@ -214,5 +214,97 @@ func TestSaveResultValidation(t *testing.T) {
 	}
 	if _, err := LoadResult(ctx, &sql.DB{}, 0); err == nil {
 		t.Fatal("LoadResult(id 0) = nil error; want error")
+	}
+}
+
+// TestListResultsQueryIntegration: q 参数对 symbol/strategy 做 ILIKE 包含
+// 匹配(通配符按字面转义),与精确过滤、limit 组合。
+func TestListResultsQueryIntegration(t *testing.T) {
+	database := openTestDB(t)
+	ctx := context.Background()
+	// Self-cleaning: 只用本测试专属符号,避免污染其他断言。
+	base := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC)
+	symbols := []string{"ZZSEARCH.US", "ZZFIND.HK", "ZZUNRELATED.US"}
+	for _, s := range symbols {
+		if _, err := database.Exec(`DELETE FROM backtest_results WHERE symbol = $1`, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func() {
+		for _, s := range symbols {
+			if _, err := database.Exec(`DELETE FROM backtest_results WHERE symbol = $1`, s); err != nil {
+				t.Logf("cleanup %s: %v", s, err)
+			}
+		}
+	}()
+	for i, s := range symbols {
+		id, err := SaveResult(ctx, database, "covered-call", s,
+			map[string]any{"cash": 10000.0},
+			&Result{Equity: 10000.0 + float64(i), TotalReturn: 0, MaxDrawdown: 0, Bars: 1},
+			base, base.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { database.Exec(`DELETE FROM backtest_results WHERE id = $1`, id) })
+	}
+
+	// 断言一律用 ZZ* 专属符号前缀:本地 dev 库含历史 covered-call 记录,
+	// 共享环境下 count 断言会被污染,专属前缀保证只命中本测试插入的行。
+	cases := []struct {
+		name      string
+		q         string
+		wantCount int
+	}{
+		{"symbol contains", "ZZSEARCH", 1},
+		{"case-insensitive", "zzsearch", 1},
+		{"hk suffix", "ZZFIND", 1},
+		{"no match", "ZZSEARCHNOPE", 0},
+	}
+	for _, tc := range cases {
+		recs, err := ListResults(ctx, database, "", "", tc.q, 0, "", false)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if len(recs) != tc.wantCount {
+			t.Fatalf("%s: len = %d; want %d (got %v)", tc.name, len(recs), tc.wantCount, recs)
+		}
+	}
+
+	// strategy 命中时每条都应包含 q(全库历史记录不算数,只查专属符号)。
+	recs, err := ListResults(ctx, database, "", "", "covered", 0, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zz := map[string]bool{}
+	for _, r := range recs {
+		if r.Strategy != "covered-call" {
+			t.Fatalf("strategy match: unexpected %q %s", r.Strategy, r.Symbol)
+		}
+		if r.Symbol != "" && len(r.Symbol) > 2 && r.Symbol[:2] == "ZZ" {
+			zz[r.Symbol] = true
+		}
+	}
+	for _, s := range symbols {
+		if !zz[s] {
+			t.Fatalf("strategy match: missing %s in results", s)
+		}
+	}
+
+	// 通配符按字面匹配:% 不应命中所有行。
+	recs, err = ListResults(ctx, database, "", "", "%", 0, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 0 {
+		t.Fatalf("literal %%: len = %d; want 0", len(recs))
+	}
+
+	// 与精确过滤组合 + limit。
+	recs, err = ListResults(ctx, database, "ZZSEARCH.US", "", "ZZSEARCH", 1, "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recs) != 1 || recs[0].Symbol != "ZZSEARCH.US" {
+		t.Fatalf("combined: got %v; want exactly ZZSEARCH.US", recs)
 	}
 }

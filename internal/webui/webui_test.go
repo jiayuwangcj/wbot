@@ -1378,15 +1378,19 @@ func TestResultsSortingJS(t *testing.T) {
 		"const RESULTS_SORT_KEYS = {",
 		"total_return: (i) => metricOf(i, \"total_return\") ?? -Infinity",
 		"created_at: (i) => i.created_at",
-		// 接入:results 页 sorter + 本地过滤(先 filter 后 sort)+ 跨页排序重载
+		// 接入:results 页 sorter + 本地即时过滤 + 跨页排序/搜索重载
+		// (搜索词防抖 250ms → 服务端全库 ILIKE,清空恢复最近列表)
 		`makeTableSorter("results-table", RESULTS_SORT_KEYS)`,
 		"resultsSorter.sortItems(list)",
 		"resultsSorter.render = loadSorted",
 		"const applyFilter = () => {",
 		"String(it.symbol).toLowerCase().includes(q)",
-		"filterInput.addEventListener(\"input\", applyFilter)",
+		"filterTimer = setTimeout(() => {",
+		`if (filterInput.value.trim() === "") {`,
+		"applyFilter();\n        loadSorted();",
 		`"无匹配「" + q + "」的回测结果。"`,
-		`"&sort=" + st.key + "&order="`,
+		"params.push(\"sort=\" + st.key + \"&order=\" + (st.dir === 1 ? \"asc\" : \"desc\"))",
+		"params.push(\"q=\" + encodeURIComponent(q))",
 		"openDetailId",
 		"if (openDetailId !== null) selectResultsRow(openDetailId)",
 	} {
