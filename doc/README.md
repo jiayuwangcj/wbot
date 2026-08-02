@@ -17,7 +17,7 @@
 - [[WORKFLOW_GITHUB_DRIVEN]]
 - [[ORGS]]（组织架构与并行协议：产品组/开发组/PM 组/运维组、角色分工、worktree 并行）
 - [[PRIVACY]]（敏感配置与密钥安全：`~/.wbot/` 存放、不入库、评审必查）
-- [[pinned_discussion]]
+- [[pinned_discussion]]（协作入口帖建议标题；发帖正文模板见 [[pinned_discussion_body]]，引用方式见 [[GITHUB_DISCUSSION_OPS]]）
 - [[GITHUB_DISCUSSION_OPS]]
 - [[ROADMAP]]
 - [[DATA_PIPELINE]]（数据管道 v1：命令/行为/调度方式）
