@@ -785,6 +785,10 @@ func (serveFakeStore) AccountSnapshots(context.Context, string, int) ([]ingest.A
 	return nil, nil
 }
 
+func (serveFakeStore) LatestOptionQuote(context.Context, string) (*ingest.OptionQuoteRow, error) {
+	return nil, nil
+}
+
 func (serveFakeStore) Ping(context.Context) error {
 	return nil
 }

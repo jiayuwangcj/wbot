@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/futu"
+	"github.com/jiayu/wbot/internal/ingest"
 )
 
 const futuOptionsPath = "/v1/futu/options"
@@ -54,15 +55,26 @@ type optionExpiryJSON struct {
 	Cycle        int    `json:"cycle"`
 }
 
+// FutuOptionPremier supplies the stored daily-close premium (权利金) for one
+// contract symbol from option_quotes (P3a 2026-08-03, doc/FUTU.md §10); the
+// gateway chain payload itself carries no premium. nil is allowed: pure-gateway
+// mode omits the premium fields.
+type FutuOptionPremier interface {
+	LatestOptionQuote(ctx context.Context, symbol string) (*ingest.OptionQuoteRow, error)
+}
+
 // optionContractJSON is one call/put leg of the chain. The gateway chain
-// payload carries no premium (权利金) — only code/strike/lot size; premium
-// needs per-contract option-quote/history-kline (P3, doc/FUTU.md §10).
+// payload carries no premium (权利金) — only code/strike/lot size; the daily-
+// close premium comes from stored contract daily K (option_quotes), live
+// per-contract option-quote/IV stays P3 (doc/FUTU.md §10).
 type optionContractJSON struct {
-	Expiry     string  `json:"expiry"`      // "2026-08-07"
-	OptionType string  `json:"option_type"` // "call" or "put"
-	Strike     float64 `json:"strike"`
-	Symbol     string  `json:"symbol"` // e.g. HK.TCH260807C335000
-	LotSize    int     `json:"lot_size"`
+	Expiry         string   `json:"expiry"`      // "2026-08-07"
+	OptionType     string   `json:"option_type"` // "call" or "put"
+	Strike         float64  `json:"strike"`
+	Symbol         string   `json:"symbol"` // e.g. HK.TCH260807C335000
+	LotSize        int      `json:"lot_size"`
+	PremiumClose   *float64 `json:"premium_close,omitempty"`    // 最近日 K 收盘权利金（option_quotes 落库数据，非实时）
+	PremiumCloseTs *string  `json:"premium_close_ts,omitempty"` // 上述价格的数据日期（RFC3339 UTC）
 }
 
 // optionsJSON is the GET /v1/futu/options success body.
@@ -76,7 +88,9 @@ type optionsJSON struct {
 // FutuOptionsHandler serves GET /v1/futu/options?symbol=HK.00700[&expiry=YYYY-MM-DD]:
 // the expirations list (for the UI dropdown) plus the call/put chain of one
 // expiry — the requested one, or the nearest future expiry when omitted.
-func FutuOptionsHandler(chainer FutuOptionChainer) http.Handler {
+// An optional FutuOptionPremier (variadic) decorates each contract with the
+// stored daily-close premium; without it the premium fields are omitted.
+func FutuOptionsHandler(chainer FutuOptionChainer, premier ...FutuOptionPremier) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(futuOptionsPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -143,14 +157,29 @@ func FutuOptionsHandler(chainer FutuOptionChainer) http.Handler {
 			}
 			out.Expiry = expiry
 			out.Contracts = make([]optionContractJSON, 0, len(contracts))
+			var p FutuOptionPremier
+			if len(premier) > 0 {
+				p = premier[0]
+			}
 			for _, c := range contracts {
-				out.Contracts = append(out.Contracts, optionContractJSON{
+				leg := optionContractJSON{
 					Expiry:     expiry,
 					OptionType: c.OptionType,
 					Strike:     c.Strike,
 					Symbol:     c.Symbol,
 					LotSize:    c.LotSize,
-				})
+				}
+				if p != nil {
+					if row, err := p.LatestOptionQuote(r.Context(), c.Symbol); err != nil {
+						// Premium is a decoration; a query failure must not fail the chain.
+						fmt.Fprintf(os.Stderr, "httpapi: futu options premium %s: %v\n", c.Symbol, err)
+					} else if row != nil {
+						leg.PremiumClose = &row.Close
+						ts := row.Ts.Format(time.RFC3339)
+						leg.PremiumCloseTs = &ts
+					}
+				}
+				out.Contracts = append(out.Contracts, leg)
 			}
 			sort.Slice(out.Contracts, func(i, j int) bool {
 				if out.Contracts[i].Strike != out.Contracts[j].Strike {

@@ -137,6 +137,31 @@ FROM option_quotes WHERE %s ORDER BY symbol ASC, ts ASC LIMIT $%d`,
 	return out, nil
 }
 
+// QueryLatestOptionQuote returns the most recent option_quotes row for one
+// contract symbol (nil, nil when none). Backs the /v1/futu/options premium
+// field: the daily-close premium (权利金) is the stored contract daily K close
+// (doc/FUTU.md §10, P3a 2026-08-03); implied_vol stays nil (P3).
+func QueryLatestOptionQuote(ctx context.Context, db *sql.DB, symbol string) (*OptionQuoteRow, error) {
+	if db == nil {
+		return nil, errors.New("ingest: query latest option quote: nil db")
+	}
+	if symbol == "" {
+		return nil, errors.New("ingest: query latest option quote: empty symbol")
+	}
+	row := db.QueryRowContext(ctx, `
+SELECT symbol, underlying, option_type, strike, expiry, ts, open, high, low, close, volume, implied_vol
+FROM option_quotes WHERE symbol = $1 ORDER BY ts DESC LIMIT 1`, symbol)
+	var r OptionQuoteRow
+	if err := row.Scan(&r.Symbol, &r.Underlying, &r.OptionType, &r.Strike, &r.Expiry, &r.Ts,
+		&r.Open, &r.High, &r.Low, &r.Close, &r.Volume, &r.ImpliedVol); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("ingest: query latest option quote: %w", err)
+	}
+	return &r, nil
+}
+
 // sqlExecutor is the minimal DB surface UpsertWatchlist needs (*sql.DB or *sql.Tx).
 type sqlExecutor interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)

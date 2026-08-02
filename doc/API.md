@@ -629,8 +629,10 @@ Query 参数：
 | `expirations[].distance_days` | 距今天数（负 = 已到期） |
 | `expirations[].cycle` | 到期周期 |
 | `contracts[]` | 该到期日全部行权价的 call/put（按 strike 升序，同 strike call 在前）；`option_type` 为 `call`/`put`，`symbol` 为合约代码（如 `HK.TCH260807C335000`，前缀+到期+Call/Put+行权价×1000），`lot_size` 为每张合约股数 |
+| `contracts[].premium_close` | 可选：该合约最近日 K 收盘权利金（`option_quotes` 落库数据，**非实时报价**；`option_quotes` 无该合约数据时字段缺省，2026-08-03 P3a） |
+| `contracts[].premium_close_ts` | 可选：`premium_close` 的数据日期（RFC3339，落库时区；同缺省规则） |
 
-**权利金说明**：期权链契约实测（[[FUTU]] §10）不含权利金/隐含波动率——`/api/option-chain` 仅返回合约代码/行权价/lot_size；premium 需逐合约 `option-quote` 或合约 K 线（拉取成本高，P3 排期）。故 `contracts` 无 premium 字段，UI 以合约代码代替。
+**权利金说明**：`/api/option-chain` 本身不含权利金/隐含波动率——仅返回合约代码/行权价/lot_size；日 K 收盘权利金由 `option_quotes`（合约日 K，`ingest futu-option` 落库）提供（P3a 已落地 2026-08-03）；实时逐合约 `option-quote`（含 IV）仍 P3 排期（拉取成本高，[[FUTU]] §10）。
 
 响应 `503`（网关不可达，连接失败/超时）：`action` 提示启动网关容器（同 `/v1/futu/quote` 约定）。
 

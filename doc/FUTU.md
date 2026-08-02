@@ -184,7 +184,7 @@ $ wbot futu quote -symbol HK.00700
 | `GET /v1/futu/quote?symbol=HK.00700` | 实时报价——代订阅+取快照并透传 s2c；数据页 bars 表单提交同时刷新报价卡 | REST `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`） |
 | `GET /v1/futu/account` | 资金+持仓只读（`env`/`acc_id` 参数，默认 `sim` 模拟盘，`real` 实盘只读查询） | proto `FUTU_PROTO_ADDR`（默认 `127.0.0.1:11111`） |
 | `GET /v1/futu/orders` | 订单列表只读（`env`/`acc_id`/`pending`，默认仅挂单） | proto `FUTU_PROTO_ADDR` |
-| `GET /v1/futu/options?symbol=HK.00700[&expiry=YYYY-MM-DD]` | 期权链代理——到期日列表 + 单到期 call/put 链（权利金 P3 排期，见下） | REST `FUTU_GATEWAY_URL` |
+| `GET /v1/futu/options?symbol=HK.00700[&expiry=YYYY-MM-DD]` | 期权链代理——到期日列表 + 单到期 call/put 链（`premium_close`=最近日 K 收盘权利金，option_quotes 落库；实时 IV 仍 P3 排期，见下） | REST `FUTU_GATEWAY_URL` |
 
 account/orders 走 OpenD protobuf（11111，与 CLI `wbot futu funds|position` 同客户端同安全策略），quote/options 走 REST（22222）；契约见 [[API]]（quote/account/orders/options 各节）。
 
@@ -331,5 +331,7 @@ wbot ingest futu-option -symbol HK.00700 [-days 7] [-expiries 1] [-adjust fwd|no
 | 合约 K 线 | `POST /api/history-kline` | 复用 ⑪-c：`{"security":{"market":1,"code":"TCH260807C335000"},"kl_type":2,...}`，免订阅 |
 
 `option-quote`（combo）实测：body `{"multi_legs":[{"security":{"market":1,"code":"..."},"side":1,"qty_ratio":1}]}`，s2c `option_quote_list[]` 含 `iv/delta/gamma/vega/theta/rho/open_interest/days_to_expiry`；**一次仅一个合约**（多腿=组合报价非批量），快照限频 1 次/3s——`implied_vol` 列保留可空，v1 管道不填充（逐合约 IV 拉取成本高，P3 排期）。
+
+**权利金（P3a，2026-08-03 落地）**：`/v1/futu/options` 的 `contracts[].premium_close` 取 `option_quotes` 该合约最近一行的日 K `close`（`QueryLatestOptionQuote`，`ingest futu-option` 落库数据，非实时）；无数据合约字段缺省。实时 `option-quote`/IV 填充仍 P3 排期。
 
 实测（HK.00700，2026-08-01）：到期日 9 个（`2026-07-31` 已到期 distance=-1 … `2027-06-29`）；链窗口 `[2026-08-07, 2026-08-28]` 返回 2 组 × 48 对（call+put）；合约日 K 正常（未成交深虚值合约 volume=0 属真实数据）。
