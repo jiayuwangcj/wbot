@@ -758,8 +758,37 @@ func TestInteractionFeedbackJS(t *testing.T) {
 		`"admin-refresh"`,
 		"document.getElementById(\"admin-refresh\").addEventListener(\"click\", loadAll)",
 		"const loadAll = () => {",
+		"startAutoRefresh(loadAll)",
+		"startAutoRefresh(loadDashboard)",
+		"function startAutoRefresh(fn) {",
+		"if (fn) autoRefreshFn = fn;",
+		"(autoRefreshFn || loadDashboard)()",
+		"else startAutoRefresh();",
 	} {
 		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
+// TestAdminAutoRefreshJS: Admin 页 30s 自动轮询契约(2026-08-02):
+// startAutoRefresh 参数化(按页注入刷新函数),visibilitychange 隐藏时停、
+// 可见时以记住的函数重启;cluster/config 为 PG 本地查询,轮询成本低。
+func TestAdminAutoRefreshJS(t *testing.T) {
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		"let autoRefreshFn = null",
+		"if (fn) autoRefreshFn = fn;",
+		`if (document.visibilityState === "visible") (autoRefreshFn || loadDashboard)();`,
+		"startAutoRefresh(loadAll)",
+		"document.getElementById(\"admin-refresh\").addEventListener(\"click\", loadAll)",
+		"startAutoRefresh(loadDashboard)",
+	} {
+		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
 	}
@@ -1018,7 +1047,7 @@ func TestAutoRefreshJS(t *testing.T) {
 		"const AUTO_REFRESH_MS = 30000",
 		"function startAutoRefresh",
 		"function stopAutoRefresh",
-		`if (document.visibilityState === "visible") loadDashboard();`,
+		`if (document.visibilityState === "visible") (autoRefreshFn || loadDashboard)();`,
 		"visibilitychange",
 		`if (document.visibilityState === "hidden") stopAutoRefresh();`,
 	} {

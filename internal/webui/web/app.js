@@ -326,11 +326,13 @@ function renderRuns(runs) {
 const AUTO_REFRESH_MS = 30000;
 
 let autoRefreshTimer = null;
+let autoRefreshFn = null;
 
-function startAutoRefresh() {
+function startAutoRefresh(fn) {
+  if (fn) autoRefreshFn = fn;
   if (autoRefreshTimer) return;
   autoRefreshTimer = setInterval(() => {
-    if (document.visibilityState === "visible") loadDashboard();
+    if (document.visibilityState === "visible") (autoRefreshFn || loadDashboard)();
   }, AUTO_REFRESH_MS);
 }
 
@@ -366,7 +368,7 @@ function initDashboardPage() {
   ordersSorter.renderIndicators();
   loadDashboard();
   loadJSON("/v1/runs?limit=10", document.getElementById("runs-error"), renderRuns);
-  startAutoRefresh();
+  startAutoRefresh(loadDashboard);
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") stopAutoRefresh();
     else startAutoRefresh();
@@ -464,6 +466,11 @@ function initAdminPage() {
   };
   loadAll();
   document.getElementById("admin-refresh").addEventListener("click", loadAll);
+  startAutoRefresh(loadAll); /* cluster/config 为 PG 本地查询,30s 轮询成本低 */
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") stopAutoRefresh();
+    else startAutoRefresh();
+  });
 }
 
 /* Data page: cached-bars coverage (/v1/admin/cluster) with drill-in to
