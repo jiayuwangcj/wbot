@@ -556,15 +556,55 @@ function freshnessCell(b) {
 }
 
 function renderConfig(keys) {
+  const form = document.getElementById("config-set-form");
+  if (form && form.hidden) {
+    const sel = document.getElementById("config-set-key");
+    sel.replaceChildren(...keys.map((c) => Object.assign(document.createElement("option"), {value: c.key, textContent: c.key})));
+    initConfigForm();
+    form.hidden = false;
+  }
   renderTable("config-table", keys.map((c) => [c.key, c.group, c.set ? "是" : "否", c.updated_at === null ? "未设置" : c.updated_at]));
+}
+
+/* Admin 配置写面 (2026-08-03): PUT /v1/admin/config/{key} 只写不读——
+   凭证键用 password 输入,值永不回显(PRIVACY 红线);成功回填列表。 */
+function initConfigForm() {
+  const form = document.getElementById("config-set-form");
+  const sel = document.getElementById("config-set-key");
+  const val = document.getElementById("config-set-value");
+  const btn = document.getElementById("config-set-btn");
+  const ok = document.getElementById("config-set-ok");
+  const errEl = document.getElementById("config-error");
+  if (!form || !sel || !val || !btn || !ok || !errEl) return;
+  const isSecret = (k) => k.startsWith("credentials.");
+  const syncType = () => { val.type = isSecret(sel.value) ? "password" : "text"; };
+  sel.addEventListener("change", syncType);
+  syncType();
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    clearError(errEl);
+    ok.hidden = true;
+    if (!val.value.trim()) { showError(errEl, new Error("值不能为空")); return; }
+    btn.disabled = true;
+    btn.textContent = "保存中…";
+    fetchJSON("/v1/admin/config/" + encodeURIComponent(sel.value), {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({value: val.value}),
+    })
+      .then(() => { val.value = ""; ok.hidden = false; loadConfig(); })
+      .catch((err) => showError(errEl, err))
+      .finally(() => { btn.disabled = false; btn.textContent = "设置"; });
+  });
 }
 
 function initAdminPage() {
   const clusterError = document.getElementById("cluster-error");
   if (!clusterError) return;
+  const loadConfig = () => loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
   const loadAll = () => Promise.all([
     loadJSON("/v1/admin/cluster", clusterError, renderCluster),
-    loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig),
+    loadConfig(),
   ]).then(() => stampUpdated("admin-updated"));
   loadAll();
   wrapRefreshClick("admin-refresh", "刷新中…", loadAll);

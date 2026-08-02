@@ -405,6 +405,10 @@ func TestAdminPageSections(t *testing.T) {
 		`id="cluster-error"`,
 		`id="config-error"`,
 		`id="config-table"`,
+		`id="config-set-form"`,
+		`id="config-set-key"`,
+		`id="config-set-value"`,
+		`id="config-set-btn"`,
 		`id="cluster-cards"`,
 		`id="cluster-process-badge"`,
 		`id="cluster-db-badge"`,
@@ -488,8 +492,12 @@ func TestAdminPageReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "<form") {
-		t.Fatal("admin.html contains a form; admin page must be read-only")
+	html := string(data)
+	/* 2026-08-03: config 写面落地(配置设置表单,值只写不读)。
+	   除该表单外 admin 页保持只读——其余 section 无任何表单。 */
+	rest := strings.ReplaceAll(html, `<form id="config-set-form"`, "")
+	if strings.Contains(rest, "<form") {
+		t.Fatal("admin.html contains a form other than config-set-form; admin page must stay read-only")
 	}
 }
 
@@ -886,6 +894,38 @@ func TestConfigMetadataOnly(t *testing.T) {
 	}
 	if strings.Contains(js, "c.value") {
 		t.Fatal("app.js renders config values (PRIVACY red line)")
+	}
+}
+
+// TestConfigWriteSurfaceJS: Admin 配置写面契约(2026-08-03)——设置页可写
+// (券商面板惯例),但严格只写不读: 值经 PUT 单向写入,表单永不回显值
+// (PRIVACY 红线);凭证键切 password 输入;保存中忙态 + 成功后回填列表。
+func TestConfigWriteSurfaceJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		`getElementById("config-set-form")`,
+		`getElementById("config-set-key")`,
+		`getElementById("config-set-value")`,
+		`startsWith("credentials.")`,
+		`val.type = isSecret(sel.value) ? "password" : "text"`,
+		`"/v1/admin/config/" + encodeURIComponent(sel.value)`,
+		`method: "PUT"`,
+		`JSON.stringify({value: val.value})`,
+		"保存中…",
+		"loadConfig()",
+		"值不能为空",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing config write surface %q", want)
+		}
+	}
+	/* PRIVACY: 成功路径清空输入,不保留值在 DOM。 */
+	if !strings.Contains(js, `val.value = ""`) {
+		t.Fatal("app.js must clear the config value input after save")
 	}
 }
 

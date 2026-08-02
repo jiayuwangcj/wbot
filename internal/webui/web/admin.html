@@ -62,9 +62,19 @@
   </section>
   <section id="config">
     <h2>配置</h2>
-    <p class="notice">仅元数据:配置值永不展示。</p>
+    <p class="notice">仅元数据:配置值只写不读——设置时输入,永不展示/回显(凭证、监听地址)。</p>
     <p id="config-error" class="notice error" hidden></p>
     <p id="config-empty" class="notice" hidden>无配置键。</p>
+    <form id="config-set-form" hidden>
+      <label>键
+        <select id="config-set-key"></select>
+      </label>
+      <label>值
+        <input id="config-set-value" autocomplete="off" placeholder="仅写入,不会回显">
+      </label>
+      <button type="submit" id="config-set-btn">设置</button>
+      <span id="config-set-ok" class="notice" hidden>已保存。</span>
+    </form>
     <div class="table-scroll">
       <table id="config-table" hidden>
         <thead>
