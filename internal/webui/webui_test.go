@@ -991,6 +991,29 @@ func TestAdminAutoRefreshJS(t *testing.T) {
 	}
 }
 
+// TestDataAutoRefreshJS: 数据页 30s 自动轮询契约(2026-08-02):
+// startAutoRefresh 复用 Admin 的参数化基础设施注入 loadDataCoverage;
+// 轮询路径静默吞错(瞬时失败下一 tick 重试),首载/手动刷新仍显示错误;
+// visibilitychange 隐藏时停、可见时重启。
+func TestDataAutoRefreshJS(t *testing.T) {
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		"startAutoRefresh(() => loadDataCoverage().catch(() => {}))",
+		"loadDataCoverage().catch((err) => showError(document.getElementById(\"coverage-error\"), err))",
+		"document.addEventListener(\"visibilitychange\", () => {",
+		"if (document.visibilityState === \"hidden\") stopAutoRefresh();",
+		"else startAutoRefresh();",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 // TestBacktestRunFormJS: the 回测页 run form (老板 2026-08-02 页3) posts to
 // /v1/backtests with {symbol, strategy, params} or {from_watchlist: true},
 // then refreshes the list and opens the new single-run detail.

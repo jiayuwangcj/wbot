@@ -682,6 +682,13 @@ function initDataPage() {
   coverageSorter.state.dir = -1;
   coverageSorter.renderIndicators();
   loadDataCoverage().catch((err) => showError(document.getElementById("coverage-error"), err));
+  /* coverage 为 PG 本地查询,30s 轮询成本低(与 Admin 一致);轮询路径静默
+     吞错(瞬时失败下一 tick 重试),首载/手动刷新仍显示错误。 */
+  startAutoRefresh(() => loadDataCoverage().catch(() => {}));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") stopAutoRefresh();
+    else startAutoRefresh();
+  });
 }
 
 /* Watchlist page: /v1/watchlist CRUD + /v1/strategies schema-driven param form. */
