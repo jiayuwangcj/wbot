@@ -781,6 +781,10 @@ func (serveFakeStore) OptionFreshness(context.Context) ([]ingest.OptionFreshness
 	return nil, nil
 }
 
+func (serveFakeStore) AccountSnapshots(context.Context, string, int) ([]ingest.AccountSnapshotRow, error) {
+	return nil, nil
+}
+
 func (serveFakeStore) Ping(context.Context) error {
 	return nil
 }

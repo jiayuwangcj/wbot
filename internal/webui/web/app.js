@@ -155,6 +155,7 @@ function stampUpdated(id) {
 let dashEnv = "sim"; /* 当前明细视图(聚合卡/持仓/订单) */
 const snapByEnv = {sim: null, real: null};
 const errByEnv = {sim: null, real: null};
+const curveByEnv = {sim: null, real: null}; /* 资产曲线点序(chronological) */
 
 /* 子账户:sim + real 各查一次;失败只影响该行,双失败时顶部横幅提示。 */
 async function loadEnvSnap(env) {
@@ -164,6 +165,16 @@ async function loadEnvSnap(env) {
   } catch (err) {
     snapByEnv[env] = null;
     errByEnv[env] = err;
+  }
+}
+
+/* 资产曲线:DB 快照序列(`wbot ingest account` 写入);失败静默(次要视图,
+   不破坏聚合卡)。 */
+async function loadSnapSeries(env) {
+  try {
+    curveByEnv[env] = await fetchJSON("/v1/account/snapshots?env=" + env + "&limit=120");
+  } catch (err) {
+    curveByEnv[env] = null;
   }
 }
 
@@ -196,6 +207,31 @@ function renderSummary() {
   setText("summary-power", fmtAccountMoney(f.power));
   setText("summary-available-cash", fmtAccountMoney(f.available_cash));
   cards.hidden = false;
+  renderSummaryCurve();
+}
+
+/* 资产曲线:≥2 个点画 sparkline(total_assets 时序,drawSparkline 读
+   chronological),否则显示引导提示(可 `wbot ingest account` 开始记录)。 */
+function renderSummaryCurve() {
+  const wrap = document.getElementById("summary-curve-wrap");
+  const canvas = document.getElementById("summary-canvas");
+  const empty = document.getElementById("summary-curve-empty");
+  const range = document.getElementById("summary-curve-range");
+  const series = curveByEnv[dashEnv];
+  if (!series || !series.points || series.points.length < 2) {
+    wrap.hidden = false;
+    canvas.hidden = true;
+    empty.hidden = false;
+    setText(range, "");
+    return;
+  }
+  const pts = series.points;
+  canvas.hidden = false;
+  empty.hidden = true;
+  const first = new Date(pts[0].captured_at);
+  const last = new Date(pts[pts.length - 1].captured_at);
+  setText(range, fmtClock(first) + " → " + fmtClock(last) + " · " + pts.length + " 点");
+  drawSparkline(canvas, pts.map((p) => p.total_assets));
 }
 
 function renderAccounts() {
@@ -325,7 +361,7 @@ async function loadOrders() {
 }
 
 async function loadDashboard() {
-  await Promise.all([loadEnvSnap("sim"), loadEnvSnap("real")]);
+  await Promise.all([loadEnvSnap("sim"), loadEnvSnap("real"), loadSnapSeries("sim"), loadSnapSeries("real")]);
   renderBadge();
   renderSummary();
   renderAccounts();
@@ -369,12 +405,14 @@ function initDashboardPage() {
   const refresh = document.getElementById("dash-refresh");
   const buttons = [paperBtn, document.getElementById("env-real")];
   for (const btn of buttons) {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       dashEnv = btn.id === "env-real" ? "real" : "sim";
       renderBadge();
       renderSummary();
       renderPositions();
       loadOrders();
+      await loadSnapSeries(dashEnv); /* 资产曲线跟随当前 env */
+      renderSummaryCurve();
     });
   }
   refresh.addEventListener("click", loadDashboard);

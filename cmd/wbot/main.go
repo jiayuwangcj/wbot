@@ -236,7 +236,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL) and the embedded Web UI (GET / redirects to /ui/).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the read-only data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET/PUT /v1/admin/config), the watchlist API (GET /v1/strategies, GET/PUT/DELETE /v1/watchlist), the backtest results API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -1585,6 +1585,8 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/v1/futu/account", httpapi.FutuAccountHandler(facc))
 	top.Handle("/v1/futu/orders", httpapi.FutuOrdersHandler(forder))
 	top.Handle("/v1/futu/options", httpapi.FutuOptionsHandler(fchain))
+	// DB-backed account snapshot series (资产曲线; written by `wbot ingest account`).
+	top.Handle("/v1/account/snapshots", httpapi.AccountSnapshotsHandler(store))
 	// One-shot bar ingestion (Data 页「补数据」; same pipeline as `wbot ingest futu`).
 	top.Handle("/v1/ingest", httpapi.IngestHandler(irunner))
 	// Longest pattern wins: GET /{$} beats the / catch-all; other methods still reach the API's JSON 404.
