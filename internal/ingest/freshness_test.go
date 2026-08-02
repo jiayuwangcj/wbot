@@ -64,3 +64,16 @@ func TestQueryFreshness_validation(t *testing.T) {
 		t.Fatal("expected error for nil db")
 	}
 }
+
+func TestQueryOptionFreshness_validation(t *testing.T) {
+	ctx := context.Background()
+	if _, err := QueryOptionFreshness(ctx, nil, time.Now()); err == nil {
+		t.Fatal("expected error for nil db")
+	}
+}
+
+func TestMaxAgeForOptions(t *testing.T) {
+	if MaxAgeForOptions != 4*time.Hour {
+		t.Fatalf("MaxAgeForOptions = %v; want 4h", MaxAgeForOptions)
+	}
+}
