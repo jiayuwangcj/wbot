@@ -602,6 +602,33 @@ Query 参数：
 
 PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIVACY.md）。限频：每请求 2 次快照类调用（到期日 + 链，各 1 次/3s），浏览器轮询需注意。
 
+## POST /v1/ingest
+
+一次性数据拉取（Data 页「补数据」/「拉取期权链」按钮的落点；浏览器不能直连网关，serve 代执行并返回结果）。与 CLI 同一管线：`kind=bars` 等价 `wbot ingest futu`（source=http-api），`kind=option` 等价 `wbot ingest futu-option`（近端 1 个到期、7 天日线窗口；期权链逐合约串行拉取受网关限频，单到期 60+ 合约实测可达 9 分钟，超时上限 15 分钟；bars 为 2 分钟）。
+
+请求 body：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `kind` | 否 | `bars`（默认）或 `option`（拉期权链 K 线，`timeframe` 忽略） |
+| `symbol` | 是 | market 限定 symbol，如 `HK.00700` |
+| `timeframe` | 否 | bars 周期（默认 `1d`）；`kind=option` 时忽略 |
+| `adjust` | 否 | `fwd`（默认）/`none`/`back`（doc/DATA_STANDARD.md） |
+
+响应 `201`：
+
+```json
+{"kind": "bars", "symbol": "HK.00700", "timeframe": "1d", "adjust": "fwd", "status": "ok"}
+```
+
+```json
+{"kind": "option", "symbol": "HK.00700", "adjust": "fwd", "status": "ok"}
+```
+
+错误（body 为 `{code, message, action, error}` 契约）：`400 invalid_request`（非法 JSON/空 symbol）、`503 ingest_failed`（网关不可达、symbol 非法、无上市期权等，`action` 提示对应 CLI 命令）、`504 timeout`。
+
+幂等：bars 经 `ingestion_runs` 记录 + `ON CONFLICT` 去重；期权 `ON CONFLICT (symbol, ts, adjust, source) DO NOTHING`，重复拉取不产生重复行（option_quotes 无运行记录，同 CLI）。
+
 ## 错误
 
 **全量统一约定**（S5，自 `/v1/backtests` S1 引入后全量接入）：所有端点错误体为 `{"code", "message", "action", "error"}`——`code` 为机器可读错误码、`message` 为人类可读描述、`action` 为可执行的补救建议（`invalid_request` → 检查参数重试、`not_found` → 检查路径、`method_not_allowed` → 用文档方法、`internal_error`/`dependency_failed` → 查日志/连接重试）；`error` 为**兼容别名**（值同 `message`），保留给既有客户端（S5 起存量端点也带 `code`/`action`，`error` 字段仍存在，不破坏老消费方）。新客户端优先读 `code`/`message`/`action`。

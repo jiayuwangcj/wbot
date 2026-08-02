@@ -62,12 +62,13 @@
           </table>
         </div>
         <h3 class="subsection">期权新鲜度</h3>
-        <p class="notice">按标的×来源聚合期权行情的最新时间(阈值 4 小时)。</p>
+        <p class="notice">按标的×来源聚合期权行情的最新时间(阈值 4 小时);过期数据可点「拉取期权链」经网关拉取。</p>
+        <p id="options-error" class="notice error" hidden></p>
         <p id="options-fresh-empty" class="notice" hidden>暂无期权行情数据。</p>
         <div class="table-scroll">
           <table id="options-fresh-table" hidden>
             <thead>
-              <tr><th data-sort="underlying" title="点击按此列排序">标的</th><th data-sort="source" title="点击按此列排序">来源</th><th data-sort="max_ts" title="点击按此列排序">最新</th><th>年龄</th><th>新鲜度</th></tr>
+              <tr><th data-sort="underlying" title="点击按此列排序">标的</th><th data-sort="source" title="点击按此列排序">来源</th><th data-sort="max_ts" title="点击按此列排序">最新</th><th>年龄</th><th>新鲜度</th><th>操作</th></tr>
             </thead>
             <tbody></tbody>
           </table>
