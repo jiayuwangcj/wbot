@@ -15,6 +15,8 @@
    ```bash
    scripts/release.sh deploy --version daily-YYYYMMDD
    # -> ~/.wbot/releases/daily-YYYYMMDD/wbot   (tar.gz 已删，SHA256SUMS 留存)
+   # deploy 后自动清理旧日构建:仅保留最新 7 个 daily-* 目录(--keep N 覆盖),
+   # 正式版 v* 目录永不触碰
    ```
 4. **留痕**：日构建 tag/URL 与部署结果记录到进度贴（discussions/9）或当日任务记录
 
@@ -31,7 +33,7 @@
 
 - 日构建 tag 格式固定 `daily-YYYYMMDD`（与正式语义化版本 `v1.x.y` 区分）
 - 无阻碍性工作/无新提交的凌晨：仍发 tag 或以最近一次日构建为准（PM 判断，留痕说明）
-- 正式版本发布（release.sh --version vX.Y.Z）时：日构建 tag 保留；累积过多后由 engineering-admin 发起清理
+- 正式版本发布（release.sh --version vX.Y.Z）时：日构建 tag 保留；本地 `~/.wbot/releases/` 由 deploy 自动清理（保 7，见上），GitHub 侧 Release 累积过多后由 engineering-admin 发起清理
 - 部署目录 `~/.wbot/releases/` 属敏感目录约定（[[PRIVACY]]）：只放构建产物与配置，不提交仓库
 
 ## 关联
