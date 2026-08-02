@@ -4,6 +4,8 @@
 # Usage:
 #   scripts/release.sh build [--version VER] [--dist DIR]
 #   scripts/release.sh publish [--version VER] [--dist DIR] [--notes FILE | --generate-notes]
+#   scripts/release.sh republish [--version VER] [--dist DIR] [--notes FILE]
+#   scripts/release.sh deploy [--version VER] [--dir DIR]
 #
 # Environment:
 #   GH_TOKEN / GITHUB_TOKEN — for gh when publishing non-interactively.
@@ -15,24 +17,36 @@
 # Or let gh create the tag from main:
 #   scripts/release.sh publish --version v1.0.0 --generate-notes
 #
+# Daily build refresh (doc/RELEASE_DAILY.md):
+#   scripts/release.sh publish --version daily-YYYYMMDD      # first publish of the day
+#   scripts/release.sh republish --version daily-YYYYMMDD    # re-tag at HEAD + replace release
+#   scripts/release.sh deploy --version daily-YYYYMMDD       # ops: fetch + verify + unpack
+#
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 cmd="${1:-}"
-if [[ "$cmd" != "build" && "$cmd" != "publish" ]]; then
-	echo "usage: $0 build|publish [--version VER] [--dist DIR]" >&2
-	echo "  build    — cross-compile; writes tar.gz/zip + SHA256SUMS under dist/" >&2
-	echo "  publish  — build then gh release create (needs gh + auth)" >&2
+case "$cmd" in
+build | publish | republish | deploy) ;;
+*)
+	echo "usage: $0 build|publish|republish|deploy [--version VER] [--dist DIR]" >&2
+	echo "  build      — cross-compile; writes tar.gz/zip + SHA256SUMS under dist/" >&2
+	echo "  publish    — build then gh release create (needs gh + auth)" >&2
+	echo "  republish  — daily builds only (vdaily-*): rebuild, delete old release/tag," >&2
+	echo "               re-tag at HEAD and recreate the release" >&2
+	echo "  deploy     — download release assets, verify SHA256SUMS, unpack wbot into ~/.wbot/releases/" >&2
 	exit 2
-fi
+	;;
+esac
 shift
 
 dist="${root}/dist"
 rel_version=""
 notes_file=""
 generate_notes="0"
+deploy_dir="${HOME}/.wbot/releases"
 
 while [[ $# -gt 0 ]]; do
 	case "$1" in
@@ -51,6 +65,10 @@ while [[ $# -gt 0 ]]; do
 	--generate-notes)
 		generate_notes="1"
 		shift
+		;;
+	--dir)
+		deploy_dir="$2"
+		shift 2
 		;;
 	*)
 		echo "unknown option: $1" >&2
@@ -85,11 +103,6 @@ checksum_write() {
 		fi
 	)
 }
-
-rm -rf "$dist"
-mkdir -p "$dist"
-
-echo "release: version=$rel_version -> $dist"
 
 export CGO_ENABLED=0
 
@@ -132,39 +145,84 @@ PY
 	rm -rf "$bindir"
 }
 
-build_target linux amd64 tar
-build_target linux arm64 tar
-build_target darwin amd64 tar
-build_target darwin arm64 tar
-build_target windows amd64 zip
+# do_build — cross-build all targets + SHA256SUMS into $1 (a fresh dist dir).
+do_build() {
+	local d="$1"
+	rm -rf "$d"
+	mkdir -p "$d"
+	echo "release: version=$rel_version -> $d"
+	build_target linux amd64 tar
+	build_target linux arm64 tar
+	build_target darwin amd64 tar
+	build_target darwin arm64 tar
+	build_target windows amd64 zip
+	checksum_write "$d"
+	echo "release: checksums -> ${d}/SHA256SUMS"
+}
 
-checksum_write "$dist"
-echo "release: checksums -> ${dist}/SHA256SUMS"
-
-if [[ "$cmd" == "publish" ]]; then
-	if ! command -v gh >/dev/null 2>&1; then
-		echo "release: publish requires GitHub CLI (https://cli.github.com/)" >&2
-		exit 1
-	fi
-
-	tag="$rel_version"
-	if [[ "$tag" != v* ]]; then
-		tag="v${tag}"
-	fi
-
-	gh_args=(release create "$tag")
+# gh_args_for — release assets from a dist dir, as a shell array via stdin
+# (printf "%s\0" | mapfile -d ''), because the asset list is dynamic.
+gh_args_for() {
+	local d="$1"
 	shopt -s nullglob
-	for f in "$dist"/*.tar.gz "$dist"/*.zip "$dist"/SHA256SUMS; do
+	for f in "$d"/*.tar.gz "$d"/*.zip "$d"/SHA256SUMS; do
 		[[ -f "$f" ]] || continue
-		gh_args+=("$f")
+		printf '%s\0' "$f"
 	done
 	shopt -u nullglob
+}
 
-	if [[ ${#gh_args[@]} -le 3 ]]; then
+require_gh() {
+	if ! command -v gh >/dev/null 2>&1; then
+		echo "release: ${cmd} requires GitHub CLI (https://cli.github.com/)" >&2
+		exit 1
+	fi
+}
+
+tag_of() { # v-prefix normalization (daily-… -> vdaily-…)
+	if [[ "$1" != v* ]]; then
+		echo "v$1"
+	else
+		echo "$1"
+	fi
+}
+
+if [[ "$cmd" == "republish" ]]; then
+	# fail fast: validate the tag before paying for a full cross-build
+	tag="$(tag_of "$rel_version")"
+	if [[ "$tag" != vdaily-* ]]; then
+		echo "release: republish is for daily builds (vdaily-*); got $tag" >&2
+		echo "  for formal versions, bump and publish a new version instead" >&2
+		exit 2
+	fi
+fi
+
+if [[ "$cmd" != "deploy" ]]; then
+	do_build "$dist"
+fi
+
+if [[ "$cmd" == "publish" || "$cmd" == "republish" ]]; then
+	require_gh
+	tag="$(tag_of "$rel_version")"
+
+	if [[ "$cmd" == "republish" ]]; then
+		echo "release: republish $tag at $(git rev-parse --short HEAD)"
+		gh release delete "$tag" --yes --cleanup-tag >/dev/null 2>&1 || true
+		git tag -d "$tag" >/dev/null 2>&1 || true
+		git push origin ":refs/tags/$tag" >/dev/null 2>&1 || true
+	fi
+
+	# Re-tag at HEAD for both paths: publish (fresh daily tag) and republish.
+	git tag -a "$tag" -m "$tag" >/dev/null 2>&1 || true
+	git push origin "$tag" >/dev/null 2>&1 || true
+
+	mapfile -d '' -t assets < <(gh_args_for "$dist")
+	if [[ ${#assets[@]} -eq 0 ]]; then
 		echo "release: no assets to upload" >&2
 		exit 1
 	fi
 
+	gh_args=(release create "$tag" "${assets[@]}")
 	if [[ "$generate_notes" == "1" ]]; then
 		gh_args+=(--generate-notes --target "${GITHUB_RELEASE_TARGET:-main}")
 	elif [[ -n "$notes_file" ]]; then
@@ -173,7 +231,35 @@ if [[ "$cmd" == "publish" ]]; then
 		gh_args+=(--notes "Release ${tag}")
 	fi
 
-	echo "release: gh ${gh_args[*]}"
+	echo "release: gh ${gh_args[*]:0:6} …"
 	gh "${gh_args[@]}"
 	echo "release: published ${tag}"
+fi
+
+if [[ "$cmd" == "deploy" ]]; then
+	require_gh
+	tag="$(tag_of "$rel_version")"
+	out="${deploy_dir}/${tag#v}"
+
+	echo "release: deploy $tag -> $out"
+	rm -rf "$out"
+	mkdir -p "$out"
+	gh release download "$tag" --dir "$out" --pattern '*linux_amd64*' --pattern 'SHA256SUMS' >/dev/null
+	(
+		cd "$out"
+		shopt -s nullglob
+		archive=(./*.tar.gz)
+		if [[ ${#archive[@]} -ne 1 ]]; then
+			echo "release: expected exactly one linux_amd64 tar.gz, got ${#archive[@]}" >&2
+			exit 1
+		fi
+		# verify only the downloaded archive's entry (SHA256SUMS lists all 5 targets)
+		grep -q "$(basename "${archive[0]}")" SHA256SUMS
+		(sha256sum -c <(grep -F "$(basename "${archive[0]}")" SHA256SUMS) 2>/dev/null \
+			|| shasum -a 256 -c <(grep -F "$(basename "${archive[0]}")" SHA256SUMS)) >/dev/null
+		tar -xzf "${archive[0]}"
+		chmod +x wbot
+		rm -f "${archive[0]}"
+		echo "release: deployed wbot to $out (SHA256SUMS verified)"
+	)
 fi
