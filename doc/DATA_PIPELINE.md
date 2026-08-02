@@ -52,7 +52,7 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 外部 cron 示例（每 15 分钟整点拉一次，范围仅当天）：
 
 ```cron
-*/15 * * * * wbot ingest url -url 'https://example.com/bars.json' -symbol '700.HK' -timeframe 1m -from "$(date -u -d '-15 minutes' +%FT%TZ)" -to "$(date -u +%FT%TZ)" >>"$HOME/.cache/wbot-ingest.log" 2>&1
+*/15 * * * * wbot ingest url -url 'https://example.com/bars.json' -symbol 'HK.00700' -timeframe 1m -from "$(date -u -d '-15 minutes' +%FT%TZ)" -to "$(date -u +%FT%TZ)" >>"$HOME/.cache/wbot-ingest.log" 2>&1
 ```
 
 > 注：示例中的 `$(...)` 由 cron 的 shell 求值；更稳的写法是包一层脚本（参考 `scripts/verify.sh` 的脚本化风格）。`-every` 与外部 cron 二选一即可，不要叠加。
