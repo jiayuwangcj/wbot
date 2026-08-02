@@ -71,6 +71,7 @@ func TestDataPageContract(t *testing.T) {
 		`id="bars-empty"`,
 		`id="detail-error"`,
 		`id="data-refresh"`,
+		`id="data-updated"`,
 	} {
 		if !strings.Contains(string(html), want) {
 			t.Fatalf("data.html missing %q", want)
@@ -88,6 +89,7 @@ func TestDataPageContract(t *testing.T) {
 		`"/v1/bars?symbol="`,
 		`&desc=1`,
 		`"/v1/admin/cluster"`,
+		`stampUpdated("data-updated")`,
 	} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("app.js missing data-page logic %q", want)
@@ -322,6 +324,7 @@ func TestDashboardPageContract(t *testing.T) {
 		`id="positions-table"`,
 		`id="orders-table"`,
 		`id="runs-table"`,
+		`id="dash-updated"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("index.html missing %q", want)
@@ -984,10 +987,43 @@ func TestAdminAutoRefreshJS(t *testing.T) {
 		"startAutoRefresh(loadAll)",
 		"document.getElementById(\"admin-refresh\").addEventListener(\"click\", loadAll)",
 		"startAutoRefresh(loadDashboard)",
+		"stampUpdated(\"admin-updated\")",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing %q", want)
 		}
+	}
+}
+
+// TestFreshnessStampJS: 数据新鲜度打点契约(2026-08-02): 三个自动刷新页
+// (Dashboard/Admin/Data)每次成功刷新后打「更新于 HH:MM:SS」时间戳——
+// 券商面板惯例,让陈旧数据一眼可见,也验证轮询还活着;页面元素缺失时
+// stampUpdated 静默跳过(helper 与页面 id 解耦,跨页共享 app.js)。
+func TestFreshnessStampJS(t *testing.T) {
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		"function fmtClock(d) {",
+		`p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds())`,
+		"function stampUpdated(id) {",
+		`el.textContent = "更新于 " + fmtClock(new Date())`,
+		`stampUpdated("dash-updated")`,
+		`stampUpdated("admin-updated")`,
+		`stampUpdated("data-updated")`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+	html, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(html), `id="admin-updated"`) {
+		t.Fatal("admin.html missing id=\"admin-updated\"")
 	}
 }
 
