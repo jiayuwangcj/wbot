@@ -45,4 +45,4 @@
 
 - `wbot ingest futu-option`：先查 DB（`option_quotes` 按 underlying+adjust+时间窗、`bars` 按 symbol+timeframe+adjust）——窗口内有数据即 **cache hit 跳过拉取**（打印行数），否则拉取落库
 - `wbot ingest futu`：`ON CONFLICT DO NOTHING` 幂等（同键重拉不覆盖）
-- 一致性校验：同 symbol+timeframe+adjust 的不同 source 行可查询对比（当前仅 futu 写入）
+- 一致性校验：同 symbol+timeframe+adjust 的不同 source 行可查询对比（各 provider 独立 source 标签：CLI mock/file/url 默认 `cli-mock`/`cli-file`/`cli-url`（`-source` 可覆盖），futu 系写入平台源；dev-up 种子即 mock 写入，与 futu 数据同键共存可对比）
