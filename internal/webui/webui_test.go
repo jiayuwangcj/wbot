@@ -1204,6 +1204,44 @@ func TestPositionsSortingJS(t *testing.T) {
 	}
 }
 
+// TestOrdersSortingJS: 订单表表头排序契约(2026-08-02):index.html 表头
+// data-sort 键 + ORDERS_SORT_KEYS 取值器 + renderOrders 渲染前排序。
+func TestOrdersSortingJS(t *testing.T) {
+	html, err := fs.ReadFile(webFiles, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`data-sort="create_time"`,
+		`data-sort="side"`,
+		`data-sort="status"`,
+		`data-sort="qty"`,
+		`data-sort="price"`,
+		`data-sort="fill_qty"`,
+	} {
+		if !strings.Contains(string(html), want) {
+			t.Fatalf("index.html missing %q", want)
+		}
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(js)
+	for _, want := range []string{
+		"const ORDERS_SORT_KEYS = {",
+		"fill_qty: (o) => o.fill_qty ?? -Infinity",
+		"let ordersSorter = null",
+		`makeTableSorter("orders-table", ORDERS_SORT_KEYS)`,
+		"ordersSorter.render = loadOrders",
+		"ordersSorter ? ordersSorter.sortItems(snap.orders) : snap.orders",
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 // TestBarsCoverageRemoved: bars 区块已随 Dashboard 改造迁出(老板 2026-08-02),
 // 旧覆盖度提示逻辑移除 — 查看缓存数据的功能现由独立「数据」页承担(data.html,
 // coverage-table + drill-in),Admin cluster 页仍有 freshness 覆盖表。
