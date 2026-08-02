@@ -193,6 +193,45 @@ func TestViewportMetaOnAllPages(t *testing.T) {
 	}
 }
 
+// TestThemeToggleOnAllPages: every page carries the theme toggle in the header
+// (UI 主题化 — dark mode + persisted manual preference).
+func TestThemeToggleOnAllPages(t *testing.T) {
+	for _, path := range []string{"web/index.html", "web/admin.html", "web/watchlist.html", "web/results.html", "web/data.html"} {
+		data, err := fs.ReadFile(webFiles, path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(data), `id="theme-toggle"`) {
+			t.Fatalf("%s missing theme toggle button", path)
+		}
+	}
+}
+
+func TestThemeSystem(t *testing.T) {
+	css, err := fs.ReadFile(webFiles, "web/style.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		`html[data-theme="dark"]`,
+		"@media (prefers-color-scheme: dark)",
+		"var(--surface)", // hardcoded #fff replaced by tokens
+	} {
+		if !strings.Contains(string(css), want) {
+			t.Fatalf("style.css missing %q", want)
+		}
+	}
+	js, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`localStorage.getItem("wbot-theme")`, "dataset.theme", "initTheme();"} {
+		if !strings.Contains(string(js), want) {
+			t.Fatalf("app.js missing %q", want)
+		}
+	}
+}
+
 func TestResponsiveBreakpoints(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/style.css")
 	if err != nil {

@@ -3,6 +3,29 @@ document.documentElement.classList.add("js");
 
 /* Shared helpers; per-page init no-ops when its elements are absent. */
 
+/* Theme (UI 主题化): 默认跟随系统深浅色; 手动切换持久化到 localStorage
+   "wbot-theme", 之后始终用该偏好(直到手动切回)。按钮 icon 显示"切换后"
+   的主题(浅色界面显示 🌙 → 点按进深色)。 */
+function initTheme() {
+  const btn = document.getElementById("theme-toggle");
+  if (!btn) return;
+  const media = window.matchMedia("(prefers-color-scheme: dark)");
+  const saved = localStorage.getItem("wbot-theme");
+  const apply = (theme) => {
+    document.documentElement.dataset.theme = theme;
+    btn.textContent = theme === "dark" ? "☀️" : "🌙";
+    btn.setAttribute("aria-label", theme === "dark" ? "切换到浅色主题" : "切换到深色主题");
+  };
+  apply(saved || (media.matches ? "dark" : "light"));
+  btn.addEventListener("click", () => {
+    const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    localStorage.setItem("wbot-theme", next);
+    apply(next);
+  });
+  /* 未手动选择过时跟随系统切换 */
+  if (!saved) media.addEventListener("change", (e) => apply(e.matches ? "dark" : "light"));
+}
+
 async function fetchJSON(url, opts) {
   let resp;
   try {
@@ -1272,6 +1295,7 @@ function renderStrategyCards(list) {
   }
 }
 
+initTheme();
 initDashboardPage();
 initAdminPage();
 initWatchlistPage();
