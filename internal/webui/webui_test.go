@@ -66,6 +66,8 @@ func TestDataPageContract(t *testing.T) {
 		`id="coverage-table"`,
 		`id="coverage-empty"`,
 		`id="coverage-error"`,
+		`id="options-fresh-table"`,
+		`id="options-fresh-empty"`,
 		`id="detail-sparkline"`,
 		`id="bars-table"`,
 		`id="bars-empty"`,
@@ -90,6 +92,9 @@ func TestDataPageContract(t *testing.T) {
 		`&desc=1`,
 		`"/v1/admin/cluster"`,
 		`stampUpdated("data-updated")`,
+		"renderOptionsFreshness",
+		`data.components.data_plane.options_freshness || []`,
+		"optionsFreshSorter",
 	} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("app.js missing data-page logic %q", want)

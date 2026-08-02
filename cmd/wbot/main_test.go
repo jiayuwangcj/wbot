@@ -777,6 +777,10 @@ func (serveFakeStore) BarCoverage(context.Context) ([]ingest.BarCoverage, error)
 	return nil, nil
 }
 
+func (serveFakeStore) OptionFreshness(context.Context) ([]ingest.OptionFreshness, error) {
+	return nil, nil
+}
+
 func (serveFakeStore) Ping(context.Context) error {
 	return nil
 }

@@ -548,9 +548,45 @@ function renderCoverageRows(rows) {
   table.hidden = false;
 }
 
+/* 期权新鲜度表:按标的×来源展示 option_quotes 最新时间与三态状态
+   (与 CLI `ingest freshness` 期权区块同一阈值 4h)。无 drill-in。 */
+const OPTIONS_FRESH_SORT_KEYS = {
+  underlying: (o) => o.underlying,
+  source: (o) => o.source,
+  max_ts: (o) => o.max_ts,
+};
+
+function renderOptionsFreshness(rows) {
+  optionsFreshRows = rows; /* 供表头排序后本地重绘 */
+  const table = document.getElementById("options-fresh-table");
+  const empty = document.getElementById("options-fresh-empty");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  rows = optionsFreshSorter ? optionsFreshSorter.sortItems(rows) : rows;
+  if (rows.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  for (const o of rows) {
+    const tr = document.createElement("tr");
+    const cells = [o.underlying, o.source, fmtTime(o.max_ts), fmtAge(o.max_ts_age_seconds)];
+    for (const cell of cells) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    }
+    tr.appendChild(freshnessCell(o));
+    tbody.appendChild(tr);
+  }
+  empty.hidden = true;
+  table.hidden = false;
+}
+
 async function loadDataCoverage() {
   const data = await fetchJSON("/v1/admin/cluster");
   renderCoverageRows(data.components.data_plane.bars_coverage || []);
+  renderOptionsFreshness(data.components.data_plane.options_freshness || []);
   stampUpdated("data-updated");
 }
 
@@ -695,6 +731,11 @@ function initDataPage() {
   coverageSorter.state.key = "max_ts"; /* 默认按最新 bar 降序,新数据在前 */
   coverageSorter.state.dir = -1;
   coverageSorter.renderIndicators();
+  optionsFreshSorter = makeTableSorter("options-fresh-table", OPTIONS_FRESH_SORT_KEYS);
+  optionsFreshSorter.render = () => renderOptionsFreshness(optionsFreshRows);
+  optionsFreshSorter.state.key = "max_ts"; /* 同 coverage:最新在前 */
+  optionsFreshSorter.state.dir = -1;
+  optionsFreshSorter.renderIndicators();
   loadDataCoverage().catch((err) => showError(document.getElementById("coverage-error"), err));
   /* coverage 为 PG 本地查询,30s 轮询成本低(与 Admin 一致);轮询路径静默
      吞错(瞬时失败下一 tick 重试),首载/手动刷新仍显示错误。 */
@@ -1286,6 +1327,9 @@ const ORDERS_SORT_KEYS = {
 };
 
 /* Data 页覆盖表排序:数量按值,日期为定长字符串字典序=时间序。 */
+let optionsFreshRows = []; /* 期权新鲜度行缓存(排序重绘用) */
+let optionsFreshSorter = null;
+
 const COVERAGE_SORT_KEYS = {
   symbol: (b) => b.symbol,
   timeframe: (b) => b.timeframe,

@@ -27,6 +27,7 @@ type Store interface {
 	RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error)
 	RunStatusCounts(ctx context.Context) (ingest.RunCounts, error)
 	BarCoverage(ctx context.Context) ([]ingest.BarCoverage, error)
+	OptionFreshness(ctx context.Context) ([]ingest.OptionFreshness, error)
 	Ping(ctx context.Context) error
 }
 
@@ -53,6 +54,10 @@ func (s dbStore) RunStatusCounts(ctx context.Context) (ingest.RunCounts, error) 
 
 func (s dbStore) BarCoverage(ctx context.Context) ([]ingest.BarCoverage, error) {
 	return ingest.QueryBarCoverage(ctx, s.db)
+}
+
+func (s dbStore) OptionFreshness(ctx context.Context) ([]ingest.OptionFreshness, error) {
+	return ingest.QueryOptionFreshness(ctx, s.db, time.Now())
 }
 
 func (s dbStore) Ping(ctx context.Context) error {

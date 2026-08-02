@@ -18,10 +18,12 @@ type fakeClusterStore struct {
 	runs      []ingest.RunStatus
 	counts    ingest.RunCounts
 	coverage  []ingest.BarCoverage
+	opts      []ingest.OptionFreshness
 	pingErr   error
 	runsErr   error
 	countsErr error
 	covErr    error
+	optsErr   error
 
 	queryCalls int
 	gotLimit   int
@@ -54,6 +56,14 @@ func (f *fakeClusterStore) BarCoverage(context.Context) ([]ingest.BarCoverage, e
 	return f.coverage, nil
 }
 
+func (f *fakeClusterStore) OptionFreshness(context.Context) ([]ingest.OptionFreshness, error) {
+	f.queryCalls++
+	if f.optsErr != nil {
+		return nil, f.optsErr
+	}
+	return f.opts, nil
+}
+
 func TestClusterComponents(t *testing.T) {
 	meta := testMeta()
 	minTs := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
@@ -68,6 +78,9 @@ func TestClusterComponents(t *testing.T) {
 		counts: ingest.RunCounts{Running: 1, Succeeded: 9, Failed: 0},
 		coverage: []ingest.BarCoverage{
 			{Symbol: "DEMO.US", Timeframe: "1d", Count: 3, MinTs: minTs, MaxTs: maxTs},
+		},
+		opts: []ingest.OptionFreshness{
+			{Underlying: "HK.00700", Source: "futu", MaxTs: maxTs, AgeSeconds: 3600},
 		},
 	}
 	rec := get(t, ClusterHandler(meta, store), "/v1/admin/cluster")
@@ -106,6 +119,11 @@ func TestClusterComponents(t *testing.T) {
 					MinTs     string `json:"min_ts"`
 					MaxTs     string `json:"max_ts"`
 				} `json:"bars_coverage"`
+				OptionsFreshness []struct {
+					Underlying string `json:"underlying"`
+					Source     string `json:"source"`
+					MaxTs      string `json:"max_ts"`
+				} `json:"options_freshness"`
 			} `json:"data_plane"`
 		} `json:"components"`
 	}
@@ -151,6 +169,13 @@ func TestClusterComponents(t *testing.T) {
 	}
 	if cov[0].MinTs != minTs.Format(time.RFC3339) || cov[0].MaxTs != maxTs.Format(time.RFC3339) {
 		t.Fatalf("coverage[0] ts = %s..%s; want %s..%s", cov[0].MinTs, cov[0].MaxTs, minTs.Format(time.RFC3339), maxTs.Format(time.RFC3339))
+	}
+	of := got.Components.DataPlane.OptionsFreshness
+	if len(of) != 1 {
+		t.Fatalf("options_freshness len = %d; want 1", len(of))
+	}
+	if of[0].Underlying != "HK.00700" || of[0].Source != "futu" || of[0].MaxTs != maxTs.Format(time.RFC3339) {
+		t.Fatalf("options_freshness[0] = %+v; want HK.00700 futu with injected max_ts", of[0])
 	}
 }
 
@@ -212,6 +237,55 @@ func TestClusterFreshnessFields(t *testing.T) {
 	}
 }
 
+// TestClusterOptionFreshnessFields: options_freshness entries carry
+// max_ts_age_seconds and fresh judged by MaxAgeForOptions (4h default) —
+// 2h old → fresh, 100h old → stale; old fields stay unchanged.
+func TestClusterOptionFreshnessFields(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	freshTs := now.Add(-2 * time.Hour)    // 4h option threshold → fresh
+	staleTs := now.Add(-100 * time.Hour)  // 4h option threshold → stale
+	store := &fakeClusterStore{
+		coverage: []ingest.BarCoverage{},
+		opts: []ingest.OptionFreshness{
+			{Underlying: "OPTFRESH.US", Source: "futu", MaxTs: freshTs, AgeSeconds: 7200},
+			{Underlying: "OPTSTALE.US", Source: "futu", MaxTs: staleTs, AgeSeconds: 360000},
+		},
+	}
+	rec := get(t, ClusterHandler(testMeta(), store), "/v1/admin/cluster")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var got struct {
+		Components struct {
+			DataPlane struct {
+				OptionsFreshness []struct {
+					Underlying      string `json:"underlying"`
+					Source          string `json:"source"`
+					MaxTs           string `json:"max_ts"`
+					MaxTsAgeSeconds int64  `json:"max_ts_age_seconds"`
+					Fresh           string `json:"fresh"`
+				} `json:"options_freshness"`
+			} `json:"data_plane"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
+	}
+	opts := got.Components.DataPlane.OptionsFreshness
+	if len(opts) != 2 {
+		t.Fatalf("options_freshness len = %d; want 2", len(opts))
+	}
+	fresh, stale := opts[0], opts[1]
+	if fresh.Underlying != "OPTFRESH.US" || fresh.Source != "futu" || fresh.MaxTs != freshTs.Format(time.RFC3339) ||
+		fresh.Fresh != "fresh" || fresh.MaxTsAgeSeconds < 7199 || fresh.MaxTsAgeSeconds > 7201 {
+		t.Fatalf("fresh option entry = %+v; want OPTFRESH.US futu fresh ≈7200s", fresh)
+	}
+	if stale.Underlying != "OPTSTALE.US" || stale.Source != "futu" || stale.MaxTs != staleTs.Format(time.RFC3339) ||
+		stale.Fresh != "stale" || stale.MaxTsAgeSeconds < 359999 || stale.MaxTsAgeSeconds > 360001 {
+		t.Fatalf("stale option entry = %+v; want OPTSTALE.US futu stale ≈360000s", stale)
+	}
+}
+
 // TestClusterDBDown: ping failure reports 200 + db ok:false and skips the
 // DB-backed queries, leaving pipeline/data plane empty (⑥-A degraded semantics).
 func TestClusterDBDown(t *testing.T) {
@@ -268,6 +342,10 @@ func TestClusterDBDown(t *testing.T) {
 	if !ok || len(cov) != 0 {
 		t.Fatalf("bars_coverage = %v; want empty array when db down", dp["bars_coverage"])
 	}
+	of, ok := dp["options_freshness"].([]any)
+	if !ok || len(of) != 0 {
+		t.Fatalf("options_freshness = %v; want empty array when db down", dp["options_freshness"])
+	}
 }
 
 func TestClusterQueryError(t *testing.T) {
@@ -275,6 +353,7 @@ func TestClusterQueryError(t *testing.T) {
 		"runs":     {runsErr: errors.New("db down")},
 		"counts":   {countsErr: errors.New("db down")},
 		"coverage": {covErr: errors.New("db down")},
+		"options":  {optsErr: errors.New("db down")},
 	} {
 		rec := get(t, ClusterHandler(testMeta(), store), "/v1/admin/cluster")
 		if rec.Code != http.StatusInternalServerError {

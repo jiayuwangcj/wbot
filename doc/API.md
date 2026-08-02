@@ -392,6 +392,10 @@ key 白名单：`credentials.wechat.{appid,secret,token}`、`credentials.schwab.
         {"symbol": "DEMO.US", "timeframe": "1d", "count": 3,
          "min_ts": "2024-06-01T00:00:00Z", "max_ts": "2024-06-03T00:00:00Z",
          "max_ts_age_seconds": 67290240, "fresh": "stale"}
+      ],
+      "options_freshness": [
+        {"underlying": "HK.00700", "source": "futu",
+         "max_ts": "2026-07-31T00:00:00+08:00", "max_ts_age_seconds": 258096, "fresh": "stale"}
       ]
     }
   }
@@ -405,8 +409,9 @@ key 白名单：`credentials.wechat.{appid,secret,token}`、`credentials.schwab.
 | `pipeline.counts` | running / succeeded / failed | `ingestion_runs` 全表按状态计数 |
 | `pipeline.recent_runs` | 最近 5 条 | 形状同 /v1/runs；`finished_at` 为 `null` 表示仍在运行 |
 | `data_plane.bars_coverage` | symbol / timeframe / count / min_ts / max_ts / max_ts_age_seconds / fresh | `bars` 表各 symbol×timeframe 组合的条数与 ts 区间；`max_ts_age_seconds` 为 max_ts 距今秒数，`fresh` 为三态新鲜度（fresh/stale/unknown，按 timeframe 默认阈值判定，见 [[DATA_PIPELINE]]）——新字段向后兼容，老客户端忽略即可 |
+| `data_plane.options_freshness` | underlying / source / max_ts / max_ts_age_seconds / fresh | `option_quotes` 表按 underlying×source 聚合的最新 ts 与三态新鲜度（默认阈值 4h，`MaxAgeForOptions`，同 CLI `ingest freshness` 期权区块）——新字段向后兼容，老客户端忽略即可 |
 
-DB 不可用时（ping 失败）：仍返回 `200`，`db.ok` 为 `false`，且**不执行** pipeline/data_plane 查询——`counts` 全 0、`recent_runs` 与 `bars_coverage` 为空数组（降级语义同 /v1/admin/status；进程字段照常返回）。
+DB 不可用时（ping 失败）：仍返回 `200`，`db.ok` 为 `false`，且**不执行** pipeline/data_plane 查询——`counts` 全 0、`recent_runs`、`bars_coverage` 与 `options_freshness` 均为空数组（降级语义同 /v1/admin/status；进程字段照常返回）。
 
 ping 通过但存储查询失败时返回 `500`（错误体见 [[#错误]]，`code: internal_error`）。
 
