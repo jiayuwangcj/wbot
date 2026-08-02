@@ -68,7 +68,7 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 */10 * * * * wbot ingest freshness >>"$HOME/.cache/wbot-freshness.log" 2>&1 || notify-freshness-stale
 ```
 
-- 判定实现：`internal/ingest`（`JudgeFreshness`/`MaxAgeForTimeframe`/`MaxAgeForOptions`/`QueryFreshness`/`QueryOptionFreshness`）；`/v1/admin/cluster` 的 `bars_coverage` 每项带 `max_ts_age_seconds`/`fresh`（同阈值规则，向后兼容，见 [[API]]）。期权区块暂只进 CLI 门禁，cluster 端点未扩展（需要时按同一模式补）。
+- 判定实现：`internal/ingest`（`JudgeFreshness`/`MaxAgeForTimeframe`/`MaxAgeForOptions`/`QueryFreshness`/`QueryOptionFreshness`）；`/v1/admin/cluster` 的 `bars_coverage` 每项带 `max_ts_age_seconds`/`fresh`（同阈值规则，向后兼容，见 [[API]]），`options_freshness` 按 underlying×source 聚合同一三态（默认 4h，与 CLI 期权区块一致）。
 
 ## 相关实现
 

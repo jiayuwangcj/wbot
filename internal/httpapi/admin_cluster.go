@@ -23,6 +23,7 @@ type ClusterStore interface {
 	RecentRuns(ctx context.Context, limit int) ([]ingest.RunStatus, error)
 	RunStatusCounts(ctx context.Context) (ingest.RunCounts, error)
 	BarCoverage(ctx context.Context) ([]ingest.BarCoverage, error)
+	OptionFreshness(ctx context.Context) ([]ingest.OptionFreshness, error)
 }
 
 // processJSON mirrors the GET /v1/admin/status process fields (⑥-A).
@@ -58,9 +59,11 @@ type runCountsJSON struct {
 	Failed    int64 `json:"failed"`
 }
 
-// dataPlaneJSON describes bars coverage per symbol×timeframe.
+// dataPlaneJSON describes bars coverage per symbol×timeframe plus option
+// freshness per underlying×source.
 type dataPlaneJSON struct {
-	BarsCoverage []barCoverageJSON `json:"bars_coverage"`
+	BarsCoverage     []barCoverageJSON     `json:"bars_coverage"`
+	OptionsFreshness []optionFreshnessJSON `json:"options_freshness"`
 }
 
 // barCoverageJSON carries the coverage plus staleness fields: max_ts_age_seconds
@@ -72,6 +75,18 @@ type barCoverageJSON struct {
 	Adjust          string `json:"adjust"`
 	Count           int64  `json:"count"`
 	MinTs           string `json:"min_ts"`
+	MaxTs           string `json:"max_ts"`
+	MaxTsAgeSeconds int64  `json:"max_ts_age_seconds"`
+	Fresh           string `json:"fresh"`
+}
+
+// optionFreshnessJSON mirrors the CLI's option block per underlying×source
+// (fresh/stale/unknown with MaxAgeForOptions default threshold). Same
+// staleness-field pattern as barCoverageJSON — new field only, old clients
+// keep working (doc/DATA_PIPELINE.md freshness section).
+type optionFreshnessJSON struct {
+	Underlying      string `json:"underlying"`
+	Source          string `json:"source"`
 	MaxTs           string `json:"max_ts"`
 	MaxTsAgeSeconds int64  `json:"max_ts_age_seconds"`
 	Fresh           string `json:"fresh"`
@@ -91,6 +106,10 @@ func fillPipelineAndDataPlane(ctx context.Context, c *componentsJSON, store Clus
 	if err != nil {
 		return fmt.Errorf("bars coverage: %w", err)
 	}
+	opts, err := store.OptionFreshness(ctx)
+	if err != nil {
+		return fmt.Errorf("option freshness: %w", err)
+	}
 	c.Pipeline.Counts = runCountsJSON{Running: counts.Running, Succeeded: counts.Succeeded, Failed: counts.Failed}
 	c.Pipeline.RecentRuns = toRunJSON(runs)
 	now := time.Now()
@@ -105,6 +124,18 @@ func fillPipelineAndDataPlane(ctx context.Context, c *componentsJSON, store Clus
 			MinTs: cov.MinTs.Format(time.RFC3339), MaxTs: cov.MaxTs.Format(time.RFC3339),
 			MaxTsAgeSeconds: int64(age.Seconds()),
 			Fresh:           string(ingest.JudgeFreshness(cov.MaxTs, now, ingest.MaxAgeForTimeframe(cov.Timeframe))),
+		})
+	}
+	c.DataPlane.OptionsFreshness = make([]optionFreshnessJSON, 0, len(opts))
+	for _, o := range opts {
+		age := now.Sub(o.MaxTs)
+		if age < 0 {
+			age = 0
+		}
+		c.DataPlane.OptionsFreshness = append(c.DataPlane.OptionsFreshness, optionFreshnessJSON{
+			Underlying: o.Underlying, Source: o.Source, MaxTs: o.MaxTs.Format(time.RFC3339),
+			MaxTsAgeSeconds: int64(age.Seconds()),
+			Fresh:           string(ingest.JudgeFreshness(o.MaxTs, now, ingest.MaxAgeForOptions)),
 		})
 	}
 	return nil
@@ -131,7 +162,7 @@ func ClusterHandler(meta ProcessMeta, store ClusterStore) http.Handler {
 			DB: dbStatusJSON{OK: true},
 			// Empty lists by default: on DB down they stay empty (⑥-A degraded semantics).
 			Pipeline:  pipelineJSON{Counts: runCountsJSON{}, RecentRuns: []runJSON{}},
-			DataPlane: dataPlaneJSON{BarsCoverage: []barCoverageJSON{}},
+			DataPlane: dataPlaneJSON{BarsCoverage: []barCoverageJSON{}, OptionsFreshness: []optionFreshnessJSON{}},
 		}}
 		pctx, cancel := context.WithTimeout(r.Context(), pingTimeout)
 		defer cancel()

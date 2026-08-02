@@ -22,6 +22,7 @@ type fakeStore struct {
 	runs     []ingest.RunStatus
 	counts   ingest.RunCounts
 	coverage []ingest.BarCoverage
+	opts     []ingest.OptionFreshness
 	err      error
 
 	gotSymbol   string
@@ -66,6 +67,13 @@ func (f *fakeStore) BarCoverage(context.Context) ([]ingest.BarCoverage, error) {
 		return nil, f.err
 	}
 	return f.coverage, nil
+}
+
+func (f *fakeStore) OptionFreshness(context.Context) ([]ingest.OptionFreshness, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.opts, nil
 }
 
 func (f *fakeStore) Ping(context.Context) error {
