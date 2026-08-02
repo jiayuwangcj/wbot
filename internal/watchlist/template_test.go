@@ -9,10 +9,10 @@ import (
 // internal/strategy registry (feat/strategy-impl) must keep these green.
 func TestTemplatesContract(t *testing.T) {
 	tmpls := Templates()
-	if len(tmpls) != 2 {
-		t.Fatalf("len = %d; want 2", len(tmpls))
+	if len(tmpls) != 3 {
+		t.Fatalf("len = %d; want 3", len(tmpls))
 	}
-	for i, name := range []string{"covered-call", "cash-secured-put"} {
+	for i, name := range []string{"buy-hold", "covered-call", "cash-secured-put"} {
 		if tmpls[i].Name != name {
 			t.Fatalf("templates[%d].name = %q; want %q", i, tmpls[i].Name, name)
 		}
@@ -21,6 +21,12 @@ func TestTemplatesContract(t *testing.T) {
 		params := map[string]Param{}
 		for _, p := range tmpl.Params {
 			params[p.Name] = p
+		}
+		if tmpl.Name == "buy-hold" {
+			if len(params) != 0 {
+				t.Fatalf("buy-hold must have no params, got %v", params)
+			}
+			continue
 		}
 		if d := params["strike_pct_otm"].Default; d != 0.03 {
 			t.Fatalf("%s strike_pct_otm default = %v; want 0.03", tmpl.Name, d)

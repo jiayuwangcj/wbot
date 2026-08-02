@@ -159,12 +159,14 @@ if [[ "$seed" == "1" ]]; then
 	# 回测页可跑: 前复权 bars (回测默认 adjust=fwd)
 	"$bin" ingest mock -dsn "$WBOT_PG_DSN" -symbol BTEXEC.US -timeframe 1d -adjust fwd >/dev/null
 	"$bin" ingest mock -dsn "$WBOT_PG_DSN" -symbol BTEXECB.US -timeframe 1d -adjust fwd >/dev/null
-	# 观察列表(回测 watchlist 模式): 全部 fwd 可跑
+	# 观察列表(回测 watchlist 模式): 全部 fwd 可跑。
+	# buy-hold 是模板注册表合法策略(2026-08-03 修复前 PUT 400 被 || true
+	# 静默吞掉,watchlist 表实为空的——种子失败必须暴露)。
 	for entry in "BTEXEC.US|buy-hold" "BTEXECB.US|buy-hold"; do
 		sym="${entry%%|*}"; strat="${entry##*|}"
 		curl -sf -X PUT "${base_url}/v1/watchlist/${sym}" \
 			-H 'Content-Type: application/json' \
-			-d "{\"strategy\":\"${strat}\"}" >/dev/null || true
+			-d "{\"strategy\":\"${strat}\"}" >/dev/null
 	done
 	say "seeded: DEMO.US / QUERY.US (none) + BTEXEC.US / BTEXECB.US (fwd) + watchlist"
 fi

@@ -72,15 +72,15 @@ func TestStrategiesList(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
 	}
-	if len(got) != 2 {
-		t.Fatalf("len = %d; want 2 (body %s)", len(got), rec.Body)
+	if len(got) != 3 {
+		t.Fatalf("len = %d; want 3 (body %s)", len(got), rec.Body)
 	}
-	for i, name := range []string{"covered-call", "cash-secured-put"} {
+	for i, name := range []string{"buy-hold", "covered-call", "cash-secured-put"} {
 		if got[i].Name != name {
 			t.Fatalf("templates[%d].name = %q; want %q", i, got[i].Name, name)
 		}
 	}
-	cc := got[0]
+	cc := got[1]
 	for _, p := range []struct{ name, typ string }{
 		{"strike_pct_otm", "number"},
 		{"expiry_rule", "choice"},
