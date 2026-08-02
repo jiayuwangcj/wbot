@@ -839,6 +839,8 @@ type serveFakeIngestRunner struct{}
 
 func (serveFakeIngestRunner) RunBars(_ context.Context, _, _, _ string) error { return nil }
 
+func (serveFakeIngestRunner) RunOptions(_ context.Context, _, _ string) error { return nil }
+
 func (serveFakeFutuOrderer) Orders(_ context.Context, _ futu.Env, _ uint64, _ bool) (httpapi.OrdersSnapshot, error) {
 	return httpapi.OrdersSnapshot{Env: "simulate", AccID: 1907141, Orders: []httpapi.OrderJSON{}}, nil
 }

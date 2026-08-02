@@ -577,6 +577,15 @@ function renderOptionsFreshness(rows) {
       tr.appendChild(td);
     }
     tr.appendChild(freshnessCell(o));
+    const action = document.createElement("td");
+    const refill = document.createElement("button");
+    refill.type = "button";
+    refill.className = "link";
+    refill.textContent = "拉取期权链";
+    refill.title = "经网关拉取 " + o.underlying + " 的期权链 K 线(近端到期),更新缓存";
+    refill.addEventListener("click", () => ingestOptions(o, refill));
+    action.appendChild(refill);
+    tr.appendChild(action);
     tbody.appendChild(tr);
   }
   empty.hidden = true;
@@ -593,6 +602,32 @@ async function loadDataCoverage() {
 /* 补数据:POST /v1/ingest 经网关拉取该标的行情(与 `wbot ingest futu`
    同一管线,source=http-api);成功刷新覆盖表与明细,失败显示原因
    (网关不可达/无数据等,按钮短暂置忙防重复点击)。 */
+/* 拉取期权链:POST /v1/ingest {kind:"option"} 经网关拉取该标的期权链
+   K 线(与 `wbot ingest futu-option` 同一管线,近端 1 个到期);成功
+   后刷新覆盖表与期权表,失败显示原因(按钮短暂置忙防重复点击)。 */
+async function ingestOptions(o, btn) {
+  const errEl = document.getElementById("options-error");
+  clearError(errEl);
+  btn.disabled = true;
+  btn.textContent = "拉取中…";
+  try {
+    await fetchJSON("/v1/ingest", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({kind: "option", symbol: o.underlying})
+    });
+    btn.textContent = "已更新";
+    const [data] = await Promise.all([fetchJSON("/v1/admin/cluster")]);
+    renderCoverageRows(data.components.data_plane.bars_coverage || []);
+    renderOptionsFreshness(data.components.data_plane.options_freshness || []);
+  } catch (err) {
+    btn.textContent = "拉取期权链";
+    showError(errEl, err);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function ingestBars(b, btn) {
   const errEl = document.getElementById("coverage-error");
   clearError(errEl);
