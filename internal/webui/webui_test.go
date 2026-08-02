@@ -1240,6 +1240,9 @@ func TestOrdersSortingJS(t *testing.T) {
 		`makeTableSorter("orders-table", ORDERS_SORT_KEYS)`,
 		"ordersSorter.render = loadOrders",
 		"ordersSorter ? ordersSorter.sortItems(snap.orders) : snap.orders",
+		`ordersSorter.state.key = "create_time"`,
+		"ordersSorter.state.dir = -1",
+		"ordersSorter.renderIndicators()",
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing %q", want)

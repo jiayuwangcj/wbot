@@ -361,6 +361,9 @@ function initDashboardPage() {
   positionsSorter.renderIndicators();
   ordersSorter = makeTableSorter("orders-table", ORDERS_SORT_KEYS);
   ordersSorter.render = loadOrders;
+  ordersSorter.state.key = "create_time"; /* 默认按时间降序,新单在上 */
+  ordersSorter.state.dir = -1;
+  ordersSorter.renderIndicators();
   loadDashboard();
   loadJSON("/v1/runs?limit=10", document.getElementById("runs-error"), renderRuns);
   startAutoRefresh();
