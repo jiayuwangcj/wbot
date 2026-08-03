@@ -77,16 +77,29 @@ func Lookup(name string) (*Template, bool) {
 	return nil, false
 }
 
-// Factory builds a strategy from a template name and params; unknown names,
-// unknown param keys, wrong types and out-of-range values all error.
-func Factory(name string, params map[string]any) (backtest.Strategy, error) {
+// Validate checks params against the named template's schema: unknown
+// template or parameter, wrong type or out-of-range values all error.
+// It is the single validation surface for registered strategies (watchlist
+// write paths delegate here; buy-hold is first-class in backtestexec).
+func Validate(name string, params map[string]any) error {
 	t, ok := Lookup(name)
 	if !ok {
 		names := make([]string, 0, len(templates))
 		for _, tt := range templates {
 			names = append(names, tt.Name)
 		}
-		return nil, fmt.Errorf("strategy: unknown template %q (want %s)", name, strings.Join(names, " or "))
+		return fmt.Errorf("strategy: unknown template %q (want %s)", name, strings.Join(names, " or "))
+	}
+	_, err := buildParams(t, params)
+	return err
+}
+
+// Factory builds a strategy from a template name and params; unknown names,
+// unknown param keys, wrong types and out-of-range values all error.
+func Factory(name string, params map[string]any) (backtest.Strategy, error) {
+	t, ok := Lookup(name)
+	if !ok {
+		return nil, Validate(name, params)
 	}
 	p, err := buildParams(t, params)
 	if err != nil {
@@ -99,6 +112,50 @@ func Factory(name string, params map[string]any) (backtest.Strategy, error) {
 		return &CashSecuredPut{base: baseFrom(p), cashReserve: p["cash_reserve"].(float64)}, nil
 	}
 	return nil, fmt.Errorf("strategy: template %q registered but not implemented", name)
+}
+
+// ContractTemplate is the JSON contract served by GET /v1/strategies. It is
+// rendered from the registry (single source of truth); the caller appends
+// engine first-class strategies (buy-hold) that take no params.
+type ContractTemplate struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Params      []ContractParam `json:"params"`
+}
+
+// ContractParam mirrors one template parameter in the JSON contract: number
+// and string types map directly; string params with an allowed set render as
+// "choice" with Choices (engine Min/Max stay engine-side, doc/BACKTEST.md).
+type ContractParam struct {
+	Name        string   `json:"name"`
+	Type        string   `json:"type"` // number | string | choice
+	Default     any      `json:"default"`
+	Choices     []string `json:"choices,omitempty"` // required when Type == choice
+	Description string   `json:"description"`
+}
+
+// ContractTemplates renders the registry as the /v1/strategies contract.
+func ContractTemplates() []ContractTemplate {
+	out := make([]ContractTemplate, 0, len(templates))
+	for _, t := range templates {
+		ct := ContractTemplate{Name: t.Name, Description: t.Description}
+		for _, p := range t.Params {
+			cp := ContractParam{
+				Name:        p.Name,
+				Default:     p.Default,
+				Description: p.Help,
+			}
+			switch {
+			case p.Type == "string" && len(p.Allowed) > 0:
+				cp.Type, cp.Choices = "choice", slices.Clone(p.Allowed)
+			default:
+				cp.Type = p.Type
+			}
+			ct.Params = append(ct.Params, cp)
+		}
+		out = append(out, ct)
+	}
+	return out
 }
 
 // buildParams merges defaults and validates every param against the schema.

@@ -1,6 +1,6 @@
 // Package watchlist persists tracked symbols with per-symbol strategy bindings
-// (migration 003 watchlist table) and holds the strategy template contract
-// served by GET /v1/strategies.
+// (migration 003 watchlist table). The strategy template contract served by
+// GET /v1/strategies renders from internal/strategy (single source).
 package watchlist
 
 import (
@@ -9,8 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"time"
+
+	"github.com/jiayu/wbot/internal/strategy"
 )
 
 // Item is one watchlist row (symbol PK; strategy/params NOT NULL in migration 003).
@@ -22,90 +23,19 @@ type Item struct {
 	UpdatedAt time.Time
 }
 
-// Template is the strategy template contract served by GET /v1/strategies.
-// ⑫-b 已合入 internal/strategy 注册表（Templates/Factory，见 doc/BACKTEST.md），
-// 本契约仍硬编码独立维护——参数已与引擎对齐（2026-08-03），
-// 统一到注册表（去双源漂移）另排期，见 doc/tasks/2026-08-03-watchlist-template-registry.md。
-type Template struct {
-	Name        string  `json:"name"`
-	Description string  `json:"description"`
-	Params      []Param `json:"params"`
-}
-
-// Param declares one strategy parameter's schema (name/type/default).
-type Param struct {
-	Name        string   `json:"name"`
-	Type        string   `json:"type"` // number | string | choice
-	Default     any      `json:"default"`
-	Choices     []string `json:"choices,omitempty"` // required when Type == choice
-	Description string   `json:"description"`
-}
-
-// Templates returns the strategy templates in contract order (⑫-b draft ⑫-c).
-// Params mirror internal/strategy registration (engine factory); keep in sync
-// when the registry gains parameters (unification pending, see type comment).
-func Templates() []Template {
-	// Numeric defaults are float64 so the JSON contract round-trips bit-identically.
-	cc := []Param{
-		{Name: "strike_pct_otm", Type: "number", Default: 0.03, Description: "行权价偏离度：行权价 = 现价×(1+pct) 就近 chain 档"},
-		{Name: "expiry_rule", Type: "choice", Default: "next_expiry", Choices: []string{"next_expiry", "days"}, Description: "到期选择规则（next_expiry 最近到期 / days 按天数）"},
-		{Name: "days_to_expiry", Type: "number", Default: 28.0, Description: "expiry_rule=days 时的目标到期天数"},
-		{Name: "fee_per_contract", Type: "number", Default: 0.0, Description: "每张合约费用（从权利金中扣除）"},
-		{Name: "lot_size", Type: "number", Default: 100.0, Description: "合约乘数（option_quotes 无 lot 列，以参数为准）"},
-	}
-	csp := append([]Param(nil), cc...)
-	csp = append(csp, Param{Name: "cash_reserve", Type: "number", Default: 1.0, Description: "现金担保倍率：开仓要求 cash ≥ cash_reserve×strike×lot×张数"})
-	return []Template{
-		// buy-hold 是引擎一等策略(backtestexec 直接支持,无 params);
-		// watchlist 作为「回测计划列表」收录它,使 from_watchlist 回测
-		// 模式在无期权数据的环境(本地 mock)也可整表跑通。
-		{Name: "buy-hold", Description: "买入持有：不调仓", Params: nil},
-		{Name: "covered-call", Description: "备兑看涨：持有正股 + 卖出看涨", Params: cc},
-		{Name: "cash-secured-put", Description: "现金担保看跌：卖出看跌、现金担保", Params: csp},
-	}
-}
-
-// Validate checks params against the named template's schema: unknown template
-// or parameter, or a type mismatch, returns an error.
+// Validate checks params against the strategy contract: buy-hold is the
+// engine's first-class no-param strategy (backtestexec); everything else
+// delegates to the internal/strategy registry — the single source of truth
+// (doc/BACKTEST.md). The /v1/strategies contract renders from the same
+// registry (strategy.ContractTemplates + appended buy-hold, httpapi).
 func Validate(name string, params map[string]any) error {
-	schema := map[string]Param{}
-	var found bool
-	for _, t := range Templates() {
-		if t.Name == name {
-			found = true
-			for _, p := range t.Params {
-				schema[p.Name] = p
-			}
+	if name == "buy-hold" {
+		for k := range params {
+			return fmt.Errorf("unknown parameter %q for strategy %q", k, name)
 		}
+		return nil
 	}
-	if !found {
-		return fmt.Errorf("unknown strategy template %q", name)
-	}
-	for key, v := range params {
-		p, ok := schema[key]
-		if !ok {
-			return fmt.Errorf("unknown parameter %q for strategy %q", key, name)
-		}
-		switch p.Type {
-		case "number":
-			if _, ok := v.(float64); !ok {
-				return fmt.Errorf("parameter %q: want number, got %T", key, v)
-			}
-		case "string":
-			if _, ok := v.(string); !ok {
-				return fmt.Errorf("parameter %q: want string, got %T", key, v)
-			}
-		case "choice":
-			s, ok := v.(string)
-			if !ok {
-				return fmt.Errorf("parameter %q: want one of %v, got %T", key, p.Choices, v)
-			}
-			if !slices.Contains(p.Choices, s) {
-				return fmt.Errorf("parameter %q: want one of %v, got %q", key, p.Choices, s)
-			}
-		}
-	}
-	return nil
+	return strategy.Validate(name, params)
 }
 
 // List returns all watchlist rows ordered by symbol.
