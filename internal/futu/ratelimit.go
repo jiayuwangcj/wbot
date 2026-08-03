@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -67,10 +66,10 @@ func (l *Limiter) crossProcessNext(now time.Time) time.Time {
 		return time.Time{}
 	}
 	defer f.Close()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flockExclusive(f); err != nil {
 		return time.Time{}
 	}
-	defer func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }()
+	defer func() { _ = flockRelease(f) }()
 
 	var last time.Time
 	if b, err := io.ReadAll(f); err == nil {
