@@ -24,7 +24,9 @@ const ingestPath = "/v1/ingest"
 // RunOptions pulls the underlying's option-chain K-lines (same pipeline as
 // `wbot ingest futu-option`, doc/FUTU.md §10).
 type IngestRunner interface {
-	RunBars(ctx context.Context, symbol, timeframe, adjust string) error
+	// RunBars fetches [from, to]; zero values keep the pipeline default
+	// (from=2000-01-01, to=now, same as `wbot ingest futu` unbounded).
+	RunBars(ctx context.Context, symbol, timeframe, adjust string, from, to time.Time) error
 	RunOptions(ctx context.Context, underlying, adjust string) error
 }
 
@@ -39,8 +41,9 @@ func NewIngestRunner(database *sql.DB) IngestRunner {
 	return ingestRunner{db: database, addr: FutuGatewayURL()}
 }
 
-// RunBars fetches one range of bars and writes one ingestion run.
-func (r ingestRunner) RunBars(ctx context.Context, symbol, timeframe, adjust string) error {
+// RunBars fetches one range of bars and writes one ingestion run. from/to are
+// passed through to the pipeline (zero = unbounded defaults).
+func (r ingestRunner) RunBars(ctx context.Context, symbol, timeframe, adjust string, from, to time.Time) error {
 	_, ingestTF, err := futu.ParseTimeframe(timeframe)
 	if err != nil {
 		return err
@@ -50,7 +53,7 @@ func (r ingestRunner) RunBars(ctx context.Context, symbol, timeframe, adjust str
 		return err
 	}
 	src := ingest.FutuSource{Client: futu.NewClient(r.addr), Adjust: adjustName}
-	return ingest.RunIngestion(ctx, r.db, "http-api", domain.Symbol(symbol), ingestTF, adjustName, "futu", time.Time{}, time.Now(), src)
+	return ingest.RunIngestion(ctx, r.db, "http-api", domain.Symbol(symbol), ingestTF, adjustName, "futu", from, to, src)
 }
 
 // RunOptions pulls the underlying's nearest-expiry option chain (7-day daily
@@ -67,9 +70,12 @@ func (r ingestRunner) RunOptions(ctx context.Context, underlying, adjust string)
 }
 
 // IngestHandler serves POST /v1/ingest: body {symbol, timeframe, adjust,
-// kind}. kind=bars (default) runs one-shot bars ingestion; kind=option pulls
-// the symbol's option chain (timeframe ignored). Data 页「补数据」/「拉取期权链」
-// 按钮的落点;浏览器无法直连网关(CORS/安全),serve 代理执行并返回运行结果。
+// kind, from, to}. kind=bars (default) runs one-shot bars ingestion; kind=option
+// pulls the symbol's option chain (timeframe ignored). from/to are optional
+// RFC3339 range bounds for kind=bars (zero = pipeline default full range),
+// matching `wbot ingest futu -from/-to`; option ignores them. Data 页
+// 「补数据」/「拉取期权链」按钮的落点;浏览器无法直连网关(CORS/安全),serve
+// 代理执行并返回运行结果。
 func IngestHandler(runner IngestRunner) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(ingestPath, func(w http.ResponseWriter, r *http.Request) {
@@ -82,14 +88,16 @@ func IngestHandler(runner IngestRunner) http.Handler {
 			Symbol    string `json:"symbol"`
 			Timeframe string `json:"timeframe"`
 			Adjust    string `json:"adjust"`
+			From      string `json:"from"`
+			To        string `json:"to"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: "invalid JSON body: " + err.Error(), Action: "send {symbol, timeframe, adjust, kind}"})
+			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: "invalid JSON body: " + err.Error(), Action: "send {symbol, timeframe, adjust, kind, from, to}"})
 			return
 		}
 		symbol := strings.TrimSpace(req.Symbol)
 		if symbol == "" {
-			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: "symbol is required", Action: "send {symbol, timeframe, adjust, kind}"})
+			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: "symbol is required", Action: "send {symbol, timeframe, adjust, kind, from, to}"})
 			return
 		}
 		adjust := strings.TrimSpace(req.Adjust)
@@ -134,7 +142,22 @@ func IngestHandler(runner IngestRunner) http.Handler {
 		if timeframe == "" {
 			timeframe = "1d"
 		}
-		if err := runner.RunBars(ctx, symbol, timeframe, adjust); err != nil {
+		// Optional RFC3339 bounds; same parser as `wbot ingest futu -from/-to`.
+		from, err := parseIngestRange("from", req.From)
+		if err != nil {
+			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: err.Error(), Action: `send "from" as RFC3339, e.g. "2026-08-01T00:00:00Z"`})
+			return
+		}
+		to, err := parseIngestRange("to", req.To)
+		if err != nil {
+			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: err.Error(), Action: `send "to" as RFC3339, e.g. "2026-08-03T00:00:00Z"`})
+			return
+		}
+		if !from.IsZero() && !to.IsZero() && from.After(to) {
+			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: "from after to", Action: `send "from" earlier than "to"`})
+			return
+		}
+		if err := runner.RunBars(ctx, symbol, timeframe, adjust, from, to); err != nil {
 			action := "check the gateway and retry; or use `wbot ingest futu -symbol " + symbol + " -timeframe " + timeframe + "`"
 			if errors.Is(err, context.DeadlineExceeded) {
 				writeErrorBody(w, http.StatusGatewayTimeout, errorJSON{Code: "timeout", Message: "ingest timed out", Action: action})
@@ -154,4 +177,17 @@ func IngestHandler(runner IngestRunner) http.Handler {
 		})
 	})
 	return mux
+}
+
+// parseIngestRange parses an optional RFC3339 range bound; empty means zero
+// (unbounded), mirroring cmd/wbot parseRangeTime so CLI and API agree.
+func parseIngestRange(name, s string) (time.Time, error) {
+	if s == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid %s %q: want RFC3339", name, s)
+	}
+	return t, nil
 }

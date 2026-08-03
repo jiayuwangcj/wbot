@@ -743,8 +743,10 @@ async function loadDataCoverage() {
 }
 
 /* 补数据:POST /v1/ingest 经网关拉取该标的行情(与 `wbot ingest futu`
-   同一管线,source=http-api);成功刷新覆盖表与明细,失败显示原因
-   (网关不可达/无数据等,按钮短暂置忙防重复点击)。 */
+   同一管线,source=http-api);增量模式:from=max_ts 只拉最新已缓存之后
+   (幂等 DO NOTHING,边界重复根无害),避免每次 2000 年至今全量重拉;
+   成功刷新覆盖表与明细,失败显示原因(网关不可达/无数据等,按钮短暂
+   置忙防重复点击)。 */
 /* 拉取期权链:POST /v1/ingest {kind:"option"} 经网关拉取该标的期权链
    K 线(与 `wbot ingest futu-option` 同一管线,近端 1 个到期);成功
    后刷新覆盖表与期权表,失败显示原因(按钮短暂置忙防重复点击)。 */
@@ -780,7 +782,7 @@ async function ingestBars(b, btn) {
     await fetchJSON("/v1/ingest", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({symbol: b.symbol, timeframe: b.timeframe, adjust: b.adjust})
+      body: JSON.stringify({symbol: b.symbol, timeframe: b.timeframe, adjust: b.adjust, from: b.max_ts})
     });
     btn.textContent = "已更新";
     const [data] = await Promise.all([fetchJSON("/v1/admin/cluster")]);

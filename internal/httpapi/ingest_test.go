@@ -8,17 +8,19 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // fakeIngestRunner records the last request and fails on demand.
 type fakeIngestRunner struct {
 	gotSymbol, gotTimeframe, gotAdjust string
+	gotFrom, gotTo                     time.Time
 	gotKind                            string // "bars" | "option"
 	fail                               error
 }
 
-func (f *fakeIngestRunner) RunBars(_ context.Context, symbol, timeframe, adjust string) error {
-	f.gotKind, f.gotSymbol, f.gotTimeframe, f.gotAdjust = "bars", symbol, timeframe, adjust
+func (f *fakeIngestRunner) RunBars(_ context.Context, symbol, timeframe, adjust string, from, to time.Time) error {
+	f.gotKind, f.gotSymbol, f.gotTimeframe, f.gotAdjust, f.gotFrom, f.gotTo = "bars", symbol, timeframe, adjust, from, to
 	return f.fail
 }
 
@@ -36,10 +38,16 @@ func TestIngestHandler(t *testing.T) {
 		wantCode   string
 		wantCall   bool
 		wantKind   string
+		wantFrom   bool // expect a non-zero from passed through
 		useGet     bool
 	}{
 		{name: "ok with defaults", body: `{"symbol":"HK.00700"}`, wantStatus: http.StatusCreated, wantCall: true, wantKind: "bars"},
 		{name: "ok full body", body: `{"symbol":"US.AAPL","timeframe":"K_DAY","adjust":"none"}`, wantStatus: http.StatusCreated, wantCall: true, wantKind: "bars"},
+		{name: "ok with from", body: `{"symbol":"HK.00700","from":"2026-08-01T00:00:00Z"}`, wantStatus: http.StatusCreated, wantCall: true, wantKind: "bars", wantFrom: true},
+		{name: "ok with from to", body: `{"symbol":"HK.00700","from":"2026-08-01T00:00:00Z","to":"2026-08-03T00:00:00Z"}`, wantStatus: http.StatusCreated, wantCall: true, wantKind: "bars", wantFrom: true},
+		{name: "bad from format", body: `{"symbol":"HK.00700","from":"2026-08-01"}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "bad to format", body: `{"symbol":"HK.00700","to":"yesterday"}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
+		{name: "from after to", body: `{"symbol":"HK.00700","from":"2026-08-03T00:00:00Z","to":"2026-08-01T00:00:00Z"}`, wantStatus: http.StatusBadRequest, wantCode: "invalid_request"},
 		{name: "ok option kind", body: `{"kind":"option","symbol":"HK.00700"}`, wantStatus: http.StatusCreated, wantCall: true, wantKind: "option"},
 		{name: "ok option full body", body: `{"kind":"option","symbol":"HK.00700","adjust":"none"}`, wantStatus: http.StatusCreated, wantCall: true, wantKind: "option"},
 		{name: "method not allowed", body: "", wantStatus: http.StatusMethodNotAllowed, wantCode: "method_not_allowed", useGet: true},
@@ -87,6 +95,12 @@ func TestIngestHandler(t *testing.T) {
 				}
 				if (tc.name == "ok full body" || tc.name == "ok option full body") && runner.gotAdjust != "none" {
 					t.Fatalf("adjust = %q, want none", runner.gotAdjust)
+				}
+				if tc.wantFrom && runner.gotFrom.IsZero() {
+					t.Fatalf("from = zero, want 2026-08-01T00:00:00Z passed through")
+				}
+				if !tc.wantFrom && !runner.gotFrom.IsZero() {
+					t.Fatalf("from = %v, want zero (unbounded default)", runner.gotFrom)
 				}
 			} else if runner.gotSymbol != "" {
 				t.Fatalf("ingest called for %s, want no call", runner.gotSymbol)

@@ -652,6 +652,7 @@ PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIV
 | `symbol` | 是 | market 限定 symbol，如 `HK.00700` |
 | `timeframe` | 否 | bars 周期（默认 `1d`）；`kind=option` 时忽略 |
 | `adjust` | 否 | `fwd`（默认）/`none`/`back`（doc/DATA_STANDARD.md） |
+| `from` / `to` | 否 | bars 范围上界/下界，RFC3339（如 `"2026-08-01T00:00:00Z"`），与 `wbot ingest futu -from/-to` 同一解析；缺省=管线默认全量（from 2000-01-01、to now）。`kind=option` 忽略。Data 页「补数据」传 `from=max_ts` 增量补拉，避免全量重拉 |
 
 响应 `201`：
 
@@ -663,7 +664,7 @@ PRIVACY：本端点无配置值字段（API 永不返回配置值，见 doc/PRIV
 {"kind": "option", "symbol": "HK.00700", "adjust": "fwd", "status": "ok"}
 ```
 
-错误（body 为 `{code, message, action, error}` 契约）：`400 invalid_request`（非法 JSON/空 symbol）、`503 ingest_failed`（网关不可达、symbol 非法、无上市期权等，`action` 提示对应 CLI 命令）、`504 timeout`。
+错误（body 为 `{code, message, action, error}` 契约）：`400 invalid_request`（非法 JSON/空 symbol/from/to 非 RFC3339/from 晚于 to）、`503 ingest_failed`（网关不可达、symbol 非法、无上市期权等，`action` 提示对应 CLI 命令）、`504 timeout`。
 
 幂等：bars 经 `ingestion_runs` 记录 + `ON CONFLICT` 去重；期权 `ON CONFLICT (symbol, ts, adjust, source) DO NOTHING`，重复拉取不产生重复行（option_quotes 无运行记录，同 CLI）。
 
