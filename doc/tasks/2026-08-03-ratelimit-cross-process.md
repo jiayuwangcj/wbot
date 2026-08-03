@@ -23,3 +23,8 @@
 - **flock 单会话**: read→decide→mark 必须在一个 flock 会话内完成,否则两进程都读旧章都通过(竞态);锁序 l.mu → flock 单向,无死锁。
 - **降级语义**: 文件不可写时 Wait 不失败、纯内存节奏继续——限频是保护措施,不是硬依赖。
 - 剩余排期: 实时逐合约 option-quote/IV 填充(P3b)、多 symbol 时间对齐(待拍板)。
+
+## 修复 (#303, 2026-08-03): Windows 交叉编译 + release 矩阵门禁
+
+republish 暴露 `syscall.Flock` 仅 linux/darwin 有(windows:amd64 目标 `undefined`):build tag 拆分 `ratelimit_flock_unix.go`(`!windows`,原实现)与 `ratelimit_flock_windows.go`(flock 返回 errNoFlock → crossProcessNext 既有降级路径,Windows 上纯内存限频)。verify.sh + ci.yml 各加「Cross-compile release matrix」步骤(五目标 go build,与 release.sh 一致)——republish 时才炸的平台回归 merge 前必查。另修 verify.sh gofmt 门禁只查跟踪文件的盲点(`git ls-files -c -o --exclude-standard '*.go'`,新增未跟踪 .go 提交前也会被查)。
+
