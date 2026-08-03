@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,6 +87,7 @@ func TestStrategiesList(t *testing.T) {
 		{"expiry_rule", "choice"},
 		{"days_to_expiry", "number"},
 		{"fee_per_contract", "number"},
+		{"lot_size", "number"},
 	} {
 		if got := templateParam(t, cc, p.name); got.Type != p.typ {
 			t.Fatalf("param %s type = %q; want %q", p.name, got.Type, p.typ)
@@ -97,9 +99,17 @@ func TestStrategiesList(t *testing.T) {
 	if d := templateParam(t, cc, "days_to_expiry").Default; d != 28.0 {
 		t.Fatalf("days_to_expiry default = %v; want 28", d)
 	}
+	if d := templateParam(t, cc, "lot_size").Default; d != 100.0 {
+		t.Fatalf("lot_size default = %v; want 100", d)
+	}
 	rule := templateParam(t, cc, "expiry_rule")
-	if rule.Default != "next_expiry" || len(rule.Choices) != 1 || rule.Choices[0] != "next_expiry" {
-		t.Fatalf("expiry_rule = %+v; want default next_expiry with single choice", rule)
+	if rule.Default != "next_expiry" || !slices.Contains(rule.Choices, "next_expiry") || !slices.Contains(rule.Choices, "days") {
+		t.Fatalf("expiry_rule = %+v; want default next_expiry with next_expiry+days choices (engine parity)", rule)
+	}
+	// cash-secured-put exposes the extra cash_reserve param.
+	csp := got[2]
+	if got := templateParam(t, csp, "cash_reserve"); got.Type != "number" || got.Default != 1.0 {
+		t.Fatalf("cash_reserve = %+v; want number default 1.0", got)
 	}
 }
 

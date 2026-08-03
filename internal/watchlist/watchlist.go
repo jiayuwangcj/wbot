@@ -23,7 +23,9 @@ type Item struct {
 }
 
 // Template is the strategy template contract served by GET /v1/strategies.
-// 待 ⑫-b（feat/strategy-impl）合入后接入 internal/strategy 注册表（Templates/Factory）。
+// ⑫-b 已合入 internal/strategy 注册表（Templates/Factory，见 doc/BACKTEST.md），
+// 本契约仍硬编码独立维护——参数已与引擎对齐（2026-08-03），
+// 统一到注册表（去双源漂移）另排期，见 doc/tasks/2026-08-03-watchlist-template-registry.md。
 type Template struct {
 	Name        string  `json:"name"`
 	Description string  `json:"description"`
@@ -40,21 +42,26 @@ type Param struct {
 }
 
 // Templates returns the strategy templates in contract order (⑫-b draft ⑫-c).
+// Params mirror internal/strategy registration (engine factory); keep in sync
+// when the registry gains parameters (unification pending, see type comment).
 func Templates() []Template {
 	// Numeric defaults are float64 so the JSON contract round-trips bit-identically.
 	cc := []Param{
 		{Name: "strike_pct_otm", Type: "number", Default: 0.03, Description: "行权价偏离度：行权价 = 现价×(1+pct) 就近 chain 档"},
-		{Name: "expiry_rule", Type: "choice", Default: "next_expiry", Choices: []string{"next_expiry"}, Description: "到期选择规则"},
-		{Name: "days_to_expiry", Type: "number", Default: 28.0, Description: "目标到期天数"},
-		{Name: "fee_per_contract", Type: "number", Default: 0.0, Description: "每合约费用"},
+		{Name: "expiry_rule", Type: "choice", Default: "next_expiry", Choices: []string{"next_expiry", "days"}, Description: "到期选择规则（next_expiry 最近到期 / days 按天数）"},
+		{Name: "days_to_expiry", Type: "number", Default: 28.0, Description: "expiry_rule=days 时的目标到期天数"},
+		{Name: "fee_per_contract", Type: "number", Default: 0.0, Description: "每张合约费用（从权利金中扣除）"},
+		{Name: "lot_size", Type: "number", Default: 100.0, Description: "合约乘数（option_quotes 无 lot 列，以参数为准）"},
 	}
+	csp := append([]Param(nil), cc...)
+	csp = append(csp, Param{Name: "cash_reserve", Type: "number", Default: 1.0, Description: "现金担保倍率：开仓要求 cash ≥ cash_reserve×strike×lot×张数"})
 	return []Template{
 		// buy-hold 是引擎一等策略(backtestexec 直接支持,无 params);
 		// watchlist 作为「回测计划列表」收录它,使 from_watchlist 回测
 		// 模式在无期权数据的环境(本地 mock)也可整表跑通。
 		{Name: "buy-hold", Description: "买入持有：不调仓", Params: nil},
 		{Name: "covered-call", Description: "备兑看涨：持有正股 + 卖出看涨", Params: cc},
-		{Name: "cash-secured-put", Description: "现金担保看跌：卖出看跌、现金担保", Params: cc},
+		{Name: "cash-secured-put", Description: "现金担保看跌：卖出看跌、现金担保", Params: csp},
 	}
 }
 

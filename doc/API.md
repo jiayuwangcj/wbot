@@ -71,7 +71,7 @@ Query 参数：
 
 ## GET /v1/strategies
 
-策略模板清单（名称 + 参数 schema；数据源 ⑫-b 模板注册表，见 [[ROADMAP]]）。只读、无查询参数。CLI 等价物：`wbot backtest -strategy <name>` 的模板名（模板落地前，本端点按草稿契约硬编码，见 `internal/watchlist`）。
+策略模板清单（名称 + 参数 schema；数据源 ⑫-b 模板注册表，见 [[ROADMAP]]）。只读、无查询参数。CLI 等价物：`wbot backtest -strategy <name>` 的模板名（`internal/watchlist` 硬编码契约，参数与引擎注册表对齐——2026-08-03；统一到 `internal/strategy` 注册表另排期，见 `doc/tasks/2026-08-03-watchlist-template-registry.md`）。
 
 响应 `200`：
 
