@@ -1,6 +1,6 @@
 # API 契约（wbot serve HTTP 接口）
 
-由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`、`/v1/account/snapshots`——资产曲线历史快照，读 `account_snapshots` 表）只读，面向 Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/orders` 为订单列表只读代理、`/v1/futu/options` 为期权链代理（serve 代浏览器访问富途网关，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。二进制另有一个独立 HTTP 面由 `wbot master` 提供（agent 联邦注册，占位子系统，见 [[ROADMAP]]），契约见文末「Agent federation」节——与 serve 数据面无交集。
+由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`、`/v1/account/snapshots`——资产曲线历史快照，读 `account_snapshots` 表）只读，面向 Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/orders` 为订单列表只读代理、`/v1/futu/options` 为期权链代理（serve 代为访问富途网关——account/orders 供浏览器 Dashboard，quote/options 消费方为 CLI/脚本，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。二进制另有一个独立 HTTP 面由 `wbot master` 提供（agent 联邦注册，占位子系统，见 [[ROADMAP]]），契约见文末「Agent federation」节——与 serve 数据面无交集。
 
 ## Web UI
 
@@ -451,7 +451,7 @@ PRIVACY：API 永不返回配置值——GET 只回 key 元数据、PUT 响应�
 
 ## GET /v1/futu/quote
 
-实时行情代理（产品组体验意见 7）：浏览器不能直连富途网关（127.0.0.1:22222，CORS/安全），serve 代浏览器先订阅后取 Basic 快照（复用 `internal/futu` 客户端：订阅幂等、限频池内置，见 [[FUTU]] §7/§8）。
+实时行情代理（产品组体验意见 7）：浏览器不能直连富途网关（127.0.0.1:22222，CORS/安全），serve 代为调用——先订阅后取 Basic 快照（复用 `internal/futu` 客户端：订阅幂等、限频池内置，见 [[FUTU]] §7/§8）。消费方为 CLI/脚本；前端调用已于 Dashboard 改造移除（2026-08-02「Data 页改 Dashboard」，bars/quote 区块已删，见 [[ROADMAP]]「不做看盘工具」）。
 
 Query 参数：
 
@@ -592,7 +592,7 @@ Query 参数：
 
 ## GET /v1/futu/options
 
-期权链代理（期权链可视化切片）：标的的到期日列表 + 单个到期日的 call/put 链（复用 `internal/futu` 的 `OptionExpirations`/`OptionChain`，快照类限频 1 次/3s 内置，见 [[FUTU]] §8/§10）。浏览器不能直连网关，serve 代浏览器调用。
+期权链代理：标的的到期日列表 + 单个到期日的 call/put 链（复用 `internal/futu` 的 `OptionExpirations`/`OptionChain`，快照类限频 1 次/3s 内置，见 [[FUTU]] §8/§10）。浏览器不能直连网关，serve 代为调用（消费方为 CLI/脚本；前端策略页的链视图已按老板决策移除——2026-08-02「不需看盘工具」，见 [[ROADMAP]]）。
 
 Query 参数：
 

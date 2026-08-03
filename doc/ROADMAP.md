@@ -32,7 +32,7 @@
 | v1 | **数据管道**：行情/历史数据拉取、**落 PostgreSQL**（迁移 + 校验）；可选仅开发用的导出目录做比对；数据源与券商侧**抽象**，单元测试可 mock，集成测再接真实凭证 |
 | v2 | **回测骨架**：消费落地数据的回测运行器、时间对齐、可测的绩效/约束；仍不依赖 LLM |
 | v3 | **执行路径**：订单与模拟盘/券商接口的深化，与 v1 数据域对齐；**Futu 已接入**（OpenD 网关：CLI 下单 `wbot futu order`（sim 默认、real 需 `-live-confirm`）、持仓 `position`、资金 `funds`/`ingest account` 快照，2026-08-03 实测，见 [[FUTU]]）；IBKR / Schwab 待凭证（见 [discussions/10](https://github.com/jiayuwangcj/wbot/discussions/10)）；**持仓数据 Web 化**（Futu 持仓已可读，Web 化/实盘下单 Web 化待老板拍板）；标准化日志（如 zerolog）随本阶段按需收紧 |
-| v4 | **控制面与产品化**：Go API（**已提前实施**，见 [discussions/9](https://github.com/jiayuwangcj/wbot/discussions/9) 分诊）、`go:embed` Web UI、Telegram/Discord 通知；Web UI 优先形态：**PC 端 Web**（已实施：serve + 内嵌 UI；微信小程序已放弃——2026-07-31 老板决策，微信将下架含股票小程序，见 [discussions/21](https://github.com/jiayuwangcj/wbot/discussions/21)）+ **移动 Web 框架预留**；master/agent 运维化按需并入 |
+| v4 | **控制面与产品化**：Go API（**已提前实施**，见 [discussions/9](https://github.com/jiayuwangcj/wbot/discussions/9) 分诊）、`go:embed` Web UI、Telegram/Discord 通知；Web UI 优先形态：**PC 端 Web**（已实施：serve + 内嵌 UI；微信小程序已放弃——2026-07-31 老板决策，微信将下架含股票小程序，见 [discussions/21](https://github.com/jiayuwangcj/wbot/discussions/21)）+ **移动 Web 框架预留**；**不做看盘工具**——2026-08-02 老板决策（策略页 options 链视图已移除，`/v1/futu/options` 端点保留供数据管道/脚本用）；master/agent 运维化按需并入 |
 | v5 | **决策与覆盖**：可配置 LLM 决策角色、港股/美股现货与期权等全覆盖 |
 
 关联：[[WORKFLOW_GITHUB_DRIVEN]] [[README]] [[proposals/0001-automation-baseline]]
