@@ -1785,7 +1785,7 @@ function drawCurvePlot(canvas, series, hover) {
   ctx.arc(x(Date.parse(hp.ts)), y(hp.equity), 4, 0, 2 * Math.PI);
   ctx.fillStyle = CURVE_LINE();
   ctx.fill();
-  ctx.strokeStyle = "#fff";
+  ctx.strokeStyle = cssVar("--surface") || "#fff";
   ctx.lineWidth = 2;
   ctx.stroke();
 }
