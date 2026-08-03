@@ -459,7 +459,7 @@ Query 参数：
 | --- | --- | --- |
 | `symbol` | 是 | market 限定 symbol，如 `HK.00700`（前缀支持 `HK./US./SH./SZ.`，非法 → 400） |
 
-网关地址：环境变量 `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`）；config.yaml 接入后续切片。
+网关地址：环境变量 `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`）；`~/.wbot/config.yaml` 的 `futu.gateway_url` / `futu.proto_addr` 键经 `configyaml` 渲染为 `FUTU_GATEWAY_URL` / `FUTU_PROTO_ADDR`（compose `--env-file` 注入，2026-08-03 落地；CLI 直跑仍 `-addr`，见 [[FUTU]]）。
 
 响应 `200`：网关 `/api/quote` 的 s2c **原样透传**（代理语义）：
 

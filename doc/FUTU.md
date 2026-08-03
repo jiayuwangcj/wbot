@@ -27,6 +27,8 @@ futu:
   login_account: "${FUTU_LOGIN_ACCOUNT}"        # 值来自环境变量；未定义即报错（fail-fast）
   login_pwd_md5: "${FUTU_LOGIN_PWD_MD5}"        # MD5 生成见下方要点
   login_region: "${FUTU_LOGIN_REGION:-sh}"      # 可选：sh=上海(默认) | hk | us
+  gateway_url: "${FUTU_GATEWAY_URL:-http://127.0.0.1:22222}"  # REST 网关地址（serve 代理用，2026-08-03 起可入 config.yaml）
+  proto_addr: "${FUTU_PROTO_ADDR:-127.0.0.1:11111}"           # OpenD protobuf 地址（账户/订单代理用）
 ```
 
 渲染为 dotenv 再交给 compose（`wbot configyaml` 输出纯 `KEY=VALUE` 行，经 `tools/config-to-env.sh` 薄封装）：
@@ -175,7 +177,7 @@ $ wbot futu quote -symbol HK.00700
 
 **错误处理**：网关不可达 → `futu: status: ... connection refused`（exit 1）；HTTP 4xx/5xx → 输出状态码与 `{"error": ...}` 内容；业务错误（`ret_type != 0`）→ 输出 `ret_msg`。market 前缀支持 `HK./US./SH./SZ.`，其余报错（exit 2）。
 
-网关地址 CLI 直跑暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；compose/serve 场景的 `futu` 配置经 config.yaml 注入——`configyaml` 渲染 + `tools/config-to-env.sh` → env（见 §1），serve 代理地址见下表的 `FUTU_GATEWAY_URL`/`FUTU_PROTO_ADDR`。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
+网关地址 CLI 直跑暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；compose/serve 场景的 `futu` 配置经 config.yaml 注入——`configyaml` 渲染 + `tools/config-to-env.sh` → env（见 §1），serve 代理地址见下表的 `FUTU_GATEWAY_URL`/`FUTU_PROTO_ADDR`；两键均可写进 config.yaml（`futu.gateway_url`/`futu.proto_addr`，2026-08-03 落地，OrbStack 等非默认网关场景一处管理）。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
 
 **serve 代理**（产品组体验意见 7，2026-08-02 起）：浏览器不能直连网关（loopback，CORS/安全），`wbot serve` 代浏览器访问富途网关（复用本客户端，限频池内置）。四个只读代理：
 

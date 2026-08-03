@@ -47,6 +47,40 @@ futu:
 	}
 }
 
+// TestLoadGatewayAddrs locks the futu.gateway_url / futu.proto_addr keys
+// (config.yaml 接入后续切片, 2026-08-03 兑现): rendered as
+// FUTU_GATEWAY_URL / FUTU_PROTO_ADDR, default fallbacks apply, env overrides.
+func TestLoadGatewayAddrs(t *testing.T) {
+	p := writeConfig(t, `
+futu:
+  gateway_url: "${FUTU_GATEWAY_URL:-http://127.0.0.1:22222}"
+  proto_addr: "${FUTU_PROTO_ADDR:-127.0.0.1:11111}"
+`)
+	got, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["FUTU_GATEWAY_URL"] != "http://127.0.0.1:22222" {
+		t.Errorf("FUTU_GATEWAY_URL = %q; want default", got["FUTU_GATEWAY_URL"])
+	}
+	if got["FUTU_PROTO_ADDR"] != "127.0.0.1:11111" {
+		t.Errorf("FUTU_PROTO_ADDR = %q; want default", got["FUTU_PROTO_ADDR"])
+	}
+
+	t.Setenv("FUTU_GATEWAY_URL", "http://192.168.215.2:22222")
+	t.Setenv("FUTU_PROTO_ADDR", "192.168.215.2:11111")
+	got2, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got2["FUTU_GATEWAY_URL"] != "http://192.168.215.2:22222" {
+		t.Errorf("FUTU_GATEWAY_URL = %q; want env override", got2["FUTU_GATEWAY_URL"])
+	}
+	if got2["FUTU_PROTO_ADDR"] != "192.168.215.2:11111" {
+		t.Errorf("FUTU_PROTO_ADDR = %q; want env override", got2["FUTU_PROTO_ADDR"])
+	}
+}
+
 func TestLoadUndefinedVarFails(t *testing.T) {
 	p := writeConfig(t, "futu:\n  login_account: \"${WBOT_TESTS_ONLY_UNSET_VAR_20260801}\"\n")
 	_, err := Load(p)
