@@ -30,3 +30,9 @@ expiry_rule 加 `days`;cc/CSP 补 `lot_size`(100);CSP 补 `cash_reserve`(1.0);�
 ## 收益
 
 单一来源:引擎模板加参数/改枚举 → `/v1/strategies` 与写面校验自动跟随,不再双源漂移。引擎错误文案现为 CLI/API 共用(watchlist add 400 body 与 backtest 校验同一来源)。
+
+## Round 收尾(#311 合入,#312 归档)
+
+- #311(refactor/strategy-registry-unify)合入 main;CI 五检查全绿(governance / test / db-integration / check-skip / ci-summary)
+- 进度帖五十五更已发(discussion #9);含代码变更,release republish vdaily-20260803
+- 后续:buy-hold 仍由 httpapi 附加(引擎一等、不进注册表);watchlist.Validate 保持薄委托,不再恢复硬编码
