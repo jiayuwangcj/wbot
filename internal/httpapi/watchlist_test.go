@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/watchlist"
 )
 
@@ -47,7 +48,7 @@ func (f *fakeWatchlistStore) Delete(_ context.Context, symbol string) (bool, err
 }
 
 // templateParam finds a template's param by name, failing the test when missing.
-func templateParam(t *testing.T, tmpl watchlist.Template, name string) watchlist.Param {
+func templateParam(t *testing.T, tmpl strategy.ContractTemplate, name string) strategy.ContractParam {
 	t.Helper()
 	for _, p := range tmpl.Params {
 		if p.Name == name {
@@ -55,7 +56,7 @@ func templateParam(t *testing.T, tmpl watchlist.Template, name string) watchlist
 		}
 	}
 	t.Fatalf("template %s missing param %s", tmpl.Name, name)
-	return watchlist.Param{}
+	return strategy.ContractParam{}
 }
 
 // TestStrategiesList is the ⑫-c contract: template names + param schema match
@@ -69,7 +70,7 @@ func TestStrategiesList(t *testing.T) {
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 		t.Fatalf("content-type = %q; want application/json", ct)
 	}
-	var got []watchlist.Template
+	var got []strategy.ContractTemplate
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
 	}
@@ -203,12 +204,12 @@ func TestWatchlistPutWithoutParamsDefaults(t *testing.T) {
 func TestWatchlistPutValidation400(t *testing.T) {
 	h := WatchlistHandler(&fakeWatchlistStore{})
 	for _, tc := range []struct{ path, body, wantMsg string }{
-		{"/v1/watchlist/HK.00700", `{"strategy":"nope"}`, "unknown strategy template"},
-		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"nope":1}}`, "unknown parameter"},
-		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"strike_pct_otm":"0.03"}}`, "want number"},
+		{"/v1/watchlist/HK.00700", `{"strategy":"nope"}`, "unknown template"},
+		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"nope":1}}`, "unknown param"},
+		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"strike_pct_otm":"0.03"}}`, "want a number"},
 		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"expiry_rule":"monthly"}}`, "want one of"},
 		{"/v1/watchlist/HK.00700", `{"params":{"strike_pct_otm":0.03}}`, "missing strategy"},
-		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"strike_pct_otm":0.03,"extra":true}}`, "unknown parameter"},
+		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"strike_pct_otm":0.03,"extra":true}}`, "unknown param"},
 		{"/v1/watchlist/HK.00700", `not json`, "invalid JSON body"},
 		{"/v1/watchlist/%20", `{"strategy":"covered-call"}`, "missing symbol"},
 	} {

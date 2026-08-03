@@ -2,31 +2,31 @@
 
 ## 状态
 
-**已登记,未排期**(2026-08-03)。Step A(参数对齐)已落地——见下方「已做」。
+**✅ 已完成**(2026-08-03)。Step A(参数对齐)+ Step B(唯一来源化)均已落地。
 
-## 问题
+## 问题(原始)
 
-⑫-b(feat/strategy-impl)定义了策略模板的**唯一来源**是 `internal/strategy` 注册表(`Templates()`/`Factory()`/`Lookup()`,见 doc/BACKTEST.md)。但 `/v1/strategies` 端点与 watchlist 校验仍用 `internal/watchlist` **独立硬编码**的一份模板(watchlist.go `Templates()`),历史注释「待 ⑫-b 合入后接入注册表」至今未兑现。
+⑫-b(feat/strategy-impl)定义了策略模板的**唯一来源**是 `internal/strategy` 注册表(`Templates()`/`Factory()`/`Lookup()`,见 doc/BACKTEST.md)。但 `/v1/strategies` 端点与 watchlist 校验曾用 `internal/watchlist` **独立硬编码**的一份模板,与引擎注册表漂移(expiry_rule 枚举、lot_size、cash_reserve 缺失)。
 
-双源漂移(2026-08-03 实测对比):
+## Step A(2026-08-03,#309):参数对齐
 
-| 差异 | `watchlist.Templates()`(HTTP 契约) | `strategy.templates`(引擎) |
-| --- | --- | --- |
-| `expiry_rule` 取值 | 修复前仅 `next_expiry` | `next_expiry` + `days` |
-| `lot_size` 参数 | 修复前缺失 | 有(默认 100) |
-| `cash_reserve`(仅 CSP) | 修复前缺失 | 有(默认 1.0) |
-| `buy-hold` | 有(引擎一等策略,backtestexec 直接支持) | 注册表无(刻意) |
+expiry_rule 加 `days`;cc/CSP 补 `lot_size`(100);CSP 补 `cash_reserve`(1.0);测试 pin 对齐断言。详见归档 `doc/tasks/2026-08-03-watchlist-template-parity.md`。
 
-漂移后果:Web 表单无法配置引擎支持的参数(days/lot_size/cash_reserve),表单校验与引擎 Factory 约束不一致。
+## Step B(#311):唯一来源化
 
-## 已做(Step A,2026-08-03,#309)
+1. **`internal/strategy` 承担 JSON 契约**:新增 `ContractTemplate`/`ContractParam`(json tag + choices/description 渲染)与 `ContractTemplates()`——引擎 string+Allowed 参数渲染为 `choice`+Choices,Help 渲染为 Description,Min/Max 留在引擎侧
+2. **`strategy.Validate(name, params)`**:从 buildParams 拆出的公开校验面(未知模板/参数、类型、范围);Factory 复用同一 Lookup 路径
+3. **`internal/watchlist` 删硬编码**:删 `Template`/`Param` 类型与 `Templates()`;`Validate` 变为薄委托——buy-hold 特判(引擎一等、无参数,错误文案保留「unknown parameter … for strategy」)+ 其余委托 `strategy.Validate`
+4. **`/v1/strategies` 渲染**:httpapi 用 `[]ContractTemplate{buy-hold} + strategy.ContractTemplates()`,buy-hold 附加逻辑与注释移入 httpapi
+5. **测试迁移**:契约 pin 从 watchlist 包迁到 `strategy/strategy_contract_test.go`(TestContractTemplates + TestValidate);watchlist/template_test.go 保留写面语义(委托 + buy-hold 特判);httpapi 契约测试改消费 `strategy.ContractTemplate`,错误文案断言适配新注册表文案(`unknown param`/`want a number` 等)
 
-参数**对齐**(不动架构):expiry_rule 加 `days`;cc/CSP 补 `lot_size`(100);CSP 补 `cash_reserve`(1.0);watchlist.go 注释与 API.md 表述更新;测试补对齐断言(含 cash_reserve 仅 CSP 用例)。验证:`/v1/strategies` 返回新字段,表单自动渲染,引擎 Factory 校验同参通过。
+## 验证
 
-## 待做(Step B,排期)
+- go test:strategy/watchlist/httpapi/cmd/webui 全绿
+- 端到端:`/v1/strategies` 返回 buy-hold(无参数)+ cc 5 参数/CSP 6 参数,choice=[next_expiry, days](真实 PG)
+- verify.sh 连跑两遍全绿;CI 五检查全绿
+- JSON 契约不变形:params null(旧 nil)语义保留,buy-hold 仍居首位
 
-1. `strategy.Param`/`Template` 增加 JSON 契约能力(json tag + choices 渲染)或新增契约转换层
-2. `/v1/strategies` 改从注册表渲染(buy-hold 特例处理:注册表外一等策略,或注册表登记 + Factory 特判)
-3. `watchlist.Validate` 改调 `strategy` 校验(保留 buy-hold 空参数路径)
-4. 删除 `watchlist.Templates()` 硬编码;全链测试(契约/CLI/backtest 集成)更新
-5. 涉及 UI 表单渲染确认(choice 枚举来自 /v1/strategies,自动生效)
+## 收益
+
+单一来源:引擎模板加参数/改枚举 → `/v1/strategies` 与写面校验自动跟随,不再双源漂移。引擎错误文案现为 CLI/API 共用(watchlist add 400 body 与 backtest 校验同一来源)。

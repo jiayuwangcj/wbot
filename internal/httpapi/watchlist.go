@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/watchlist"
 )
 
@@ -80,8 +81,14 @@ func WatchlistHandler(store WatchlistStore) http.Handler {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
+		// buy-hold 是引擎一等策略(backtestexec 直接支持,无 params);
+		// watchlist 作为「回测计划列表」收录它,使 from_watchlist 回测
+		// 模式在无期权数据的环境(本地 mock)也可整表跑通。
+		tmpls := append([]strategy.ContractTemplate{
+			{Name: "buy-hold", Description: "买入持有：不调仓"},
+		}, strategy.ContractTemplates()...)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(watchlist.Templates())
+		_ = json.NewEncoder(w).Encode(tmpls)
 	})
 
 	mux.HandleFunc(watchlistPath, func(w http.ResponseWriter, r *http.Request) {
