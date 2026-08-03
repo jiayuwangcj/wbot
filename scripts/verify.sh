@@ -5,8 +5,9 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-# gofmt（与 ci.yml test job "Check gofmt" 步骤一致）
-files=$(git ls-files '*.go')
+# gofmt（与 ci.yml test job "Check gofmt" 步骤一致;含未跟踪文件——2026-08-03
+# 实测新增 .go 在提交前逃过仅跟踪文件的检查）
+files=$(git ls-files -c -o --exclude-standard '*.go')
 if [ -n "$files" ]; then
   bad=$(gofmt -l $files)
   if [ -n "$bad" ]; then
@@ -26,6 +27,14 @@ if ! command -v staticcheck >/dev/null 2>&1; then
   exit 1
 fi
 staticcheck ./...
+
+# 交叉编译 release 矩阵(release.sh 五目标一致)——平台专用代码(如 flock
+# build tag)回归在此暴露,republish 前必过(2026-08-03 实测 Windows 缺
+# syscall.Flock,修复后加此门禁)。
+for t in 'linux:amd64' 'linux:arm64' 'darwin:amd64' 'darwin:arm64' 'windows:amd64'; do
+  goos=${t%%:*}; goarch=${t##*:}
+  GOOS="$goos" GOARCH="$goarch" go build ./cmd/wbot ./internal/futu/
+done
 
 bin="$(mktemp)"
 tmp="$(mktemp -d)"

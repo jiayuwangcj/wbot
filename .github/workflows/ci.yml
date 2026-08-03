@@ -120,6 +120,14 @@ jobs:
         if: needs.check-skip.outputs.skip != 'true'
         run: go test -race ./... -count=1
 
+      - name: Cross-compile release matrix
+        if: needs.check-skip.outputs.skip != 'true'
+        run: |
+          for t in 'linux:amd64' 'linux:arm64' 'darwin:amd64' 'darwin:arm64' 'windows:amd64'; do
+            goos=${t%%:*}; goarch=${t##*:}
+            GOOS="$goos" GOARCH="$goarch" go build ./cmd/wbot ./internal/futu/
+          done
+
       - name: Install staticcheck
         if: needs.check-skip.outputs.skip != 'true'
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
