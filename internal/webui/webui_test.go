@@ -575,6 +575,7 @@ func TestWatchlistPageElements(t *testing.T) {
 		`id="watchlist-error"`,
 		`id="watchlist-form-error"`,
 		`id="watchlist-form-ok"`,
+		`id="watchlist-count"`,
 		`/ui/app.js`,
 	} {
 		if !strings.Contains(html, want) {
@@ -630,6 +631,9 @@ func TestWatchlistSortJS(t *testing.T) {
 		"watchlistSorter.state.key = \"updated_at\";",
 		"watchlistSorter.state.dir = -1;",
 		"watchlistSorter.renderIndicators();",
+		// 列表计数(富途「自选 N」惯例):整表加载,标题旁显示标的数。
+		`getElementById("watchlist-count")`,
+		`count.textContent = items.length === 0 ? "" : items.length + " 个标的"`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing %q", want)
