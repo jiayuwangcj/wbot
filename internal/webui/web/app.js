@@ -916,7 +916,10 @@ function renderBarsDetail(bars) {
   mirrorNumericColumns(table);
 }
 
-async function loadBars(symbol, timeframe, adjust) {
+/* loadBars 拉取明细 K 线。/v1/bars 支持 from/to 范围(闭区间 RFC3339);
+   传入时取范围内最近 1000 根(新在前),未传保持「最近 100 根」尾部窗口。
+   券商面板惯例:富途/IB K 线页都有起止日期选择,数据页表单据此暴露。 */
+async function loadBars(symbol, timeframe, adjust, from, to) {
   const errEl = document.getElementById("detail-error");
   clearError(errEl);
   const empty = document.getElementById("detail-empty");
@@ -929,8 +932,12 @@ async function loadBars(symbol, timeframe, adjust) {
   document.getElementById("bars-symbol").value = symbol;
   document.getElementById("bars-timeframe").value = timeframe;
   document.getElementById("bars-adjust").value = adjust;
+  const q = "symbol=" + encodeURIComponent(symbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&adjust=" + encodeURIComponent(adjust);
+  const range = from || to
+    ? "&from=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to) + "&limit=1000&desc=1"
+    : "&limit=100&desc=1";
   try {
-    const bars = await fetchJSON("/v1/bars?symbol=" + encodeURIComponent(symbol) + "&timeframe=" + encodeURIComponent(timeframe) + "&adjust=" + encodeURIComponent(adjust) + "&limit=100&desc=1");
+    const bars = await fetchJSON("/v1/bars?" + q + range);
     renderBarsDetail(bars);
   } catch (err) {
     showError(errEl, err);
@@ -938,6 +945,18 @@ async function loadBars(symbol, timeframe, adjust) {
     document.getElementById("bars-empty").hidden = false;
     document.getElementById("bars-empty").textContent = "加载失败,请检查代码与周期。";
   }
+}
+
+/* 日期输入转 RFC3339 闭区间:from 取当天 00:00Z,to 取当天 23:59:59Z
+   (bars 的 ts 为 UTC 收盘时刻,日线 bar 落在当天 UTC 内,边界直觉一致)。 */
+function barsRangeFromInputs() {
+  const from = document.getElementById("bars-from").value;
+  const to = document.getElementById("bars-to").value;
+  return {
+    from: from ? from + "T00:00:00Z" : "",
+    to: to ? to + "T23:59:59Z" : "",
+    hasRange: from !== "" || to !== "",
+  };
 }
 
 function initDataPage() {
@@ -948,7 +967,11 @@ function initDataPage() {
     const symbol = document.getElementById("bars-symbol").value.trim();
     const timeframe = document.getElementById("bars-timeframe").value;
     const adjust = document.getElementById("bars-adjust").value;
-    if (symbol !== "") loadBars(symbol, timeframe, adjust);
+    if (symbol === "") return;
+    const {from, to, hasRange} = barsRangeFromInputs();
+    const tag = document.getElementById("bars-range-tag");
+    if (tag) tag.textContent = hasRange ? "指定区间" : "最近 100 根";
+    loadBars(symbol, timeframe, adjust, from, to);
   });
   wrapRefreshClick("data-refresh", "刷新中…", () => {
     const errEl = document.getElementById("data-error");

@@ -38,9 +38,11 @@
         <option value="none">不复权 none</option>
         <option value="back">后复权 back</option>
       </select>
+      <input type="date" id="bars-from" name="from" title="起始日期(留空=最近 100 根)" aria-label="起始日期">
+      <input type="date" id="bars-to" name="to" title="结束日期(留空=最近 100 根)" aria-label="结束日期">
       <button type="submit">加载 K 线</button>
     </form>
-    <span class="section-tag">最近 100 根</span>
+    <span id="bars-range-tag" class="section-tag">最近 100 根</span>
     <button type="button" id="data-refresh" class="ghost">刷新覆盖</button>
     <span id="data-updated" class="muted"></span>
   </div>
