@@ -13,4 +13,4 @@ import (
 var errNoFlock = errors.New("futu: flock unsupported on this platform")
 
 func flockExclusive(*os.File) error { return errNoFlock }
-func flockRelease(*os.File) error  { return errNoFlock }
+func flockRelease(*os.File) error   { return errNoFlock }
