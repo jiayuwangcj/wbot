@@ -1037,8 +1037,11 @@ function collectParams(strategy, form) {
 function renderWatchlist(items, onEdit, onDelete, onBacktest) {
   const table = document.getElementById("watchlist-table");
   const empty = document.getElementById("watchlist-empty");
+  const count = document.getElementById("watchlist-count");
   const tbody = table.tBodies[0];
   tbody.replaceChildren();
+  /* 券商面板惯例:列表标题旁显示记录数(富途「自选 N」)。整表加载,数即总量。 */
+  count.textContent = items.length === 0 ? "" : items.length + " 个标的";
   if (items.length === 0) {
     table.hidden = true;
     empty.hidden = false;
