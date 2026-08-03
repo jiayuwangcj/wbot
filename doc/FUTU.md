@@ -179,11 +179,11 @@ $ wbot futu quote -symbol HK.00700
 
 网关地址 CLI 直跑暂用 `-addr` flag（默认 `http://127.0.0.1:22222`）；compose/serve 场景的 `futu` 配置经 config.yaml 注入——`configyaml` 渲染 + `tools/config-to-env.sh` → env（见 §1），serve 代理地址见下表的 `FUTU_GATEWAY_URL`/`FUTU_PROTO_ADDR`；两键均可写进 config.yaml（`futu.gateway_url`/`futu.proto_addr`，2026-08-03 落地，OrbStack 等非默认网关场景一处管理）。行情落库管道见 [[DATA_PIPELINE]] ⑪-c。
 
-**serve 代理**（产品组体验意见 7，2026-08-02 起）：浏览器不能直连网关（loopback，CORS/安全），`wbot serve` 代浏览器访问富途网关（复用本客户端，限频池内置）。四个只读代理：
+**serve 代理**（产品组体验意见 7，2026-08-02 起）：浏览器不能直连网关（loopback，CORS/安全），`wbot serve` 代为访问富途网关（复用本客户端，限频池内置；消费方：浏览器 Dashboard 账户/订单 + CLI/脚本）。四个只读代理：
 
 | 端点 | 行为 | 网关地址 |
 | --- | --- | --- |
-| `GET /v1/futu/quote?symbol=HK.00700` | 实时报价——代订阅+取快照并透传 s2c；数据页 bars 表单提交同时刷新报价卡 | REST `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`） |
+| `GET /v1/futu/quote?symbol=HK.00700` | 实时报价——代订阅+取快照并透传 s2c；消费方为 CLI/脚本（前端报价卡已随 Dashboard 改造移除，2026-08-02） | REST `FUTU_GATEWAY_URL`（默认 `http://127.0.0.1:22222`） |
 | `GET /v1/futu/account` | 资金+持仓只读（`env`/`acc_id` 参数，默认 `sim` 模拟盘，`real` 实盘只读查询） | proto `FUTU_PROTO_ADDR`（默认 `127.0.0.1:11111`） |
 | `GET /v1/futu/orders` | 订单列表只读（`env`/`acc_id`/`pending`，默认仅挂单） | proto `FUTU_PROTO_ADDR` |
 | `GET /v1/futu/options?symbol=HK.00700[&expiry=YYYY-MM-DD]` | 期权链代理——到期日列表 + 单到期 call/put 链（`premium_close`=最近日 K 收盘权利金，option_quotes 落库；实时 IV 仍 P3 排期，见下） | REST `FUTU_GATEWAY_URL` |
