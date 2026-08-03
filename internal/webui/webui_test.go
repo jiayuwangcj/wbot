@@ -294,7 +294,7 @@ func TestThemeSystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`localStorage.getItem("wbot-theme")`, "dataset.theme", "initTheme();", "redrawCharts()", "chartCache"} {
+	for _, want := range []string{`localStorage.getItem("wbot-theme")`, "dataset.theme", "initTheme();", "redrawCharts()", "chartCache", `cssVar("--surface") || "#fff"`} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("app.js missing %q", want)
 		}
