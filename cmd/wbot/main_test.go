@@ -845,7 +845,9 @@ type serveFakeFutuOrderer struct{}
 // serveFakeIngestRunner is a no-op IngestRunner for serveMux tests.
 type serveFakeIngestRunner struct{}
 
-func (serveFakeIngestRunner) RunBars(_ context.Context, _, _, _ string) error { return nil }
+func (serveFakeIngestRunner) RunBars(_ context.Context, _, _, _ string, _, _ time.Time) error {
+	return nil
+}
 
 func (serveFakeIngestRunner) RunOptions(_ context.Context, _, _ string) error { return nil }
 

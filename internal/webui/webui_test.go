@@ -655,7 +655,7 @@ func TestIngestRefillJS(t *testing.T) {
 		"ev.stopPropagation()",
 		`fetchJSON("/v1/ingest"`,
 		`method: "POST"`,
-		`body: JSON.stringify({symbol: b.symbol, timeframe: b.timeframe, adjust: b.adjust})`,
+		`body: JSON.stringify({symbol: b.symbol, timeframe: b.timeframe, adjust: b.adjust, from: b.max_ts})`,
 		"btn.textContent = \"拉取中…\"",
 		"renderCoverageRows(data.components.data_plane.bars_coverage || [])",
 	} {
