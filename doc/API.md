@@ -615,7 +615,7 @@ Query 参数：
     {"date": "2026-08-28", "timestamp": "2026-08-27T16:00:00Z", "distance_days": 26, "cycle": 1}
   ],
   "contracts": [
-    {"expiry": "2026-08-07", "option_type": "call", "strike": 335.0, "symbol": "HK.TCH260807C335000", "lot_size": 100},
+    {"expiry": "2026-08-07", "option_type": "call", "strike": 335.0, "symbol": "HK.TCH260807C335000", "lot_size": 100, "premium_close": 140.46, "premium_close_ts": "2026-07-31T00:00:00+08:00"},
     {"expiry": "2026-08-07", "option_type": "put", "strike": 335.0, "symbol": "HK.TCH260807P335000", "lot_size": 100}
   ]
 }

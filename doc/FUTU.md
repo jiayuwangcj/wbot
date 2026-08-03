@@ -225,7 +225,7 @@ wbot ingest futu -symbol HK.00700 -timeframe K_1M -from 2026-07-30T00:00:00Z -to
 - **history-kline 第 1 页**：叠加 `HistoryPageLimit` 3s/次（官方 10 次/30s 的均匀化）
 - **分页批间**：强制 ≥1s/批（`BatchGap`，含 -every 循环）
 - **超限响应**：HTTP 429 → 1s/2s 指数退避重试至多 3 次后报错停止，不硬拉
-- **生效范围**：限频池仅**进程内**共享——shell 循环反复启动 wbot 会绕过；跨进程聚合排期待后续
+- **生效范围**：限频池**进程内**共享(默认)；设置环境变量 `FUTU_RATELIMIT_DIR=<目录>` 后**跨进程**共享(2026-08-03 落地)——各档位在该目录下各一个 flock 时间戳文件，单 flock 会话内完成读-决策-标记，无竞态；文件不可写自动降级纯内存。shell 循环反复启动 wbot / 多进程并发的场景应设置（如 `export FUTU_RATELIMIT_DIR=~/.wbot/ratelimit`）
 
 拉超会被富途限制行情权限，属安全红线；改动限频参数须先确认官方文档当前数值（档位由 `TestDefaultTiers` 锁定）。
 
