@@ -6,3 +6,5 @@ futu:
   login_pwd_md5: "${FUTU_LOGIN_PWD_MD5:-<password-md5>}"
   login_region: "${FUTU_LOGIN_REGION:-sh}"
   init_on_start: "${FUTU_INIT_ON_START:-yes}"
+  gateway_url: "${FUTU_GATEWAY_URL:-http://127.0.0.1:22222}"
+  proto_addr: "${FUTU_PROTO_ADDR:-127.0.0.1:11111}"
