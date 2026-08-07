@@ -810,6 +810,71 @@ function redrawCharts() {
   for (const [canvas, draw] of chartCache) {
     if (canvas.isConnected) draw();
   }
+  applyChartTheme(); /* LightweightCharts 实例: 主题切换只 applyOptions, 不重建 */
+}
+
+/* 行情明细 K 线图 (TradingView Lightweight Charts v4, vendored 单文件):
+   蜡烛图实例只创建一次, 之后 setData 换数据、applyOptions 换主题——
+   保留用户缩放/平移状态。bars 为 &desc=1(新在前), 喂图前反转为时间升序。
+   库未加载时静默降级(表格仍在), 防御性兜底。 */
+let detailChart = null;
+let detailSeries = null;
+
+function chartTheme() {
+  return {
+    up: cssVar("--ok") || "#1a7f37",
+    down: cssVar("--down") || "#cf222e",
+    border: cssVar("--border") || "#d0d7de",
+    muted: cssVar("--muted") || "#656d76",
+    surface: cssVar("--surface") || "#ffffff",
+  };
+}
+
+function applyChartTheme() {
+  if (!detailChart || !detailSeries) return;
+  const t = chartTheme();
+  detailChart.applyOptions({
+    layout: {background: {type: LightweightCharts.ColorType.Solid, color: t.surface}, textColor: t.muted},
+    grid: {vertLines: {color: t.border}, horzLines: {color: t.border}},
+    timeScale: {borderColor: t.border},
+    rightPriceScale: {borderColor: t.border},
+  });
+  detailSeries.applyOptions({
+    upColor: t.up, downColor: t.down,
+    borderUpColor: t.up, borderDownColor: t.down,
+    wickUpColor: t.up, wickDownColor: t.down,
+  });
+}
+
+function renderCandlestickChart(bars) {
+  const el = document.getElementById("detail-chart");
+  if (!el || typeof LightweightCharts === "undefined") return;
+  const data = [];
+  for (let i = bars.length - 1; i >= 0; i--) {
+    const b = bars[i];
+    data.push({
+      time: Math.floor(Date.parse(b.ts) / 1000),
+      open: b.open, high: b.high, low: b.low, close: b.close,
+    });
+  }
+  if (!detailChart) {
+    const t = chartTheme();
+    detailChart = LightweightCharts.createChart(el, {
+      autoSize: true,
+      layout: {background: {type: LightweightCharts.ColorType.Solid, color: t.surface}, textColor: t.muted},
+      grid: {vertLines: {color: t.border}, horzLines: {color: t.border}},
+      timeScale: {borderColor: t.border},
+      rightPriceScale: {borderColor: t.border},
+    });
+    detailSeries = detailChart.addSeries(LightweightCharts.CandlestickSeries, {
+      upColor: t.up, downColor: t.down,
+      borderUpColor: t.up, borderDownColor: t.down,
+      wickUpColor: t.up, wickDownColor: t.down,
+    });
+    detailChart.timeScale().fitContent();
+  }
+  detailSeries.setData(data);
+  detailChart.timeScale().fitContent();
 }
 
 function drawSparkline(canvas, closes) {
@@ -869,10 +934,11 @@ function renderBarsDetail(bars) {
   if (bars.length === 0) {
     table.hidden = true;
     empty.hidden = false;
+    if (detailSeries) detailSeries.setData([]);
     return;
   }
-  /* &desc=1: bars[0] is the newest, bars[len-1] the oldest; stats and the
-     sparkline read chronologically from oldest to newest. */
+  /* &desc=1: bars[0] is the newest, bars[len-1] the oldest; stats read
+     chronologically from oldest to newest; the chart is fed ascending. */
   const first = bars[bars.length - 1];
   const last = bars[0];
   setText("detail-count", bars.length);
@@ -883,7 +949,7 @@ function renderBarsDetail(bars) {
   chgEl.textContent = (chg >= 0 ? "+" : "") + (chg * 100).toFixed(2) + "%";
   chgEl.classList.toggle("up", chg >= 0);
   chgEl.classList.toggle("down", chg < 0);
-  drawSparkline(document.getElementById("detail-sparkline"), bars.map((b) => b.close));
+  renderCandlestickChart(bars);
   for (let i = 0; i < bars.length; i++) {
     const b = bars[i];
     const row = document.createElement("tr");

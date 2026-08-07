@@ -92,7 +92,7 @@
             <div class="metric-card"><h3>末收盘</h3><p id="detail-last" class="metric-value">—</p></div>
             <div class="metric-card"><h3>区间涨跌</h3><p id="detail-change" class="metric-value">—</p></div>
           </div>
-          <canvas id="detail-sparkline" class="sparkline" aria-label="收盘价迷你走势"></canvas>
+          <div id="detail-chart" class="detail-chart" aria-label="K 线图"></div>
           <div class="table-scroll">
             <table id="bars-table" hidden>
               <thead>
@@ -107,6 +107,7 @@
     </aside>
   </div>
 </main>
+<script src="/ui/vendor/lightweight-charts.standalone.production.js"></script>
 <script src="/ui/app.js"></script>
 </body>
 </html>
