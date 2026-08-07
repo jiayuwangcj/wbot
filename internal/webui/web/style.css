@@ -465,6 +465,18 @@ td.num-down {
   margin: 0.75rem 0;
 }
 
+/* 行情明细 K 线图容器 (TradingView Lightweight Charts 渲染目标):
+   固定高度撑开布局, 背景随主题 surface token, 与卡片风格一致。 */
+.detail-chart {
+  width: 100%;
+  height: 360px;
+  margin: 0.75rem 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
 /* 资产曲线 hover 读数(富途/IB 账户曲线惯例):跟随鼠标的数值标签,
    主题变量联动,不拦截鼠标事件(pointer-events: none 防闪烁)。 */
 #summary-curve-wrap {

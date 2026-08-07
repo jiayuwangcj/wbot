@@ -72,11 +72,12 @@ func TestDataPageContract(t *testing.T) {
 		`id="options-fresh-table"`,
 		`id="options-fresh-empty"`,
 		`id="options-error"`,
-		`id="detail-sparkline"`,
+		`id="detail-chart"`,
 		`id="detail-tabs"`,
 		`id="bars-table"`,
 		`id="bars-empty"`,
 		`id="detail-error"`,
+		`/ui/vendor/lightweight-charts.standalone.production.js`,
 		`涨跌幅`,
 		`id="data-refresh"`,
 		`id="data-updated"`,
@@ -97,6 +98,12 @@ func TestDataPageContract(t *testing.T) {
 		"renderDetailTabs",
 		`DETAIL_TIMEFRAMES`,
 		"drawSparkline",
+		"renderCandlestickChart",
+		"applyChartTheme",
+		"detailSeries.setData(data)",
+		`LightweightCharts.CandlestickSeries`,
+		`LightweightCharts.createChart(el, {`,
+		`typeof LightweightCharts === "undefined"`,
 		`"/v1/bars?" + q + range`,
 		`&desc=1`,
 		`&limit=1000&desc=1`,
@@ -112,6 +119,21 @@ func TestDataPageContract(t *testing.T) {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("app.js missing data-page logic %q", want)
 		}
+	}
+}
+
+// TestVendorLightweightCharts: K 线库 vendored 单文件必须随包分发
+// (go:embed 自动包含), 大小下限防止误替换为占位文件/空文件。
+func TestVendorLightweightCharts(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/vendor/lightweight-charts.standalone.production.js")
+	if err != nil {
+		t.Fatalf("vendor chart lib missing: %v", err)
+	}
+	if len(data) < 100_000 {
+		t.Fatalf("vendor chart lib suspiciously small: %d bytes", len(data))
+	}
+	if !strings.Contains(string(data), "Apache License") {
+		t.Fatalf("vendor chart lib missing Apache 2.0 license header")
 	}
 }
 
@@ -244,6 +266,11 @@ func TestNoExternalURLs(t *testing.T) {
 		return nil
 	})
 	for _, path := range files {
+		// vendor/ 为 vendored 第三方库(本页无外链的保证范围是自有页面与脚本;
+		// 库文件许可头自带 Apache 许可证 URL,不属于运行时外链)。
+		if strings.HasPrefix(path, "web/vendor/") {
+			continue
+		}
 		data, err := fs.ReadFile(webFiles, path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
