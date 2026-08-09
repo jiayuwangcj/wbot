@@ -60,6 +60,7 @@ func TestDataPageContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		`<main class="full">`,
 		`id="bars-form"`,
 		`id="bars-symbol"`,
 		`id="bars-timeframe"`,
@@ -82,6 +83,8 @@ func TestDataPageContract(t *testing.T) {
 		`id="data-refresh"`,
 		`id="data-updated"`,
 		`id="datacheck-summary"`,
+		`id="datacheck-total"`,
+		`id="datacheck-checked"`,
 		`id="datacheck-table"`,
 		`id="datacheck-error"`,
 	} {
@@ -118,9 +121,12 @@ func TestDataPageContract(t *testing.T) {
 		"loadDatacheck",
 		`"/v1/datacheck"`,
 		`document.getElementById("datacheck-error")`,
+		`status.textContent = "读取失败"`,
 		`await loadDataCoverage()`,
 		`item.kind === "options" ? "期权" : "K 线"`,
 		`item.state === "missing" ? "缺失" : "过期"`,
+		`status.textContent = "未配置"`,
+		`stateCell.className = item.state === "missing" ? "state-down" : "state-warn"`,
 		`data.components.data_plane.options_freshness || []`,
 		"optionsFreshSorter",
 		"ingestOptions",
@@ -409,7 +415,8 @@ func TestMobileBreakpointStyles(t *testing.T) {
 		"width: 100%",
 		"min-height: 44px", // touch targets >= 44px
 		"min-width: 600px", // tables scroll inside .table-scroll
-		"display: block",   // nav links stack instead of overflowing
+		"header nav",       // nav gets its own wrapping mobile row
+		"flex-wrap: wrap",
 	} {
 		if !strings.Contains(mobile, want) {
 			t.Fatalf("mobile media query missing %q", want)

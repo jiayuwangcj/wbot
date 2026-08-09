@@ -19,7 +19,7 @@
   </nav>
   <button type="button" id="theme-toggle" class="ghost" title="切换深浅色主题" aria-label="切换深浅色主题">🌙</button>
 </header>
-<main>
+<main class="full">
   <div class="env-bar">
     <form id="bars-form" class="inline-form">
       <input type="text" id="bars-symbol" name="symbol" placeholder="代码,如 HK.00700 / US.AAPL" required>
@@ -42,9 +42,11 @@
       <input type="date" id="bars-to" name="to" title="结束日期(留空=最近 100 根)" aria-label="结束日期">
       <button type="submit">加载 K 线</button>
     </form>
-    <span id="bars-range-tag" class="section-tag">最近 100 根</span>
-    <button type="button" id="data-refresh" class="ghost">刷新覆盖</button>
-    <span id="data-updated" class="muted"></span>
+    <div class="data-toolbar-status">
+      <span id="bars-range-tag" class="section-tag">最近 100 根</span>
+      <button type="button" id="data-refresh" class="ghost">刷新覆盖</button>
+      <span id="data-updated" class="muted"></span>
+    </div>
   </div>
 
   <p id="data-error" class="notice error" hidden></p>
@@ -52,15 +54,17 @@
   <div class="data-grid">
     <div class="data-main">
       <section id="datacheck">
-        <h2>数据齐全 <span id="datacheck-status" class="section-tag">—</span></h2>
-        <p id="datacheck-error" class="notice error" hidden></p>
+        <h2>数据齐全 <span id="datacheck-status" class="section-tag" aria-live="polite">—</span></h2>
+        <p id="datacheck-checked" class="notice compact" hidden></p>
+        <p id="datacheck-error" class="notice error" role="alert" hidden></p>
         <div id="datacheck-summary" class="metric-grid" hidden>
           <div class="metric-card"><h3>标的</h3><p id="datacheck-symbols" class="metric-value">—</p></div>
-          <div class="metric-card"><h3>完整</h3><p id="datacheck-complete" class="metric-value">—</p></div>
-          <div class="metric-card"><h3>缺失</h3><p id="datacheck-missing" class="metric-value">—</p></div>
-          <div class="metric-card"><h3>过期</h3><p id="datacheck-stale" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>检查项</h3><p id="datacheck-total" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>完整项</h3><p id="datacheck-complete" class="metric-value up">—</p></div>
+          <div class="metric-card"><h3>缺失</h3><p id="datacheck-missing" class="metric-value down">—</p></div>
+          <div class="metric-card"><h3>过期</h3><p id="datacheck-stale" class="metric-value warn">—</p></div>
         </div>
-        <p id="datacheck-empty" class="notice" hidden>当前数据完整。</p>
+        <p id="datacheck-empty" class="notice ok" hidden>当前数据完整。</p>
         <div class="table-scroll">
           <table id="datacheck-table" hidden>
             <thead><tr><th>代码</th><th>类型</th><th>周期</th><th>复权</th><th>状态</th><th>最新</th></tr></thead>

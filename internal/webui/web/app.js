@@ -132,6 +132,9 @@ async function loadJSON(url, errorEl, render) {
     render(data);
   } catch (err) {
     showError(errorEl, err);
+    const status = document.getElementById("datacheck-status");
+    status.textContent = "读取失败";
+    status.className = "section-tag warn";
   }
 }
 
@@ -764,24 +767,58 @@ function renderDatacheck(report) {
   const table = document.getElementById("datacheck-table");
   const empty = document.getElementById("datacheck-empty");
   const status = document.getElementById("datacheck-status");
-  const rows = (report.items || []).filter((item) => item.state === "missing" || item.state === "stale");
+  const checked = document.getElementById("datacheck-checked");
+  const timeframeOrder = ["1m", "5m", "15m", "30m", "60m", "1d", "1w", "1mo"];
+  const adjustOrder = ["none", "fwd", "back"];
+  const rows = (report.items || [])
+    .filter((item) => item.state === "missing" || item.state === "stale")
+    .sort((a, b) => {
+      const priority = {missing: 0, stale: 1};
+      return priority[a.state] - priority[b.state]
+        || a.symbol.localeCompare(b.symbol)
+        || a.kind.localeCompare(b.kind)
+        || timeframeOrder.indexOf(a.timeframe) - timeframeOrder.indexOf(b.timeframe)
+        || adjustOrder.indexOf(a.adjust) - adjustOrder.indexOf(b.adjust);
+    });
   const complete = report.total - report.missing - report.stale;
   setText("datacheck-symbols", report.symbols);
+  setText("datacheck-total", report.total);
   setText("datacheck-complete", complete);
   setText("datacheck-missing", report.missing);
   setText("datacheck-stale", report.stale);
-  status.textContent = report.missing === 0 && report.stale === 0 ? "完整" : "需关注";
-  status.className = "section-tag " + (report.missing === 0 && report.stale === 0 ? "ok" : "warn");
+  if (report.symbols === 0) {
+    status.textContent = "未配置";
+    status.className = "section-tag idle";
+    empty.textContent = "自选列表为空；添加标的后将自动检查行情矩阵。";
+    empty.className = "notice";
+  } else if (report.missing === 0 && report.stale === 0) {
+    status.textContent = "完整";
+    status.className = "section-tag ok";
+    empty.textContent = "当前数据完整。";
+    empty.className = "notice ok";
+  } else {
+    status.textContent = "需关注";
+    status.className = "section-tag warn";
+  }
+  if (report.checked_at) {
+    checked.textContent = "检查于 " + fmtTime(report.checked_at);
+    checked.hidden = false;
+  } else {
+    checked.hidden = true;
+  }
   summary.hidden = false;
   const tbody = table.tBodies[0];
   tbody.replaceChildren();
   for (const item of rows) {
     const kind = item.kind === "options" ? "期权" : "K 线";
     const state = item.state === "missing" ? "缺失" : "过期";
-    appendRow(tbody, [item.symbol, kind, item.timeframe || "—", item.adjust || "—", state, item.max_ts ? fmtTime(item.max_ts) : "—"]);
+    const stateCell = document.createElement("td");
+    stateCell.textContent = state;
+    stateCell.className = item.state === "missing" ? "state-down" : "state-warn";
+    appendRow(tbody, [item.symbol, kind, item.timeframe || "—", item.adjust || "—", stateCell, item.max_ts ? fmtTime(item.max_ts) : "—"]);
   }
   table.hidden = rows.length === 0;
-  empty.hidden = rows.length !== 0;
+  empty.hidden = rows.length !== 0 && report.symbols !== 0;
 }
 
 /* 补数据:POST /v1/ingest 经网关拉取该标的行情(与 `wbot ingest futu`
