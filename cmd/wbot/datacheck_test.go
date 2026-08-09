@@ -1,10 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/jiayu/wbot/internal/datacheck"
 	"github.com/jiayu/wbot/internal/db"
 )
 
@@ -64,4 +68,87 @@ func TestParseDailyTime(t *testing.T) {
 			t.Fatalf("parseDailyTime(%q) succeeded; want error", value)
 		}
 	}
+}
+
+func TestSendDataCheckAlertOnlyForAnomalies(t *testing.T) {
+	now := time.Date(2026, 8, 9, 17, 30, 0, 0, time.FixedZone("CST", 8*60*60))
+	capture := &captureSender{}
+	complete := datacheck.RunResult{After: datacheck.Report{Symbols: 1, Items: []datacheck.Item{}}}
+	if err := sendDataCheckAlert(context.Background(), capture, complete, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.messages) != 0 {
+		t.Fatalf("complete run sent %d messages", len(capture.messages))
+	}
+
+	incomplete := datacheck.RunResult{After: datacheck.Report{
+		Symbols: 1,
+		Missing: 2,
+		Items: []datacheck.Item{
+			{Symbol: "US.AAPL", Kind: "bars", Timeframe: "1d", Adjust: "fwd", State: datacheck.StateMissing},
+			{Symbol: "US.AAPL", Kind: "options", State: datacheck.StateMissing},
+		},
+	}}
+	if err := sendDataCheckAlert(context.Background(), capture, incomplete, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.messages) != 1 {
+		t.Fatalf("messages = %d; want 1", len(capture.messages))
+	}
+	for _, want := range []string{"标的 1 / 缺失 2 / 过期 0", "US.AAPL 1d/fwd: 缺失", "US.AAPL options: 缺失"} {
+		if !strings.Contains(capture.messages[0], want) {
+			t.Errorf("message %q missing %q", capture.messages[0], want)
+		}
+	}
+}
+
+func TestSendDataCheckAlertReportsRunAndSenderErrors(t *testing.T) {
+	now := time.Date(2026, 8, 9, 17, 30, 0, 0, time.UTC)
+	capture := &captureSender{err: errors.New("sink unavailable")}
+	err := sendDataCheckAlert(context.Background(), capture, datacheck.RunResult{}, errors.New("database unavailable"), now)
+	if err == nil || err.Error() != "sink unavailable" {
+		t.Fatalf("error = %v", err)
+	}
+	if len(capture.messages) != 1 || !strings.Contains(capture.messages[0], "调度失败: database unavailable") {
+		t.Fatalf("messages = %q", capture.messages)
+	}
+}
+
+func TestDataCheckNotifierFromEnv(t *testing.T) {
+	for _, name := range []string{
+		"DATACHECK_TELEGRAM_BOT_TOKEN",
+		"DATACHECK_TELEGRAM_CHAT_ID",
+		"DATACHECK_DISCORD_WEBHOOK_URL",
+	} {
+		t.Setenv(name, "")
+	}
+	if _, err := dataCheckNotifierFromEnv(nil); err == nil {
+		t.Fatal("empty notification config succeeded")
+	}
+
+	t.Setenv("DATACHECK_TELEGRAM_BOT_TOKEN", "token")
+	if _, err := dataCheckNotifierFromEnv(nil); err == nil || !strings.Contains(err.Error(), "CHAT_ID") {
+		t.Fatalf("partial Telegram error = %v", err)
+	}
+	t.Setenv("DATACHECK_TELEGRAM_CHAT_ID", "chat")
+	if sender, err := dataCheckNotifierFromEnv(nil); err != nil || sender == nil {
+		t.Fatalf("Telegram sender = %T, %v", sender, err)
+	}
+
+	t.Setenv("DATACHECK_TELEGRAM_BOT_TOKEN", "")
+	t.Setenv("DATACHECK_TELEGRAM_CHAT_ID", "")
+	t.Setenv("DATACHECK_DISCORD_WEBHOOK_URL", "https://discord.com/api/webhooks/id/token")
+	if sender, err := dataCheckNotifierFromEnv(nil); err != nil || sender == nil {
+		t.Fatalf("Discord sender = %T, %v", sender, err)
+	}
+}
+
+type captureSender struct {
+	messages []string
+	err      error
+}
+
+func (s *captureSender) Send(_ context.Context, message string) error {
+	s.messages = append(s.messages, message)
+	return s.err
 }

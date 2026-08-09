@@ -29,6 +29,7 @@ import (
 	"github.com/jiayu/wbot/internal/httpregister"
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/master"
+	"github.com/jiayu/wbot/internal/notify"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
 	"github.com/jiayu/wbot/internal/watchlist"
@@ -237,6 +238,7 @@ func runServe(prog string, argv []string) int {
 	duration := fs.Duration("duration", 0, "run wall-clock; 0 means until SIGINT")
 	datacheckAt := fs.String("datacheck-at", "17:30", "daily watchlist data check/repair time in local HH:MM")
 	datacheckDisable := fs.Bool("datacheck-disable", false, "disable the built-in daily data check/repair scheduler")
+	datacheckNotify := fs.Bool("datacheck-notify", false, "send scheduled datacheck alerts via configured Telegram/Discord endpoints")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
@@ -257,6 +259,14 @@ func runServe(prog string, argv []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serve: -datacheck-at: %v\n", err)
 		return 2
+	}
+	var datacheckNotifier notify.Sender
+	if *datacheckNotify {
+		datacheckNotifier, err = dataCheckNotifierFromEnv(nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serve: -datacheck-notify: %v\n", err)
+			return 2
+		}
 	}
 
 	startedAt := time.Now()
@@ -312,7 +322,7 @@ func runServe(prog string, argv []string) int {
 	}
 	defer runCancel()
 	if !*datacheckDisable {
-		go startDataCheckScheduler(runCtx, database, datacheckHour, datacheckMinute)
+		go startDataCheckScheduler(runCtx, database, datacheckHour, datacheckMinute, datacheckNotifier)
 	}
 
 	<-runCtx.Done()

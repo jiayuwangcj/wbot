@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"github.com/jiayu/wbot/internal/domain"
 	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/ingest"
+	"github.com/jiayu/wbot/internal/notify"
 )
 
 type futuDataRepairer struct {
@@ -61,7 +64,7 @@ func parseDailyTime(value string) (int, int, error) {
 	return hour, minute, nil
 }
 
-func startDataCheckScheduler(ctx context.Context, database *sql.DB, hour, minute int) {
+func startDataCheckScheduler(ctx context.Context, database *sql.DB, hour, minute int, notifier notify.Sender) {
 	addr := resolveFutuGateway("")
 	service := datacheck.Service{
 		Loader:   datacheck.DBLoader{DB: database},
@@ -72,6 +75,9 @@ func startDataCheckScheduler(ctx context.Context, database *sql.DB, hour, minute
 		result, err := service.Run(runCtx, now)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "datacheck: scheduled run: %v\n", err)
+			if notifyErr := sendDataCheckAlert(runCtx, notifier, result, err, now); notifyErr != nil {
+				fmt.Fprintf(os.Stderr, "datacheck: notify: %v\n", notifyErr)
+			}
 			return
 		}
 		fmt.Fprintf(os.Stderr, "datacheck: scheduled run: before missing=%d stale=%d; after missing=%d stale=%d; repair_errors=%d\n",
@@ -79,8 +85,110 @@ func startDataCheckScheduler(ctx context.Context, database *sql.DB, hour, minute
 		for _, repairErr := range result.RepairErrors {
 			fmt.Fprintf(os.Stderr, "datacheck: repair: %s\n", repairErr)
 		}
+		if notifyErr := sendDataCheckAlert(runCtx, notifier, result, nil, now); notifyErr != nil {
+			fmt.Fprintf(os.Stderr, "datacheck: notify: %v\n", notifyErr)
+		}
 	}
 	datacheck.RunDaily(ctx, hour, minute, run)
+}
+
+func dataCheckNotifierFromEnv(client *http.Client) (notify.Sender, error) {
+	token := strings.TrimSpace(os.Getenv("DATACHECK_TELEGRAM_BOT_TOKEN"))
+	chatID := strings.TrimSpace(os.Getenv("DATACHECK_TELEGRAM_CHAT_ID"))
+	discordURL := strings.TrimSpace(os.Getenv("DATACHECK_DISCORD_WEBHOOK_URL"))
+
+	var senders notify.MultiSender
+	if token != "" || chatID != "" {
+		if token == "" || chatID == "" {
+			return nil, errors.New("telegram requires DATACHECK_TELEGRAM_BOT_TOKEN and DATACHECK_TELEGRAM_CHAT_ID")
+		}
+		sender, err := notify.NewTelegram(token, chatID, "", client)
+		if err != nil {
+			return nil, err
+		}
+		senders = append(senders, sender)
+	}
+	if discordURL != "" {
+		sender, err := notify.NewDiscord(discordURL, client)
+		if err != nil {
+			return nil, err
+		}
+		senders = append(senders, sender)
+	}
+	if len(senders) == 0 {
+		return nil, errors.New("set Telegram or Discord datacheck notification environment variables")
+	}
+	return senders, nil
+}
+
+func sendDataCheckAlert(ctx context.Context, notifier notify.Sender, result datacheck.RunResult, runErr error, now time.Time) error {
+	if notifier == nil {
+		return nil
+	}
+	if runErr == nil && result.After.Complete() && len(result.RepairErrors) == 0 {
+		return nil
+	}
+	return notifier.Send(ctx, formatDataCheckAlert(result, runErr, now))
+}
+
+func formatDataCheckAlert(result datacheck.RunResult, runErr error, now time.Time) string {
+	var b strings.Builder
+	b.WriteString("wbot 数据齐全告警\n")
+	b.WriteString("检查时间: ")
+	b.WriteString(now.Format(time.RFC3339))
+	b.WriteByte('\n')
+	if runErr != nil {
+		fmt.Fprintf(&b, "调度失败: %v", runErr)
+		return limitMessage(b.String(), 1800)
+	}
+	fmt.Fprintf(&b, "修复后: 标的 %d / 缺失 %d / 过期 %d\n", result.After.Symbols, result.After.Missing, result.After.Stale)
+	if len(result.RepairErrors) > 0 {
+		fmt.Fprintf(&b, "修复错误: %d\n", len(result.RepairErrors))
+		for i, repairErr := range result.RepairErrors {
+			if i == 3 {
+				break
+			}
+			fmt.Fprintf(&b, "- 修复: %s\n", repairErr)
+		}
+	}
+	shown := 0
+	for _, item := range result.After.Items {
+		if item.State == datacheck.StateComplete {
+			continue
+		}
+		name := item.Kind
+		if item.Kind == "bars" {
+			name = item.Timeframe + "/" + item.Adjust
+		}
+		fmt.Fprintf(&b, "- %s %s: %s\n", item.Symbol, name, dataCheckStateLabel(item.State))
+		shown++
+		if shown == 10 {
+			remaining := result.After.Missing + result.After.Stale - shown
+			if remaining > 0 {
+				fmt.Fprintf(&b, "- 另有 %d 项\n", remaining)
+			}
+			break
+		}
+	}
+	return limitMessage(strings.TrimSpace(b.String()), 1800)
+}
+
+func dataCheckStateLabel(state datacheck.State) string {
+	if state == datacheck.StateMissing {
+		return "缺失"
+	}
+	if state == datacheck.StateStale {
+		return "过期"
+	}
+	return string(state)
+}
+
+func limitMessage(message string, maxRunes int) string {
+	runes := []rune(message)
+	if len(runes) <= maxRunes {
+		return message
+	}
+	return string(runes[:maxRunes-1]) + "…"
 }
 
 func resolveFutuGateway(flagValue string) string {

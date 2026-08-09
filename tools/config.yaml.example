@@ -8,3 +8,10 @@ futu:
   init_on_start: "${FUTU_INIT_ON_START:-yes}"
   gateway_url: "${FUTU_GATEWAY_URL:-http://127.0.0.1:22222}"
   proto_addr: "${FUTU_PROTO_ADDR:-127.0.0.1:11111}"
+
+# Optional; wbot serve still requires -datacheck-notify to send alerts.
+# Keep these empty when notifications are not used.
+datacheck:
+  telegram_bot_token: "${DATACHECK_TELEGRAM_BOT_TOKEN:-}"
+  telegram_chat_id: "${DATACHECK_TELEGRAM_CHAT_ID:-}"
+  discord_webhook_url: "${DATACHECK_DISCORD_WEBHOOK_URL:-}"
