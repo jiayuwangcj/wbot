@@ -736,10 +736,52 @@ function renderOptionsFreshness(rows) {
 }
 
 async function loadDataCoverage() {
-  const data = await fetchJSON("/v1/admin/cluster");
+  const [data] = await Promise.all([
+    fetchJSON("/v1/admin/cluster"),
+    loadDatacheck(),
+  ]);
   renderCoverageRows(data.components.data_plane.bars_coverage || []);
   renderOptionsFreshness(data.components.data_plane.options_freshness || []);
   stampUpdated("data-updated");
+}
+
+async function loadDatacheck() {
+  const errorEl = document.getElementById("datacheck-error");
+  try {
+    const report = await fetchJSON("/v1/datacheck");
+    clearError(errorEl);
+    renderDatacheck(report);
+  } catch (err) {
+    showError(errorEl, err);
+  }
+}
+
+/* Datacheck is the authoritative completeness snapshot; the Data page only
+   renders its summary and non-complete items, leaving the K-line interaction
+   and existing coverage tables unchanged. */
+function renderDatacheck(report) {
+  const summary = document.getElementById("datacheck-summary");
+  const table = document.getElementById("datacheck-table");
+  const empty = document.getElementById("datacheck-empty");
+  const status = document.getElementById("datacheck-status");
+  const rows = (report.items || []).filter((item) => item.state === "missing" || item.state === "stale");
+  const complete = report.total - report.missing - report.stale;
+  setText("datacheck-symbols", report.symbols);
+  setText("datacheck-complete", complete);
+  setText("datacheck-missing", report.missing);
+  setText("datacheck-stale", report.stale);
+  status.textContent = report.missing === 0 && report.stale === 0 ? "完整" : "需关注";
+  status.className = "section-tag " + (report.missing === 0 && report.stale === 0 ? "ok" : "warn");
+  summary.hidden = false;
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  for (const item of rows) {
+    const kind = item.kind === "options" ? "期权" : "K 线";
+    const state = item.state === "missing" ? "缺失" : "过期";
+    appendRow(tbody, [item.symbol, kind, item.timeframe || "—", item.adjust || "—", state, item.max_ts ? fmtTime(item.max_ts) : "—"]);
+  }
+  table.hidden = rows.length === 0;
+  empty.hidden = rows.length !== 0;
 }
 
 /* 补数据:POST /v1/ingest 经网关拉取该标的行情(与 `wbot ingest futu`
@@ -762,9 +804,7 @@ async function ingestOptions(o, btn) {
       body: JSON.stringify({kind: "option", symbol: o.underlying})
     });
     btn.textContent = "已更新";
-    const [data] = await Promise.all([fetchJSON("/v1/admin/cluster")]);
-    renderCoverageRows(data.components.data_plane.bars_coverage || []);
-    renderOptionsFreshness(data.components.data_plane.options_freshness || []);
+    await loadDataCoverage();
   } catch (err) {
     btn.textContent = "拉取期权链";
     showError(errEl, err);
@@ -785,8 +825,7 @@ async function ingestBars(b, btn) {
       body: JSON.stringify({symbol: b.symbol, timeframe: b.timeframe, adjust: b.adjust, from: b.max_ts})
     });
     btn.textContent = "已更新";
-    const [data] = await Promise.all([fetchJSON("/v1/admin/cluster")]);
-    renderCoverageRows(data.components.data_plane.bars_coverage || []);
+    await loadDataCoverage();
     if (document.getElementById("detail").hidden === false && document.getElementById("detail-title").textContent.includes(b.symbol)) {
       loadBars(b.symbol, b.timeframe, b.adjust); /* 明细视图同步刷新 */
     }

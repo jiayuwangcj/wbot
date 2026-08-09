@@ -23,9 +23,23 @@
 
 ## State
 
-- **status**: `running`
-- **last step**: P0 已独立提交并验证；P1 分支已创建，准备派发 Luna subagent。
+- **status**: `done`
+- **last step**: Luna 完成只读 API/Data 页实现；主线程修正 PG fixture、错误隔离、补拉后即时刷新与零时间序列化，真实 PG、Chrome headless、最终 verify 全绿。
 
 ## Next
 
-Luna subagent 从 httpapi handler/fake store 测试开始，随后接 mux、API 文档与 Data 页；主线程负责复核、真实 PG/Chrome 与最终 verify。
+P1 已完成。后续按优先级进入 `2026-08-09-datacheck-market-calendar.md`（P2），不在本切片加入 repair 写端点。
+
+## Delivered
+
+- `GET /v1/datacheck`：返回服务端统一计算的 `datacheck.Report`；GET-only，DB 错误 500，空 watchlist 返回空数组。
+- Data 页“数据齐全”：标的/完整/缺失/过期摘要，仅列 missing/stale；类型与状态中文化。
+- datacheck 错误独立展示，不阻断原有 cluster coverage；手动补 bars/期权成功后立即刷新完整性摘要。
+- 零 `time.Time` 使用 Go 1.24 `omitzero`，缺失项不会输出或显示 `0001-01-01`。
+
+## Verification
+
+- `go test ./internal/datacheck ./internal/httpapi ./internal/webui ./cmd/wbot -count=1`：PASS。
+- 临时 PostgreSQL 内 `TestHandlerIntegration`：PASS（显式写入/清理唯一 watchlist symbol）。
+- Mac Chrome headless：`symbols=1 / complete=0 / missing=24 / stale=1`，中文行与独立 error hidden 正常，无零时间。
+- `scripts/verify.sh`：`verify: ok`（含 race/staticcheck/五平台构建/smoke/accept）。

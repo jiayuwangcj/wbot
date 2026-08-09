@@ -64,6 +64,7 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 
 - 手动只读门禁：`wbot datacheck [-dsn ...] [-now RFC3339]`；仅打印缺失/过期项与汇总，完整为 exit 0，否则 exit 1。
 - 手动补拉：显式加 `-repair`，逐项调用富途 REST 网关（`-addr` > `$FUTU_GATEWAY_URL` > 默认地址），单项失败不阻断其余项，全部尝试后重新读取数据库并报告最终状态。
+- 只读观察面：`GET /v1/datacheck` 返回同一份完整报告；Data 页展示摘要与 missing/stale 列表。HTTP 端点不会触发 repair。
 - 内置调度：`wbot serve` 默认按进程本地时间每天 `17:30` 检查并自动补拉；`-datacheck-at HH:MM` 改时刻，`-datacheck-disable` 关闭。调度只在进程持续运行并到达该时刻时触发；临时进程不会因启动时间已过而补跑，避免重启造成大批重复网关请求。
 - 交易时段：分钟/日线与期权按标的市场的最新应有工作日判断（港股 16:30、沪深 15:30、美股纽约 16:30 收盘缓冲）；周/月线沿用 timeframe 新鲜度阈值。当前内建日历识别周末，不内置交易所节假日日历；节假日会产生一次无害补拉尝试，下一交易日自动恢复。
 

@@ -81,6 +81,9 @@ func TestDataPageContract(t *testing.T) {
 		`涨跌幅`,
 		`id="data-refresh"`,
 		`id="data-updated"`,
+		`id="datacheck-summary"`,
+		`id="datacheck-table"`,
+		`id="datacheck-error"`,
 	} {
 		if !strings.Contains(string(html), want) {
 			t.Fatalf("data.html missing %q", want)
@@ -111,6 +114,13 @@ func TestDataPageContract(t *testing.T) {
 		`"/v1/admin/cluster"`,
 		`stampUpdated("data-updated")`,
 		"renderOptionsFreshness",
+		"renderDatacheck",
+		"loadDatacheck",
+		`"/v1/datacheck"`,
+		`document.getElementById("datacheck-error")`,
+		`await loadDataCoverage()`,
+		`item.kind === "options" ? "期权" : "K 线"`,
+		`item.state === "missing" ? "缺失" : "过期"`,
 		`data.components.data_plane.options_freshness || []`,
 		"optionsFreshSorter",
 		"ingestOptions",

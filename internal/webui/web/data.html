@@ -51,6 +51,23 @@
 
   <div class="data-grid">
     <div class="data-main">
+      <section id="datacheck">
+        <h2>数据齐全 <span id="datacheck-status" class="section-tag">—</span></h2>
+        <p id="datacheck-error" class="notice error" hidden></p>
+        <div id="datacheck-summary" class="metric-grid" hidden>
+          <div class="metric-card"><h3>标的</h3><p id="datacheck-symbols" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>完整</h3><p id="datacheck-complete" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>缺失</h3><p id="datacheck-missing" class="metric-value">—</p></div>
+          <div class="metric-card"><h3>过期</h3><p id="datacheck-stale" class="metric-value">—</p></div>
+        </div>
+        <p id="datacheck-empty" class="notice" hidden>当前数据完整。</p>
+        <div class="table-scroll">
+          <table id="datacheck-table" hidden>
+            <thead><tr><th>代码</th><th>类型</th><th>周期</th><th>复权</th><th>状态</th><th>最新</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
       <section id="coverage">
         <h2>已缓存数据</h2>
         <p class="notice">点击一行查看该标的的行情明细;过期数据可点「补数据」经网关拉取。</p>

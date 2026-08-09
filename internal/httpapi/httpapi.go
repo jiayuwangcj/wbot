@@ -12,13 +12,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jiayu/wbot/internal/datacheck"
 	"github.com/jiayu/wbot/internal/ingest"
 )
 
 const (
-	barsPath   = "/v1/bars"
-	runsPath   = "/v1/runs"
-	healthPath = "/v1/health"
+	barsPath      = "/v1/bars"
+	runsPath      = "/v1/runs"
+	healthPath    = "/v1/health"
+	datacheckPath = "/v1/datacheck"
 )
 
 // Store is the read-only data surface the API serves.
@@ -31,6 +33,13 @@ type Store interface {
 	AccountSnapshots(ctx context.Context, env string, limit int) ([]ingest.AccountSnapshotRow, error)
 	LatestOptionQuote(ctx context.Context, symbol string) (*ingest.OptionQuoteRow, error)
 	Ping(ctx context.Context) error
+}
+
+// DatacheckStore is the optional read-only snapshot surface used by
+// GET /v1/datacheck. It remains separate from Store for compatibility with
+// alternate Store implementations.
+type DatacheckStore interface {
+	Datacheck(context.Context) (datacheck.Report, error)
 }
 
 // NewDBStore returns a Store backed by PostgreSQL via internal/ingest queries.
@@ -74,6 +83,14 @@ func (s dbStore) Ping(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	return s.db.PingContext(ctx)
+}
+
+func (s dbStore) Datacheck(ctx context.Context) (datacheck.Report, error) {
+	symbols, bars, options, err := datacheck.Snapshot(ctx, s.db)
+	if err != nil {
+		return datacheck.Report{}, err
+	}
+	return datacheck.Check(symbols, bars, options, time.Now(), datacheck.DefaultPolicy()), nil
 }
 
 // barJSON mirrors the `ingest bars -json` output shape (ts RFC3339).
@@ -208,6 +225,25 @@ func Handler(store Store) http.Handler {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(healthJSON{Status: "ok"})
+	})
+
+	mux.HandleFunc(datacheckPath, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		provider, ok := store.(DatacheckStore)
+		if !ok {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		report, err := provider.Datacheck(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(report)
 	})
 
 	// Any other path: JSON 404.

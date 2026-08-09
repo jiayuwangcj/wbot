@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jiayu/wbot/internal/datacheck"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/domain"
 	"github.com/jiayu/wbot/internal/ingest"
+	"github.com/jiayu/wbot/internal/watchlist"
 )
 
 func TestHandlerIntegration(t *testing.T) {
@@ -35,6 +37,12 @@ func TestHandlerIntegration(t *testing.T) {
 	if err := ingest.RunMockIngestion(ctx, database, source, domain.Symbol("DEMO.US"), "1d", "none"); err != nil {
 		t.Fatal(err)
 	}
+	const datacheckSymbol = "US.HTTPAPICHECK"
+	_, _ = watchlist.Delete(ctx, database, datacheckSymbol)
+	if _, err := watchlist.Upsert(ctx, database, datacheckSymbol, "buy-hold", nil); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = watchlist.Delete(ctx, database, datacheckSymbol) }()
 
 	srv := httptest.NewServer(Handler(NewDBStore(database)))
 	defer srv.Close()
@@ -84,6 +92,30 @@ func TestHandlerIntegration(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("runs missing source %q (got %d runs)", source, len(runs))
+	}
+
+	// GET /v1/datacheck: real PostgreSQL snapshot reuses the datacheck policy.
+	resp, err = http.Get(srv.URL + "/v1/datacheck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("datacheck status = %d", resp.StatusCode)
+	}
+	var report datacheck.Report
+	if err := json.NewDecoder(resp.Body).Decode(&report); err != nil {
+		t.Fatal(err)
+	}
+	foundDatacheckSymbol := false
+	for _, item := range report.Items {
+		if item.Symbol == datacheckSymbol {
+			foundDatacheckSymbol = true
+			break
+		}
+	}
+	if report.Symbols < 1 || report.Total == 0 || !foundDatacheckSymbol {
+		t.Fatalf("datacheck report = %+v; want watchlist symbol %s", report, datacheckSymbol)
 	}
 
 	// GET /v1/health: the real pool must answer the ping.

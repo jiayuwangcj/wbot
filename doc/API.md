@@ -1,5 +1,7 @@
 # API 契约（wbot serve HTTP 接口）
 
+`GET /v1/datacheck` 是只读数据完整性快照接口，返回 `internal/datacheck.Report`（`checked_at`、`symbols`、`total`、`missing`、`stale`、`items`）。判定由服务端统一执行，接口不会触发 repair 或任何写入。
+
 由 `wbot serve` 提供（`-listen` 默认 `127.0.0.1:8080`；`-dsn` 或 `$WBOT_PG_DSN`）。数据面接口（`/v1/bars`、`/v1/runs`、`/v1/health`、`/v1/account/snapshots`——资产曲线历史快照，读 `account_snapshots` 表）只读，面向 Web 前端；`/v1/strategies`、`/v1/watchlist` 为关注标的与策略绑定数据面（可写：PUT/DELETE watchlist）；`/v1/backtests` 为回测执行与结果数据面（GET 读取，含 `/{id}/export` csv/json 下载；写入方为 CLI `wbot backtest -save` 与 POST /v1/backtests，同一运行器路径，见 [[BACKTEST]]）；`/v1/futu/quote` 为实时行情代理、`/v1/futu/account` 为资金/持仓只读代理、`/v1/futu/orders` 为订单列表只读代理、`/v1/futu/options` 为期权链代理（serve 代为访问富途网关——account/orders 供浏览器 Dashboard，quote/options 消费方为 CLI/脚本，见 [[FUTU]]）；`/v1/admin/*` 为后台管理数据面（`/v1/admin/config` 可写，配置值永不返回）。二进制另有一个独立 HTTP 面由 `wbot master` 提供（agent 联邦注册，占位子系统，见 [[ROADMAP]]），契约见文末「Agent federation」节——与 serve 数据面无交集。
 
 ## Web UI
@@ -17,6 +19,25 @@
 | `GET /ui/*` | 其余静态资源（`style.css`、`app.js`、`favicon.svg`；不存在 → 404） |
 
 UI 页面不请求、不渲染任何配置值（PRIVACY 红线，见 [[PRIVACY]]）。API 路径（`/v1/*`）不受 `/ui/` 影响；其余未知路径仍为 JSON 404。
+
+## GET /v1/datacheck
+
+读取当前 watchlist 的 bars/期权完整性快照。该端点只读，不执行 repair；空 watchlist 返回 `symbols=0`、`total=0` 和空 `items` 数组。
+
+响应 `200`：
+
+```json
+{
+  "checked_at": "2026-08-09T09:00:00Z",
+  "symbols": 1,
+  "total": 25,
+  "missing": 1,
+  "stale": 0,
+  "items": [{"symbol":"US.AAPL","kind":"bars","timeframe":"1d","adjust":"fwd","state":"missing"}]
+}
+```
+
+`state` 为 `complete`、`missing` 或 `stale`；`items` 中每项代表一个必需 bars series 或 option chain。数据库读取失败返回 `500`。
 
 **安全边界**（2026-08-03 补充）：serve 默认仅绑定 loopback（`-listen` 默认 `127.0.0.1:8080`），**无鉴权设计**——admin/config 写面、watchlist/backtests/ingest 写面与 futu 只读代理（资金/持仓）均无认证。默认形态只应被本机浏览器访问；如需远程访问须自置反向代理 + 认证（否则写面可被任意操作），且 futu 代理通道涉及账户数据（[[PRIVACY]]）。
 

@@ -54,8 +54,8 @@ type Item struct {
 	Timeframe  string    `json:"timeframe,omitempty"`
 	Adjust     string    `json:"adjust,omitempty"`
 	State      State     `json:"state"`
-	MaxTs      time.Time `json:"max_ts,omitempty"`
-	MaxExpiry  time.Time `json:"max_expiry,omitempty"`
+	MaxTs      time.Time `json:"max_ts,omitzero"`
+	MaxExpiry  time.Time `json:"max_expiry,omitzero"`
 	AgeSeconds int64     `json:"age_seconds,omitempty"`
 }
 

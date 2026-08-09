@@ -28,8 +28,8 @@
 ## State
 
 - **status**: `running`
-- **last step**: P0 已完成 Luna 独立审查、误判修复、真实 PG 回归、Chrome headless 与最终 `verify: ok`；临时容器已清理。
+- **last step**: P0、P1 均完成 Luna 实施/审查与主线程真实 PG、Chrome、最终 `verify: ok`；所有临时容器已清理。P2/P3 保持 queued。
 
 ## Next
 
-提交 P0 后新建独立分支，启动 P1 `2026-08-09-datacheck-observability.md`；P2/P3 保持 queued。
+下一切片为 P2 `2026-08-09-datacheck-market-calendar.md`；先完成 calendar interface/离线来源小设计，再编码。P3 通知继续排在 P1/P2 之后。
