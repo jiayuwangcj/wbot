@@ -36,7 +36,7 @@ wbot backtest -dsn "$WBOT_PG_DSN" -export 7              # csv 到 stdout
 wbot backtest -dsn "$WBOT_PG_DSN" -export 7 -format json # json 到 stdout
 ```
 
-与 `GET /v1/backtests/{id}/export` **同序列化器、同输出**（roundtrip 契约，doc/API.md）：`json` 即详情端点 body、`csv` 为 equity_curve/trades 两段（空行分隔）。缺 id（`-export 0`/负数）或格式非法 → exit 2；id 不存在 → exit 1 + 可读错误。
+与 `GET /v1/backtests/{id}/export` **同序列化器、同输出**（roundtrip 契约，doc/API.md）：`json` 即详情端点 body、`csv` 为 equity_curve/trades 两段（空行分隔）；两种格式的所有时间统一输出 RFC3339 UTC `Z`，不随 serve/CLI 进程时区变化。缺 id（`-export 0`/负数）或格式非法 → exit 2；id 不存在 → exit 1 + 可读错误。
 
 ## 服务端执行（v4 阶段 A 切片 4）
 

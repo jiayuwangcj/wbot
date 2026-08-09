@@ -88,7 +88,7 @@ Query 参数：
 ]
 ```
 
-> **时间字段渲染（2026-08-03 实测校正）**：全部端点（bars/runs/backtests/watchlist/snapshots）的时间字段按 serve 进程本地时区渲染 RFC3339 偏移——本机为 `+08:00`（如上例，= UTC `2024-06-01T00:00:00Z`，同一瞬时）。本文档其余示例的 `Z` 字面仅作 UTC 示意，勿按字面匹配；落库规范见 [[DATA_STANDARD]] 时间基准节。
+> **时间字段渲染（2026-08-09 实测校正）**：一般端点（bars/runs/watchlist 等）的时间字段按 serve 进程本地时区渲染 RFC3339 偏移——本机为 `+08:00`（如上例，= UTC `2024-06-01T00:00:00Z`，同一瞬时）。回测详情与 export 的 `start_ts` / `end_ts` / `created_at` / `equity_curve[].ts` / `trades[].ts` 例外，统一规范化为 UTC `Z`，保证不同部署时区的导出逐字节稳定；落库规范见 [[DATA_STANDARD]] 时间基准节。
 
 ## GET /v1/strategies
 
@@ -198,8 +198,8 @@ Query 参数：
 | `id` | 运行 id（详情端点路径参数） |
 | `params` | 运行参数（cash/fee/timeframe/adjust 等，JSONB 原样返回） |
 | `metrics` | 摘要指标（equity/total_return/max_drawdown/bars） |
-| `start_ts` / `end_ts` | 回测 bars 时间范围（RFC3339） |
-| `created_at` | 落库时间（RFC3339） |
+| `start_ts` / `end_ts` | 回测 bars 时间范围（RFC3339 UTC） |
+| `created_at` | 落库时间（RFC3339 UTC） |
 
 无结果时返回 `[]`。
 
@@ -228,8 +228,8 @@ Query 参数：
 
 | 字段 | 说明 |
 | --- | --- |
-| `equity_curve[]` | 每根 bar 一根曲线点：`ts`（bar 时间，RFC3339）+ `equity`（结算后组合市值） |
-| `trades[]` | 逐笔明细：`action`（`buy`/`sell`/`sell-call`/`buy-call`/`sell-put`/`buy-put`/`exercise-call`/`exercise-put`/`expire-otm`）、`symbol`（期权腿为合约代码，正股为标的）、`size`（正股/行权为股数，期权为合约数）、`price`（正股为成交价、期权为每张权利金、行权为 strike）、`cash_after`（结算后现金） |
+| `equity_curve[]` | 每根 bar 一根曲线点：`ts`（bar 时间，RFC3339 UTC）+ `equity`（结算后组合市值） |
+| `trades[]` | 逐笔明细：`ts`（RFC3339 UTC）、`action`（`buy`/`sell`/`sell-call`/`buy-call`/`sell-put`/`buy-put`/`exercise-call`/`exercise-put`/`expire-otm`）、`symbol`（期权腿为合约代码，正股为标的）、`size`（正股/行权为股数，期权为合约数）、`price`（正股为成交价、期权为每张权利金、行权为 strike）、`cash_after`（结算后现金） |
 
 migration 004 之前的老行（无曲线）返回 `equity_curve: []`、`trades: []`（不报错）。
 

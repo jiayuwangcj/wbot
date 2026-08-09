@@ -34,6 +34,25 @@ func TestDetailShape(t *testing.T) {
 	}
 }
 
+func TestDetailAndCSVNormalizeTimestampsToUTC(t *testing.T) {
+	r := exportSample()
+	plusEight := time.FixedZone("CST", 8*60*60)
+	r.StartTs = r.StartTs.In(plusEight)
+	r.EndTs = r.EndTs.In(plusEight)
+	r.CreatedAt = r.CreatedAt.In(plusEight)
+	r.EquityCurve[0].Ts = r.EquityCurve[0].Ts.In(plusEight)
+	r.Trades[0].Ts = r.Trades[0].Ts.In(plusEight)
+
+	detail := Detail(r)
+	if detail.StartTs != "2026-08-01T00:00:00Z" || detail.EquityCurve[0].Ts.Location() != time.UTC || detail.Trades[0].Ts.Location() != time.UTC {
+		t.Fatalf("detail timestamps = %s / %s / %s; want UTC", detail.StartTs, detail.EquityCurve[0].Ts, detail.Trades[0].Ts)
+	}
+	csv := string(ExportCSV(r))
+	if strings.Contains(csv, "+08:00") || !strings.Contains(csv, "2026-08-01T00:00:00Z") {
+		t.Fatalf("csv timestamps not normalized: %q", csv)
+	}
+}
+
 func TestDetailNilTraceStaysReadable(t *testing.T) {
 	r := exportSample()
 	r.EquityCurve, r.Trades = nil, nil
