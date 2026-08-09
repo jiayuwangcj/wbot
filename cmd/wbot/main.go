@@ -68,6 +68,8 @@ func run(argv []string) int {
 		return runBacktest(argv[0], argv[2:])
 	case "watchlist":
 		return runWatchlist(argv[0], argv[2:])
+	case "datacheck":
+		return runDataCheck(argv[0], argv[2:])
 	case "configyaml":
 		return runConfigYAML(argv[0], argv[2:])
 	case "serve":
@@ -233,6 +235,8 @@ func runServe(prog string, argv []string) int {
 	listen := fs.String("listen", "127.0.0.1:8080", "HTTP listen address")
 	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
 	duration := fs.Duration("duration", 0, "run wall-clock; 0 means until SIGINT")
+	datacheckAt := fs.String("datacheck-at", "17:30", "daily watchlist data check/repair time in local HH:MM")
+	datacheckDisable := fs.Bool("datacheck-disable", false, "disable the built-in daily data check/repair scheduler")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
@@ -248,6 +252,11 @@ func runServe(prog string, argv []string) int {
 		fs.SetOutput(os.Stderr)
 		fs.Usage()
 		return 0
+	}
+	datacheckHour, datacheckMinute, err := parseDailyTime(strings.TrimSpace(*datacheckAt))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve: -datacheck-at: %v\n", err)
+		return 2
 	}
 
 	startedAt := time.Now()
@@ -302,6 +311,9 @@ func runServe(prog string, argv []string) int {
 		runCtx, runCancel = signal.NotifyContext(context.Background(), os.Interrupt)
 	}
 	defer runCancel()
+	if !*datacheckDisable {
+		go startDataCheckScheduler(runCtx, database, datacheckHour, datacheckMinute)
+	}
 
 	<-runCtx.Done()
 
@@ -1669,5 +1681,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  futu                futu-opend-rs gateway client: status/quote/funds/position/order (try futu -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  watchlist           Watchlist management: add/remove/list (try watchlist -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               HTTP server: data API + write endpoints + futu proxies + Web UI (try -h)\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  futu                futu-opend-rs gateway client: status/quote/funds/position/order (try futu -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  watchlist           Watchlist management: add/remove/list (try watchlist -h)\n  datacheck           Check watchlist market-data completeness (try -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               HTTP server: data API + write endpoints + futu proxies + Web UI (try -h)\n")
 }

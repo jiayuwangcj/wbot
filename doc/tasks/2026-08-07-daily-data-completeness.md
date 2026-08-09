@@ -2,7 +2,7 @@
 
 ## 状态
 
-**🕐 排期中**(老板 2026-08-07 指令,待实施)。
+**✅ 已完成**（2026-08-09，本地分支 `codex/feat-daily-data-completeness`；实现、独立审查与验收均完成）。
 
 ## 来源
 
@@ -28,11 +28,26 @@
 
 ## 验收
 
-- [ ] 独立模块(新 package),不改变现有 serve/ingest 行为
-- [ ] 每日 ticker 可配置(默认交易时段后)
-- [ ] 模拟缺失场景:检查能报出缺失项;补拉后转齐全
-- [ ] E2E:watchlist 标的 + 真实 PG 跑通
-- [ ] verify.sh 全绿 + 测试覆盖
+- [x] 独立模块 `internal/datacheck`；ingest/httpapi 既有接口不变
+- [x] serve 每日 ticker 可配置（默认本地 17:30；`-datacheck-at` / `-datacheck-disable`）
+- [x] 模拟缺失场景：逐项报告 missing/stale，repair 后复查转 complete
+- [x] E2E：watchlist + bars + option_quotes 真 PostgreSQL；CLI 缺失报告 exit 1
+- [x] `scripts/verify.sh` 全绿（test/vet/race/staticcheck/五平台构建/smoke/accept）
+
+## 实施
+
+- 完整矩阵：8 timeframe × 3 adjust + 每标的最新未到期期权链；账户快照仍按原需求保持在本轮范围外。
+- `wbot datacheck` 默认只读，支持 `-json`；显式 `-repair` 复用 serve 的富途补拉器，单项失败继续、最后统一复查。
+- bars 补拉窗口：普通周期 14 天、周线 60 天、月线 180 天；期权 7 天/最近一个到期日；继续复用 ingest 事务、限频、校验与幂等。
+- 分钟/日线与期权按标的市场最新应有工作日判定（HK/沪深/US 收盘缓冲 + 周末）；周/月线沿用既有 timeframe 阈值。当前不内置交易所节假日日历，节假日最多产生一次无害补拉尝试。
+- 只读 API/数据页区块保持为后续可选切片；本轮已有 CLI JSON 报告和 serve 日志观察面，不扩张 HTTP 契约。
+
+## 验证记录
+
+- `go test ./... -count=1`、`go vet ./...`：全绿。
+- `scripts/verify.sh`：`verify: ok`（当前机器需临时把 Go bin 加入 PATH 以发现已安装的 staticcheck；未修改仓库配置）。
+- 真 PG：因当前执行环境到 OrbStack 容器网络受限，将两个 CGO-disabled 测试二进制放入临时 `postgres:16-alpine` 容器内执行；`TestSnapshotIntegration` 与 `TestDataCheckCLIIntegrationReportsWatchlistGaps` 均 PASS，测试容器及启动的开发 PG 已恢复/清理。
+- Luna 独立审查修复 option coverage 聚合误判：`MaxTs` 与 `MaxExpiry` 现在强制来自同一最新快照；历史更晚 expiry + 最新较早 expiry 的真实 PG 回归测试 PASS。
 
 ## 相关
 
