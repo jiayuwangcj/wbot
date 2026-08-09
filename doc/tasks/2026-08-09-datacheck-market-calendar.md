@@ -22,9 +22,22 @@
 
 ## State
 
-- **status**: `queued`
-- **last step**: 已识别当前 weekday-only 的剩余风险并限定解决范围。
+- **status**: `done`
+- **last step**: 已落地离线可注入 calendar、2026 官方休市/半日市数据、370 天防挂死降级与周末/节假日/半日市/DST 回归测试。
 
 ## Next
 
-P0 后先写 calendar interface 与测试矩阵设计，不直接引入在线依赖。
+进入 P3 缺失报告外部通知；calendar 年度更新只需替换内建日期，运行时不增加网络依赖。
+
+## Decision / Evidence
+
+- `Policy.Calendar` 接受自定义实现；nil 使用 `ExchangeCalendar`，默认路径完全离线。
+- 2026 沪深休市以 SSE/SZSE 年度通知为准；HKEX 覆盖 14 个工作日休市与 3 个半日市；NYSE 覆盖 10 个休市日与 2 个 13:00 提前收市日。
+- 正常日延续收盘后 30 分钟缓冲：沪深 15:30、港美 16:30；港股半日 12:30、NYSE 提前收市 13:30。
+- 非 2026 年安全降级到 market-local 周一至周五；错误注入日历连续 370 天无交易日时自动退回内建日历，避免报告挂死。
+- 官方来源：
+  - SSE: <https://www.sse.com.cn/disclosure/announcement/general/c/c_20251222_10802507.shtml>
+  - SZSE: <https://www.szse.cn/disclosure/notice/t20251222_618087.html>
+  - HKEX: <https://www.hkex.com.hk/-/media/HKEX-Market/Services/Circulars-and-Notices/Participant-and-Members-Circulars/SEHK/2025/ce_SEHK_CT_075_2025.pdf>
+  - NYSE: <https://www.nyse.com/markets/hours-calendars>
+- `go test ./internal/datacheck -count=1`: PASS。

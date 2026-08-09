@@ -23,6 +23,9 @@ type Policy struct {
 	Timeframes []string
 	Adjusts    []string
 	Options    bool
+	// Calendar may override the checked-in offline exchange calendar. A nil
+	// value uses NewExchangeCalendar.
+	Calendar Calendar
 	// SessionAware compares intraday/daily timestamps with the latest expected
 	// market weekday instead of wall-clock ages. This avoids declaring US data
 	// stale before that market opens in the process's local timezone.
@@ -167,7 +170,7 @@ func expiryBefore(expiry, now time.Time) bool {
 
 func barsStale(symbol, timeframe string, maxTs, now time.Time, policy Policy) bool {
 	if policy.SessionAware && timeframe != "1w" && timeframe != "1mo" {
-		return marketDate(maxTs, symbol) < expectedSessionDate(now, symbol)
+		return marketDate(maxTs, symbol) < expectedSessionDateWithCalendar(now, symbol, policy.Calendar)
 	}
 	return ingest.JudgeFreshness(maxTs, now, ingest.MaxAgeForTimeframe(timeframe)) != ingest.Fresh
 }
@@ -175,42 +178,57 @@ func barsStale(symbol, timeframe string, maxTs, now time.Time, policy Policy) bo
 func optionsStale(symbol string, coverage OptionCoverage, now time.Time, policy Policy) bool {
 	stale := ingest.JudgeFreshness(coverage.MaxTs, now, ingest.MaxAgeForOptions) != ingest.Fresh
 	if policy.SessionAware {
-		stale = marketDate(coverage.MaxTs, symbol) < expectedSessionDate(now, symbol)
+		stale = marketDate(coverage.MaxTs, symbol) < expectedSessionDateWithCalendar(now, symbol, policy.Calendar)
 	}
 	return stale || expiryBefore(coverage.MaxExpiry, now)
 }
 
 func expectedSessionDate(now time.Time, symbol string) int {
-	loc, closeHour, closeMinute := marketClock(symbol)
+	return expectedSessionDateWithCalendar(now, symbol, nil)
+}
+
+func expectedSessionDateWithCalendar(now time.Time, symbol string, calendar Calendar) int {
+	loc := marketLocation(symbol)
 	marketNow := now.In(loc)
-	y, m, d := marketNow.Date()
-	closeAt := time.Date(y, m, d, closeHour, closeMinute, 0, 0, loc)
-	if marketNow.Before(closeAt) {
-		marketNow = marketNow.AddDate(0, 0, -1)
+	if calendar == nil {
+		calendar = NewExchangeCalendar()
 	}
-	for marketNow.Weekday() == time.Saturday || marketNow.Weekday() == time.Sunday {
-		marketNow = marketNow.AddDate(0, 0, -1)
+
+	candidate := marketNow
+	session := calendar.Session(symbol, candidate)
+	y, m, d := candidate.Date()
+	readyAt := time.Date(y, m, d, session.ReadyHour, session.ReadyMinute, 0, 0, loc)
+	if !session.TradingDay || marketNow.Before(readyAt) {
+		candidate = candidate.AddDate(0, 0, -1)
 	}
-	return dateKey(marketNow)
+	for scanned := 0; scanned < 370; scanned++ {
+		if calendar.Session(symbol, candidate).TradingDay {
+			return dateKey(candidate)
+		}
+		candidate = candidate.AddDate(0, 0, -1)
+	}
+	// A broken injected calendar must not hang a report. Fall back to the
+	// checked-in calendar, which itself degrades to weekdays outside 2026.
+	return expectedSessionDateWithCalendar(now, symbol, NewExchangeCalendar())
 }
 
 func marketDate(value time.Time, symbol string) int {
-	loc, _, _ := marketClock(symbol)
-	return dateKey(value.In(loc))
+	return dateKey(value.In(marketLocation(symbol)))
 }
 
-func marketClock(symbol string) (*time.Location, int, int) {
-	name, closeHour, closeMinute := "Asia/Shanghai", 15, 30
-	if len(symbol) >= 3 && symbol[:3] == "US." {
-		name, closeHour, closeMinute = "America/New_York", 16, 30
-	} else if len(symbol) >= 3 && symbol[:3] == "HK." {
-		name, closeHour, closeMinute = "Asia/Hong_Kong", 16, 30
+func marketLocation(symbol string) *time.Location {
+	name := "Asia/Shanghai"
+	switch marketForSymbol(symbol) {
+	case marketUS:
+		name = "America/New_York"
+	case marketHK:
+		name = "Asia/Hong_Kong"
 	}
 	loc, err := time.LoadLocation(name)
 	if err != nil {
 		loc = time.UTC
 	}
-	return loc, closeHour, closeMinute
+	return loc
 }
 
 func dateKey(value time.Time) int {

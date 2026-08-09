@@ -28,8 +28,8 @@
 ## State
 
 - **status**: `running`
-- **last step**: P0、P1 均完成 Luna 实施/审查与主线程真实 PG、Chrome、最终 `verify: ok`；所有临时容器已清理。P2/P3 保持 queued。
+- **last step**: P0、P1 已完成；P2 已完成官方 2026 交易日历、离线注入与时间边界测试。P3 进入实现。
 
 ## Next
 
-下一切片为 P2 `2026-08-09-datacheck-market-calendar.md`；先完成 calendar interface/离线来源小设计，再编码。P3 通知继续排在 P1/P2 之后。
+实现 P3 Telegram/Discord 外部通知：默认关闭、无凭证零影响、仅 repair 后仍异常或调度失败时发送。

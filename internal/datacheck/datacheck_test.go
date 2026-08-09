@@ -91,6 +91,86 @@ func TestDefaultPolicyUsesLatestExpectedMarketWeekday(t *testing.T) {
 	assertItemState(t, us, "bars", "1d", "fwd", StateComplete)
 }
 
+func TestExchangeCalendarSkipsMainlandHoliday(t *testing.T) {
+	shanghai := mustLocation(t, "Asia/Shanghai")
+	now := time.Date(2026, 1, 2, 18, 0, 0, 0, shanghai)
+	if got, want := expectedSessionDate(now, "SH.600000"), 20251231; got != want {
+		t.Fatalf("expected session = %d; want %d", got, want)
+	}
+}
+
+func TestExchangeCalendarHonorsHKHalfDay(t *testing.T) {
+	hongKong := mustLocation(t, "Asia/Hong_Kong")
+	beforeReady := time.Date(2026, 2, 16, 12, 29, 0, 0, hongKong)
+	if got, want := expectedSessionDate(beforeReady, "HK.00700"), 20260213; got != want {
+		t.Fatalf("before half-day ready = %d; want %d", got, want)
+	}
+	afterReady := time.Date(2026, 2, 16, 12, 30, 0, 0, hongKong)
+	if got, want := expectedSessionDate(afterReady, "HK.00700"), 20260216; got != want {
+		t.Fatalf("after half-day ready = %d; want %d", got, want)
+	}
+}
+
+func TestExchangeCalendarHonorsNYSEEarlyClose(t *testing.T) {
+	newYork := mustLocation(t, "America/New_York")
+	beforeReady := time.Date(2026, 11, 27, 13, 29, 0, 0, newYork)
+	if got, want := expectedSessionDate(beforeReady, "US.AAPL"), 20261125; got != want {
+		t.Fatalf("before early-close ready = %d; want %d", got, want)
+	}
+	afterReady := time.Date(2026, 11, 27, 13, 30, 0, 0, newYork)
+	if got, want := expectedSessionDate(afterReady, "US.AAPL"), 20261127; got != want {
+		t.Fatalf("after early-close ready = %d; want %d", got, want)
+	}
+}
+
+func TestExchangeCalendarUsesUSDST(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		now  time.Time
+		want int
+	}{
+		{name: "standard time", now: time.Date(2026, 3, 6, 21, 30, 0, 0, time.UTC), want: 20260306},
+		{name: "daylight time", now: time.Date(2026, 3, 9, 20, 30, 0, 0, time.UTC), want: 20260309},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := expectedSessionDate(test.now, "US.AAPL"); got != test.want {
+				t.Fatalf("expected session = %d; want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPolicyAcceptsInjectedCalendar(t *testing.T) {
+	shanghai := mustLocation(t, "Asia/Shanghai")
+	now := time.Date(2026, 8, 10, 18, 0, 0, 0, shanghai)
+	policy := Policy{
+		Timeframes:   []string{"1d"},
+		Adjusts:      []string{"fwd"},
+		SessionAware: true,
+		Calendar: calendarFunc(func(_ string, date time.Time) MarketSession {
+			return MarketSession{TradingDay: dateKey(date) == 20260807, ReadyHour: 15, ReadyMinute: 30}
+		}),
+	}
+	report := Check([]string{"SH.600000"}, []ingest.BarCoverage{{
+		Symbol: "SH.600000", Timeframe: "1d", Adjust: "fwd",
+		MaxTs: time.Date(2026, 8, 7, 15, 0, 0, 0, shanghai),
+	}}, nil, now, policy)
+	assertItemState(t, report, "bars", "1d", "fwd", StateComplete)
+}
+
+type calendarFunc func(string, time.Time) MarketSession
+
+func (f calendarFunc) Session(symbol string, date time.Time) MarketSession { return f(symbol, date) }
+
+func mustLocation(t *testing.T, name string) *time.Location {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return loc
+}
+
 func assertItemState(t *testing.T, report Report, kind, timeframe, adjust string, want State) {
 	t.Helper()
 	for _, item := range report.Items {
