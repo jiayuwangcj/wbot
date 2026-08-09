@@ -19,13 +19,13 @@
 ## Links
 
 - Driven-By / trigger: `doc/tasks/2026-08-07-daily-data-completeness.md`
-- PR / branch: P0 后新建
+- PR / branch: `codex/feat-datacheck-observability`
 
 ## State
 
-- **status**: `queued`
-- **last step**: 契约与禁止范围已拍定。
+- **status**: `running`
+- **last step**: P0 已独立提交并验证；P1 分支已创建，准备派发 Luna subagent。
 
 ## Next
 
-P0 合格后，从 httpapi handler/fake store 测试开始，随后接 mux、API 文档与 Data 页。
+Luna subagent 从 httpapi handler/fake store 测试开始，随后接 mux、API 文档与 Data 页；主线程负责复核、真实 PG/Chrome 与最终 verify。
