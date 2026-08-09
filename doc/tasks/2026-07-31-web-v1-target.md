@@ -2,7 +2,7 @@
 
 - **id**: `2026-07-31-web-v1-target`
 - **created**: `2026-07-31`
-- **updated**: `2026-08-02`
+- **updated**: `2026-08-09`
 
 ## Goal
 
@@ -29,12 +29,12 @@
 | ⑧ PC 端 Web（前端，第一步）：页面框架 + 数据展示（bars/runs）+ 后台管理页面 | ✅ 已完成（PR #45/#49/#50，/ui/ 上线） | ① |
 | ⑨ 移动版本 Web 框架预留（响应式布局/断点，PC 页面可复用） | ✅ 已完成（viewport/断点/auto-fit 已预埋） | ⑧ |
 | ⑩ 券商 paper 接入：Schwab PaperMoney / IBKR Paper | **挂起**（降级候选；富途优先） | ① |
-| ⑪ 富途接入：OpenD 容器部署（docker-compose 配置）+ Go proto 客户端（参考/直接使用 qtopie/gofutuapi） | **可做**（OpenD 容器本地部署；行情数据接入；需富途账号登录 OpenD——老板协助时列 discussions/21） | ① |
+| ⑪ 富途接入：OpenD 容器部署（docker-compose 配置）+ Go proto 客户端（参考/直接使用 qtopie/gofutuapi） | ✅ **已完成**（容器部署、行情/期权/账户只读链路；真实账号登录由部署方配置） | ① |
 | ④ 微信小程序前端 | ❌ **废弃**（微信将下架含股票小程序，2026-07-31 老板指令） | — |
 | ⑤ 券商持仓显示 | **挂起**——缺 paper/真实凭证（并入 ⑩） | ⑩ |
 
 
-| ⑫ 策略模块：Covered Call + Cash-Secured Put + 关注标的（watchlist） | **可做**（拆解中：期权数据依赖/回测集成/参数待产品组细化；**测试标的：HK.00700（腾讯，模拟盘）**——2026-08-01 老板确认） | ①（数据）、富途期权行情（⑪ 链路） |
+| ⑫ 策略模块：Covered Call + Cash-Secured Put + 关注标的（watchlist） | ✅ **已完成**（期权数据、回测、逐标的参数与 Web 工作台） | ①（数据）、富途期权行情（⑪ 链路） |
 
 > 注：原 miniapp 目标见 [[2026-07-31-miniapp-v1-target]]（已废弃，指向本文件）。
 
@@ -46,10 +46,10 @@
 
 ## State
 
-- **status**: `running`
-- **last step**: 2026-08-02 ⑪-b/c 完成（富途 Go 客户端+数据管道 PR #58-#61）；⑫ 策略模块（covered-call/cash-secured-put #69）、watchlist 调参（#68）、Web 全链可用（#45-#90）；⑧⑨ 完成；8-02 凌晨 20 个 PR（#71-#90：策略工作台/多 symbol 回测/导出/新鲜度监控/富途账户与期权 Web）全部合入，vdaily-20260802 已从 main 重建并部署（~/.wbot/releases/daily-20260802/，校验 OK）。
+- **status**: `done`
+- **last step**: ⑧⑨⑪⑫ 均已完成；2026-08-09 又补齐 datacheck 自动 repair、只读观察面、官方交易日历、可选外部告警及 Data 页桌面/移动端验收。需外部凭证或实盘写确认的候选不再让已达成的 v1 目标保持 running。
 
 ## Next
 
-- ⑩ Schwab/IBKR paper：降级挂起（凭证 blocked，discussions/21）；富途实盘下单 Web 化需老板确认（doc/FUTU.md 交易安全策略）。
-- 产品组下一批草稿（doc/issues/2026-08-02-* 已全部交付）：批量导出/图表报告、新鲜度告警推送（等老板通知 token）、自动补拉。
+- ⑩ Schwab/IBKR paper 继续作为独立候选等待外部凭证（discussions/21），不属于已完成 v1 的未交付项。
+- 富途实盘下单 Web 化仍需老板单独确认（doc/FUTU.md 交易安全策略）；默认只读/模拟盘护栏不变。

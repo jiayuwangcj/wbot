@@ -27,9 +27,18 @@
 
 ## State
 
-- **status**: `running`
-- **last step**: P0、P1 已完成；P2 已完成官方 2026 交易日历、离线注入与时间边界测试。P3 进入实现。
+- **status**: `done`
+- **last step**: P0-P3 与最终 UI 收口全部完成；真实 PG、Mac Chrome 桌面/390px、全量 verify 均通过，临时服务/容器/浏览器资料已清理。
 
 ## Next
 
-实现 P3 Telegram/Discord 外部通知：默认关闭、无凭证零影响、仅 repair 后仍异常或调度失败时发送。
+后续仅需按年度更新内建交易日历；通知凭证由部署方按需配置，不影响默认单体运行。
+
+## Final Evidence
+
+- `scripts/verify.sh`: `verify: ok`（含全仓测试、race、staticcheck）。
+- 真实 PostgreSQL 16：`internal/datacheck`、`internal/httpapi`、`cmd/wbot` 集成测试 PASS；共享数据库残留数据下 fixture 仍隔离。
+- Mac Chrome 151：桌面 1440×1000 实际截图通过；移动端 DevTools 390×844 中 `innerWidth = documentElement.scrollWidth = 390`，工具栏、5 个指标与异常表均在视口内。
+- 浏览器 fixture：`symbols=1 / total=25 / complete=0 / missing=24 / stale=1`；缺失优先、中文状态色、检查时间与读取失败状态均可见。
+- 验收期间额外修复：回测详情/JSON/CSV 时间统一 UTC；`umask=0077` 权限测试稳定；真实 PG integration 不再依赖数据库只有一条期权 coverage。
+- 审计结果：本计划与 Web v1 总目标均归档为 done；无其他结构化 `running` / `queued` task。
