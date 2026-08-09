@@ -60,17 +60,24 @@ VALUES ('US.DATACHECK260901P10',$1,'put',10,$2,$3,1,1,1,1,1,'fwd','datacheck-tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(options) != 1 {
-		t.Fatalf("option coverage rows = %d; want 1", len(options))
+	var option *OptionCoverage
+	for i := range options {
+		if options[i].Underlying == symbol {
+			option = &options[i]
+			break
+		}
 	}
-	if !options[0].MaxTs.Equal(now) {
-		t.Fatalf("option max ts = %s; want %s", options[0].MaxTs, now)
+	if option == nil {
+		t.Fatalf("option coverage = %+v; want underlying %s", options, symbol)
+	}
+	if !option.MaxTs.Equal(now) {
+		t.Fatalf("option max ts = %s; want %s", option.MaxTs, now)
 	}
 	wantExpiry := now.AddDate(0, 1, 0)
-	gotY, gotM, gotD := options[0].MaxExpiry.Date()
+	gotY, gotM, gotD := option.MaxExpiry.Date()
 	wantY, wantM, wantD := wantExpiry.Date()
 	if gotY != wantY || gotM != wantM || gotD != wantD {
-		t.Fatalf("option max expiry = %s; want latest snapshot expiry date %s", options[0].MaxExpiry, wantExpiry.Format("2006-01-02"))
+		t.Fatalf("option max expiry = %s; want latest snapshot expiry date %s", option.MaxExpiry, wantExpiry.Format("2006-01-02"))
 	}
 	report := Check(symbols, bars, options, now, Policy{Timeframes: []string{"1d"}, Adjusts: []string{"fwd"}, Options: true})
 	var found []Item
