@@ -7,9 +7,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jiayu/wbot/internal/strategy"
+)
+
+// Execution status values for a binding (migration 005 whitelist, same set
+// the wheel runner writes and the audit UI renders).
+const (
+	StatusReady            = "READY"
+	StatusDataBlocked      = "DATA_BLOCKED"
+	StatusNeedsReconfigure = "NEEDS_RECONFIGURATION"
 )
 
 // Item is one watchlist row (symbol PK; strategy/params NOT NULL in migration 003).
@@ -162,6 +171,43 @@ ON CONFLICT (symbol) DO UPDATE SET
 		return Item{}, fmt.Errorf("watchlist: upsert: commit: %w", err)
 	}
 	return it, nil
+}
+
+// SetExecutionStatus updates one binding's execution status and reason
+// (READY clears the reason to NULL). Status is validated against the
+// migration-005 whitelist before any DB call; a missing row returns a
+// sql.ErrNoRows-wrapped error.
+func SetExecutionStatus(ctx context.Context, db *sql.DB, symbol, status, reason string) error {
+	status = strings.ToUpper(strings.TrimSpace(status))
+	switch status {
+	case StatusReady, StatusDataBlocked, StatusNeedsReconfigure:
+	default:
+		return fmt.Errorf("watchlist: set execution status: invalid status %q (want READY, DATA_BLOCKED or NEEDS_RECONFIGURATION)", status)
+	}
+	if symbol == "" {
+		return errors.New("watchlist: set execution status: empty symbol")
+	}
+	if db == nil {
+		return errors.New("watchlist: set execution status: nil db")
+	}
+	var storedReason any
+	if status != StatusReady {
+		storedReason = reason
+	}
+	res, err := db.ExecContext(ctx, `
+UPDATE watchlist SET execution_status = $2, invalidation_reason = $3, updated_at = now()
+WHERE symbol = $1`, symbol, status, storedReason)
+	if err != nil {
+		return fmt.Errorf("watchlist: set execution status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("watchlist: set execution status: rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("watchlist: set execution status: %w: symbol %s", sql.ErrNoRows, symbol)
+	}
+	return nil
 }
 
 // Delete removes one symbol; returns false when the symbol is not on the list.
