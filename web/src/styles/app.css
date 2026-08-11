@@ -252,6 +252,55 @@ html[data-theme="dark-contrast"] {
   border-radius: var(--app-card-radius);
 }
 
+/* Data page (slice P3): bars 查询表单、datacheck 汇总卡与覆盖/期权 Tabs */
+.bars-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.bars-form .ant-select {
+  min-width: 104px;
+}
+
+.bars-form input[type="date"] {
+  height: 40px;
+  min-width: 148px;
+  padding: 0 11px;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color-scheme: light dark;
+}
+
+.data-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.data-toolbar-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.datacheck-hero .metric-grid {
+  margin-bottom: 16px;
+}
+
+@media (max-width: 767px) {
+  .bars-form input[type="date"] {
+    flex: 1 1 100%;
+  }
+}
+
 .wheel-curve-row {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
