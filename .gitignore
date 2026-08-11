@@ -1,4 +1,5 @@
 /dist/
+/internal/webui/web/dist/
 # 敏感配置（见 doc/PRIVACY.md）：值一律禁止入库
 *.env
 *.key

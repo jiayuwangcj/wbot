@@ -9,11 +9,11 @@ import (
 	"time"
 )
 
-//go:embed web/*
+//go:embed web/dist/*
 var webFiles embed.FS
 
 // webRoot is the embedded web/ directory exposed as an fs.FS.
-var webRoot = mustSub(webFiles, "web")
+var webRoot = mustSub(webFiles, "web/dist")
 
 // mustSub returns fs.Sub(fsys, dir), panicking on the static embed failure.
 func mustSub(fsys fs.FS, dir string) fs.FS {
@@ -80,9 +80,8 @@ func (i stampedInfo) ModTime() time.Time { return i.modTime }
 // staticHandler serves the stamped embedded tree; built once at init.
 var staticHandler = http.FileServer(http.FS(stampedFS{webRoot, assetModTime}))
 
-// FileServer returns an http.Handler serving the embedded UI (index.html,
-// watchlist.html, results.html, data.html, admin.html, style.css, app.js,
-// favicon.svg). Every response carries Cache-Control:
+// FileServer returns an http.Handler serving the embedded UI build.
+// Every response carries Cache-Control:
 // no-cache plus Last-Modified (binary build time), so browsers revalidate on
 // each load instead of ever serving a stale asset after a rebuild/deploy —
 // and unchanged assets round-trip as cheap 304s.
