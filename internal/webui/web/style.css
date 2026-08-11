@@ -546,6 +546,29 @@ td.num-down {
   font-weight: 600;
 }
 
+/* Wheel 能力状态/动作语义色(券商面板惯例, 富途/IB/嘉信):READY 可提醒
+   =绿, DATA_BLOCKED 数据阻塞=黄, ALERT 可操作=橙, HOLD 保持=灰。
+   三张审计表(watchlist 能力列、信号表、回测 trace)共用 data-status /
+   data-action 属性,新状态未命中时回落默认色。 */
+td[data-status="READY"] {
+  color: var(--ok);
+  font-weight: 600;
+}
+
+td[data-status="DATA_BLOCKED"] {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+td[data-action="ALERT"] {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+
+td[data-action="HOLD"] {
+  color: var(--muted);
+}
+
 @media (min-width: 1024px) {
   .dash-grid {
     grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
