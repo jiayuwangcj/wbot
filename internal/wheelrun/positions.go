@@ -43,14 +43,27 @@ type TradePositions interface {
 // like "HK." is stripped before matching.
 var optionCodeRE = regexp.MustCompile(`^([A-Za-z]+)(\d{2})(\d{2})(\d{2})([CP])(\d+)$`)
 
+// suspiciousOptionRE matches digit-led codes that still carry a C/P suffix —
+// likely SH/SZ ETF option shapes this mapping does not support yet.
+var suspiciousOptionRE = regexp.MustCompile(`^[^A-Za-z].*[CP]\d+$`)
+
+// errUnsupportedOption marks a code that looks like an option but whose
+// underlying does not start with a letter (e.g. SH/SZ ETF options).
+var errUnsupportedOption = errors.New("wheelrun: unsupported option code: underlying must start with a letter")
+
 // parseOptionCode parses an option code into strike, expiry (UTC midnight)
 // and a wheel.OptionType ("call"/"put") ready for wheel.OptionPosition.
+// Digit-led codes with an option suffix fail with errUnsupportedOption instead
+// of a generic parse error, so callers never mistake them for stock codes.
 func parseOptionCode(code string) (strike float64, expiry time.Time, typ wheel.OptionType, err error) {
 	for _, pre := range []string{"HK.", "US.", "SH.", "SZ."} {
 		code = strings.TrimPrefix(code, pre)
 	}
 	m := optionCodeRE.FindStringSubmatch(code)
 	if m == nil {
+		if suspiciousOptionRE.MatchString(code) {
+			return 0, time.Time{}, "", fmt.Errorf("%w: %q", errUnsupportedOption, code)
+		}
 		return 0, time.Time{}, "", fmt.Errorf("not an option code %q (want UNDERLYING+YYMMDD+C/P+strike×1000)", code)
 	}
 	expiry, err = time.Parse("060102", m[2]+m[3]+m[4])
@@ -73,8 +86,9 @@ func parseOptionCode(code string) (strike float64, expiry time.Time, typ wheel.O
 // and option positions (pure). Codes that parse as options become option
 // positions; everything else counts as stock. wheel.OptionPosition has no
 // expiry field, so LotSize/Delta/Expiry stay zero — the runner fills quotes
-// (with parseOptionCode's expiry) from OptionQuotes.
-func PositionsInput(ctx context.Context, positions []Position) (stockShares float64, opts []wheel.OptionPosition, err error) {
+// (with parseOptionCode's expiry) from OptionQuotes. Suspicious option-shaped
+// codes and negative qtys fail instead of silently entering the inventory.
+func PositionsInput(positions []Position) (stockShares float64, opts []wheel.OptionPosition, err error) {
 	opts = make([]wheel.OptionPosition, 0, len(positions))
 	for _, p := range positions {
 		code := p.Code
@@ -100,6 +114,8 @@ func PositionsInput(ctx context.Context, positions []Position) (stockShares floa
 				OptionType:      typ,
 			})
 			continue
+		} else if errors.Is(perr, errUnsupportedOption) {
+			return 0, nil, fmt.Errorf("wheelrun: position %s: %w", sym, perr)
 		}
 		stockShares += signed
 	}
@@ -107,8 +123,12 @@ func PositionsInput(ctx context.Context, positions []Position) (stockShares floa
 }
 
 // signedQty applies the PositionSide sign (long +, short −); an unknown side
-// is an error so a mis-adapted position cannot silently flip the inventory.
+// or a negative qty is an error so a mis-adapted position cannot silently
+// flip or shrink the inventory.
 func signedQty(p Position) (float64, error) {
+	if p.Qty < 0 {
+		return 0, fmt.Errorf("wheelrun: negative qty %v for %s", p.Qty, p.Symbol)
+	}
 	switch p.Side {
 	case SideLong:
 		return p.Qty, nil
