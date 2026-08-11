@@ -24,15 +24,15 @@
 
 ## State
 
-- **status**: `delivered`(待评审)
-- **last step**: coder 已完成并提交 `ecfc10d`(feat/slice-d-llm-review,未 push):llmreview 包(Review + fail-closed 全部错误路径 + 防注入 prompt + 10s 超时)+ wheelstore.AppendAction 白名单扩展(LLM_REVIEW)+ 迁移 008(actions CHECK 约束)+ 单测/集成测。主会话抽验:commit 只动 6 个允许文件;Review 错误路径全覆盖;AppendAction 由已有实现扩展而非重写。verify.sh 全绿。
+- **status**: `delivered`(评审修复已合入,2026-08-11 收口)
+- **last step**: coder 已完成并提交 `ecfc10d`(feat/slice-d-llm-review,未 push):llmreview 包(Review + fail-closed 全部错误路径 + 防注入 prompt + 10s 超时)+ wheelstore.AppendAction 白名单扩展(LLM_REVIEW)+ 迁移 008(actions CHECK 约束)+ 单测/集成测。主会话抽验:commit 只动 6 个允许文件;Review 错误路径全覆盖;AppendAction 由已有实现扩展而非重写。verify.sh 全绿。评审修复已合入基线 `0f510dc`(fix(llmreview): review findings);主会话 2026-08-11 核对:New 校验三个必填项 ✓、marshal 失败返回 error(不再回退退化载荷)✓、解码失败 fail-closed ✓。
 
 ## 遗留(评审结论 2026-08-11:有条件批准,无 P0)
 
-**P1(已派 coder 修)**:
+**P1(已修,0f510dc)**:
 - llmreview.go userContent marshal 失败回退退化载荷 → 可能无数据 APPROVE,违背 fail-closed → 改返回 error。
 
-**P2(已派 coder 修)**:
+**P2(已修,0f510dc)**:
 - New 不校验 model(注释声称校验全部必需项)→ 补校验 + 测试。
 - fail-closed 测试缺顶层解码失败、网络故障/超时两路径 → 补用例。
 - integration_test 缺 DB 层非法 action 负例(008 约束无人守护)→ 补裸 SQL 'HACK' 期望失败用例。

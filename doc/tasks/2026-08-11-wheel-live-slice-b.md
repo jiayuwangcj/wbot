@@ -23,15 +23,15 @@
 
 ## State
 
-- **status**: `delivered`(评审修复中)
-- **last step**: coder 完成并提交 `30b3cac`(feat/slice-b-option-quote):OptionQuotes 批量报价(Greeks 解析、canonical key、缺字段留零)+ wheelrun/positions.go(code 解析、多空映射);已合入开发基线(283363d)。评审(有条件批准,无 P0)要求修复:① P1-1 运行时诊断(requested/answered/bidask_zero warn 日志);② P2×4(去 ctx、Theta 改 *float64、数字开头 code 显式报错、负 Qty 校验)——已发 coder 修复中。
+- **status**: `delivered`(评审修复已合入,2026-08-11 收口)
+- **last step**: coder 完成并提交 `30b3cac`(feat/slice-b-option-quote):OptionQuotes 批量报价(Greeks 解析、canonical key、缺字段留零)+ wheelrun/positions.go(code 解析、多空映射);已合入开发基线(283363d)。评审(有条件批准,无 P0)修复已完成并合入基线 `4338def`(fix(futu,wheelrun): review findings——① P1-1 运行时诊断 requested/answered/bidask_zero warn 日志;② P2×4 去 ctx、Theta 改 *float64(option_quote.go:30)、数字开头 code 显式报错、负 Qty 校验)。主会话 2026-08-11 核对:Theta 已为 *float64 ✓;后续切片(25ea2da 等)适配无回归。
 
 ## 遗留(评审记录)
 
-- **P1-1 字段路径核对(显式验收)**:真实捕获(client_test.go:100,2026-07-31)basic 快照键为 `cur_price/high_price/open_price/volume/name/update_time`,与 fixture 假定的 `bid_price/ask_price/last_price` 体系相悖;若真实网关对期权也返回 cur_price 体系 → Bid/Ask 恒零 → 永久 DATA_BLOCKED。核对步骤已列入切片 F 验收(网关恢复后 curl dump 键名 diff);运行器诊断日志区分形态不匹配与休市。
+- **P1-1 字段路径核对(显式验收)**:真实捕获(client_test.go:100,2026-07-31)basic 快照键为 `cur_price/high_price/open_price/volume/name/update_time`,与 fixture 假定的 `bid_price/ask_price/last_price` 体系相悖;若真实网关对期权也返回 cur_price 体系 → Bid/Ask 恒零 → 永久 DATA_BLOCKED。核对步骤已列入切片 F ③(网关恢复后 curl dump 键名 diff,**真实环境认证闸门,非离线必过**);运行器诊断日志区分形态不匹配与休市。
 - P3:未知 market 裸 code key(跳过+日志)、ParseSymbol 不支持含点 underlying(US.BRK.B,留待 US 标的支持)、subscribe 非 429 失败无重试(依赖下一轮)、测试小缺口(bad s2c JSON、重复 symbol、未请求合约)——低风险,随 F 的 fixture 核对一并补。
 - 确认无问题:空批不发网络、parseQuoteTime 零值→wheel.Validate 阻断而非当新鲜、零=缺失语义与领域安全组合、OptionQuoteEx 缺 Expiry/Strike 由 code 解析更权威、Sign 约定与领域一致(长正短负)。
 
 ## Next
 
-coder 修复(评审 P1/P2)→ 修复提交后合入开发基线 → 切片 C 适配新接口 → 字段路径核对列 F 验收。
+(收口)切片 C/G 已适配新接口并合入;P1-1 字段路径核对由切片 F ③ 承接(网关恢复后执行并记入 ledger)。
