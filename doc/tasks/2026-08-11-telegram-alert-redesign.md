@@ -70,11 +70,13 @@ PUT 持仓  <code>0</code> 张
 
 ## State
 
-- **status**: `ready_for_review`(2026-08-11 codex 实现完成)
+- **status**: `done`(2026-08-11 评审通过、合入 main;PR #333 已 MERGED)
 - **executor**: codex(worktree `.claude/worktrees/telegram-alert-redesign`)
 - **verification**: `PATH="$(go env GOPATH)/bin:$PATH" scripts/verify.sh` 全绿(`verify: ok`)
+- 评审结论: 可合入,feature(合批发布);P2: telegram_scheduler.go CALL/PUT 持仓硬编码 `-` 未接线(数据已存在,排期接线);P3: parse_mode HTML 契约注释、dismiss 注释补「程序异常」
 
 ## Next
 
-- reviewer 评审(功能类型判定)→ 合入 main → serve 重启生效
+- ✅ 已合入(PR #333);重建 release 后 serve 重启生效
 - 明早 9:30 港股开盘实测:真实 ALERT 推送排版验证
+- 后续:持仓 CALL/PUT 接线(P2)、telegram 智能助手(对话+工程能力,任务 #31)
