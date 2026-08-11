@@ -99,6 +99,11 @@ jobs:
         working-directory: web
         run: npm run build
 
+      - name: Check frontend types
+        if: needs.check-skip.outputs.skip != 'true'
+        working-directory: web
+        run: npx tsc --noEmit
+
       - name: Run frontend tests
         if: needs.check-skip.outputs.skip != 'true'
         working-directory: web
