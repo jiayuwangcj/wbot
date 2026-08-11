@@ -163,9 +163,17 @@ VALUES ($1, $2, 1, $3, $4::jsonb, 'invalid fixture')`, symbol, tc.action, tc.sta
 	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "FILL", Actor: "operator", Note: "human-reported fill", Details: map[string]any{"contracts": 1}}); err != nil {
 		t.Fatalf("AppendAction FILL: %v", err)
 	}
+	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "LLM_REVIEW", Actor: "llm:test-model", Details: map[string]any{"verdict": "APPROVE", "reasons": []string{"within budget"}}}); err != nil {
+		t.Fatalf("AppendAction LLM_REVIEW: %v", err)
+	}
 	actions, err := store.ListActions(ctx, alertID)
-	if err != nil || len(actions) != 2 || actions[1].Action != "FILL" {
+	if err != nil || len(actions) != 3 || actions[2].Action != "LLM_REVIEW" || actions[2].Details["verdict"] != "APPROVE" {
 		t.Fatalf("ListActions=%+v err=%v", actions, err)
+	}
+	// Guard migration 008: unknown actions must be rejected by the CHECK
+	// constraint even when written with bare SQL past the Go validation.
+	if _, err := database.Exec(`INSERT INTO wheel_signal_actions (signal_id, action, actor) VALUES ($1, 'HACK', 'test')`, alertID); err == nil {
+		t.Fatal("database accepted HACK action; CHECK constraint from migration 008 missing")
 	}
 }
 

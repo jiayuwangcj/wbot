@@ -21,7 +21,7 @@ var (
 	ErrInvalidRecord = errors.New("wheelstore: invalid record")
 	ErrInvalidAction = errors.New("wheelstore: action must be ALERT or HOLD")
 	ErrInvalidStatus = errors.New("wheelstore: capability status must be READY or DATA_BLOCKED")
-	ErrInvalidOp     = errors.New("wheelstore: action must be CONFIRM, IGNORE, FILL, or NOTE")
+	ErrInvalidOp     = errors.New("wheelstore: action must be CONFIRM, IGNORE, FILL, NOTE, or LLM_REVIEW")
 )
 
 // ConfigRecord is one version of a symbol's strategy configuration. Config
@@ -679,23 +679,29 @@ func (s *Store) QuerySignals(ctx context.Context, symbol, action string, limit i
 	return s.ListSignals(ctx, symbol, action, "", limit)
 }
 
-func validOperatorAction(a string) bool {
+func validAction(a string) bool {
 	switch strings.ToUpper(strings.TrimSpace(a)) {
-	case "CONFIRM", "IGNORE", "FILL", "NOTE":
+	case "CONFIRM", "IGNORE", "FILL", "NOTE", "LLM_REVIEW":
 		return true
 	}
 	return false
+}
+func validateAction(r *ActionRecord) error {
+	if r.SignalID <= 0 || strings.TrimSpace(r.Actor) == "" {
+		return fmt.Errorf("%w: signal id and actor are required", ErrInvalidRecord)
+	}
+	r.Action = strings.ToUpper(strings.TrimSpace(r.Action))
+	if !validAction(r.Action) {
+		return ErrInvalidOp
+	}
+	return nil
 }
 func (s *Store) AppendAction(ctx context.Context, r ActionRecord) (int64, error) {
 	if err := s.check(); err != nil {
 		return 0, err
 	}
-	r.Action = strings.ToUpper(strings.TrimSpace(r.Action))
-	if r.SignalID <= 0 || strings.TrimSpace(r.Actor) == "" {
-		return 0, fmt.Errorf("%w: signal id and actor are required", ErrInvalidRecord)
-	}
-	if !validOperatorAction(r.Action) {
-		return 0, ErrInvalidOp
+	if err := validateAction(&r); err != nil {
+		return 0, err
 	}
 	d, e := validateJSONMap("details", r.Details, true)
 	if e != nil {
