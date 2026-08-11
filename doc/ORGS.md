@@ -12,14 +12,14 @@
 │   老板反馈（唯一发贴权限）     ├─ reviewer（评审组）         │   取任务/派单/verify 跟踪（轻 token）
 │   .claude/agents/product/      │   多角色评审（合入门禁）    ├─ efficiency（工程运行提效）
 │   owner.md                     │   .claude/agents/dev/       │   CI/工具链瓶颈评估（轻 token）
-│                                │   reviewer.md               ├─ engineering-admin（工程管理员）
-│                                │                                 目录结构/远端分支/发布 发起（轻 token）
-│                                │                                 .claude/agents/pm/
-│                                │                                 engineering-admin.md
-│                                │                                 （仍 PM 组：发起不执行）
-│                                │                                 └─ robot（GitHub 机器人）
-│                                │                                     评论[robot]/分诊/进度贴
-│                                │                                     .claude/agents/pm/
+├─ sol（需求评估，2026-08-11）    │   reviewer.md               ├─ engineering-admin（工程管理员）
+│   经 codex-cli 调 gpt-5.6-sol   │                                 目录结构/远端分支/发布 发起（轻 token）
+│   medium 评估需求栈/衍生切片    │                                 .claude/agents/pm/
+│   不排期/不写码/不评审          │                                 engineering-admin.md
+│   .claude/agents/product/       │                                 （仍 PM 组：发起不执行）
+│   sol.md                        │                                 └─ robot（GitHub 机器人）
+│                                 │                                     评论[robot]/分诊/进度贴
+│                                 │                                     .claude/agents/pm/
 
 运维组 Ops
 └─ operator（运维）
@@ -33,6 +33,7 @@
 | 组 | 角色 | 文件 | 职责 | 不碰 |
 | --- | --- | --- | --- | --- |
 | 产品组 | owner | `product/owner.md` | 需求衍生、需求切片（Goal/验收/非目标）、验收预期、自主任务生成（无指令时）、**GitHub issue 与 ROADMAP 自主维护（含删除无用项）**、**老板反馈（唯一发贴权限，与主 agent 并列）** | 代码/评审/排期 |
+| 产品组 | sol | `product/sol.md` | **需求评估（2026-08-11 新增，以模型命名）**：经 codex-cli 调 `gpt-5.6-sol`（medium 思考）独立评估需求栈/用户指令/交付现状，衍生新需求切片（Goal/验收/优先级/依赖）；第二视角，产出交 owner/主会话消化 | 代码/评审/排期 |
 | 开发组 | coder | `dev/coder.md` | 按任务记录实现、自测、独立分支提交 | 评审自己的活/计划 |
 | 开发组 | reviewer | `dev/reviewer.md` | 多角色评审（健壮性/容灾/API 兼容/产品体验/CI 覆盖/日志/粒度/调用方视角） | 修改代码 |
 | PM 组 | manager | `pm/manager.md` | 进度评审、三级优先级调整 | 代码/评审 |
