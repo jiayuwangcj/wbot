@@ -1533,7 +1533,7 @@ function applySignalDetailHash(rowsById) {
   if (hit) toggleWheelSignalDetail(hit.tbody, hit.row, hit.item, hit.toggle);
 }
 
-function renderWheelSignals(items, onActions) {
+function renderWheelSignals(items, onActions, onConfig) {
   const table = document.getElementById("wheel-signals-table");
   const empty = document.getElementById("wheel-signals-empty");
   const tbody = table.tBodies[0];
@@ -1563,7 +1563,13 @@ function renderWheelSignals(items, onActions) {
     const auditCell = document.createElement("td");
     auditCell.appendChild(detailToggle);
     auditCell.appendChild(audit);
-    appendRow(tbody, [fmtTime(item.created_at), item.symbol, action, capability, "v" + item.config_version, wheelInventorySummary(item.inventory), item.reason, auditCell]);
+    const configLink = document.createElement("button");
+    configLink.type = "button";
+    configLink.className = "link";
+    configLink.textContent = "v" + item.config_version;
+    configLink.title = "查看该版本配置";
+    configLink.addEventListener("click", () => onConfig(item));
+    appendRow(tbody, [fmtTime(item.created_at), item.symbol, action, capability, configLink, wheelInventorySummary(item.inventory), item.reason, auditCell]);
     const row = tbody.lastElementChild;
     rowsById.set(item.id, {tbody, row, item, toggle: detailToggle});
     detailToggle.addEventListener("click", () => toggleWheelSignalDetail(tbody, row, item, detailToggle));
@@ -1646,13 +1652,21 @@ function initWatchlistPage() {
     if (capability) query.push("capability=" + encodeURIComponent(capability));
     loadJSON("/v1/wheel/signals?" + query.join("&"), signalsError, (items) => {
       wheelSignalItems = items;
-      renderWheelSignals(signalsSorter.sortItems(items), loadSignalActions);
+      renderWheelSignals(signalsSorter.sortItems(items), loadSignalActions, jumpToConfigVersion);
     });
+  }
+
+  /* 信号 → 配置版本联动:把配置视图过滤到该标的并滚动到该区,
+     审计闭环(信号引用的不可变版本可在下方查原文)。 */
+  function jumpToConfigVersion(item) {
+    configsFilter.symbol.value = item.symbol;
+    configsFilter.dispatchEvent(new Event("submit", {cancelable: true}));
+    document.getElementById("wheel-configs").scrollIntoView();
   }
 
   /* 信号审计表排序(全站表排序一致性):默认时间降序,最新在上。 */
   const signalsSorter = makeTableSorter("wheel-signals-table", WHEEL_SIGNALS_SORT_KEYS);
-  signalsSorter.render = () => renderWheelSignals(wheelSignalItems, loadSignalActions);
+  signalsSorter.render = () => renderWheelSignals(wheelSignalItems, loadSignalActions, jumpToConfigVersion);
   signalsSorter.state.key = "created_at";
   signalsSorter.state.dir = -1;
   signalsSorter.renderIndicators();
@@ -1672,7 +1686,7 @@ function initWatchlistPage() {
   }
   const configsSorter = makeTableSorter("wheel-configs-table", WHEEL_CONFIGS_SORT_KEYS);
   configsSorter.render = () => renderWheelConfigs(wheelConfigItems);
-  configsSorter.state.key = "version";
+  configsSorter.state.key = "created_at";
   configsSorter.state.dir = -1;
   configsSorter.renderIndicators();
   configsFilter.addEventListener("submit", (e) => {

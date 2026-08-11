@@ -255,7 +255,7 @@ func (s *Store) ListConfigs(ctx context.Context, symbol string, limit int) ([]Co
 		args = []any{symbol, limit}
 		q += ` WHERE symbol = $1`
 	}
-	q += fmt.Sprintf(` ORDER BY symbol ASC, version DESC LIMIT $%d`, len(args))
+	q += fmt.Sprintf(` ORDER BY created_at DESC, id DESC LIMIT $%d`, len(args))
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("wheelstore: list configs: %w", err)

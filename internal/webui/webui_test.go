@@ -659,7 +659,7 @@ func TestWatchlistWheelAuditJS(t *testing.T) {
 	}
 	s := string(data)
 	for _, want := range []string{
-		"function renderWheelSignals(items, onActions) {",
+		"function renderWheelSignals(items, onActions, onConfig) {",
 		"function loadWheelSignals() {",
 		`loadJSON("/v1/wheel/signals?" + query.join("&")`,
 		`loadJSON("/v1/wheel/signals/" + item.id + "/actions"`,
@@ -687,9 +687,14 @@ func TestWatchlistWheelAuditJS(t *testing.T) {
 		`function wheelConfigDetail(item) {`,
 		`wheelConfigSummary(item.config || {})`,
 		`makeTableSorter("wheel-configs-table", WHEEL_CONFIGS_SORT_KEYS)`,
-		`configsSorter.state.key = "version"`,
+		`configsSorter.state.key = "created_at"`,
 		`function applyConfigDetailHash(rowsById) {`,
 		`/^#config-(.+)-v(\d+)$/.exec(location.hash)`,
+		`configLink.textContent = "v" + item.config_version`,
+		`configLink.addEventListener("click", () => onConfig(item))`,
+		`function jumpToConfigVersion(item) {`,
+		`configsFilter.symbol.value = item.symbol`,
+		`renderWheelSignals(signalsSorter.sortItems(items), loadSignalActions, jumpToConfigVersion)`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing Wheel audit contract %q", want)
