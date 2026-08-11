@@ -2,9 +2,11 @@ package futu
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -102,7 +104,10 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 	}
 
 	var mu sync.Mutex
-	starts := make([]time.Time, 0, 8)
+	starts := make([]struct {
+		t time.Time
+		l int
+	}, 0, 8)
 	limiters := []*Limiter{l1, l2}
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -114,7 +119,10 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 				return
 			}
 			mu.Lock()
-			starts = append(starts, time.Now())
+			starts = append(starts, struct {
+				t time.Time
+				l int
+			}{time.Now(), i % 2})
 			mu.Unlock()
 		}(i)
 	}
@@ -122,10 +130,28 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 	if len(starts) != 8 {
 		t.Fatalf("got %d starts; want 8", len(starts))
 	}
+	failed := false
 	for i := 1; i < len(starts); i++ {
-		if d := starts[i].Sub(starts[i-1]); d < gap-2*time.Millisecond {
+		if d := starts[i].t.Sub(starts[i-1].t); d < gap-2*time.Millisecond {
+			failed = true
 			t.Errorf("start %d only %v after previous (across instances); want >= %v (persistPath %s)", i, d, gap, l1.persistPath)
 		}
+	}
+	// One compact line with the full timing scene (every start with its
+	// instance, the whole gap sequence, final stamp file) for CI log grepping.
+	if failed {
+		base := starts[0].t
+		offs := make([]string, len(starts))
+		for i, s := range starts {
+			offs[i] = fmt.Sprintf("%d:l%d:+%v", i, s.l, s.t.Sub(base))
+		}
+		gaps := make([]string, len(starts)-1)
+		for i := 1; i < len(starts); i++ {
+			gaps[i-1] = fmt.Sprintf("%d->%d:%v", i-1, i, starts[i].t.Sub(starts[i-1].t))
+		}
+		file, _ := os.ReadFile(l1.persistPath)
+		t.Errorf("scene: persistPath=%s file=%q starts=[%s] gaps=[%s]",
+			l1.persistPath, file, strings.Join(offs, " "), strings.Join(gaps, " "))
 	}
 }
 
