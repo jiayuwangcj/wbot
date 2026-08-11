@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// DetailJSON is one run's full detail: summary fields + equity_curve/trades
+// DetailJSON is one run's full detail: summary fields + equity_curve/trades/signals
 // (same shape as GET /v1/backtests/{id}); pre-004 rows (nil trace) come back
 // as empty arrays for read compatibility.
 type DetailJSON struct {
@@ -28,6 +28,7 @@ type DetailJSON struct {
 	CreatedAt   string         `json:"created_at"`
 	EquityCurve []EquityPoint  `json:"equity_curve"`
 	Trades      []Trade        `json:"trades"`
+	Signals     []SignalTrace  `json:"signals"`
 }
 
 // Detail converts one record to the export/detail shape: RFC3339 timestamps,
@@ -55,6 +56,18 @@ func Detail(r ResultRecord) DetailJSON {
 		trade.Ts = trade.Ts.UTC()
 		d.Trades[i] = trade
 	}
+	d.Signals = make([]SignalTrace, len(r.Signals))
+	for i, signal := range r.Signals {
+		signal.Ts = signal.Ts.UTC()
+		if signal.BlockedBy == nil {
+			signal.BlockedBy = []string{}
+		}
+		if signal.SnapshotObservedAt != nil {
+			observedAt := signal.SnapshotObservedAt.UTC()
+			signal.SnapshotObservedAt = &observedAt
+		}
+		d.Signals[i] = signal
+	}
 	return d
 }
 
@@ -77,7 +90,7 @@ func Export(r ResultRecord, format string) ([]byte, string, error) {
 	}
 }
 
-// ExportCSV renders one run as two blank-line-separated sections, each with a
+// ExportCSV renders one run as blank-line-separated sections, each with a
 // section name line and a header row; rows mirror the JSON arrays 1:1
 // (RFC3339 ts, shortest float form).
 func ExportCSV(r ResultRecord) []byte {
@@ -101,6 +114,34 @@ func ExportCSV(r ResultRecord) []byte {
 			strconv.FormatFloat(tr.Size, 'g', -1, 64),
 			strconv.FormatFloat(tr.Price, 'g', -1, 64),
 			strconv.FormatFloat(tr.CashAfter, 'g', -1, 64),
+		})
+	}
+	cw.Flush()
+	b.WriteString("\n")
+	cw.Write([]string{"signals"})
+	cw.Write([]string{"ts", "action", "direction", "reason", "capability_status", "blocked_by", "snapshot_key", "snapshot_observed_at", "actual_inventory", "effective_inventory", "option_delta_stock", "candidate_code", "quantity", "candidates"})
+	for _, signal := range detail.Signals {
+		candidates, _ := json.Marshal(signal.Candidates)
+		blockedBy, _ := json.Marshal(signal.BlockedBy)
+		observedAt := ""
+		if signal.SnapshotObservedAt != nil {
+			observedAt = signal.SnapshotObservedAt.Format(time.RFC3339)
+		}
+		cw.Write([]string{
+			signal.Ts.Format(time.RFC3339),
+			signal.Action,
+			signal.Direction,
+			signal.Reason,
+			signal.CapabilityStatus,
+			string(blockedBy),
+			signal.SnapshotKey,
+			observedAt,
+			strconv.FormatFloat(signal.ActualInventory, 'g', -1, 64),
+			strconv.FormatFloat(signal.EffectiveInventory, 'g', -1, 64),
+			strconv.FormatFloat(signal.OptionDeltaStock, 'g', -1, 64),
+			signal.CandidateCode,
+			strconv.FormatFloat(signal.Quantity, 'g', -1, 64),
+			string(candidates),
 		})
 	}
 	cw.Flush()

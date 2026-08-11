@@ -1,6 +1,4 @@
-// Package watchlist persists tracked symbols with per-symbol strategy bindings
-// (migration 003 watchlist table). The strategy template contract served by
-// GET /v1/strategies renders from internal/strategy (single source).
+// Package watchlist persists tracked symbols with their Wheel configuration.
 package watchlist
 
 import (
@@ -16,25 +14,19 @@ import (
 
 // Item is one watchlist row (symbol PK; strategy/params NOT NULL in migration 003).
 type Item struct {
-	Symbol    string
-	Strategy  string
-	Params    map[string]any
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Symbol             string
+	Strategy           string
+	Params             map[string]any
+	ConfigVersion      *int
+	ExecutionStatus    string
+	InvalidationReason string
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
-// Validate checks params against the strategy contract: buy-hold is the
-// engine's first-class no-param strategy (backtestexec); everything else
-// delegates to the internal/strategy registry — the single source of truth
-// (doc/BACKTEST.md). The /v1/strategies contract renders from the same
-// registry (strategy.ContractTemplates + appended buy-hold, httpapi).
+// Validate delegates to the single strategy registry. Internal benchmark
+// strategies are deliberately not accepted by the product watchlist.
 func Validate(name string, params map[string]any) error {
-	if name == "buy-hold" {
-		for k := range params {
-			return fmt.Errorf("unknown parameter %q for strategy %q", k, name)
-		}
-		return nil
-	}
 	return strategy.Validate(name, params)
 }
 
@@ -44,7 +36,8 @@ func List(ctx context.Context, db *sql.DB) ([]Item, error) {
 		return nil, errors.New("watchlist: list: nil db")
 	}
 	rows, err := db.QueryContext(ctx, `
-SELECT symbol, strategy, params, created_at, updated_at FROM watchlist ORDER BY symbol`)
+SELECT symbol, strategy, params, config_version, execution_status, invalidation_reason, created_at, updated_at
+FROM watchlist ORDER BY symbol`)
 	if err != nil {
 		return nil, fmt.Errorf("watchlist: list: query: %w", err)
 	}
@@ -54,8 +47,20 @@ SELECT symbol, strategy, params, created_at, updated_at FROM watchlist ORDER BY 
 	for rows.Next() {
 		var it Item
 		var paramsJSON []byte
-		if err := rows.Scan(&it.Symbol, &it.Strategy, &paramsJSON, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		var version sql.NullInt64
+		var status, reason sql.NullString
+		if err := rows.Scan(&it.Symbol, &it.Strategy, &paramsJSON, &version, &status, &reason, &it.CreatedAt, &it.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("watchlist: list: scan: %w", err)
+		}
+		if version.Valid {
+			v := int(version.Int64)
+			it.ConfigVersion = &v
+		}
+		if status.Valid {
+			it.ExecutionStatus = status.String
+		}
+		if reason.Valid {
+			it.InvalidationReason = reason.String
 		}
 		if err := json.Unmarshal(paramsJSON, &it.Params); err != nil {
 			return nil, fmt.Errorf("watchlist: list: params: %w", err)
@@ -68,8 +73,10 @@ SELECT symbol, strategy, params, created_at, updated_at FROM watchlist ORDER BY 
 	return out, nil
 }
 
-// Upsert inserts or replaces one symbol's binding (ON CONFLICT DO UPDATE keeps
-// created_at, refreshes updated_at) and returns the stored row.
+// Upsert validates and persists one complete Wheel binding. A symbol-scoped
+// transaction lock makes version allocation serial even when two writers race
+// to create the first row. wheel_configs is append-only; the watchlist merely
+// points at the newly-created immutable version.
 func Upsert(ctx context.Context, db *sql.DB, symbol, strategy string, params map[string]any) (Item, error) {
 	if db == nil {
 		return Item{}, errors.New("watchlist: upsert: nil db")
@@ -83,29 +90,76 @@ func Upsert(ctx context.Context, db *sql.DB, symbol, strategy string, params map
 	if params == nil {
 		params = map[string]any{}
 	}
+	if err := Validate(strategy, params); err != nil {
+		return Item{}, fmt.Errorf("watchlist: upsert: validate: %w", err)
+	}
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return Item{}, fmt.Errorf("watchlist: upsert: params: %w", err)
 	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return Item{}, fmt.Errorf("watchlist: upsert: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// hashtextextended is deterministic for a given symbol and the advisory
+	// lock is released automatically when this transaction commits/rolls back.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, symbol); err != nil {
+		return Item{}, fmt.Errorf("watchlist: upsert: lock: %w", err)
+	}
+	var version int
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(version), 0) + 1 FROM wheel_configs WHERE symbol = $1`, symbol).Scan(&version); err != nil {
+		return Item{}, fmt.Errorf("watchlist: upsert: next version: %w", err)
+	}
+	configJSON, err := json.Marshal(map[string]any{"strategy": "wheel", "params": params})
+	if err != nil {
+		return Item{}, fmt.Errorf("watchlist: upsert: config: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO wheel_configs (symbol, version, config)
+VALUES ($1, $2, $3::jsonb)`, symbol, version, string(configJSON)); err != nil {
+		return Item{}, fmt.Errorf("watchlist: upsert: append config: %w", err)
+	}
+	const blockedReason = "waiting for complete quote snapshot"
 	var it Item
 	var raw []byte
-	err = db.QueryRowContext(ctx, `
-INSERT INTO watchlist (symbol, strategy, params, updated_at)
-VALUES ($1, $2, $3::jsonb, now())
+	var storedVersion sql.NullInt64
+	var storedStatus, storedReason sql.NullString
+	err = tx.QueryRowContext(ctx, `
+INSERT INTO watchlist (symbol, strategy, params, config_version, execution_status, invalidation_reason, updated_at)
+VALUES ($1, 'wheel', $2::jsonb, $3, 'DATA_BLOCKED', $4, now())
 ON CONFLICT (symbol) DO UPDATE SET
-	strategy = EXCLUDED.strategy,
 	params = EXCLUDED.params,
+	strategy = EXCLUDED.strategy,
+	config_version = $3,
+	execution_status = 'DATA_BLOCKED',
+	invalidation_reason = $4,
 	updated_at = now()
-RETURNING symbol, strategy, params, created_at, updated_at`,
-		symbol, strategy, string(paramsJSON)).Scan(&it.Symbol, &it.Strategy, &raw, &it.CreatedAt, &it.UpdatedAt)
+	RETURNING symbol, strategy, params, config_version, execution_status, invalidation_reason, created_at, updated_at`,
+		symbol, string(paramsJSON), version, blockedReason).Scan(&it.Symbol, &it.Strategy, &raw, &storedVersion, &storedStatus, &storedReason, &it.CreatedAt, &it.UpdatedAt)
 	if err != nil {
 		return Item{}, fmt.Errorf("watchlist: upsert: %w", err)
+	}
+	if storedVersion.Valid {
+		v := int(storedVersion.Int64)
+		it.ConfigVersion = &v
+	}
+	if storedStatus.Valid {
+		it.ExecutionStatus = storedStatus.String
+	}
+	if storedReason.Valid {
+		it.InvalidationReason = storedReason.String
 	}
 	if err := json.Unmarshal(raw, &it.Params); err != nil {
 		return Item{}, fmt.Errorf("watchlist: upsert: params: %w", err)
 	}
 	if it.Params == nil {
 		it.Params = map[string]any{}
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, fmt.Errorf("watchlist: upsert: commit: %w", err)
 	}
 	return it, nil
 }

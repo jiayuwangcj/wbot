@@ -242,7 +242,7 @@ func runServe(prog string, argv []string) int {
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -397,8 +397,8 @@ func runBacktest(prog string, argv []string) int {
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
 	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
-	strat := fs.String("strategy", "hold", "strategy to run: hold, buy-hold, covered-call or cash-secured-put")
-	params := fs.String("params", "", `strategy params as JSON, e.g. {"strike_pct_otm":0.05}; validated against the template schema (option strategies only)`)
+	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
+	params := fs.String("params", "", `Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md`)
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
@@ -408,11 +408,10 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file (-file) or directly from the\n")
 		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
-		fmt.Fprintf(os.Stderr, "Option strategies (covered-call, cash-secured-put) read contract prices and\n")
-		fmt.Fprintf(os.Stderr, "chain metadata from option_quotes, so they require -dsn input.\n")
+		fmt.Fprintf(os.Stderr, "The wheel strategy reads quote snapshots and contract metadata, so it requires -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
-		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades trace) is stored in backtest_results (migrations 003/004).\n")
+		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
 		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
 		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-symbols/-timeframe/-adjust/-from/-to/-limit apply to -dsn input.\n")
@@ -501,7 +500,7 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 	if templ != nil && templ.NeedsOptions && fp != "" {
-		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads option_quotes; -file input has no option data (use -dsn)\n", stratName)
+		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads atomic option_quote_snapshots; -file input has no option snapshot data (use -dsn)\n", stratName)
 		return 2
 	}
 
@@ -510,7 +509,7 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 	if multi && templ != nil && templ.NeedsOptions {
-		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads option_quotes; not supported for multi-symbol runs (use hold or buy-hold)\n", stratName)
+		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads atomic option_quote_snapshots; not supported for multi-symbol runs (use hold or buy-hold)\n", stratName)
 		return 2
 	}
 	if multi && *save {
@@ -702,8 +701,8 @@ func runWatchlistAdd(prog string, argv []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
 	symbol := fs.String("symbol", "", "instrument symbol (required, e.g. HK.00700)")
-	strategy := fs.String("strategy", "", "strategy template name (required, e.g. covered-call)")
-	params := fs.String("params", "", "strategy params as JSON object, e.g. '{\"strike_pct_otm\":0.03}'")
+	strategy := fs.String("strategy", "", "strategy name (required; wheel is the only product strategy)")
+	params := fs.String("params", "", "Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s watchlist add [flags]\n\n", prog)
@@ -1594,6 +1593,14 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/v1/strategies", wl)
 	top.Handle("/v1/watchlist", wl)
 	top.Handle("/v1/watchlist/", wl)
+	// Wheel audit endpoints are intentionally read-only. NewDBStore's dbStore
+	// implements the narrow WheelAuditStore interface; test stores that do not
+	// opt in receive a structured 500 instead of gaining write access.
+	var auditStore httpapi.WheelAuditStore
+	if candidate, ok := store.(httpapi.WheelAuditStore); ok {
+		auditStore = candidate
+	}
+	top.Handle("/v1/wheel/", httpapi.WheelAuditHandler(auditStore))
 	// Backtest results: saved runs list + detail with equity/trades + csv/json
 	// export (one handler mux); the method-specific pattern wins for POST, so
 	// the execute endpoint runs one backtest synchronously (manual body or

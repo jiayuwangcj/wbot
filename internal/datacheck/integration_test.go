@@ -33,7 +33,7 @@ func TestSnapshotIntegration(t *testing.T) {
 	defer cleanup()
 
 	now := time.Now().UTC().Truncate(time.Second)
-	if _, err := database.Exec(`INSERT INTO watchlist(symbol, strategy) VALUES ($1, 'buy-hold')`, symbol); err != nil {
+	if _, err := database.Exec(`INSERT INTO watchlist(symbol, strategy) VALUES ($1, 'wheel')`, symbol); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := database.Exec(`

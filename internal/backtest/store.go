@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-// Result persistence in backtest_results (migration 003, detail columns 004):
-// params/metrics as JSONB, equity_curve/trades nullable; SaveResult inserts one
-// run, LoadResults lists newest first, LoadResult reads one run's full trace.
+// Result persistence in backtest_results (migration 003, detail columns 004,
+// Wheel signal journal 006): params/metrics as JSONB and trace columns
+// nullable; SaveResult inserts one run, LoadResults lists newest first,
+// LoadResult reads one run's full trace.
 
 // ErrResultNotFound reports LoadResult missing its row.
 var ErrResultNotFound = errors.New("backtest: result not found")
@@ -30,13 +31,15 @@ type ResultRecord struct {
 	CreatedAt   time.Time
 	EquityCurve []EquityPoint
 	Trades      []Trade
+	Signals     []SignalTrace
 }
 
 // SaveResult persists one run: params (e.g. cash/fee/adjust) plus the metrics
 // derived from Result (equity/total_return/max_drawdown/bars) and, when the
-// Result carries them, the equity_curve/trades trace (migration 004). Stock
-// trades get their Symbol filled with the underlying symbol; option trades
-// keep the contract code. A trace-less Result saves metrics only.
+// Result carries them, the equity_curve/trades trace (migration 004) and
+// signals trace (migration 006). Stock trades get their Symbol filled with
+// the underlying symbol; option trades keep the contract code. A trace-less
+// Result saves metrics only.
 func SaveResult(ctx context.Context, db *sql.DB, strategy, symbol string, params map[string]any, r *Result, startTs, endTs time.Time) (int64, error) {
 	if db == nil {
 		return 0, errors.New("backtest: save result: nil db")
@@ -66,7 +69,7 @@ func SaveResult(ctx context.Context, db *sql.DB, strategy, symbol string, params
 	if err != nil {
 		return 0, fmt.Errorf("backtest: save result: metrics: %w", err)
 	}
-	var curveArg, tradesArg any
+	var curveArg, tradesArg, signalsArg any
 	if len(r.EquityCurve) > 0 {
 		curveJSON, err := json.Marshal(r.EquityCurve)
 		if err != nil {
@@ -88,11 +91,18 @@ func SaveResult(ctx context.Context, db *sql.DB, strategy, symbol string, params
 		}
 		tradesArg = string(tradesJSON)
 	}
+	if len(r.Signals) > 0 {
+		signalsJSON, err := json.Marshal(r.Signals)
+		if err != nil {
+			return 0, fmt.Errorf("backtest: save result: signals: %w", err)
+		}
+		signalsArg = string(signalsJSON)
+	}
 	var id int64
 	err = db.QueryRowContext(ctx, `
-INSERT INTO backtest_results (strategy, symbol, params, metrics, start_ts, end_ts, equity_curve, trades)
-VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb)
-RETURNING id`, strategy, symbol, string(paramsJSON), string(metricsJSON), startTs, endTs, curveArg, tradesArg).Scan(&id)
+INSERT INTO backtest_results (strategy, symbol, params, metrics, start_ts, end_ts, equity_curve, trades, signals)
+VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7::jsonb, $8::jsonb, $9::jsonb)
+RETURNING id`, strategy, symbol, string(paramsJSON), string(metricsJSON), startTs, endTs, curveArg, tradesArg, signalsArg).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("backtest: save result: insert: %w", err)
 	}
@@ -227,7 +237,7 @@ func LoadResults(ctx context.Context, db *sql.DB, symbol, strategy string, limit
 	return ListResults(ctx, db, symbol, strategy, "", 0, limit, "", false)
 }
 
-// LoadResult reads one run by id including its equity_curve/trades trace;
+// LoadResult reads one run by id including its equity_curve/trades/signals trace;
 // ErrResultNotFound when no row has that id.
 func LoadResult(ctx context.Context, db *sql.DB, id int64) (*ResultRecord, error) {
 	if db == nil {
@@ -237,12 +247,12 @@ func LoadResult(ctx context.Context, db *sql.DB, id int64) (*ResultRecord, error
 		return nil, errors.New("backtest: load result: id must be positive")
 	}
 	var rec ResultRecord
-	var paramsJSON, metricsJSON, curveJSON, tradesJSON []byte
+	var paramsJSON, metricsJSON, curveJSON, tradesJSON, signalsJSON []byte
 	err := db.QueryRowContext(ctx, `
-SELECT id, strategy, symbol, params, metrics, start_ts, end_ts, created_at, equity_curve, trades
+SELECT id, strategy, symbol, params, metrics, start_ts, end_ts, created_at, equity_curve, trades, signals
 FROM backtest_results WHERE id = $1`, id).
 		Scan(&rec.ID, &rec.Strategy, &rec.Symbol, &paramsJSON, &metricsJSON,
-			&rec.StartTs, &rec.EndTs, &rec.CreatedAt, &curveJSON, &tradesJSON)
+			&rec.StartTs, &rec.EndTs, &rec.CreatedAt, &curveJSON, &tradesJSON, &signalsJSON)
 	if err == sql.ErrNoRows {
 		return nil, ErrResultNotFound
 	}
@@ -263,6 +273,11 @@ FROM backtest_results WHERE id = $1`, id).
 	if tradesJSON != nil {
 		if err := json.Unmarshal(tradesJSON, &rec.Trades); err != nil {
 			return nil, fmt.Errorf("backtest: load result: trades: %w", err)
+		}
+	}
+	if signalsJSON != nil {
+		if err := json.Unmarshal(signalsJSON, &rec.Signals); err != nil {
+			return nil, fmt.Errorf("backtest: load result: signals: %w", err)
 		}
 	}
 	return &rec, nil

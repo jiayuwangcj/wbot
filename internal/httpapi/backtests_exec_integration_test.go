@@ -18,6 +18,21 @@ import (
 	"github.com/jiayu/wbot/internal/watchlist"
 )
 
+func integrationWheelParams() map[string]any {
+	return map[string]any{
+		"price_position_curve": []any{
+			map[string]any{"price": 90.0, "target_inventory": 100.0},
+			map[string]any{"price": 130.0, "target_inventory": 100.0},
+		},
+		"max_inventory":      100.0,
+		"min_option_quality": 0.0,
+	}
+}
+
+func integrationWheelExecBody(symbol string) string {
+	return `{"symbol":"` + symbol + `","strategy":"wheel","params":{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":100}],"max_inventory":100,"min_option_quality":0}}`
+}
+
 // execTestServer wires the serve topology as in cmd/wbot: backtests GET mux +
 // POST execute handler + data API on one top mux.
 func execTestServer(database *sql.DB) *httptest.Server {
@@ -61,6 +76,9 @@ func TestBacktestExecuteIntegration(t *testing.T) {
 		if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, s); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := database.Exec(`DELETE FROM option_quote_snapshots WHERE underlying = $1`, s); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := database.Exec(`DELETE FROM watchlist WHERE symbol = $1`, s); err != nil {
 			t.Fatal(err)
 		}
@@ -75,15 +93,25 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 				t.Fatal(err)
 			}
 		}
+		for i, bid := range []float64{3, 2.5, 2} {
+			if _, err := database.Exec(`
+INSERT INTO option_quote_snapshots
+  (symbol, underlying, option_type, strike, expiry, source, snapshot_key,
+   underlying_price, delta, bid, ask, iv, theta, volume, open_interest, lot_size, observed_at)
+VALUES ($1, $2, 'PUT', 95, $3, 'fixture', $4, $5, -0.30, $6, $7, 0.30, -0.10, 1000, 10000, 100, $8)`,
+				s+"-P95", s, day(7), "batch-"+strconv.Itoa(i), []float64{100, 110, 121}[i], bid, bid+0.1, day(i)); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	// The batch runs every watchlist row, so the test needs a clean list.
 	if _, err := database.Exec(`DELETE FROM watchlist`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := watchlist.Upsert(ctx, database, batchA, "buy-hold", map[string]any{}); err != nil {
+	if _, err := watchlist.Upsert(ctx, database, batchA, "wheel", integrationWheelParams()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := watchlist.Upsert(ctx, database, batchB, "buy-hold", map[string]any{}); err != nil {
+	if _, err := watchlist.Upsert(ctx, database, batchB, "wheel", integrationWheelParams()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,7 +120,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 
 	// Manual run: same input, same output as `wbot backtest -dsn -save`.
 	resp, err := http.Post(srv.URL+"/v1/backtests", "application/json",
-		bytes.NewBufferString(`{"symbol":"`+symbol+`","strategy":"buy-hold"}`))
+		bytes.NewBufferString(integrationWheelExecBody(symbol)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,8 +148,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
 		t.Fatal(err)
 	}
-	if detail.ID <= 0 || detail.Metrics["equity"] != 12100.0 {
-		t.Fatalf("detail = %+v; want positive id with equity 12100", detail)
+	if detail.ID <= 0 || detail.Metrics["equity"] != 10100.0 {
+		t.Fatalf("detail = %+v; want positive id with equity 10100", detail)
 	}
 	wantParams := map[string]any{"cash": 10000.0, "fee": 0.0, "timeframe": "1d", "adjust": "fwd"}
 	for k, v := range wantParams {
@@ -129,7 +157,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 			t.Fatalf("params = %v; want %v", detail.Params, wantParams)
 		}
 	}
-	wantCurve := []float64{10000, 11000, 12100}
+	wantCurve := []float64{10000, 10050, 10100}
 	if len(detail.EquityCurve) != len(wantCurve) {
 		t.Fatalf("equity_curve = %+v; want %v", detail.EquityCurve, wantCurve)
 	}
@@ -138,9 +166,9 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 			t.Fatalf("equity_curve[%d] = %v; want %v", i, detail.EquityCurve[i].Equity, eq)
 		}
 	}
-	if len(detail.Trades) != 1 || detail.Trades[0].Action != "buy" ||
-		detail.Trades[0].Symbol != symbol || detail.Trades[0].Size != 100 || detail.Trades[0].Price != 100 {
-		t.Fatalf("trades = %+v; want buy %s 100 @100", detail.Trades, symbol)
+	if len(detail.Trades) != 1 || detail.Trades[0].Action != "sell-put" ||
+		detail.Trades[0].Symbol != symbol+"-P95" || detail.Trades[0].Size != 1 || detail.Trades[0].Price != 3 {
+		t.Fatalf("trades = %+v; want sell-put %s-P95 1 @3", detail.Trades, symbol)
 	}
 
 	// List: the run appears with the same metrics.
@@ -156,8 +184,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 1 || list[0]["id"] != float64(detail.ID) || list[0]["metrics"].(map[string]any)["equity"] != 12100.0 {
-		t.Fatalf("list = %v; want the created run with equity 12100", list)
+	if len(list) != 1 || list[0]["id"] != float64(detail.ID) || list[0]["metrics"].(map[string]any)["equity"] != 10100.0 {
+		t.Fatalf("list = %v; want the created run with equity 10100", list)
 	}
 
 	// Detail: the GET endpoint returns the same trace the POST returned.
@@ -178,8 +206,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
-	if got.Metrics["equity"] != 12100.0 || len(got.EquityCurve) != 3 {
-		t.Fatalf("detail = %+v; want equity 12100 with 3 curve points", got)
+	if got.Metrics["equity"] != 10100.0 || len(got.EquityCurve) != 3 {
+		t.Fatalf("detail = %+v; want equity 10100 with 3 curve points", got)
 	}
 
 	// Batch: from_watchlist runs each row serially and saves each.
@@ -206,8 +234,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 		t.Fatalf("batch runs = %+v; want 2", batch.Runs)
 	}
 	for _, run := range batch.Runs {
-		if run.ID <= 0 || run.Metrics["equity"] != 12100.0 {
-			t.Fatalf("batch run = %+v; want saved run with equity 12100", run)
+		if run.ID <= 0 || run.Metrics["equity"] != 10100.0 {
+			t.Fatalf("batch run = %+v; want saved run with equity 10100", run)
 		}
 	}
 	if batch.Runs[0].Symbol == batch.Runs[1].Symbol {
@@ -227,14 +255,14 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 		if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
 			t.Fatal(err)
 		}
-		if len(list) != 1 || list[0]["metrics"].(map[string]any)["equity"] != 12100.0 {
-			t.Fatalf("list %s = %v; want one run with equity 12100", s, list)
+		if len(list) != 1 || list[0]["metrics"].(map[string]any)["equity"] != 10100.0 {
+			t.Fatalf("list %s = %v; want one run with equity 10100", s, list)
 		}
 	}
 
 	// Missing input data: 503 no_data with an ingest action.
 	resp, err = http.Post(srv.URL+"/v1/backtests", "application/json",
-		bytes.NewBufferString(`{"symbol":"`+noDataSym+`","strategy":"buy-hold"}`))
+		bytes.NewBufferString(integrationWheelExecBody(noDataSym)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,8 +286,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, s, day(i), c); err !
 	}
 }
 
-// TestBacktestExecuteOptionIntegration: covered-call needs option_quotes — the
-// endpoint loads them like the CLI and returns the same deterministic result.
+// TestBacktestExecuteOptionIntegration loads trusted Wheel snapshots and
+// returns the same deterministic result as the CLI adapter.
 func TestBacktestExecuteOptionIntegration(t *testing.T) {
 	dsn := os.Getenv("WBOT_PG_DSN")
 	if dsn == "" {
@@ -281,7 +309,7 @@ func TestBacktestExecuteOptionIntegration(t *testing.T) {
 	if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.Exec(`DELETE FROM option_quotes WHERE underlying = $1`, symbol); err != nil {
+	if _, err := database.Exec(`DELETE FROM option_quote_snapshots WHERE underlying = $1`, symbol); err != nil {
 		t.Fatal(err)
 	}
 	day := func(i int) time.Time { return time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC) }
@@ -292,31 +320,21 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 			t.Fatal(err)
 		}
 	}
-	quotes := []struct {
-		code   string
-		opt    string
-		strike float64
-		expiry int
-		closes []float64
-	}{
-		{"BTEXECOPTC105", "call", 105, 2, []float64{3, 2.5, 1}},
-		{"BTEXECOPTC110", "call", 110, 4, []float64{1, 0.8, 0.5, 0.2}},
-	}
-	for _, q := range quotes {
-		for i, c := range q.closes {
-			if _, err := database.Exec(`
-INSERT INTO option_quotes (symbol, underlying, option_type, strike, expiry, ts, open, high, low, close, volume, implied_vol, adjust, source)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $7, 10, NULL, 'fwd', 'futu')`,
-				q.code, symbol, q.opt, q.strike, day(q.expiry), day(i), c); err != nil {
-				t.Fatal(err)
-			}
+	for i, bid := range []float64{3, 2.5, 2, 1.5, 1} {
+		if _, err := database.Exec(`
+INSERT INTO option_quote_snapshots
+  (symbol, underlying, option_type, strike, expiry, source, snapshot_key,
+   underlying_price, delta, bid, ask, iv, theta, volume, open_interest, lot_size, observed_at)
+VALUES ('BTEXECOPT-P95', $1, 'PUT', 95, $2, 'fixture', $3, $4, -0.30, $5, $6, 0.30, -0.10, 1000, 10000, 100, $7)`,
+			symbol, day(7), "api-option-"+strconv.Itoa(i), []float64{100, 103, 99, 106, 104}[i], bid, bid+0.1, day(i)); err != nil {
+			t.Fatal(err)
 		}
 	}
 
 	srv := execTestServer(database)
 	defer srv.Close()
 	resp, err := http.Post(srv.URL+"/v1/backtests", "application/json",
-		bytes.NewBufferString(`{"symbol":"`+symbol+`","strategy":"covered-call","params":{"strike_pct_otm":0.05}}`))
+		bytes.NewBufferString(integrationWheelExecBody(symbol)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,10 +349,10 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $7, 10, NULL, 'fwd', 'futu')`,
 	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
 		t.Fatal(err)
 	}
-	// Same fixture/expectation as cmd/wbot's CLI integration test (buy 100 @100,
-	// sell C105 for 250, OTM void; sell C110 for 20, OTM void → 270 + 100×104).
-	if detail.Metrics["equity"] != 10670.0 || detail.Metrics["bars"] != 5.0 {
-		t.Fatalf("metrics = %v; want equity 10670 over 5 bars", detail.Metrics)
+	// One short P95 receives 300 and is marked at the final bid 1. Existing
+	// assignment commitment prevents repeated puts beyond max_inventory.
+	if detail.Metrics["equity"] != 10200.0 || detail.Metrics["bars"] != 5.0 {
+		t.Fatalf("metrics = %v; want equity 10200 over 5 bars", detail.Metrics)
 	}
 	if detail.Params["adjust"] != "fwd" || detail.Params["timeframe"] != "1d" {
 		t.Fatalf("params = %v; want timeframe 1d adjust fwd", detail.Params)

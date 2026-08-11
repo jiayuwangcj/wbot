@@ -34,9 +34,9 @@ func runIngestFutuOption(prog string, argv []string) int {
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest futu-option -symbol HK.00700 [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Pulls the option chain (nearest -expiries listed expiries, all strikes) from the\n")
-		fmt.Fprintf(os.Stderr, "futu-opend-rs gateway REST (22222), stores each contract's daily K-lines in\n")
-		fmt.Fprintf(os.Stderr, "option_quotes, the underlying's daily bars in bars, and registers the symbol\n")
-		fmt.Fprintf(os.Stderr, "in watchlist. Cache-first: if option_quotes/bars already cover the window for\n")
+		fmt.Fprintf(os.Stderr, "futu-opend-rs gateway REST (22222) and stores contract daily K-lines in\n")
+		fmt.Fprintf(os.Stderr, "option_quotes plus underlying daily bars in bars. It never creates or overwrites\n")
+		fmt.Fprintf(os.Stderr, "a Wheel watchlist configuration. Cache-first: if option_quotes/bars cover the window for\n")
 		fmt.Fprintf(os.Stderr, "-adjust, the pull is skipped (doc/DATA_STANDARD.md).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()

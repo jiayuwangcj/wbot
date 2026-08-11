@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
+	"github.com/jiayu/wbot/internal/wheel"
 )
 
 // Result summarizes one backtest run; EquityCurve/Trades are the deterministic
@@ -20,6 +21,30 @@ type Result struct {
 	Bars        int
 	EquityCurve []EquityPoint
 	Trades      []Trade
+	Signals     []SignalTrace
+}
+
+// SignalTrace is the deterministic per-bar decision trace. CandidateCode is
+// empty for HOLD; Candidates preserves the accepted/considered contract codes
+// when the strategy exposes a Wheel signal. Inventory fields are duplicated
+// explicitly so the trace remains useful without decoding domain JSON.
+type SignalTrace struct {
+	Ts                 time.Time  `json:"ts"`
+	Action             string     `json:"action"`
+	Direction          string     `json:"direction"`
+	Reason             string     `json:"reason"`
+	CapabilityStatus   string     `json:"capability_status"`
+	BlockedBy          []string   `json:"blocked_by"`
+	SnapshotKey        string     `json:"snapshot_key,omitempty"`
+	SnapshotObservedAt *time.Time `json:"snapshot_observed_at,omitempty"`
+	ActualInventory    float64    `json:"actual_inventory"`
+	EffectiveInventory float64    `json:"effective_inventory"`
+	OptionDeltaStock   float64    `json:"option_delta_stock"`
+	Inventory          float64    `json:"inventory"`
+	CandidateCode      string     `json:"candidate_code,omitempty"`
+	Candidate          string     `json:"candidate,omitempty"`
+	Candidates         []string   `json:"candidates,omitempty"`
+	Quantity           float64    `json:"quantity"`
 }
 
 // EquityPoint is one bar's portfolio equity at the bar timestamp.
@@ -29,7 +54,7 @@ type EquityPoint struct {
 }
 
 // Trade is one settled trade event: fills at the bar close (stock at close,
-// option at per-contract premium), expiry events exercise ITM legs at the
+// option at its per-share market premium), expiry events exercise ITM legs at the
 // strike or void OTM legs. Symbol is the option contract code for legs and is
 // filled with the underlying symbol by SaveResult for stock trades.
 type Trade struct {
@@ -83,13 +108,29 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		peak, maxDD float64
 		curve       []EquityPoint
 		trades      []Trade
+		signals     []SignalTrace
+		lastDate    time.Time
 	)
 	for i, b := range bars {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		st.Pending = nil
+		barDate := b.Ts.UTC().Truncate(24 * time.Hour)
+		if lastDate.IsZero() || !barDate.Equal(lastDate) {
+			st.DailyOrders = 0
+			lastDate = barDate
+		}
 		st.Price = b.Close
+		// DATA_BLOCKED: this remains bar-time replay with the latest atomic
+		// snapshot at or before the bar. Without a trusted event timeline we do
+		// not claim event-driven historical execution semantics.
+		st.QuoteBatch = latestQuoteBatch(opts, b.Ts)
+		st.Quotes, st.ObservedAt, st.SnapshotKey = nil, time.Time{}, ""
+		if st.QuoteBatch != nil {
+			st.Quotes = st.QuoteBatch.Quotes
+			st.ObservedAt, st.SnapshotKey = st.QuoteBatch.ObservedAt, st.QuoteBatch.SnapshotKey
+		}
 		markOptions(st, b.Ts)
 		act, size, err := s.OnBar(ctx, b, st)
 		if err != nil {
@@ -98,6 +139,7 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		if err := settleAction(st, act, size, b, feePerTrade, &trades); err != nil {
 			return nil, fmt.Errorf("backtest: bar %d: %w", i, err)
 		}
+		signals = append(signals, makeSignalTrace(b.Ts, s, st, act, size))
 		settleExpired(st, b.Ts, &trades)
 		eq := st.Equity(b.Close)
 		curve = append(curve, EquityPoint{Ts: b.Ts, Equity: eq})
@@ -117,7 +159,70 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		Bars:        len(bars),
 		EquityCurve: curve,
 		Trades:      trades,
+		Signals:     signals,
 	}, nil
+}
+
+func latestQuoteBatch(opts *OptionsData, ts time.Time) *QuoteSnapshotBatch {
+	if opts == nil {
+		return nil
+	}
+	batches := opts.QuoteBatches
+	if len(batches) == 0 {
+		batches = opts.Snapshots
+	}
+	if len(batches) == 0 {
+		batches = opts.QuoteSnapshots
+	}
+	var best *QuoteSnapshotBatch
+	for i := range batches {
+		b := &batches[i]
+		if b.ObservedAt.After(ts) {
+			continue
+		}
+		if best == nil || b.ObservedAt.After(best.ObservedAt) || (b.ObservedAt.Equal(best.ObservedAt) && b.SnapshotKey > best.SnapshotKey) {
+			best = b
+		}
+	}
+	return best
+}
+
+type signalProvider interface{ Signal() wheel.Signal }
+
+func makeSignalTrace(ts time.Time, s Strategy, st *State, act Action, size float64) SignalTrace {
+	t := SignalTrace{Ts: ts, Action: act.String(), Direction: wheel.DirectionHold, CapabilityStatus: wheel.CapabilityReady, BlockedBy: []string{}, Quantity: size, ActualInventory: st.Position, EffectiveInventory: st.Position, Inventory: st.Position, SnapshotKey: st.SnapshotKey}
+	if !st.ObservedAt.IsZero() {
+		observedAt := st.ObservedAt
+		t.SnapshotObservedAt = &observedAt
+	}
+	if p, ok := s.(signalProvider); ok {
+		sig := p.Signal()
+		t.Action, t.Direction, t.Reason = string(sig.Action), string(sig.Direction), sig.Reason
+		if sig.CapabilityStatus != "" {
+			t.CapabilityStatus = sig.CapabilityStatus
+		}
+		t.BlockedBy = append([]string{}, sig.BlockedBy...)
+		t.ActualInventory, t.EffectiveInventory, t.OptionDeltaStock = sig.ActualInventory, sig.EffectiveInventory, sig.OptionDeltaStock
+		t.Inventory = sig.EffectiveInventory
+		t.Quantity = float64(sig.Quantity)
+		for _, c := range sig.Candidates {
+			name := c.Quote.Symbol
+			if name == "" {
+				name = c.Quote.Code
+			}
+			if name != "" {
+				t.Candidates = append(t.Candidates, name)
+			}
+		}
+		if sig.Quote != nil {
+			t.CandidateCode = sig.Quote.Symbol
+			if t.CandidateCode == "" {
+				t.CandidateCode = sig.Quote.Code
+			}
+			t.Candidate = t.CandidateCode
+		}
+	}
+	return t
 }
 
 // markOptions fills OptPrice with each open leg's latest close at or before ts.
@@ -173,7 +278,11 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades
 	if p.Kind != want {
 		return fmt.Errorf("%s pending kind %q; want %q", act, p.Kind, want)
 	}
-	if p.Code == "" || p.Strike <= 0 || p.Expiry.IsZero() || p.Lot <= 0 {
+	lot := p.Lot
+	if lot <= 0 {
+		lot = p.LotSize
+	}
+	if p.Code == "" || p.Strike <= 0 || p.Expiry.IsZero() || lot <= 0 {
 		return fmt.Errorf("%s pending option incomplete: code=%q strike=%v expiry=%v lot=%d", act, p.Code, p.Strike, p.Expiry, p.Lot)
 	}
 	price, ok := st.PriceAt(p.Code, b.Ts)
@@ -185,21 +294,25 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades
 		sign = -1
 	}
 	contracts := sign * size
-	// Sells receive the premium, buys pay it; direction rides on the sign.
-	flow := -contracts * p.AvgPremium
+	// Option market prices are quoted per underlying share. Sells receive and
+	// buys pay price × contract lot size; direction rides on the signed
+	// contract count. Keeping this multiplier here also makes the cash ledger
+	// use the same unit as option mark-to-market in State.Equity.
+	flow := -contracts * p.AvgPremium * float64(lot)
 	if flow < 0 && st.Cash+flow < -buyTol {
 		return fmt.Errorf("%s %v contracts costs %v; exceeds cash %v", act, size, -flow, st.Cash)
 	}
 	if act == ActionSellPut {
-		reserve := size * float64(p.Lot) * p.Strike
+		reserve := shortPutCashReserve(st.Options) + size*float64(lot)*p.Strike
 		if st.Cash+flow < reserve {
-			return fmt.Errorf("sell-put %v contracts needs cash reserve %v (strike %v x lot %v), have %v",
-				size, reserve, p.Strike, p.Lot, st.Cash+flow)
+			return fmt.Errorf("sell-put %v contracts needs cash reserve %v cumulative across open short puts, have %v",
+				size, reserve, st.Cash+flow)
 		}
 	}
 	pos := OptionPosition{
 		Code: p.Code, Kind: p.Kind, Strike: p.Strike, Expiry: p.Expiry,
-		Lot: p.Lot, Contracts: contracts, AvgPremium: p.AvgPremium,
+		Lot: lot, LotSize: lot, Contracts: contracts, AvgPremium: p.AvgPremium,
+		MarketDelta: p.MarketDelta, Delta: p.Delta,
 	}
 	if old, ok := st.Options[p.Code]; ok {
 		net := old.Contracts*old.AvgPremium + contracts*p.AvgPremium
@@ -215,9 +328,29 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades
 	} else {
 		st.Options[p.Code] = pos
 	}
+	if act == ActionSellCall || act == ActionSellPut {
+		st.DailyOrders++
+	}
 	st.OptPrice[p.Code] = price
 	st.Pending = nil
 	return nil
+}
+
+func shortPutCashReserve(positions map[string]OptionPosition) float64 {
+	var reserve float64
+	for _, p := range positions {
+		if p.Kind != OptionPut || p.Contracts >= 0 || p.Strike <= 0 {
+			continue
+		}
+		lot := p.Lot
+		if lot <= 0 {
+			lot = p.LotSize
+		}
+		if lot > 0 {
+			reserve += -p.Contracts * p.Strike * float64(lot)
+		}
+	}
+	return reserve
 }
 
 // settleExpired exercises ITM legs (call: shares out at strike, put: shares in

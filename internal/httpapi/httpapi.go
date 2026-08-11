@@ -277,10 +277,12 @@ func parseLimit(s string) (int, error) {
 // errorJSON is the API-wide error body: {code, message, action, error}.
 // error mirrors message as a legacy alias kept for existing clients (S1 backtests convention, S5 full rollout).
 type errorJSON struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-	Action  string `json:"action"`
-	Error   string `json:"error"`
+	Code             string   `json:"code"`
+	Message          string   `json:"message"`
+	Action           string   `json:"action"`
+	Error            string   `json:"error"`
+	CapabilityStatus string   `json:"capability_status,omitempty"`
+	BlockedBy        []string `json:"blocked_by,omitempty"`
 }
 
 // writeErrorBody writes an errorJSON; the legacy error alias defaults to message.

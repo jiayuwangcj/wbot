@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
+	"github.com/jiayu/wbot/internal/wheel"
 )
 
 // OptionKind distinguishes call and put legs.
@@ -22,8 +23,9 @@ type OptionContract struct {
 	Expiry time.Time
 }
 
-// OptionPosition is one open option leg; Contracts > 0 = long, < 0 = short,
-// AvgPremium is the per-contract premium (received on sells, paid on buys).
+// OptionPosition is one open option leg; Contracts > 0 = long, < 0 = short.
+// AvgPremium is the market price per underlying share; cash settlement and
+// mark-to-market both multiply it by Lot.
 type OptionPosition struct {
 	Code       string
 	Kind       OptionKind
@@ -32,6 +34,16 @@ type OptionPosition struct {
 	Lot        int
 	Contracts  float64
 	AvgPremium float64
+	// MarketDelta is the last trusted snapshot delta for this leg. It is
+	// optional for the legacy mechanical runner, but WheelStrategy will not
+	// invent it from an option close.
+	MarketDelta float64
+	// Delta is an alternate field name accepted by adapters building typed
+	// state; MarketDelta remains the canonical backtest field.
+	Delta float64
+	// LotSize mirrors wheel.OptionPosition for snapshot-backed callers. Lot is
+	// retained for the original mechanical runner API.
+	LotSize int
 }
 
 // OptionChain maps a contract code to its static data (runner-injected).
@@ -44,7 +56,31 @@ type OptionBars map[string][]ingest.Bar
 type OptionsData struct {
 	Bars  OptionBars
 	Chain OptionChain
+	// QuoteBatches are immutable, atomic Wheel quote observations. A batch is
+	// selected by observed_at + snapshot_key; quotes from different batches
+	// are never combined.
+	QuoteBatches []QuoteSnapshotBatch
+	// Snapshots is an alias accepted by callers constructing OptionsData. New
+	// code should prefer QuoteBatches.
+	Snapshots []QuoteSnapshotBatch
+	// QuoteSnapshots is a descriptive alias for integrations that use the
+	// persistence vocabulary directly.
+	QuoteSnapshots []QuoteSnapshotBatch
 }
+
+// QuoteSnapshotBatch is one atomic set of trusted option quotes. The
+// underlying price is kept separately because it is common to all contracts
+// in the batch and is required to make a Wheel decision.
+type QuoteSnapshotBatch struct {
+	ObservedAt      time.Time
+	SnapshotKey     string
+	Underlying      string
+	UnderlyingPrice float64
+	Quotes          []wheel.OptionQuote
+}
+
+// OptionQuoteBatch is a concise compatibility name for QuoteSnapshotBatch.
+type OptionQuoteBatch = QuoteSnapshotBatch
 
 // State is a backtest's portfolio state; Run updates Price to each bar's close
 // before OnBar, fills OptPrice from open legs, and clears Pending per bar.
@@ -59,6 +95,16 @@ type State struct {
 	// Pending is the contract a strategy picked for an option action on the
 	// current bar; the runner settles size contracts against it and clears it.
 	Pending *OptionPosition
+	// QuoteBatch is the one atomic snapshot selected for the current bar.
+	// It is nil when no trusted snapshot exists at or before the bar.
+	QuoteBatch *QuoteSnapshotBatch
+	// Quotes, ObservedAt and SnapshotKey mirror QuoteBatch for adapters that
+	// consume state without depending on the batch wrapper.
+	Quotes      []wheel.OptionQuote
+	ObservedAt  time.Time
+	SnapshotKey string
+	DailyOrders int
+	ExtremeDay  bool
 }
 
 // Equity returns total portfolio value: cash + position at price plus option

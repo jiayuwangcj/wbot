@@ -86,17 +86,17 @@ func TestRunTraceExerciseCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
-	assertCurve(t, res, []eqPoint{{0, 10000}, {1, 10252.5}, {2, 10502.5}})
+	assertCurve(t, res, []eqPoint{{0, 10000}, {1, 10500}, {2, 10750}})
 	if len(res.Trades) != 3 {
 		t.Fatalf("Trades = %+v; want buy + sell-call + exercise-call", res.Trades)
 	}
 	open := res.Trades[1]
-	if !open.Ts.Equal(expiryAt(1)) || open.Action != "sell-call" || open.Symbol != "C" || open.Size != 1 || open.Price != 2.5 || open.CashAfter != 2.5 {
-		t.Fatalf("Trades[1] = %+v; want sell-call 1 @2.5 on day 1, cash_after 2.5", open)
+	if !open.Ts.Equal(expiryAt(1)) || open.Action != "sell-call" || open.Symbol != "C" || open.Size != 1 || open.Price != 2.5 || open.CashAfter != 250 {
+		t.Fatalf("Trades[1] = %+v; want sell-call 1 @2.5 on day 1, cash_after 250", open)
 	}
 	ex := res.Trades[2]
-	if !ex.Ts.Equal(expiryAt(2)) || ex.Action != "exercise-call" || ex.Symbol != "C" || ex.Size != -100 || ex.Price != 105 || ex.CashAfter != 10502.5 {
-		t.Fatalf("Trades[2] = %+v; want exercise-call -100 @105 on day 2, cash_after 10502.5", ex)
+	if !ex.Ts.Equal(expiryAt(2)) || ex.Action != "exercise-call" || ex.Symbol != "C" || ex.Size != -100 || ex.Price != 105 || ex.CashAfter != 10750 {
+		t.Fatalf("Trades[2] = %+v; want exercise-call -100 @105 on day 2, cash_after 10750", ex)
 	}
 }
 
@@ -113,18 +113,18 @@ func TestRunTraceExpireOTM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
-	assertCurve(t, res, []eqPoint{{0, 10000}, {1, 10252.5}, {2, 10402.5}})
+	assertCurve(t, res, []eqPoint{{0, 10000}, {1, 10500}, {2, 10650}})
 	if len(res.Trades) != 3 {
 		t.Fatalf("Trades = %+v; want buy + sell-call + expire-otm", res.Trades)
 	}
 	void := res.Trades[2]
-	if !void.Ts.Equal(expiryAt(2)) || void.Action != "expire-otm" || void.Symbol != "C" || void.Size != 0 || void.Price != 0 || void.CashAfter != 2.5 {
-		t.Fatalf("Trades[2] = %+v; want expire-otm on day 2, cash_after 2.5", void)
+	if !void.Ts.Equal(expiryAt(2)) || void.Action != "expire-otm" || void.Symbol != "C" || void.Size != 0 || void.Price != 0 || void.CashAfter != 250 {
+		t.Fatalf("Trades[2] = %+v; want expire-otm on day 2, cash_after 250", void)
 	}
 }
 
 func TestRunTraceExercisePut(t *testing.T) {
-	// CSP: sell 1 P95 @4 (premium per contract; leg marked 4×100 at day 0),
+	// CSP: sell 1 P95 @4 per share (contract premium 4×100),
 	// expiry day 1 with spot 90 < 95: the short put exercises (buy shares at
 	// 95: cash -9500, position +100).
 	chain := map[string]OptionContract{"P": {Code: "P", Kind: OptionPut, Strike: 95, Expiry: expiryAt(1)}}
@@ -138,18 +138,18 @@ func TestRunTraceExercisePut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
-	// Day 0: cash 10004, short put marked -4×100 → 9604.
-	// Day 1: exercise → cash 10004-9500 = 504, position +100 → 504 + 9000.
-	assertCurve(t, res, []eqPoint{{0, 9604}, {1, 9504}})
+	// Day 0: cash 10400, short put marked -4×100 → 10000.
+	// Day 1: exercise → cash 10400-9500 = 900, position +100 → 9900.
+	assertCurve(t, res, []eqPoint{{0, 10000}, {1, 9900}})
 	if len(res.Trades) != 2 {
 		t.Fatalf("Trades = %+v; want sell-put + exercise-put", res.Trades)
 	}
-	if open := res.Trades[0]; open.Action != "sell-put" || open.Symbol != "P" || open.Size != 1 || open.Price != 4 || open.CashAfter != 10004 {
-		t.Fatalf("Trades[0] = %+v; want sell-put 1 @4, cash_after 10004", open)
+	if open := res.Trades[0]; open.Action != "sell-put" || open.Symbol != "P" || open.Size != 1 || open.Price != 4 || open.CashAfter != 10400 {
+		t.Fatalf("Trades[0] = %+v; want sell-put 1 @4, cash_after 10400", open)
 	}
 	ex := res.Trades[1]
-	if !ex.Ts.Equal(expiryAt(1)) || ex.Action != "exercise-put" || ex.Symbol != "P" || ex.Size != -100 || ex.Price != 95 || ex.CashAfter != 504 {
-		t.Fatalf("Trades[1] = %+v; want exercise-put -100 @95 on day 1, cash_after 504", ex)
+	if !ex.Ts.Equal(expiryAt(1)) || ex.Action != "exercise-put" || ex.Symbol != "P" || ex.Size != -100 || ex.Price != 95 || ex.CashAfter != 900 {
+		t.Fatalf("Trades[1] = %+v; want exercise-put -100 @95 on day 1, cash_after 900", ex)
 	}
 }
 
@@ -173,10 +173,10 @@ func TestRunTraceSameDayExpiryDeterministic(t *testing.T) {
 		}
 	}
 	want := []Trade{
-		{Ts: expiryAt(0), Action: "sell-call", Symbol: "A", Size: 1, Price: 1, CashAfter: 10001},
-		{Ts: expiryAt(1), Action: "sell-call", Symbol: "B", Size: 1, Price: 0.25, CashAfter: 10001.25},
-		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "A", Size: -100, Price: 90, CashAfter: 19001.25},
-		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "B", Size: -100, Price: 100, CashAfter: 29001.25},
+		{Ts: expiryAt(0), Action: "sell-call", Symbol: "A", Size: 1, Price: 1, CashAfter: 10100},
+		{Ts: expiryAt(1), Action: "sell-call", Symbol: "B", Size: 1, Price: 0.25, CashAfter: 10125},
+		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "A", Size: -100, Price: 90, CashAfter: 19125},
+		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "B", Size: -100, Price: 100, CashAfter: 29125},
 	}
 	for i := 0; i < 20; i++ {
 		res, err := RunOptions(context.Background(), mkBars(100, 110), 10000, 0, newScript(), opts)
@@ -187,7 +187,7 @@ func TestRunTraceSameDayExpiryDeterministic(t *testing.T) {
 			t.Fatalf("run %d: Trades = %+v; want %+v (stable contract-code order)", i, res.Trades, want)
 		}
 		if i == 0 {
-			assertCurve(t, res, []eqPoint{{0, 9901}, {1, 7001.25}})
+			assertCurve(t, res, []eqPoint{{0, 10000}, {1, 7125}})
 		}
 	}
 }

@@ -237,10 +237,7 @@ jobs:
           bin="$(mktemp)"
           trap 'kill "${serve_pid:-}" 2>/dev/null || true; rm -f "$bin"' EXIT
           go build -o "$bin" ./cmd/wbot
-          "$bin" ingest mock -dsn "$WBOT_PG_DSN" -symbol BTEXEC.US -timeframe 1d -adjust fwd >/dev/null
-          "$bin" ingest mock -dsn "$WBOT_PG_DSN" -symbol BTEXECB.US -timeframe 1d -adjust fwd >/dev/null
-          "$bin" watchlist add -dsn "$WBOT_PG_DSN" -symbol BTEXEC.US -strategy buy-hold >/dev/null
-          "$bin" watchlist add -dsn "$WBOT_PG_DSN" -symbol BTEXECB.US -strategy buy-hold >/dev/null
+          scripts/seed-wheel-demo.sh "$bin" "$WBOT_PG_DSN" BTEXEC.US BTEXECB.US
           "$bin" serve -listen 127.0.0.1:8080 -dsn "$WBOT_PG_DSN" &
           serve_pid=$!
           for i in $(seq 1 30); do

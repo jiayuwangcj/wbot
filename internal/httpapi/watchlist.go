@@ -50,11 +50,14 @@ func (s watchlistStore) Delete(ctx context.Context, symbol string) (bool, error)
 
 // watchlistItemJSON is the API shape of one watchlist row (times RFC3339).
 type watchlistItemJSON struct {
-	Symbol    string         `json:"symbol"`
-	Strategy  string         `json:"strategy"`
-	Params    map[string]any `json:"params"`
-	CreatedAt string         `json:"created_at"`
-	UpdatedAt string         `json:"updated_at"`
+	Symbol             string         `json:"symbol"`
+	Strategy           string         `json:"strategy"`
+	Params             map[string]any `json:"params"`
+	ConfigVersion      *int           `json:"config_version"`
+	ExecutionStatus    string         `json:"execution_status"`
+	InvalidationReason string         `json:"invalidation_reason"`
+	CreatedAt          string         `json:"created_at"`
+	UpdatedAt          string         `json:"updated_at"`
 }
 
 func toWatchlistItemJSON(it watchlist.Item) watchlistItemJSON {
@@ -62,17 +65,19 @@ func toWatchlistItemJSON(it watchlist.Item) watchlistItemJSON {
 		it.Params = map[string]any{}
 	}
 	return watchlistItemJSON{
-		Symbol:    it.Symbol,
-		Strategy:  it.Strategy,
-		Params:    it.Params,
-		CreatedAt: it.CreatedAt.Format(time.RFC3339),
-		UpdatedAt: it.UpdatedAt.Format(time.RFC3339),
+		Symbol:             it.Symbol,
+		Strategy:           it.Strategy,
+		Params:             it.Params,
+		ConfigVersion:      it.ConfigVersion,
+		ExecutionStatus:    it.ExecutionStatus,
+		InvalidationReason: it.InvalidationReason,
+		CreatedAt:          it.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:          it.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
-// WatchlistHandler serves GET /v1/strategies and GET /v1/watchlist with
-// PUT/DELETE /v1/watchlist/{symbol}; params are validated against the template
-// schema (unknown strategy/parameter or type mismatch → 400).
+// WatchlistHandler serves the single Wheel strategy contract and watchlist
+// CRUD. PUT params are validated against the same contract before persistence.
 func WatchlistHandler(store WatchlistStore) http.Handler {
 	mux := http.NewServeMux()
 
@@ -81,14 +86,8 @@ func WatchlistHandler(store WatchlistStore) http.Handler {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		// buy-hold 是引擎一等策略(backtestexec 直接支持,无 params);
-		// watchlist 作为「回测计划列表」收录它,使 from_watchlist 回测
-		// 模式在无期权数据的环境(本地 mock)也可整表跑通。
-		tmpls := append([]strategy.ContractTemplate{
-			{Name: "buy-hold", Description: "买入持有：不调仓"},
-		}, strategy.ContractTemplates()...)
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(tmpls)
+		_ = json.NewEncoder(w).Encode(strategy.ContractTemplates())
 	})
 
 	mux.HandleFunc(watchlistPath, func(w http.ResponseWriter, r *http.Request) {

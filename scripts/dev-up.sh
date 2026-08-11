@@ -159,19 +159,10 @@ if [[ "$seed" == "1" ]]; then
 	# 数据页覆盖展示: 不复权 bars (mock)
 	"$bin" ingest mock -dsn "$WBOT_PG_DSN" -symbol DEMO.US -timeframe 1d >/dev/null
 	"$bin" ingest mock -dsn "$WBOT_PG_DSN" -symbol QUERY.US -timeframe 1d >/dev/null
-	# 回测页可跑: 前复权 bars (回测默认 adjust=fwd)
-	"$bin" ingest mock -dsn "$WBOT_PG_DSN" -symbol BTEXEC.US -timeframe 1d -adjust fwd >/dev/null
-	"$bin" ingest mock -dsn "$WBOT_PG_DSN" -symbol BTEXECB.US -timeframe 1d -adjust fwd >/dev/null
-	# 观察列表(回测 watchlist 模式): 全部 fwd 可跑。
-	# buy-hold 是模板注册表合法策略(2026-08-03 修复前 PUT 400 被 || true
-	# 静默吞掉,watchlist 表实为空的——种子失败必须暴露)。
-	for entry in "BTEXEC.US|buy-hold" "BTEXECB.US|buy-hold"; do
-		sym="${entry%%|*}"; strat="${entry##*|}"
-		curl -sf -X PUT "${base_url}/v1/watchlist/${sym}" \
-			-H 'Content-Type: application/json' \
-			-d "{\"strategy\":\"${strat}\"}" >/dev/null
-	done
-	say "seeded: DEMO.US / QUERY.US (none) + BTEXEC.US / BTEXECB.US (fwd) + watchlist"
+	# 产品演示只使用结构化 Wheel。fixture 同时写入 fwd bars、版本配置和
+	# 每根 bar 的完整原子期权 snapshot；source=demo-fixture 明确不是实时源。
+	"$root/scripts/seed-wheel-demo.sh" "$bin" "$WBOT_PG_DSN" BTEXEC.US BTEXECB.US
+	say "seeded: DEMO.US / QUERY.US (none) + BTEXEC.US / BTEXECB.US (Wheel fixtures)"
 fi
 
 # --- 5. acceptance smoke -----------------------------------------------------
@@ -206,9 +197,11 @@ if [[ "$smoke" == "1" ]]; then
 	check "条件请求 304 (style.css)" 304 "$(curl -s -o /dev/null -w '%{http_code}' -H "If-Modified-Since: $style_lm" "$base_url/ui/style.css")"
 	check "GET /v1/strategies" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/strategies")"
 	check "GET /v1/watchlist" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/watchlist")"
+	check "GET /v1/wheel/configs" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/wheel/configs?limit=2")"
+	check "GET /v1/wheel/signals" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/wheel/signals?limit=2")"
 	check "GET /v1/backtests?limit=1" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/backtests?limit=1")"
 	check "GET /v1/admin/cluster" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/admin/cluster")"
-	check "POST /v1/backtests (回测可跑)" 201 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base_url/v1/backtests" -H 'Content-Type: application/json' -d '{"symbol":"BTEXEC.US","strategy":"buy-hold"}')"
+	check "POST /v1/backtests (Wheel 回测可跑)" 201 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base_url/v1/backtests" -H 'Content-Type: application/json' -d '{"symbol":"BTEXEC.US","strategy":"wheel","params":{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":10,"strategic_state":"NORMAL"}}')"
 	# DB-local 端点补齐(2026-08-03): 与网关无关,dev-up 种子数据后应恒 200;
 	# futu 系端点依赖网关,由 scripts/accept-*.sh 覆盖,不入 dev-up。
 	check "GET /v1/health" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/health")"

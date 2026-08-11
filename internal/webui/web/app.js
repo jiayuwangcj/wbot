@@ -1140,65 +1140,195 @@ function initDataPage() {
   });
 }
 
-/* Watchlist page: /v1/watchlist CRUD + /v1/strategies schema-driven param form. */
+/* Watchlist page: /v1/watchlist CRUD + the structured Wheel editor. */
 
-/* fieldsetId defaults to the watchlist page's #param-fields; the 回测页 run
-   form passes "run-param-fields" to render its own param inputs. */
-function renderParamFields(strategy, values, fieldsetId) {
-  const fields = document.getElementById(fieldsetId || "param-fields");
-  fields.replaceChildren();
-  const legend = document.createElement("legend");
-  legend.textContent = "参数";
-  fields.appendChild(legend);
-  if (!strategy) return;
-  for (const p of strategy.params) {
-    const label = document.createElement("label");
-    const name = document.createElement("span");
-    name.textContent = p.name + (p.description ? " · " + p.description : "");
-    label.appendChild(name);
-    let value = values && values[p.name] !== undefined ? values[p.name] : p.default;
-    let input;
-    if (p.type === "choice") {
-      input = document.createElement("select");
-      for (const choice of p.choices) {
-        const opt = document.createElement("option");
-        opt.value = choice;
-        opt.textContent = choice;
-        input.appendChild(opt);
-      }
-      if (p.choices.indexOf(value) === -1) value = p.choices[0];
-    } else if (p.type === "number") {
-      input = document.createElement("input");
-      input.type = "number";
-      input.step = "any";
-    } else {
-      input = document.createElement("input");
-      input.type = "text";
-    }
-    input.name = "params." + p.name;
-    input.value = value === undefined || value === null ? "" : value;
-    label.appendChild(input);
-    fields.appendChild(label);
-  }
+const WHEEL_DEFAULTS = {
+  price_position_curve: [
+    {price: "", target_inventory: ""},
+    {price: "", target_inventory: ""},
+  ],
+  max_inventory: "",
+  lot_size: 100,
+  min_dte: 5,
+  max_dte: 10,
+  min_option_quality: 0.6,
+  max_daily_orders: 1,
+  extreme_max_daily_orders: 2,
+  no_trade_gap: 50,
+  strategic_state: "NORMAL",
+};
+
+const WHEEL_STATES = ["NORMAL", "CAUTION", "PAUSE_BUY", "EXIT"];
+
+function wheelCloneDefaults(values) {
+  const source = values || {};
+  const curve = Array.isArray(source.price_position_curve) && source.price_position_curve.length
+    ? source.price_position_curve : WHEEL_DEFAULTS.price_position_curve;
+  return {
+    price_position_curve: curve.map((p) => ({
+      price: p.price,
+      target_inventory: p.target_inventory,
+    })),
+    max_inventory: source.max_inventory === undefined ? WHEEL_DEFAULTS.max_inventory : source.max_inventory,
+    lot_size: source.lot_size === undefined ? WHEEL_DEFAULTS.lot_size : source.lot_size,
+    min_dte: source.min_dte === undefined ? WHEEL_DEFAULTS.min_dte : source.min_dte,
+    max_dte: source.max_dte === undefined ? WHEEL_DEFAULTS.max_dte : source.max_dte,
+    min_option_quality: source.min_option_quality === undefined ? WHEEL_DEFAULTS.min_option_quality : source.min_option_quality,
+    max_daily_orders: source.max_daily_orders === undefined ? WHEEL_DEFAULTS.max_daily_orders : source.max_daily_orders,
+    extreme_max_daily_orders: source.extreme_max_daily_orders === undefined ? WHEEL_DEFAULTS.extreme_max_daily_orders : source.extreme_max_daily_orders,
+    no_trade_gap: source.no_trade_gap === undefined ? WHEEL_DEFAULTS.no_trade_gap : source.no_trade_gap,
+    strategic_state: WHEEL_STATES.indexOf(source.strategic_state) >= 0 ? source.strategic_state : WHEEL_DEFAULTS.strategic_state,
+  };
 }
 
-function collectParams(strategy, form) {
-  const params = {};
-  for (const p of strategy.params) {
-    const raw = form.elements["params." + p.name].value;
-    if (raw === "") continue; /* omit: strategy default applies */
-    if (p.type === "number") {
-      const n = Number(raw);
-      if (!isFinite(n)) return {error: "invalid number for " + p.name};
-      params[p.name] = n;
-    } else if (p.type === "choice") {
-      if (p.choices.indexOf(raw) === -1) return {error: "invalid choice for " + p.name};
-      params[p.name] = raw;
-    } else {
-      params[p.name] = raw;
-    }
+function makeNumberInput(name, value, min, step) {
+  const input = document.createElement("input");
+  input.type = "number";
+  input.name = name;
+  input.value = value === undefined || value === null ? "" : value;
+  input.min = String(min);
+  input.step = step;
+  if (name === "curve-price") input.placeholder = "例如 400";
+  if (name === "curve-target") input.placeholder = "例如 1200";
+  return input;
+}
+
+function wheelElement(root, prefix, id) {
+  const scope = root || document;
+  return scope.querySelector("#" + (prefix || "") + id);
+}
+
+function renderWheelCurve(values, root, prefix) {
+  const rows = wheelElement(root, prefix, "curve-rows");
+  if (!rows) return;
+  rows.replaceChildren();
+  const curve = values && values.length ? values : WHEEL_DEFAULTS.price_position_curve;
+  curve.forEach((point, index) => {
+    const row = document.createElement("div");
+    row.className = "curve-row";
+    row.dataset.index = String(index);
+    const price = document.createElement("label");
+    price.textContent = "价格";
+    price.appendChild(makeNumberInput("curve-price", point.price, 0, "any"));
+    const inventory = document.createElement("label");
+    inventory.textContent = "目标库存";
+    inventory.appendChild(makeNumberInput("curve-target", point.target_inventory, 0, "any"));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "ghost curve-remove";
+    remove.textContent = "移除";
+    remove.title = "移除此价格锚点";
+    /* Keep one row editable; submit validation explains when two anchors are
+       required, and the user can add the next row without losing input. */
+    remove.disabled = curve.length <= 1;
+    remove.addEventListener("click", () => {
+      const current = collectWheelCurve(root, prefix);
+      current.splice(index, 1);
+      renderWheelCurve(current, root, prefix);
+    });
+    row.appendChild(price);
+    row.appendChild(inventory);
+    row.appendChild(remove);
+    rows.appendChild(row);
+  });
+}
+
+function collectWheelCurve(root, prefix) {
+  const scope = root || document;
+  const rows = scope.querySelectorAll("#" + (prefix || "") + "curve-rows .curve-row");
+  return Array.from(rows).map((row) => ({
+    price: row.querySelector('[name="curve-price"]').value,
+    target_inventory: row.querySelector('[name="curve-target"]').value,
+  }));
+}
+
+function renderWheelFields(values, root, prefix) {
+  const config = wheelCloneDefaults(values);
+  const byID = {
+    "max-inventory": config.max_inventory,
+    "lot-size": config.lot_size,
+    "min-dte": config.min_dte,
+    "max-dte": config.max_dte,
+    "min-option-quality": config.min_option_quality,
+    "max-daily-orders": config.max_daily_orders,
+    "extreme-max-daily-orders": config.extreme_max_daily_orders,
+    "no-trade-gap": config.no_trade_gap,
+  };
+  for (const [id, value] of Object.entries(byID)) {
+    const input = wheelElement(root, prefix, id);
+    if (input) input.value = value;
   }
-  return {params: params};
+  const state = wheelElement(root, prefix, "strategic-state");
+  if (state) state.value = config.strategic_state;
+  renderWheelCurve(config.price_position_curve, root, prefix);
+}
+
+function wheelNumber(root, prefix, id, label) {
+  const input = wheelElement(root, prefix, id);
+  const value = Number(input.value);
+  if (input.value.trim() === "" || !Number.isFinite(value)) {
+    throw new Error(label + " 必须是有效数字");
+  }
+  return value;
+}
+
+function collectWheelParams(form, root, prefix) {
+  try {
+    const maxInventory = wheelNumber(root, prefix, "max-inventory", "最大库存");
+    const lotSize = wheelNumber(root, prefix, "lot-size", "合约乘数");
+    const minDTE = wheelNumber(root, prefix, "min-dte", "最小 DTE");
+    const maxDTE = wheelNumber(root, prefix, "max-dte", "最大 DTE");
+    const minQuality = wheelNumber(root, prefix, "min-option-quality", "最低期权质量");
+    const maxDaily = wheelNumber(root, prefix, "max-daily-orders", "正常日最多张数");
+    const extremeDaily = wheelNumber(root, prefix, "extreme-max-daily-orders", "极端日最多张数");
+    const noTradeGap = wheelNumber(root, prefix, "no-trade-gap", "不交易缺口");
+    if (maxInventory <= 0) throw new Error("最大库存必须大于 0");
+    if (lotSize < 1 || !Number.isInteger(lotSize)) throw new Error("合约乘数必须是正整数");
+    if (minDTE < 5 || maxDTE > 10 || !Number.isInteger(minDTE) || maxDTE < minDTE || !Number.isInteger(maxDTE)) {
+      throw new Error("DTE 必须是 5 到 10 之间的有效范围");
+    }
+    if (minQuality < 0 || minQuality > 1) throw new Error("最低期权质量必须在 0 到 1 之间");
+    if (maxDaily !== 1) throw new Error("正常日最多张数固定为 1");
+    if (extremeDaily < 1 || extremeDaily > 2 || !Number.isInteger(extremeDaily) || extremeDaily < maxDaily) {
+		throw new Error("极端日最多张数必须在 1 到 2 之间");
+    }
+    if (noTradeGap < 0) throw new Error("不交易缺口必须不小于 0");
+    const rawCurve = collectWheelCurve(root, prefix);
+    if (rawCurve.length < 2) throw new Error("至少需要两个价格锚点");
+    const curve = [];
+    let previousPrice = -Infinity;
+    let previousInventory = Infinity;
+    for (let i = 0; i < rawCurve.length; i++) {
+      const price = Number(rawCurve[i].price);
+      const inventory = Number(rawCurve[i].target_inventory);
+      if (rawCurve[i].price.trim() === "" || rawCurve[i].target_inventory.trim() === "" || !Number.isFinite(price) || !Number.isFinite(inventory)) {
+        throw new Error("曲线第 " + (i + 1) + " 行必须填写有效数字");
+      }
+		if (price <= 0) throw new Error("曲线价格必须大于 0");
+      if (price <= previousPrice) throw new Error("曲线价格必须严格递增");
+      if (inventory > previousInventory) throw new Error("曲线目标库存必须单调不增");
+      if (inventory < 0 || inventory > maxInventory) throw new Error("曲线目标库存必须位于 0 与最大库存之间");
+      previousPrice = price;
+      previousInventory = inventory;
+      curve.push({price: price, target_inventory: inventory});
+    }
+    const state = wheelElement(root, prefix, "strategic-state").value;
+    if (WHEEL_STATES.indexOf(state) < 0) throw new Error("战略状态无效");
+    return {
+      price_position_curve: curve,
+      max_inventory: maxInventory,
+      lot_size: lotSize,
+      min_dte: minDTE,
+      max_dte: maxDTE,
+      min_option_quality: minQuality,
+      max_daily_orders: maxDaily,
+      extreme_max_daily_orders: extremeDaily,
+      no_trade_gap: noTradeGap,
+      strategic_state: state,
+    };
+  } catch (err) {
+    return {error: err.message};
+  }
 }
 
 function renderWatchlist(items, onEdit, onDelete, onBacktest) {
@@ -1216,7 +1346,19 @@ function renderWatchlist(items, onEdit, onDelete, onBacktest) {
   }
   for (const item of items) {
     const tr = document.createElement("tr");
-    for (const cell of [item.symbol, item.strategy, JSON.stringify(item.params), item.updated_at]) {
+    const status = item.execution_status || "UNKNOWN";
+    const blockedReason = item.invalidation_reason || "未登记原因";
+    for (const cell of [item.symbol, item.strategy, item.config_version ? "v" + item.config_version : "—"]) {
+      const td = document.createElement("td");
+      td.textContent = cell;
+      tr.appendChild(td);
+    }
+    const capability = document.createElement("td");
+    capability.textContent = status + " · " + blockedReason;
+    capability.title = blockedReason;
+    capability.dataset.status = status;
+    tr.appendChild(capability);
+    for (const cell of [JSON.stringify(item.params), item.updated_at]) {
       const td = document.createElement("td");
       td.textContent = cell;
       tr.appendChild(td);
@@ -1247,58 +1389,66 @@ function renderWatchlist(items, onEdit, onDelete, onBacktest) {
   table.hidden = false;
 }
 
+function wheelInventorySummary(inventory) {
+  const inv = inventory || {};
+  const show = (value) => value == null ? "—" : Number(value).toLocaleString("en-US", {maximumFractionDigits: 2});
+  return show(inv.actual_inventory) + " / " + show(inv.effective_inventory) + " / " + show(inv.target_inventory);
+}
+
+function renderWheelSignals(items, onActions) {
+  const table = document.getElementById("wheel-signals-table");
+  const empty = document.getElementById("wheel-signals-empty");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  if (items.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  for (const item of items) {
+    const action = document.createElement("td");
+    action.textContent = item.action;
+    action.dataset.action = item.action;
+    const capability = document.createElement("td");
+    capability.textContent = item.capability_status + (item.blocked_by && item.blocked_by.length ? " · " + item.blocked_by.join(", ") : "");
+    capability.dataset.status = item.capability_status;
+    const audit = document.createElement("button");
+    audit.type = "button";
+    audit.className = "link";
+    audit.textContent = "人工记录";
+    audit.addEventListener("click", () => onActions(item));
+    const auditCell = document.createElement("td");
+    auditCell.appendChild(audit);
+    appendRow(tbody, [fmtTime(item.created_at), item.symbol, action, capability, "v" + item.config_version, wheelInventorySummary(item.inventory), item.reason, auditCell]);
+  }
+  empty.hidden = true;
+  table.hidden = false;
+  mirrorNumericColumns(table);
+}
+
 function initWatchlistPage() {
   const form = document.getElementById("watchlist-form");
   if (!form) return;
-  const strategySelect = document.getElementById("strategy-select");
   const formError = document.getElementById("watchlist-form-error");
   const formOk = document.getElementById("watchlist-form-ok");
   const listError = document.getElementById("watchlist-error");
-  let strategies = [];
+  const signalFilter = document.getElementById("wheel-signals-filter");
+  const signalsError = document.getElementById("wheel-signals-error");
+  const actionsView = document.getElementById("wheel-signal-actions");
   let editingSymbol = null;
 
   function hideOk() {
     formOk.hidden = true;
   }
 
-  function strategyByName(name) {
-    for (const s of strategies) {
-      if (s.name === name) return s;
+  function selectWheelCard() {
+    for (const card of document.querySelectorAll(".strategy-card")) {
+      card.addEventListener("click", () => {
+        clearError(formError);
+        hideOk();
+        document.getElementById("editor").scrollIntoView();
+      });
     }
-    return null;
-  }
-
-  function currentStrategy() {
-    return strategyByName(strategySelect.value);
-  }
-
-  function renderStrategySelect() {
-    strategySelect.replaceChildren();
-    for (const s of strategies) {
-      const opt = document.createElement("option");
-      opt.value = s.name;
-      opt.textContent = s.name;
-      strategySelect.appendChild(opt);
-    }
-    renderParamFields(currentStrategy());
-  }
-
-  function loadStrategies() {
-    loadJSON("/v1/strategies", formError, (list) => {
-      strategies = list;
-      renderStrategySelect();
-      renderStrategyCards(list);
-      const cards = document.querySelectorAll(".strategy-card");
-      for (const card of cards) {
-        card.addEventListener("click", () => {
-          strategySelect.value = card.dataset.strategy;
-          renderParamFields(currentStrategy());
-          clearError(formError);
-          hideOk();
-          document.getElementById("editor").scrollIntoView();
-        });
-      }
-    });
   }
 
   /* 一键回测:POST /v1/backtests(该标的绑定的策略与参数),成功后带
@@ -1324,6 +1474,29 @@ function initWatchlistPage() {
     });
   }
 
+  function loadSignalActions(item) {
+    clearError(signalsError);
+    loadJSON("/v1/wheel/signals/" + item.id + "/actions", signalsError, (actions) => {
+      actionsView.hidden = false;
+      if (actions.length === 0) {
+        actionsView.textContent = item.symbol + " / signal #" + item.id + "：尚无人工处置记录。";
+        return;
+      }
+      actionsView.textContent = item.symbol + " / signal #" + item.id + "：" + actions.map((a) => fmtTime(a.created_at) + " " + a.action + " by " + a.actor + (a.note ? " · " + a.note : "")).join("；");
+    });
+  }
+
+  function loadWheelSignals() {
+    clearError(signalsError);
+    actionsView.hidden = true;
+    const query = ["limit=50"];
+    const symbol = signalFilter.symbol.value.trim();
+    const action = signalFilter.action.value;
+    if (symbol) query.push("symbol=" + encodeURIComponent(symbol));
+    if (action) query.push("action=" + encodeURIComponent(action));
+    loadJSON("/v1/wheel/signals?" + query.join("&"), signalsError, (items) => renderWheelSignals(items, loadSignalActions));
+  }
+
   /* 观察列表排序(全站最后一列无排序的表):默认按更新时间降序,新更新在上。 */
   const watchlistSorter = makeTableSorter("watchlist-table", WATCHLIST_SORT_KEYS);
   watchlistSorter.render = () => renderWatchlist(watchlistItems, beginEdit, deleteItem, runBacktest);
@@ -1334,8 +1507,8 @@ function initWatchlistPage() {
   function beginEdit(item) {
     editingSymbol = item.symbol;
     form.symbol.value = item.symbol;
-    strategySelect.value = item.strategy;
-    renderParamFields(currentStrategy(), item.params);
+    form.strategy.value = "wheel";
+    renderWheelFields(item.params, form, "");
     clearError(formError);
     hideOk();
     document.getElementById("editor").scrollIntoView();
@@ -1344,7 +1517,8 @@ function initWatchlistPage() {
   function resetForm() {
     editingSymbol = null;
     form.symbol.value = "";
-    renderParamFields(currentStrategy());
+    form.strategy.value = "wheel";
+    renderWheelFields(undefined, form, "");
     form.symbol.focus();
   }
 
@@ -1358,8 +1532,15 @@ function initWatchlistPage() {
     }
   }
 
-  strategySelect.addEventListener("change", () => {
-    renderParamFields(currentStrategy());
+  document.getElementById("curve-add").addEventListener("click", () => {
+    const curve = collectWheelCurve(form, "");
+    const last = curve[curve.length - 1] || {price: 0, target_inventory: 0};
+    const price = Number(last.price);
+    curve.push({
+      price: Number.isFinite(price) ? price + 1 : "",
+      target_inventory: last.target_inventory,
+    });
+    renderWheelCurve(curve, form, "");
     hideOk();
   });
   form.addEventListener("submit", async (event) => {
@@ -1369,24 +1550,19 @@ function initWatchlistPage() {
       showError(formError, new Error("symbol is required"));
       return;
     }
-    const strategy = currentStrategy();
-    if (!strategy) {
-      showError(formError, new Error("请选择策略"));
-      return;
-    }
-    const collected = collectParams(strategy, form);
-    if (collected.error) {
-      showError(formError, new Error(collected.error));
+    const params = collectWheelParams(form, form, "");
+    if (params.error) {
+      showError(formError, new Error(params.error));
       return;
     }
     try {
       await fetchJSON("/v1/watchlist/" + encodeURIComponent(symbol), {
         method: "PUT",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({strategy: strategy.name, params: collected.params})
+        body: JSON.stringify({strategy: "wheel", params: params})
       });
       clearError(formError);
-      formOk.textContent = "已保存 " + symbol + "(" + strategy.name + ")。";
+      formOk.textContent = "已保存 " + symbol + "(wheel)。";
       formOk.hidden = false;
       resetForm();
       loadWatchlist();
@@ -1395,46 +1571,33 @@ function initWatchlistPage() {
       showError(formError, err);
     }
   });
+  signalFilter.addEventListener("submit", (event) => {
+    event.preventDefault();
+    loadWheelSignals();
+  });
 
-  loadStrategies();
+  renderWheelFields(undefined, form, "");
+  selectWheelCard();
   loadWatchlist();
+  loadWheelSignals();
 }
 
 /* Results page: /v1/backtests list + detail with a hand-drawn equity curve,
    plus the 启动回测 form (POST /v1/backtests, synchronous). */
 
-/* Run form: /v1/strategies schema → strategy select + param fields, then
+/* Run form: the same structured Wheel configuration as watchlist, then
    POST /v1/backtests. Single run returns the new result detail (open it);
    from_watchlist returns {runs: [...]} (refresh the list). */
 function setupBacktestRunForm() {
   const form = document.getElementById("backtest-form");
   if (!form) return;
-  const select = document.getElementById("run-strategy-select");
   const watchlistCheck = document.getElementById("run-watchlist");
   const symbolInput = document.getElementById("run-symbol");
+  const wheelFields = document.getElementById("run-param-fields");
   const btn = document.getElementById("run-btn");
   const errEl = document.getElementById("run-error");
   const okEl = document.getElementById("run-ok");
   const listError = document.getElementById("results-error");
-  let strategies = [];
-
-  function strategyByName(name) {
-    for (const s of strategies) {
-      if (s.name === name) return s;
-    }
-    return null;
-  }
-
-  function renderSelect() {
-    select.replaceChildren();
-    for (const s of strategies) {
-      const opt = document.createElement("option");
-      opt.value = s.name;
-      opt.textContent = s.name;
-      select.appendChild(opt);
-    }
-    renderParamFields(strategyByName(select.value), null, "run-param-fields");
-  }
 
   function refreshList() {
     loadJSON("/v1/backtests?limit=50", listError, (items) => {
@@ -1442,25 +1605,17 @@ function setupBacktestRunForm() {
     });
   }
 
-  select.addEventListener("change", () => {
-    renderParamFields(strategyByName(select.value), null, "run-param-fields");
-    clearError(errEl);
-  });
-
-  watchlistCheck.addEventListener("change", () => {
+  function syncRunMode() {
     symbolInput.disabled = watchlistCheck.checked;
+    wheelFields.disabled = watchlistCheck.checked;
     clearError(errEl);
-  });
+  }
+  watchlistCheck.addEventListener("change", syncRunMode);
 
   form.addEventListener("submit", async (ev) => {
     ev.preventDefault();
     clearError(errEl);
     okEl.hidden = true;
-    const strategy = strategyByName(select.value);
-    if (!strategy) {
-      showError(errEl, new Error("请选择策略"));
-      return;
-    }
     let body;
     if (watchlistCheck.checked) {
       body = {from_watchlist: true};
@@ -1470,12 +1625,12 @@ function setupBacktestRunForm() {
         showError(errEl, new Error("symbol is required (或勾选使用观察列表全部标的)"));
         return;
       }
-      const collected = collectParams(strategy, form);
-      if (collected.error) {
-        showError(errEl, new Error(collected.error));
+      const params = collectWheelParams(form, form, "run-");
+      if (params.error) {
+        showError(errEl, new Error(params.error));
         return;
       }
-      body = {symbol: symbol, strategy: strategy.name, params: collected.params};
+      body = {symbol: symbol, strategy: "wheel", params: params};
     }
     btn.disabled = true;
     btn.textContent = "运行中…";
@@ -1503,29 +1658,35 @@ function setupBacktestRunForm() {
     }
   });
 
-  loadJSON("/v1/strategies", errEl, (list) => {
-    strategies = list;
-    renderSelect();
+  document.getElementById("run-curve-add").addEventListener("click", () => {
+    const curve = collectWheelCurve(form, "run-");
+    const last = curve[curve.length - 1] || {price: 0, target_inventory: 0};
+    const price = Number(last.price);
+    curve.push({
+      price: Number.isFinite(price) ? price + 1 : "",
+      target_inventory: last.target_inventory,
+    });
+    renderWheelCurve(curve, form, "run-");
+    clearError(errEl);
   });
 
-  /* 详情「重新运行」:把该回测的代码/策略/参数填回顶部表单(参数
-     renderParamFields 回填,与 watchlist 编辑同款),滚到表单微调即
-     可重跑——看结果→调参→再跑 的迭代闭环。 */
+  renderWheelFields(undefined, form, "run-");
+
+  /* 详情「重新运行」:把 Wheel 回测的代码/参数填回顶部表单，滚到
+     表单微调即可重跑——看结果→调参→再跑的迭代闭环。 */
   rerunHandler = (d) => {
     document.getElementById("rerun-btn").onclick = () => {
       const symbolInput = document.getElementById("run-symbol");
       document.getElementById("run-watchlist").checked = false;
       symbolInput.disabled = false;
+      wheelFields.disabled = false;
       symbolInput.value = d.symbol;
-      const st = strategyByName(d.strategy);
-      if (st) {
-        select.value = d.strategy;
-        renderParamFields(st, d.params, "run-param-fields");
+      if (d.strategy === "wheel") {
+        const strategyParams = d.params && d.params.strategy_params ? d.params.strategy_params : d.params;
+        renderWheelFields(strategyParams, form, "run-");
         clearError(errEl);
       } else {
-        /* 内部基准策略(如 buy-hold)不在注册表,select 无法回填:
-           保留代码,提示手动选策略。 */
-        showError(errEl, new Error("策略「" + d.strategy + "」不在当前注册表,请手动选择策略。"));
+        showError(errEl, new Error("该回测不是 Wheel 策略，无法回填。"));
       }
       document.getElementById("run").scrollIntoView();
       symbolInput.focus();
@@ -1789,6 +1950,39 @@ function renderTradesTable(trades) {
   };
 }
 
+/* Wheel 回测逐 bar 审计轨迹。DATA_BLOCKED 与普通风险 HOLD 必须在 UI
+   上可区分；snapshot key/observed_at 证明决策只消费了哪个原子批次。 */
+function renderBacktestSignals(signals) {
+  const table = document.getElementById("backtest-signals-table");
+  const empty = document.getElementById("backtest-signals-empty");
+  const rows = signals.map((signal) => {
+    const action = document.createElement("td");
+    action.textContent = signal.action || "HOLD";
+    action.dataset.action = signal.action || "HOLD";
+
+    const capability = document.createElement("td");
+    const blocked = signal.blocked_by || [];
+    capability.textContent = (signal.capability_status || "READY") + (blocked.length ? " · " + blocked.join(", ") : "");
+    capability.dataset.status = signal.capability_status || "READY";
+
+    const snapshot = signal.snapshot_key
+      ? signal.snapshot_key + (signal.snapshot_observed_at ? " · " + fmtTime(signal.snapshot_observed_at) : "")
+      : "—";
+    const inventory = "实际 " + fmtNum(signal.actual_inventory) +
+      " / 有效 " + fmtNum(signal.effective_inventory) +
+      " / 期权Δ " + fmtNum(signal.option_delta_stock);
+    return [fmtTime(signal.ts), action, capability, snapshot, signal.direction || "—", inventory,
+      signal.candidate_code || "—", signal.quantity ?? 0, signal.reason || "—"];
+  });
+  if (rows.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  renderTable("backtest-signals-table", rows);
+}
+
 function renderDetail(d) {
   setText("detail-id", d.id);
   showMetric("metric-equity", metricOf(d, "equity"), fmtMoney);
@@ -1801,6 +1995,7 @@ function renderDetail(d) {
   wireExport(d.id);
   if (rerunHandler) rerunHandler(d); /* initResultsPage 注入,重新运行表单回填 */
   renderTradesTable(d.trades || []);
+  renderBacktestSignals(d.signals || []);
   document.getElementById("detail-params").textContent = d.params ? JSON.stringify(d.params, null, 2) : "{}";
   curvePoints = d.equity_curve || [];
   curveIndex = 0;
@@ -2200,38 +2395,6 @@ function initResultsPage() {
   /* 一键回测跳入(watchlist 页 #bt-<id>):直接打开该回测详情。 */
   const bt = location.hash.match(/^#bt-(\d+)$/);
   if (bt) openDetail(Number(bt[1]));
-}
-
-/* 策略页策略说明卡(/v1/strategies schema):名称 + 描述 + 每参数
-   「默认值 = 参数名 · 含义」,点击卡片联动下方编辑表单。 */
-
-function renderStrategyCards(list) {
-  const wrap = document.getElementById("strategy-cards");
-  if (!wrap) return;
-  wrap.replaceChildren();
-  for (const s of list) {
-    const card = document.createElement("article");
-    card.className = "strategy-card";
-    card.dataset.strategy = s.name;
-    const h3 = document.createElement("h3");
-    h3.textContent = s.name;
-    card.appendChild(h3);
-    const desc = document.createElement("p");
-    desc.className = "strategy-desc";
-    desc.textContent = s.description || "";
-    card.appendChild(desc);
-    const dl = document.createElement("dl");
-    for (const p of s.params) {
-      const dt = document.createElement("dt");
-      dt.textContent = p.name + " = " + (p.default === undefined || p.default === null ? "—" : p.default);
-      const dd = document.createElement("dd");
-      dd.textContent = p.description || "";
-      dl.appendChild(dt);
-      dl.appendChild(dd);
-    }
-    card.appendChild(dl);
-    wrap.appendChild(card);
-  }
 }
 
 /* 导航高亮当前页:按 pathname 匹配 nav 链接加 active 类(/ui/ 直达

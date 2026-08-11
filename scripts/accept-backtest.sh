@@ -17,6 +17,7 @@ base="${1:-http://127.0.0.1:8080}"
 bin="${2:-$HOME/.wbot/dev/wbot}"
 dsn="${3:-${WBOT_PG_DSN:-}}"
 symbol="${4:-BTEXEC.US}"
+params='{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":10,"strategic_state":"NORMAL"}'
 if [[ -z "$dsn" ]]; then
   echo "accept-backtest: need dsn (arg 3 or \$WBOT_PG_DSN)" >&2
   exit 2
@@ -27,14 +28,14 @@ check() { local d="$1" w="$2" g="$3"; if [[ "$g" == "$w" ]]; then pass=$((pass+1
 strip_ansi() { sed -E 's/\x1b\[[0-9;]*m//g'; }
 
 # 1. CLI 运行: -dsn 真数据 → exit 0 + summary 行形状。
-out="$( "$bin" backtest -dsn "$dsn" -symbol $symbol -strategy buy-hold 2>&1 )"
+out="$( "$bin" backtest -dsn "$dsn" -symbol "$symbol" -strategy wheel -params "$params" 2>&1 )"
 rc=$?
 check "CLI backtest -dsn 运行 exit 0 (got $rc)" 0 "$rc"
 check "CLI summary 形状 final_equity/total_return/max_drawdown/bars" \
   1 "$(echo "$out" | grep -cE '^final_equity=.+ total_return=.+ max_drawdown=.+ bars=[0-9]+$')"
 
 # 2. CLI -save: 落库并打印 result id。
-out="$( "$bin" backtest -dsn "$dsn" -symbol $symbol -strategy buy-hold -save 2>&1 | strip_ansi )"
+out="$( "$bin" backtest -dsn "$dsn" -symbol "$symbol" -strategy wheel -params "$params" -save 2>&1 | strip_ansi )"
 rc=$?
 check "CLI -save exit 0 (got $rc)" 0 "$rc"
 id="$(echo "$out" | grep -oE 'saved result id=[0-9]+' | grep -oE '[0-9]+$')"
@@ -47,46 +48,48 @@ check "GET /v1/backtests/$id → 200 (got $code)" 200 "$code"
 node -e "
 const j = JSON.parse(process.argv[1]);
 const m = j.metrics || {};
-const ok = j.id === $id && j.strategy === 'buy-hold' && j.symbol === '$symbol'
+const ok = j.id === $id && j.strategy === 'wheel' && j.symbol === '$symbol'
   && typeof m.total_return === 'number' && typeof m.max_drawdown === 'number'
   && typeof m.equity === 'number' && typeof m.bars === 'number'
   && Array.isArray(j.equity_curve) && j.equity_curve.length >= 2
-  && Array.isArray(j.trades) && j.trades.length >= 1;
+  && Array.isArray(j.trades) && j.trades.length >= 1
+  && Array.isArray(j.signals) && j.signals.length === m.bars
+  && j.signals.every(s => typeof s.capability_status === 'string'
+    && Array.isArray(s.blocked_by) && typeof s.snapshot_key === 'string');
 process.exit(ok ? 0 : 1);
 " "$body"
-check "详情形状: id/strategy/symbol + metrics 键 + equity_curve≥2 + trades≥1" 0 "$?"
+check "详情形状: Wheel metrics/equity/trades + 每 bar capability/snapshot trace" 0 "$?"
 
 # 4. 等价①: POST exec 201 body 与随后 GET detail 字节一致。
 post="$(curl -s -m 30 -X POST "$base/v1/backtests" -H 'Content-Type: application/json' \
-  -d "{\"symbol\":\"$symbol\",\"strategy\":\"buy-hold\"}")"
+  -d "{\"symbol\":\"$symbol\",\"strategy\":\"wheel\",\"params\":$params}")"
 code="$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST "$base/v1/backtests" \
-  -H 'Content-Type: application/json' -d "{\"symbol\":\"$symbol\",\"strategy\":\"buy-hold\"}")"
+  -H 'Content-Type: application/json' -d "{\"symbol\":\"$symbol\",\"strategy\":\"wheel\",\"params\":$params}")"
 check "POST /v1/backtests → 201 (got $code)" 201 "$code"
 pid="$(echo "$post" | node -e "const j=JSON.parse(require('fs').readFileSync(0)); console.log(j.id)" | strip_ansi)"
 getd="$(curl -s -m 10 "$base/v1/backtests/$pid")"
 check "POST 201 body == GET /v1/backtests/{id} 字节一致" \
   1 "$([[ "$post" == "$getd" ]] && echo 1 || echo 0)"
 
-# 4b. 回测 watchlist 模式: POST from_watchlist → 201 + runs 数组
-#     (2026-08-03 修复前 dev-up 种子 buy-hold 被 || true 吞掉,watchlist
-#     表实为空 → 此步 422 empty_watchlist;buy-hold 入模板后整表可跑)。
+# 4b. 回测 watchlist 模式: POST from_watchlist → 201 + Wheel runs 数组。
 wl="$(curl -s -m 60 -X POST "$base/v1/backtests" -H 'Content-Type: application/json' \
   -d '{"from_watchlist":true}')"
 code="$(curl -s -o /dev/null -w '%{http_code}' -m 60 -X POST "$base/v1/backtests" \
   -H 'Content-Type: application/json' -d '{"from_watchlist":true}')"
 check "POST from_watchlist → 201 (got $code)" 201 "$code"
-check "from_watchlist runs 数组非空且每条 buy-hold" \
-  1 "$(echo "$wl" | node -e "const j=JSON.parse(require('fs').readFileSync(0)); process.exit(Array.isArray(j.runs) && j.runs.length >= 1 && j.runs.every(r => r.strategy === 'buy-hold') ? 0 : 1)" 2>/dev/null && echo 1 || echo 0)"
+check "from_watchlist runs 数组非空且每条 wheel" \
+  1 "$(echo "$wl" | node -e "const j=JSON.parse(require('fs').readFileSync(0)); process.exit(Array.isArray(j.runs) && j.runs.length >= 1 && j.runs.every(r => r.strategy === 'wheel') ? 0 : 1)" 2>/dev/null && echo 1 || echo 0)"
 
-# 5. GET /v1/backtests/{id}/export CSV: mime + 双节头行。
+# 5. GET /v1/backtests/{id}/export CSV: mime + equity/trades/signals 三节。
 csv="$(curl -s -m 10 "$base/v1/backtests/$id/export")"
 mime="$(curl -s -o /dev/null -w '%{content_type}' -m 10 "$base/v1/backtests/$id/export")"
 check "export csv Content-Type text/csv (got $mime)" "text/csv; charset=utf-8" "$mime"
 head_ok=0
 echo "$csv" | grep -q '^equity_curve$' && echo "$csv" | grep -q '^ts,equity$' \
   && echo "$csv" | grep -q '^trades$' && echo "$csv" | grep -q '^ts,action,symbol,size,price,cash_after$' \
+  && echo "$csv" | grep -q '^signals$' && echo "$csv" | grep -q '^ts,action,direction,reason,capability_status,blocked_by,snapshot_key,snapshot_observed_at,' \
   && head_ok=1
-check "export csv 双节(equity_curve/trades)头行" 1 "$head_ok"
+check "export csv 三节(equity_curve/trades/signals)头行" 1 "$head_ok"
 
 # 6. 等价②: CLI -export csv 与 HTTP export 字节一致(roundtrip)。
 cli_csv="$("$bin" backtest -dsn "$dsn" -export "$id" -format csv 2>/dev/null)"

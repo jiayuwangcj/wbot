@@ -1,0 +1,197 @@
+package wheelstore
+
+import (
+	"context"
+	"database/sql"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/jiayu/wbot/internal/db"
+)
+
+func openIntegrationDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MigrateUp(database); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	return database
+}
+
+func cleanIntegrationWheel(t *testing.T, database *sql.DB, symbol string) {
+	t.Helper()
+	if _, err := database.Exec(`
+DELETE FROM wheel_signal_actions
+WHERE signal_id IN (SELECT id FROM wheel_signals WHERE symbol = $1)`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM wheel_signals WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM option_quote_snapshots WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM wheel_configs WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestWheelStoreIntegration(t *testing.T) {
+	database := openIntegrationDB(t)
+	ctx := context.Background()
+	symbol := "WHEELSTORE.TEST"
+	cleanIntegrationWheel(t, database, symbol)
+	t.Cleanup(func() { cleanIntegrationWheel(t, database, symbol) })
+
+	store := New(database)
+	configID, err := store.AppendConfig(ctx, ConfigRecord{
+		Symbol: symbol, Version: 1,
+		Config: map[string]any{"strategy": "wheel", "params": map[string]any{"max_inventory": 1200}},
+		State:  map[string]any{"strategic_state": "NORMAL"},
+	})
+	if err != nil || configID <= 0 {
+		t.Fatalf("AppendConfig id=%d err=%v", configID, err)
+	}
+	latest, err := store.LatestConfig(ctx, symbol)
+	if err != nil || latest.Version != 1 || latest.Config["strategy"] != "wheel" {
+		t.Fatalf("LatestConfig=%+v err=%v", latest, err)
+	}
+	configs, err := store.ListConfigs(ctx, symbol, 10)
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs=%+v err=%v", configs, err)
+	}
+
+	observed := time.Date(2026, 8, 10, 9, 30, 0, 0, time.UTC)
+	complete := validQuote()
+	complete.Symbol, complete.Underlying, complete.ObservedAt = symbol, "WHEELSTORE", observed
+	complete.SnapshotKey = "batch-complete"
+	quoteID, err := store.AppendQuoteSnapshot(ctx, complete)
+	if err != nil || quoteID <= 0 {
+		t.Fatalf("AppendQuoteSnapshot complete id=%d err=%v", quoteID, err)
+	}
+	// Incomplete observations are retained for diagnostics and query, but
+	// Complete remains false and the signal layer cannot turn them into ALERT.
+	incomplete := complete
+	incomplete.SnapshotKey = "batch-incomplete"
+	incomplete.IV = nil
+	incomplete.Delta = nil
+	incomplete.ObservedAt = observed.Add(time.Minute)
+	if _, err := store.AppendQuoteSnapshot(ctx, incomplete); err != nil {
+		t.Fatalf("AppendQuoteSnapshot incomplete: %v", err)
+	}
+	quotes, err := store.QueryQuoteSnapshots(ctx, symbol, time.Time{}, time.Time{}, 10)
+	if err != nil || len(quotes) != 2 {
+		t.Fatalf("QueryQuoteSnapshots len=%d err=%v", len(quotes), err)
+	}
+	if quotes[0].Source != "test" || quotes[0].IngestedAt.IsZero() {
+		t.Fatalf("quote metadata=%+v", quotes[0])
+	}
+
+	alertID, err := store.AppendSignal(ctx, SignalRecord{
+		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
+		Inventory: validInventory(), Candidates: []map[string]any{{"quote_snapshot_id": quoteID, "direction": "PUT"}},
+		Reason: "inventory gap exceeds no-trade gap",
+	})
+	if err != nil || alertID <= 0 {
+		t.Fatalf("AppendSignal ALERT id=%d err=%v", alertID, err)
+	}
+	holdID, err := store.AppendSignal(ctx, SignalRecord{
+		Symbol: symbol, Action: "HOLD", ConfigVersion: 1, CapabilityStatus: "DATA_BLOCKED",
+		BlockedBy: []string{"missing_iv"}, RejectionReasons: []string{"incomplete quote"},
+		Reason: "required quote fields are missing",
+	})
+	if err != nil || holdID <= 0 {
+		t.Fatalf("AppendSignal HOLD id=%d err=%v", holdID, err)
+	}
+	gotAlert, err := store.GetSignal(ctx, alertID)
+	if err != nil || gotAlert.Action != "ALERT" || len(gotAlert.Candidates) != 1 {
+		t.Fatalf("GetSignal=%+v err=%v", gotAlert, err)
+	}
+	gotHold, err := store.GetSignal(ctx, holdID)
+	if err != nil || gotHold.CapabilityStatus != "DATA_BLOCKED" || len(gotHold.BlockedBy) != 1 {
+		t.Fatalf("GetSignal HOLD=%+v err=%v", gotHold, err)
+	}
+	// The database repeats the repository's invariants so direct/internal SQL
+	// cannot persist contradictory audit records.
+	for _, tc := range []struct {
+		name    string
+		action  string
+		status  string
+		blocked string
+	}{
+		{"unknown status", "HOLD", "UNKNOWN", `[]`},
+		{"ready with blockers", "HOLD", "READY", `["missing_iv"]`},
+		{"blocked without blockers", "HOLD", "DATA_BLOCKED", `[]`},
+		{"blocked alert", "ALERT", "DATA_BLOCKED", `["missing_iv"]`},
+	} {
+		t.Run("database rejects "+tc.name, func(t *testing.T) {
+			_, err := database.ExecContext(ctx, `
+INSERT INTO wheel_signals (symbol, action, config_version, capability_status, blocked_by, reason)
+VALUES ($1, $2, 1, $3, $4::jsonb, 'invalid fixture')`, symbol, tc.action, tc.status, tc.blocked)
+			if err == nil {
+				t.Fatalf("database accepted %s/%s blocked_by=%s", tc.action, tc.status, tc.blocked)
+			}
+		})
+	}
+	signals, err := store.ListSignals(ctx, symbol, "", 10)
+	if err != nil || len(signals) != 2 {
+		t.Fatalf("ListSignals len=%d err=%v", len(signals), err)
+	}
+
+	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "CONFIRM", Actor: "operator", Note: "reviewed"}); err != nil {
+		t.Fatalf("AppendAction CONFIRM: %v", err)
+	}
+	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "FILL", Actor: "operator", Note: "human-reported fill", Details: map[string]any{"contracts": 1}}); err != nil {
+		t.Fatalf("AppendAction FILL: %v", err)
+	}
+	actions, err := store.ListActions(ctx, alertID)
+	if err != nil || len(actions) != 2 || actions[1].Action != "FILL" {
+		t.Fatalf("ListActions=%+v err=%v", actions, err)
+	}
+}
+
+func TestQueryUnderlyingQuoteSnapshotsPreservesAtomicBatchAtLimit(t *testing.T) {
+	database := openIntegrationDB(t)
+	ctx := context.Background()
+	const underlying = "WHEELSTORE.ATOMIC"
+	if _, err := database.Exec(`DELETE FROM option_quote_snapshots WHERE underlying = $1`, underlying); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = database.Exec(`DELETE FROM option_quote_snapshots WHERE underlying = $1`, underlying) })
+
+	store := New(database)
+	observed := time.Date(2026, 8, 10, 9, 30, 0, 0, time.UTC)
+	for _, fixture := range []struct {
+		symbol, kind, key string
+		delta             float64
+		at                time.Time
+	}{
+		{underlying + "-OLD", "PUT", "older", -0.2, observed.Add(-time.Minute)},
+		{underlying + "-P", "PUT", "latest-atomic", -0.3, observed},
+		{underlying + "-C", "CALL", "latest-atomic", 0.3, observed},
+	} {
+		quote := validQuote()
+		quote.Symbol, quote.Underlying, quote.OptionType = fixture.symbol, underlying, fixture.kind
+		quote.SnapshotKey, quote.ObservedAt, quote.Delta = fixture.key, fixture.at, f(fixture.delta)
+		if _, err := store.AppendQuoteSnapshot(ctx, quote); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := store.QueryUnderlyingQuoteSnapshots(ctx, underlying, time.Time{}, time.Time{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].SnapshotKey != "latest-atomic" || rows[1].SnapshotKey != "latest-atomic" {
+		t.Fatalf("limit=1 returned %+v; want every contract in the latest atomic batch", rows)
+	}
+}

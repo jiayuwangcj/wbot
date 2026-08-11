@@ -45,7 +45,7 @@ func TestDataCheckCLIIntegrationReportsWatchlistGaps(t *testing.T) {
 	}
 	cleanup()
 	defer cleanup()
-	if _, err := database.Exec(`INSERT INTO watchlist(symbol, strategy) VALUES ($1, 'buy-hold')`, symbol); err != nil {
+	if _, err := database.Exec(`INSERT INTO watchlist(symbol, strategy) VALUES ($1, 'wheel')`, symbol); err != nil {
 		t.Fatal(err)
 	}
 

@@ -187,6 +187,78 @@ fieldset {
   gap: 0.75rem;
 }
 
+/* Wheel editor: the curve is a small editable table, while scalar risk
+   controls remain a responsive grid on desktop and stack on narrow screens. */
+.wheel-fields {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.curve-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.curve-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--fg);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.field-help {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.curve-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.curve-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(8rem, 1fr) auto;
+  gap: 0.75rem;
+  align-items: end;
+}
+
+.curve-row .curve-remove {
+  margin-bottom: 0;
+}
+
+.curve-row .curve-remove:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.wheel-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.wheel-grid label input,
+.wheel-grid label select,
+.curve-row label input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.strategy-fixed {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 legend {
   font-size: 0.85rem;
   color: var(--muted);
@@ -841,6 +913,15 @@ pre {
 
   fieldset {
     flex-direction: column;
+  }
+
+  .curve-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .curve-row .curve-remove {
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 
   input:not([type="checkbox"]),

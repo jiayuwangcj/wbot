@@ -31,6 +31,7 @@ import (
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/master"
 	"github.com/jiayu/wbot/internal/watchlist"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 func TestRun(t *testing.T) {
@@ -159,9 +160,8 @@ func TestRunRequiresDSN(t *testing.T) {
 	}
 }
 
-// TestBacktestOptionStrategyIntegration: full CLI path against real PG —
-// option_quotes + bars seeded, covered-call run with -params prints the
-// deterministic summary (skipped without WBOT_PG_DSN).
+// TestBacktestOptionStrategyIntegration drives the full CLI path with trusted
+// atomic Wheel snapshots (skipped without WBOT_PG_DSN).
 func TestBacktestOptionStrategyIntegration(t *testing.T) {
 	dsn := os.Getenv("WBOT_PG_DSN")
 	if dsn == "" {
@@ -180,7 +180,7 @@ func TestBacktestOptionStrategyIntegration(t *testing.T) {
 	if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := database.Exec(`DELETE FROM option_quotes WHERE underlying = $1`, symbol); err != nil {
+	if _, err := database.Exec(`DELETE FROM option_quote_snapshots WHERE underlying = $1`, symbol); err != nil {
 		t.Fatal(err)
 	}
 	day := func(i int) time.Time { return time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC) }
@@ -191,33 +191,23 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 			t.Fatal(err)
 		}
 	}
-	quotes := []struct {
-		code   string
-		opt    string
-		strike float64
-		expiry int
-		closes []float64
-	}{
-		{"CLIO105C", "call", 105, 2, []float64{3, 2.5, 1}},
-		{"CLIO110C", "call", 110, 4, []float64{1, 0.8, 0.5, 0.2}},
-	}
-	for _, q := range quotes {
-		for i, c := range q.closes {
-			if _, err := database.Exec(`
-INSERT INTO option_quotes (symbol, underlying, option_type, strike, expiry, ts, open, high, low, close, volume, implied_vol, adjust, source)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7, $7, 10, NULL, 'none', 'futu')`,
-				q.code, symbol, q.opt, q.strike, day(q.expiry), day(i), c); err != nil {
-				t.Fatal(err)
-			}
+	for i, bid := range []float64{3, 2.5, 2, 1.5, 1} {
+		if _, err := database.Exec(`
+INSERT INTO option_quote_snapshots
+  (symbol, underlying, option_type, strike, expiry, source, snapshot_key,
+   underlying_price, delta, bid, ask, iv, theta, volume, open_interest, lot_size, observed_at)
+VALUES ('CLIO95P', $1, 'PUT', 95, $2, 'fixture', $3, $4, -0.30, $5, $6, 0.30, -0.10, 1000, 10000, 100, $7)`,
+			symbol, day(7), fmt.Sprintf("cli-%d", i), []float64{100, 103, 99, 106, 104}[i], bid, bid+0.1, day(i)); err != nil {
+			t.Fatal(err)
 		}
 	}
 
 	argv := []string{"wbot", "backtest", "-dsn", dsn, "-symbol", symbol, "-timeframe", "1d", "-adjust", "none",
-		"-strategy", "covered-call", "-params", `{"strike_pct_otm":0.05}`}
-	// buy 100 @100, sell C105 for 250, OTM void; sell C110 for 20, OTM void:
-	// cash 270 + 100*104 (same fixture as internal/strategy's integration test).
+		"-strategy", "wheel", "-params", `{"price_position_curve":[{"price":90,"target_inventory":100},{"price":110,"target_inventory":100}],"max_inventory":100,"min_option_quality":0,"no_trade_gap":0}`}
+	// Day 0 sells one P95 for 300. Existing assignment commitment consumes the
+	// max inventory, so later snapshots cannot open another. Final bid mark is 1.
 	out := captureRunOutput(t, argv)
-	for _, want := range []string{"final_equity=10670", "total_return=0.067", "bars=5"} {
+	for _, want := range []string{"final_equity=10200", "total_return=0.02", "bars=5"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q; want containing %q", out, want)
 		}
@@ -294,16 +284,16 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	if err := json.Unmarshal([]byte(cliJSON), &detail); err != nil {
 		t.Fatalf("unmarshal CLI json: %v", err)
 	}
-	if detail.ID != id || detail.Symbol != symbol || len(detail.EquityCurve) != 3 || len(detail.Trades) != 1 {
-		t.Fatalf("detail = %+v; want id %d symbol %s with 3 curve points and 1 trade", detail, id, symbol)
+	if detail.ID != id || detail.Symbol != symbol || len(detail.EquityCurve) != 3 || len(detail.Trades) != 1 || len(detail.Signals) != 3 {
+		t.Fatalf("detail = %+v; want id %d symbol %s with 3 curve points, 1 trade, and 3 signals", detail, id, symbol)
 	}
 	cliCSV := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", dsn, "-export", idStr})
 	if cliCSV != apiCSV.Body.String() {
 		t.Fatalf("CLI csv != API csv: %q vs %q", cliCSV, apiCSV.Body)
 	}
 	sections := strings.Split(cliCSV, "\n\n")
-	if len(sections) != 2 {
-		t.Fatalf("csv sections = %d; want 2 (equity_curve + trades): %q", len(sections), cliCSV)
+	if len(sections) != 3 {
+		t.Fatalf("csv sections = %d; want 3 (equity_curve + trades + signals): %q", len(sections), cliCSV)
 	}
 	// Each section = name line + header + data rows; the last row's newline is
 	// consumed by the blank-line separator, so 4 lines = 3 curve points and
@@ -311,8 +301,11 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	if lines := strings.Count(sections[0], "\n"); lines != 4 {
 		t.Fatalf("equity section lines = %d; want 4 (name + header + 3 rows): %q", lines, cliCSV)
 	}
-	if lines := strings.Count(sections[1], "\n"); lines != 3 {
-		t.Fatalf("trades section lines = %d; want 3 (name + header + 1 row): %q", lines, cliCSV)
+	if lines := strings.Count(sections[1], "\n"); lines != 2 {
+		t.Fatalf("trades section separators = %d; want 2 (name + header + 1 row): %q", lines, cliCSV)
+	}
+	if lines := strings.Count(sections[2], "\n"); lines != 5 {
+		t.Fatalf("signals section lines = %d; want 5 (name + header + 3 rows): %q", lines, cliCSV)
 	}
 	for _, want := range []string{
 		"2024-03-01T00:00:00Z,10000\n2024-03-02T00:00:00Z,10300\n2024-03-03T00:00:00Z,9900",
@@ -628,14 +621,14 @@ func TestServeMuxWatchlistRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/v1/strategies = %d; want 200 (body %s)", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), "covered-call") {
-		t.Fatalf("/v1/strategies missing covered-call: %s", rec.Body)
+	if !strings.Contains(rec.Body.String(), `"name":"wheel"`) || strings.Contains(rec.Body.String(), "covered-call") {
+		t.Fatalf("/v1/strategies must expose only wheel: %s", rec.Body)
 	}
 	rec = serveGet(t, top, "/v1/watchlist")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/v1/watchlist = %d; want 200 (body %s)", rec.Code, rec.Body)
 	}
-	req := httptest.NewRequest(http.MethodPut, "/v1/watchlist/HK.00700", strings.NewReader(`{"strategy":"covered-call"}`))
+	req := httptest.NewRequest(http.MethodPut, "/v1/watchlist/HK.00700", strings.NewReader(`{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}}`))
 	rec = httptest.NewRecorder()
 	top.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -661,13 +654,13 @@ func TestWatchlistCLIIntegration(t *testing.T) {
 		t.Fatalf("cleanup remove = %d; want 0 or 1", got)
 	}
 
-	addArgs := []string{"wbot", "watchlist", "add", "-symbol", symbol, "-strategy", "covered-call", "-params", `{"strike_pct_otm":0.03}`}
+	addArgs := []string{"wbot", "watchlist", "add", "-symbol", symbol, "-strategy", "wheel", "-params", `{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}`}
 	if out := captureRunOutput(t, addArgs); !strings.Contains(out, symbol) {
 		t.Fatalf("add output missing symbol: %q", out)
 	}
 
 	listOut := captureRunOutput(t, []string{"wbot", "watchlist", "list"})
-	if !strings.Contains(listOut, symbol) || !strings.Contains(listOut, "covered-call") {
+	if !strings.Contains(listOut, symbol) || !strings.Contains(listOut, "wheel") {
 		t.Fatalf("list output missing entry: %q", listOut)
 	}
 
@@ -793,6 +786,22 @@ func (serveFakeStore) Ping(context.Context) error {
 	return nil
 }
 
+// serveFakeAuditStore opts the serve-mux fixture into the read-only Wheel
+// audit capability without adding any write methods to the HTTP store.
+type serveFakeAuditStore struct{ serveFakeStore }
+
+func (serveFakeAuditStore) ListWheelConfigs(context.Context, string, int) ([]wheelstore.ConfigRecord, error) {
+	return []wheelstore.ConfigRecord{{ID: 1, Symbol: "DEMO.US", Version: 1, Config: map[string]any{"strategy": "wheel"}, State: map[string]any{}}}, nil
+}
+
+func (serveFakeAuditStore) ListWheelSignals(context.Context, string, string, int) ([]wheelstore.SignalRecord, error) {
+	return []wheelstore.SignalRecord{{ID: 1, Symbol: "DEMO.US", Action: "HOLD", BlockedBy: []string{}, Candidates: []map[string]any{}, RejectionReasons: []string{}}}, nil
+}
+
+func (serveFakeAuditStore) ListWheelSignalActions(context.Context, int64) ([]wheelstore.ActionRecord, error) {
+	return []wheelstore.ActionRecord{}, nil
+}
+
 // serveFakeWatchlistStore is a no-data httpapi.WatchlistStore for serve-mux tests.
 type serveFakeWatchlistStore struct{}
 
@@ -895,7 +904,22 @@ func (f serveFakeFutuChainer) Chain(_ context.Context, _ string, begin, end time
 
 func serveMuxForTest() http.Handler {
 	meta := httpapi.ProcessMeta{Version: "v-test", StartedAt: time.Now(), ListenAddr: "127.0.0.1:8080"}
-	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{}, serveFakeFutuQuoter{s2c: json.RawMessage(`{"basic_qot_list":[{"cur_price":475.2}]}`)}, serveFakeFutuAccounter{}, serveFakeFutuOrderer{}, serveFakeFutuChainer{}, serveFakeIngestRunner{})
+	return serveMux(meta, httpapi.PingerFunc(func(context.Context) error { return nil }), serveFakeAuditStore{}, serveFakeWatchlistStore{}, serveFakeBacktestStore{}, serveFakeBacktestExecutor{}, serveFakeFutuQuoter{s2c: json.RawMessage(`{"basic_qot_list":[{"cur_price":475.2}]}`)}, serveFakeFutuAccounter{}, serveFakeFutuOrderer{}, serveFakeFutuChainer{}, serveFakeIngestRunner{})
+}
+
+func TestServeMuxWheelAuditRoutes(t *testing.T) {
+	top := serveMuxForTest()
+	for _, path := range []string{"/v1/wheel/configs?symbol=DEMO.US", "/v1/wheel/signals?symbol=DEMO.US", "/v1/wheel/signals/1/actions"} {
+		rec := serveGet(t, top, path)
+		if rec.Code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(rec.Body.String()), "[") {
+			t.Fatalf("GET %s status=%d body=%s; want read-only JSON array", path, rec.Code, rec.Body)
+		}
+	}
+	rec := httptest.NewRecorder()
+	top.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/wheel/signals", nil))
+	if rec.Code != http.StatusMethodNotAllowed || !strings.Contains(rec.Body.String(), `"code":"method_not_allowed"`) {
+		t.Fatalf("POST /v1/wheel/signals status=%d body=%s; want 405 JSON", rec.Code, rec.Body)
+	}
 }
 
 // TestServeMuxBacktestExecuteRoute: POST /v1/backtests routes to the execute
@@ -903,7 +927,7 @@ func serveMuxForTest() http.Handler {
 func TestServeMuxBacktestExecuteRoute(t *testing.T) {
 	top := serveMuxForTest()
 	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
-		strings.NewReader(`{"symbol":"DEMO.US","strategy":"buy-hold"}`))
+		strings.NewReader(`{"symbol":"DEMO.US","strategy":"wheel","params":{"price_position_curve":[{"price":100,"target_inventory":100},{"price":200,"target_inventory":0}],"max_inventory":100}}`))
 	rec := httptest.NewRecorder()
 	top.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -1210,9 +1234,9 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	}
 }
 
-// TestBacktestExecuteMatchesCLISave: POST /v1/backtests and `wbot backtest
-// -save` share the runner path — same input yields the same metrics and the
-// same persisted params (acceptance: 同输入同输出, draft 2026-08-02 S4).
+// TestBacktestExecuteMatchesCLISave: the Wheel-only product POST and `wbot
+// backtest -save` share the snapshot-backed runner path — same input yields
+// the same metrics, params, and persisted decision trace.
 func TestBacktestExecuteMatchesCLISave(t *testing.T) {
 	if os.Getenv("WBOT_PG_DSN") == "" {
 		t.Skip("WBOT_PG_DSN not set")
@@ -1233,6 +1257,9 @@ func TestBacktestExecuteMatchesCLISave(t *testing.T) {
 	if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := database.Exec(`DELETE FROM option_quote_snapshots WHERE underlying = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
 	day := func(i int) time.Time { return time.Date(2024, 1, 1+i, 0, 0, 0, 0, time.UTC) }
 	for i, c := range []float64{100, 110, 121} {
 		// adjust 'fwd' matches both the CLI default and the API's default.
@@ -1241,13 +1268,23 @@ INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust,
 VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); err != nil {
 			t.Fatal(err)
 		}
+		bid := []float64{3, 2.5, 2}[i]
+		if _, err := database.Exec(`
+INSERT INTO option_quote_snapshots
+  (symbol, underlying, option_type, strike, expiry, source, snapshot_key,
+   underlying_price, delta, bid, ask, iv, theta, volume, open_interest, lot_size, observed_at)
+VALUES ($1, $2, 'PUT', 95, $3, 'fixture', $4, $5, -0.30, $6, $7, 0.30, -0.10, 1000, 10000, 100, $8)`,
+			symbol+"-P95", symbol, day(7), fmt.Sprintf("batch-%d", i), c, bid, bid+0.1, day(i)); err != nil {
+			t.Fatal(err)
+		}
 	}
+	wheelParams := `{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":100}],"max_inventory":100,"min_option_quality":0}`
 
-	// CLI -save: baseline output (deterministic; doc/BACKTEST.md).
+	// CLI -save: baseline Wheel output from immutable quote snapshots.
 	cliOut := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", os.Getenv("WBOT_PG_DSN"),
-		"-symbol", symbol, "-timeframe", "1d", "-strategy", "buy-hold", "-save"})
-	if !strings.Contains(cliOut, "final_equity=12100") || !strings.Contains(cliOut, "saved result id=") {
-		t.Fatalf("CLI output %q; want final_equity=12100 and saved id", cliOut)
+		"-symbol", symbol, "-timeframe", "1d", "-strategy", "wheel", "-params", wheelParams, "-save"})
+	if !strings.Contains(cliOut, "final_equity=10100") || !strings.Contains(cliOut, "saved result id=") {
+		t.Fatalf("CLI output %q; want final_equity=10100 and saved id", cliOut)
 	}
 
 	// API POST: same fixture, same strategy → identical metrics/params.
@@ -1255,7 +1292,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 		httpapi.PingerFunc(database.PingContext), httpapi.NewDBStore(database),
 		httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOrderer(), httpapi.NewFutuOptionChainer(), httpapi.NewIngestRunner(database))
 	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
-		strings.NewReader(`{"symbol":"`+symbol+`","strategy":"buy-hold"}`))
+		strings.NewReader(`{"symbol":"`+symbol+`","strategy":"wheel","params":`+wheelParams+`}`))
 	rec := httptest.NewRecorder()
 	top.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -1269,8 +1306,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 	if err := json.Unmarshal(rec.Body.Bytes(), &posted); err != nil {
 		t.Fatal(err)
 	}
-	if posted.Metrics["equity"] != 12100.0 || posted.Metrics["bars"] != 3.0 {
-		t.Fatalf("POST metrics = %v; want the CLI's equity 12100 over 3 bars", posted.Metrics)
+	if posted.Metrics["equity"] != 10100.0 || posted.Metrics["bars"] != 3.0 {
+		t.Fatalf("POST metrics = %v; want the CLI's equity 10100 over 3 bars", posted.Metrics)
 	}
 
 	// Both runs are listed; their persisted params match field for field.
@@ -1287,8 +1324,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 		t.Fatalf("list = %d rows; want 2 (CLI + API)", len(rows))
 	}
 	for _, row := range rows {
-		if row.Metrics["equity"] != 12100.0 {
-			t.Fatalf("row %d metrics = %v; want equity 12100", row.ID, row.Metrics)
+		if row.Metrics["equity"] != 10100.0 {
+			t.Fatalf("row %d metrics = %v; want equity 10100", row.ID, row.Metrics)
 		}
 		for _, k := range []string{"cash", "fee", "timeframe", "adjust"} {
 			if row.Params[k] == nil {
@@ -1309,12 +1346,13 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', 'futu')`, symbol, day(i), c); 
 		EquityCurve []struct {
 			Equity float64 `json:"equity"`
 		} `json:"equity_curve"`
+		Signals []backtest.SignalTrace `json:"signals"`
 	}
 	if err := json.Unmarshal(detail.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.EquityCurve) != 3 || got.EquityCurve[2].Equity != 12100 {
-		t.Fatalf("equity_curve = %+v; want 3 points ending 12100", got.EquityCurve)
+	if len(got.EquityCurve) != 3 || got.EquityCurve[2].Equity != 10100 || len(got.Signals) != 3 {
+		t.Fatalf("detail curve/signals = %+v / %+v; want 3 points ending 10100 and 3 signals", got.EquityCurve, got.Signals)
 	}
 }
 

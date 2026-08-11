@@ -39,7 +39,7 @@ func TestHandlerIntegration(t *testing.T) {
 	}
 	const datacheckSymbol = "US.HTTPAPICHECK"
 	_, _ = watchlist.Delete(ctx, database, datacheckSymbol)
-	if _, err := watchlist.Upsert(ctx, database, datacheckSymbol, "buy-hold", nil); err != nil {
+	if _, err := watchlist.Upsert(ctx, database, datacheckSymbol, "wheel", validWheelParams()); err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _, _ = watchlist.Delete(ctx, database, datacheckSymbol) }()

@@ -299,7 +299,7 @@ func TestBacktestsExportCSV(t *testing.T) {
 	if cd := got.Header().Get("Content-Disposition"); cd != `attachment; filename="backtest-3-buy-hold-2026-08-03.csv"` {
 		t.Fatalf("content-disposition = %q; want attachment filename backtest-3-buy-hold-2026-08-03.csv", cd)
 	}
-	want := "equity_curve\nts,equity\n2026-08-01T00:00:00Z,10000\n2026-08-02T00:00:00Z,10500\n\ntrades\nts,action,symbol,size,price,cash_after\n2026-08-01T00:00:00Z,buy,DEMO.US,100,100,0\n"
+	want := "equity_curve\nts,equity\n2026-08-01T00:00:00Z,10000\n2026-08-02T00:00:00Z,10500\n\ntrades\nts,action,symbol,size,price,cash_after\n2026-08-01T00:00:00Z,buy,DEMO.US,100,100,0\n\nsignals\nts,action,direction,reason,capability_status,blocked_by,snapshot_key,snapshot_observed_at,actual_inventory,effective_inventory,option_delta_stock,candidate_code,quantity,candidates\n"
 	if got.Body.String() != want {
 		t.Fatalf("csv body = %q; want %q", got.Body, want)
 	}
@@ -336,7 +336,7 @@ func TestBacktestsExportJSONMatchesDetail(t *testing.T) {
 
 func TestBacktestsExportNoTraceStillServed(t *testing.T) {
 	rec := sampleRecord(5)
-	rec.EquityCurve, rec.Trades = nil, nil
+	rec.EquityCurve, rec.Trades, rec.Signals = nil, nil, nil
 	h := BacktestsHandler(&fakeBacktestStore{rec: &rec})
 	csv := get(t, h, "/v1/backtests/5/export")
 	if csv.Code != http.StatusOK {
@@ -354,8 +354,8 @@ func TestBacktestsExportNoTraceStillServed(t *testing.T) {
 	if err := json.Unmarshal(jsonGot.Body.Bytes(), &detail); err != nil {
 		t.Fatalf("unmarshal: %v (body %s)", err, jsonGot.Body)
 	}
-	if len(detail.EquityCurve) != 0 || len(detail.Trades) != 0 {
-		t.Fatalf("no-trace json = curve %d trades %d; want empty arrays", len(detail.EquityCurve), len(detail.Trades))
+	if len(detail.EquityCurve) != 0 || len(detail.Trades) != 0 || len(detail.Signals) != 0 {
+		t.Fatalf("no-trace json = curve %d trades %d signals %d; want empty arrays", len(detail.EquityCurve), len(detail.Trades), len(detail.Signals))
 	}
 }
 
