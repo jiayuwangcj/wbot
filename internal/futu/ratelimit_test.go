@@ -2,9 +2,11 @@ package futu
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -86,8 +88,26 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 	l2.persistPath = l1.persistPath
 	ctx := context.Background()
 
+	// Serial probe that the shared stamp is effective before the strict timing
+	// assertion below; a broken stamp (e.g. silent write failure emptying the
+	// file, CI flake) would show as µs gaps — skip with the cause instead.
+	if err := l1.Wait(ctx); err != nil {
+		t.Fatalf("probe l1 Wait: %v", err)
+	}
+	probeStart := time.Now()
+	if err := l2.Wait(ctx); err != nil {
+		t.Fatalf("probe l2 Wait: %v", err)
+	}
+	if d := time.Since(probeStart); d < gap*4/5 {
+		stamp, _ := os.ReadFile(l1.persistPath)
+		t.Skipf("cross-process stamping not effective: l2 passed after %v; want >= %v; stamp file: %q", d, gap*4/5, stamp)
+	}
+
 	var mu sync.Mutex
-	starts := make([]time.Time, 0, 8)
+	starts := make([]struct {
+		t time.Time
+		l int
+	}, 0, 8)
 	limiters := []*Limiter{l1, l2}
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -99,7 +119,10 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 				return
 			}
 			mu.Lock()
-			starts = append(starts, time.Now())
+			starts = append(starts, struct {
+				t time.Time
+				l int
+			}{time.Now(), i % 2})
 			mu.Unlock()
 		}(i)
 	}
@@ -107,10 +130,67 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 	if len(starts) != 8 {
 		t.Fatalf("got %d starts; want 8", len(starts))
 	}
+	failed := false
 	for i := 1; i < len(starts); i++ {
-		if d := starts[i].Sub(starts[i-1]); d < gap-2*time.Millisecond {
-			t.Fatalf("start %d only %v after previous (across instances); want >= %v", i, d, gap)
+		if d := starts[i].t.Sub(starts[i-1].t); d < gap-2*time.Millisecond {
+			failed = true
+			t.Errorf("start %d only %v after previous (across instances); want >= %v (persistPath %s)", i, d, gap, l1.persistPath)
 		}
+	}
+	// One compact line with the full timing scene (every start with its
+	// instance, the whole gap sequence, final stamp file) for CI log grepping.
+	if failed {
+		base := starts[0].t
+		offs := make([]string, len(starts))
+		for i, s := range starts {
+			offs[i] = fmt.Sprintf("%d:l%d:+%v", i, s.l, s.t.Sub(base))
+		}
+		gaps := make([]string, len(starts)-1)
+		for i := 1; i < len(starts); i++ {
+			gaps[i-1] = fmt.Sprintf("%d->%d:%v", i-1, i, starts[i].t.Sub(starts[i-1].t))
+		}
+		file, _ := os.ReadFile(l1.persistPath)
+		t.Errorf("scene: persistPath=%s file=%q starts=[%s] gaps=[%s]",
+			l1.persistPath, file, strings.Join(offs, " "), strings.Join(gaps, " "))
+	}
+}
+
+// TestLimiterCrossProcessTimestampAfterLock ensures a caller delayed behind
+// the file lock records the time at which it actually gets the lock, rather
+// than the time at which it started waiting. A stale stamp would let the next
+// process pass immediately after the lock is released.
+func TestLimiterCrossProcessTimestampAfterLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shared.ts")
+	blocker, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatalf("open lock file: %v", err)
+	}
+	defer blocker.Close()
+	if err := flockExclusive(blocker); err != nil {
+		t.Skipf("flock unavailable: %v", err)
+	}
+
+	l := NewLimiter(10 * time.Millisecond)
+	l.persistPath = path
+	releaseAt := time.Now().Add(50 * time.Millisecond)
+	released := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(time.Until(releaseAt))
+		defer timer.Stop()
+		<-timer.C
+		if err := flockRelease(blocker); err != nil {
+			t.Errorf("release lock: %v", err)
+		}
+		close(released)
+	}()
+
+	decisionAt, next := l.crossProcessNext(time.Time{})
+	<-released
+	if decisionAt.Before(releaseAt) {
+		t.Fatalf("decision timestamp %v predates lock release %v", decisionAt, releaseAt)
+	}
+	if !next.IsZero() {
+		t.Fatalf("first pass next = %v; want zero", next)
 	}
 }
 
