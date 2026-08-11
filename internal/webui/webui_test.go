@@ -663,6 +663,18 @@ func TestWatchlistWheelAuditJS(t *testing.T) {
 		`makeTableSorter("wheel-signals-table", WHEEL_SIGNALS_SORT_KEYS)`,
 		`signalsSorter.state.key = "created_at"`,
 		`if (capability) query.push("capability=" + encodeURIComponent(capability))`,
+		`detailToggle.textContent = "详情"`,
+		`toggleWheelSignalDetail(tbody, row, item, detailToggle)`,
+		`function wheelSignalDetail(item) {`,
+		`detailRow.className = "detail-row"`,
+		`row.insertAdjacentElement("afterend", detailRow)`,
+		`function wheelCandidateLine(c) {`,
+		`"阻塞依赖: " + blocked.join("、")`,
+		`"拒绝原因: " + rejections.join("；")`,
+		`function applySignalDetailHash(rowsById) {`,
+		`/^#signal-(\d+)$/.exec(location.hash)`,
+		`rowsById.set(item.id, {tbody, row, item, toggle: detailToggle})`,
+		`applySignalDetailHash(rowsById)`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing Wheel audit contract %q", want)

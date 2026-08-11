@@ -1395,6 +1395,80 @@ function wheelInventorySummary(inventory) {
   return show(inv.actual_inventory) + " / " + show(inv.effective_inventory) + " / " + show(inv.target_inventory);
 }
 
+/* 候选以自由 JSON DTO 存储(领域仍在演进),按已知键渲染、缺失键兜底,
+   避免字段改名时详情页崩溃。 */
+function wheelCandidateLine(c) {
+  const q = c.quote || {};
+  const parts = [];
+  const push = (v) => { if (v != null && v !== "") parts.push(String(v)); };
+  push(c.direction);
+  push(c.quantity != null ? c.quantity + " 张" : null);
+  if (c.quality != null) parts.push("质量 " + Math.round(c.quality * 100) + "%");
+  parts.push(c.accepted ? "接受" : "拒绝");
+  push(q.code || q.symbol);
+  if (q.strike != null) parts.push("strike " + q.strike);
+  push(q.expiry ? q.expiry.slice(0, 10) : null);
+  if (q.delta != null) parts.push("Δ " + q.delta.toFixed(2));
+  if (q.bid != null && q.ask != null) parts.push("bid/ask " + q.bid + "/" + q.ask);
+  if (q.iv != null) parts.push("IV " + Math.round(q.iv * 100) + "%");
+  const reasons = c.reasons || [];
+  if (reasons.length) parts.push("(" + reasons.join("、") + ")");
+  return "候选: " + parts.join(" · ");
+}
+
+/* 信号行内联详情(券商审计面板惯例):展开库存快照、阻塞依赖、候选与
+   拒绝原因;与「人工记录」分开,只读不改写。 */
+function wheelSignalDetail(item) {
+  const inv = item.inventory || {};
+  const show = (v) => (v == null ? "—" : fmtNum(v));
+  const lines = [
+    "现价 " + show(inv.current_price) + " · 实际 " + show(inv.actual_inventory) +
+      " · 期权Δ " + show(inv.option_delta_stock) + " · 有效 " + show(inv.effective_inventory) +
+      " · 目标 " + show(inv.target_inventory) + " · 缺口 " + show(inv.inventory_gap),
+  ];
+  const blocked = item.blocked_by || [];
+  if (blocked.length) lines.push("阻塞依赖: " + blocked.join("、"));
+  const rejections = item.rejection_reasons || [];
+  if (rejections.length) lines.push("拒绝原因: " + rejections.join("；"));
+  for (const c of item.candidates || []) lines.push(wheelCandidateLine(c));
+  if (item.reason) lines.push("原因: " + item.reason);
+  const div = document.createElement("div");
+  div.className = "signal-detail";
+  for (const line of lines) {
+    const p = document.createElement("p");
+    p.textContent = line;
+    div.appendChild(p);
+  }
+  return div;
+}
+
+/* 展开/收起信号详情行。sort 重渲染会重建 tbody,展开态自然重置。 */
+function toggleWheelSignalDetail(tbody, row, item, button) {
+  const next = row.nextElementSibling;
+  if (next && next.classList.contains("detail-row")) {
+    next.remove();
+    button.textContent = "详情";
+    return;
+  }
+  const detailRow = document.createElement("tr");
+  detailRow.className = "detail-row";
+  const td = document.createElement("td");
+  td.colSpan = 8;
+  td.appendChild(wheelSignalDetail(item));
+  detailRow.appendChild(td);
+  row.insertAdjacentElement("afterend", detailRow);
+  button.textContent = "收起";
+}
+
+/* 深链展开:hash #signal-<id> 时自动展开对应信号详情(与 results 页
+   #bt-<id> 深链同一惯例,便于从外部链接定位某条审计信号)。 */
+function applySignalDetailHash(rowsById) {
+  const m = /^#signal-(\d+)$/.exec(location.hash);
+  if (!m) return;
+  const hit = rowsById.get(Number(m[1]));
+  if (hit) toggleWheelSignalDetail(hit.tbody, hit.row, hit.item, hit.toggle);
+}
+
 function renderWheelSignals(items, onActions) {
   const table = document.getElementById("wheel-signals-table");
   const empty = document.getElementById("wheel-signals-empty");
@@ -1405,6 +1479,7 @@ function renderWheelSignals(items, onActions) {
     empty.hidden = false;
     return;
   }
+  const rowsById = new Map();
   for (const item of items) {
     const action = document.createElement("td");
     action.textContent = item.action;
@@ -1417,10 +1492,19 @@ function renderWheelSignals(items, onActions) {
     audit.className = "link";
     audit.textContent = "人工记录";
     audit.addEventListener("click", () => onActions(item));
+    const detailToggle = document.createElement("button");
+    detailToggle.type = "button";
+    detailToggle.className = "link";
+    detailToggle.textContent = "详情";
     const auditCell = document.createElement("td");
+    auditCell.appendChild(detailToggle);
     auditCell.appendChild(audit);
     appendRow(tbody, [fmtTime(item.created_at), item.symbol, action, capability, "v" + item.config_version, wheelInventorySummary(item.inventory), item.reason, auditCell]);
+    const row = tbody.lastElementChild;
+    rowsById.set(item.id, {tbody, row, item, toggle: detailToggle});
+    detailToggle.addEventListener("click", () => toggleWheelSignalDetail(tbody, row, item, detailToggle));
   }
+  applySignalDetailHash(rowsById);
   empty.hidden = true;
   table.hidden = false;
   mirrorNumericColumns(table);

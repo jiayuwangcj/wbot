@@ -344,6 +344,28 @@ th {
   font-variant-numeric: tabular-nums;
 }
 
+/* 信号行内联详情(只读审计):表内展开行用 hover 色衬底,与表格同主题;
+   内容列保持左对齐,深浅色随设计令牌切换。 */
+.detail-row td {
+  background: var(--hover);
+  border-top: none;
+  padding: 0.5rem 0.8rem;
+}
+
+.signal-detail {
+  display: grid;
+  gap: 0.2rem;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+  max-width: 100%;
+}
+
+.signal-detail p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .notice {
   color: var(--muted);
 }
