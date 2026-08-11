@@ -41,6 +41,8 @@ var WhitelistedKeys = []Key{
 	{"credentials.ibkr.gateway_host", "credentials.ibkr"},
 	{"credentials.ibkr.gateway_port", "credentials.ibkr"},
 	{"credentials.ibkr.account", "credentials.ibkr"},
+	{"credentials.telegram.token", "credentials.telegram"},
+	{"credentials.telegram.chat_ids", "credentials.telegram"},
 	{"system.listen", "system"},
 }
 

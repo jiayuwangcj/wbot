@@ -1,0 +1,454 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jiayu/wbot/internal/telegram"
+	"github.com/jiayu/wbot/internal/wheelstore"
+)
+
+const tgTestToken = "bottest-token"
+
+// fakeTGServer records answerCallbackQuery toasts (the scheduler's reply path).
+type fakeTGServer struct {
+	mu      sync.Mutex
+	answers []map[string]any
+}
+
+func (f *fakeTGServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/bot"+tgTestToken+"/")
+	switch path {
+	case "answerCallbackQuery":
+		var p map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		f.mu.Lock()
+		f.answers = append(f.answers, p)
+		f.mu.Unlock()
+		w.Write([]byte(`{"ok":true}`))
+	case "sendMessage":
+		w.Write([]byte(`{"ok":true}`))
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (f *fakeTGServer) lastToast(t *testing.T) string {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.answers) == 0 {
+		t.Fatal("no answerCallbackQuery received")
+	}
+	text, _ := f.answers[len(f.answers)-1]["text"].(string)
+	return text
+}
+
+// fakeTGStore is an in-memory wheelTelegramStore for handler tests.
+type fakeTGStore struct {
+	mu        sync.Mutex
+	signals   map[int64]*wheelstore.SignalRecord
+	reviews   map[int64]*wheelstore.ActionRecord
+	dismissed map[string]bool
+	appended  []wheelstore.ActionRecord
+}
+
+func newFakeTGStore() *fakeTGStore {
+	return &fakeTGStore{
+		signals:   map[int64]*wheelstore.SignalRecord{},
+		reviews:   map[int64]*wheelstore.ActionRecord{},
+		dismissed: map[string]bool{},
+	}
+}
+
+func (f *fakeTGStore) GetSignal(_ context.Context, id int64) (*wheelstore.SignalRecord, error) {
+	sig, ok := f.signals[id]
+	if !ok {
+		return nil, wheelstore.ErrNotFound
+	}
+	return sig, nil
+}
+
+func (f *fakeTGStore) LatestLLMReview(_ context.Context, signalID int64) (*wheelstore.ActionRecord, error) {
+	r, ok := f.reviews[signalID]
+	if !ok {
+		return nil, wheelstore.ErrNotFound
+	}
+	return r, nil
+}
+
+func (f *fakeTGStore) AppendAction(_ context.Context, r wheelstore.ActionRecord) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.appended = append(f.appended, r)
+	return int64(len(f.appended)), nil
+}
+
+func (f *fakeTGStore) QuerySignalsSince(context.Context, string, int64, int) ([]wheelstore.SignalRecord, error) {
+	return nil, nil
+}
+
+func (f *fakeTGStore) MaxSignalID(context.Context) (int64, error) { return 0, nil }
+
+func (f *fakeTGStore) Dismiss(_ context.Context, symbol string, date time.Time) error {
+	f.dismissed[symbol+"|"+date.Format("2006-01-02")] = true
+	return nil
+}
+
+func (f *fakeTGStore) IsDismissed(_ context.Context, symbol string, date time.Time) (bool, error) {
+	return f.dismissed[symbol+"|"+date.Format("2006-01-02")], nil
+}
+
+func (f *fakeTGStore) lastAppended(t *testing.T) wheelstore.ActionRecord {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.appended) == 0 {
+		t.Fatal("no action appended")
+	}
+	return f.appended[len(f.appended)-1]
+}
+
+type fakePlacer struct {
+	err       error
+	orderIDEx string
+	orderID   uint64
+	gotSymbol string
+	gotSide   string
+	gotQty    float64
+	calls     int
+}
+
+func (p *fakePlacer) PlaceOrder(_ context.Context, symbol, side string, qty float64) (string, uint64, error) {
+	p.calls++
+	p.gotSymbol, p.gotSide, p.gotQty = symbol, side, qty
+	return p.orderIDEx, p.orderID, p.err
+}
+
+func startFakeTG(t *testing.T) (*fakeTGServer, *httptest.Server) {
+	t.Helper()
+	fake := &fakeTGServer{}
+	server := httptest.NewServer(fake)
+	t.Cleanup(server.Close)
+	return fake, server
+}
+
+func newTestScheduler(t *testing.T, server *httptest.Server, store *fakeTGStore, placer *fakePlacer, chatIDs map[int64]bool, now time.Time) *telegramScheduler {
+	t.Helper()
+	tg, err := telegram.New(tgTestToken, server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newTelegramScheduler(tg, store, placer, chatIDs)
+	s.now = func() time.Time { return now }
+	s.logf = func(string, ...any) {}
+	return s
+}
+
+// signalFixture is an ALERT with a full first candidate (as the runner
+// persists it: opaque JSON maps).
+func signalFixture(id int64, symbol string, created time.Time) *wheelstore.SignalRecord {
+	return &wheelstore.SignalRecord{
+		ID: id, Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
+		Inventory: wheelstore.InventorySnapshot{CurrentPrice: f64ptr(248.5), InventoryGap: f64ptr(-300)},
+		Candidates: []map[string]any{{
+			"direction": "PUT",
+			"quantity":  2,
+			"quote": map[string]any{
+				"symbol": "US.AAPL260815C250000", "option_type": "CALL", "strike": 250.0,
+				"expiry": "2026-08-15T00:00:00Z", "bid": 3.2, "ask": 3.35, "delta": 0.42,
+				"implied_vol": 0.25, "open_interest": 1234.0,
+			},
+		}},
+		Reason: "gap", CreatedAt: created,
+	}
+}
+
+func f64ptr(v float64) *float64 { return &v }
+
+func approvedReview() *wheelstore.ActionRecord {
+	return &wheelstore.ActionRecord{Action: "LLM_REVIEW", Actor: "llm:test", Details: map[string]any{"verdict": "APPROVE"}}
+}
+
+func callback(from int64, data string) *telegram.CallbackQuery {
+	return &telegram.CallbackQuery{ID: "cb-" + data, From: telegram.User{ID: from}, Data: data}
+}
+
+func TestCallbackUnknownUserRejected(t *testing.T) {
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, time.Now())
+
+	s.handleCallback(context.Background(), callback(99, "wheel:1:yes"))
+	if toast := fake.lastToast(t); !strings.Contains(toast, "未授权") {
+		t.Fatalf("toast = %q; want 未授权", toast)
+	}
+	if len(store.appended) != 0 {
+		t.Fatalf("unknown user triggered %d store writes", len(store.appended))
+	}
+}
+
+func TestCallbackYesPlacesSimOrder(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{orderID: 12345, orderIDEx: "ord-12345"}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	if placer.calls != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want 1", placer.calls)
+	}
+	if placer.gotSymbol != "US.AAPL260815C250000" || placer.gotSide != "sell" || placer.gotQty != 2 {
+		t.Fatalf("order = %s %s %v", placer.gotSymbol, placer.gotSide, placer.gotQty)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "CONFIRM" || act.Actor != "telegram:42" {
+		t.Fatalf("action = %+v", act)
+	}
+	if act.Details["order_id"] != uint64(12345) || act.Details["symbol"] != "US.AAPL260815C250000" {
+		t.Fatalf("details = %+v", act.Details)
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "12345") {
+		t.Fatalf("toast = %q; want order number", toast)
+	}
+}
+
+func TestCallbackYesRealEnvRejected(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{err: errLiveEnvNotAllowed}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	if placer.calls != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want 1 (guard lives in the placer)", placer.calls)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "REJECTED" || act.Note != "live env not allowed" {
+		t.Fatalf("action = %+v; want REJECTED with live-env reason", act)
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "实盘下单不允许") {
+		t.Fatalf("toast = %q; want 实盘下单不允许", toast)
+	}
+}
+
+func TestCallbackYesExpiredRejected(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now.Add(-11*time.Minute))
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	if placer.calls != 0 {
+		t.Fatalf("expired signal placed an order; calls = %d", placer.calls)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "REJECTED" || act.Note != "signal expired" {
+		t.Fatalf("action = %+v; want REJECTED with expired reason", act)
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "已过期") {
+		t.Fatalf("toast = %q; want 已过期", toast)
+	}
+}
+
+func TestCallbackYesReviewNotApprovedRejected(t *testing.T) {
+	for name, review := range map[string]*wheelstore.ActionRecord{
+		"reject": {Action: "LLM_REVIEW", Actor: "llm:test", Details: map[string]any{"verdict": "REJECT"}},
+		"none":   nil,
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake, server := startFakeTG(t)
+			now := time.Now()
+			store := newFakeTGStore()
+			store.signals[7] = signalFixture(7, "US.AAPL", now)
+			if review != nil {
+				store.reviews[7] = review
+			}
+			placer := &fakePlacer{}
+			s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+			s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+			if placer.calls != 0 {
+				t.Fatalf("unapproved signal placed an order; calls = %d", placer.calls)
+			}
+			act := store.lastAppended(t)
+			if act.Action != "REJECTED" || !strings.Contains(act.Note, "llm review") {
+				t.Fatalf("action = %+v; want REJECTED with review reason", act)
+			}
+			if toast := fake.lastToast(t); !strings.Contains(toast, "审核未通过") {
+				t.Fatalf("toast = %q; want 审核未通过", toast)
+			}
+		})
+	}
+}
+
+func TestCallbackYesMissingSignalRejected(t *testing.T) {
+	_, server := startFakeTG(t)
+	store := newFakeTGStore() // no signal 7
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, time.Now())
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	act := store.lastAppended(t)
+	if act.Action != "REJECTED" || act.Note != "signal not found" {
+		t.Fatalf("action = %+v", act)
+	}
+}
+
+func TestCallbackNoRecordsAndAnswers(t *testing.T) {
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, time.Now())
+
+	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
+	act := store.lastAppended(t)
+	if act.Action != "NO" || act.Actor != "telegram:42" || act.SignalID != 9 {
+		t.Fatalf("action = %+v", act)
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "继续等待") {
+		t.Fatalf("toast = %q", toast)
+	}
+}
+
+func TestCallbackDismissSilencesToday(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 11, 14, 30, 0, 0, time.FixedZone("UTC+8", 8*3600))
+	store := newFakeTGStore()
+	store.signals[5] = signalFixture(5, "US.AAPL", now)
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:5:dismiss"))
+	// utcDate(now): 14:30 UTC+8 = 06:30 UTC on 2026-08-11.
+	wantKey := "US.AAPL|2026-08-11"
+	if !store.dismissed[wantKey] {
+		t.Fatalf("dismissed = %v; want %q", store.dismissed, wantKey)
+	}
+	if len(store.appended) != 0 {
+		t.Fatalf("dismiss wrote %d actions; want 0", len(store.appended))
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "今日不再提醒") {
+		t.Fatalf("toast = %q", toast)
+	}
+}
+
+func TestCallbackMalformedDataRejected(t *testing.T) {
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, time.Now())
+
+	s.handleCallback(context.Background(), callback(42, "bogus"))
+	if len(store.appended) != 0 {
+		t.Fatalf("malformed data wrote %d actions", len(store.appended))
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "无效") {
+		t.Fatalf("toast = %q", toast)
+	}
+}
+
+func TestAlertMessageFormat(t *testing.T) {
+	sig := signalFixture(7, "US.AAPL", time.Now())
+	text, err := alertMessage(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"[WHEEL 提醒] US.AAPL",
+		"方向: 卖出认沽",
+		"数量: 2 张",
+		"候选: US.AAPL260815C250000",
+		"行权 250.00",
+		"到期 2026-08-15",
+		"bid 3.20",
+		"ask 3.35",
+		"IV 0.25",
+		"OI 1234",
+		"现价: 248.50",
+		"库存缺口: -300.00",
+		"信号 #7",
+		"LLM 审核: APPROVE",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("alert message missing %q:\n%s", want, text)
+		}
+	}
+}
+
+func TestFirstCandidateOrderFacts(t *testing.T) {
+	sig := signalFixture(1, "US.AAPL", time.Now())
+	c, err := firstCandidate(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Code != "US.AAPL260815C250000" || c.Side != "sell" || c.Quantity != 2 || c.Direction != "PUT" {
+		t.Fatalf("candidate = %+v", c)
+	}
+	if _, err := firstCandidate(&wheelstore.SignalRecord{}); err == nil {
+		t.Fatal("candidate-less signal accepted")
+	}
+	// Quantity defaults to 1 when the candidate omits it.
+	noQty := signalFixture(1, "US.AAPL", time.Now())
+	noQty.Candidates[0]["quantity"] = 0
+	c, err = firstCandidate(noQty)
+	if err != nil || c.Quantity != 1 {
+		t.Fatalf("default qty: c=%+v err=%v", c, err)
+	}
+}
+
+func TestParseCallbackData(t *testing.T) {
+	for _, tc := range []struct {
+		data   string
+		ok     bool
+		id     int64
+		action string
+	}{
+		{"wheel:42:yes", true, 42, "yes"},
+		{"wheel:42:no", true, 42, "no"},
+		{"wheel:42:dismiss", true, 42, "dismiss"},
+		{"wheel:0:yes", false, 0, ""},
+		{"wheel:x:yes", false, 0, ""},
+		{"bogus", false, 0, ""},
+		{"wheel:42:maybe", false, 0, ""},
+	} {
+		id, action, err := parseCallbackData(tc.data)
+		if tc.ok && (err != nil || id != tc.id || action != tc.action) {
+			t.Fatalf("%s: id=%d action=%s err=%v", tc.data, id, action, err)
+		}
+		if !tc.ok && err == nil {
+			t.Fatalf("%s accepted", tc.data)
+		}
+	}
+}
+
+func TestUtcDateBoundary(t *testing.T) {
+	// A late-evening local instant still lands on the UTC calendar day.
+	in := time.Date(2026, 8, 11, 23, 59, 0, 0, time.FixedZone("UTC+8", 8*3600))
+	if got := utcDate(in); got.Format("2006-01-02") != "2026-08-11" {
+		t.Fatalf("utcDate = %v; want 2026-08-11", got)
+	}
+}
+
+func TestVerdictOf(t *testing.T) {
+	if verdictOf(nil) != "" {
+		t.Fatal("verdictOf(nil) != empty")
+	}
+	if verdictOf(&wheelstore.ActionRecord{Details: map[string]any{"verdict": "approve"}}) != "APPROVE" {
+		t.Fatal("verdictOf did not normalize")
+	}
+	if verdictOf(&wheelstore.ActionRecord{Details: map[string]any{"verdict": 42}}) != "" {
+		t.Fatal("verdictOf non-string detail accepted")
+	}
+}

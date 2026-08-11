@@ -21,7 +21,7 @@ var (
 	ErrInvalidRecord = errors.New("wheelstore: invalid record")
 	ErrInvalidAction = errors.New("wheelstore: action must be ALERT or HOLD")
 	ErrInvalidStatus = errors.New("wheelstore: capability status must be READY or DATA_BLOCKED")
-	ErrInvalidOp     = errors.New("wheelstore: action must be CONFIRM, IGNORE, FILL, NOTE, or LLM_REVIEW")
+	ErrInvalidOp     = errors.New("wheelstore: action must be CONFIRM, IGNORE, FILL, NOTE, LLM_REVIEW, NO, or REJECTED")
 )
 
 // ConfigRecord is one version of a symbol's strategy configuration. Config
@@ -681,7 +681,7 @@ func (s *Store) QuerySignals(ctx context.Context, symbol, action string, limit i
 
 func validAction(a string) bool {
 	switch strings.ToUpper(strings.TrimSpace(a)) {
-	case "CONFIRM", "IGNORE", "FILL", "NOTE", "LLM_REVIEW":
+	case "CONFIRM", "IGNORE", "FILL", "NOTE", "LLM_REVIEW", "NO", "REJECTED":
 		return true
 	}
 	return false
@@ -752,4 +752,113 @@ func (s *Store) ListActions(ctx context.Context, signalID int64) ([]ActionRecord
 
 func (s *Store) QueryActions(ctx context.Context, signalID int64) ([]ActionRecord, error) {
 	return s.ListActions(ctx, signalID)
+}
+
+// LatestLLMReview returns the most recent LLM_REVIEW action for a signal
+// (the pre-order gate's verdict; ErrNotFound when no review exists).
+func (s *Store) LatestLLMReview(ctx context.Context, signalID int64) (*ActionRecord, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	if signalID <= 0 {
+		return nil, fmt.Errorf("%w: positive signal id required", ErrInvalidRecord)
+	}
+	r, err := scanAction(s.db.QueryRowContext(ctx, `
+SELECT id,signal_id,action,actor,note,details,created_at
+FROM wheel_signal_actions
+WHERE signal_id = $1 AND action = 'LLM_REVIEW'
+ORDER BY created_at DESC, id DESC LIMIT 1`, signalID))
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("wheelstore: latest llm review: %w", err)
+	}
+	return &r, nil
+}
+
+// QuerySignalsSince returns signals with id > afterID in id order (the
+// Telegram push loop's cursor query; action filters when non-empty).
+func (s *Store) QuerySignalsSince(ctx context.Context, action string, afterID int64, limit int) ([]SignalRecord, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	conds := []string{"id > $1"}
+	args := []any{afterID}
+	if strings.TrimSpace(action) != "" {
+		action = strings.ToUpper(action)
+		if action != "ALERT" && action != "HOLD" {
+			return nil, ErrInvalidAction
+		}
+		args = append(args, action)
+		conds = append(conds, fmt.Sprintf("action = $%d", len(args)))
+	}
+	args = append(args, limit)
+	q := fmt.Sprintf(`SELECT id,symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,created_at FROM wheel_signals WHERE %s ORDER BY id ASC LIMIT $%d`, strings.Join(conds, " AND "), len(args))
+	rows, e := s.db.QueryContext(ctx, q, args...)
+	if e != nil {
+		return nil, fmt.Errorf("wheelstore: query signals since: %w", e)
+	}
+	defer rows.Close()
+	var out []SignalRecord
+	for rows.Next() {
+		r, e := scanSignal(rows)
+		if e != nil {
+			return nil, fmt.Errorf("wheelstore: query signals since scan: %w", e)
+		}
+		out = append(out, r)
+	}
+	if e := rows.Err(); e != nil {
+		return nil, fmt.Errorf("wheelstore: query signals since rows: %w", e)
+	}
+	return out, nil
+}
+
+// MaxSignalID returns the newest signal id (0 when no signals exist); the
+// push loop seeds its in-memory cursor from it so old signals are not pushed
+// after a restart.
+func (s *Store) MaxSignalID(ctx context.Context) (int64, error) {
+	if err := s.check(); err != nil {
+		return 0, err
+	}
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM wheel_signals`).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("wheelstore: max signal id: %w", err)
+	}
+	return id, nil
+}
+
+// Dismiss silences a symbol for one calendar day (idempotent).
+func (s *Store) Dismiss(ctx context.Context, symbol string, date time.Time) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(symbol) == "" || date.IsZero() {
+		return fmt.Errorf("%w: symbol and date are required", ErrInvalidRecord)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO wheel_signal_dismissals (symbol, dismiss_date) VALUES ($1, $2) ON CONFLICT (symbol, dismiss_date) DO NOTHING`, strings.TrimSpace(symbol), date)
+	if err != nil {
+		return fmt.Errorf("wheelstore: dismiss: %w", err)
+	}
+	return nil
+}
+
+// IsDismissed reports whether symbol is silenced on date (UTC calendar day).
+func (s *Store) IsDismissed(ctx context.Context, symbol string, date time.Time) (bool, error) {
+	if err := s.check(); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(symbol) == "" || date.IsZero() {
+		return false, fmt.Errorf("%w: symbol and date are required", ErrInvalidRecord)
+	}
+	var dismissed bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM wheel_signal_dismissals WHERE symbol = $1 AND dismiss_date = $2)`, strings.TrimSpace(symbol), date).Scan(&dismissed)
+	if err != nil {
+		return false, fmt.Errorf("wheelstore: is dismissed: %w", err)
+	}
+	return dismissed, nil
 }

@@ -291,8 +291,10 @@ func TestNoExternalURLs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
+		// 2026-08-11: Telegram 接入向导显式外链 @BotFather(任务要求),是唯一例外。
+		text := strings.ReplaceAll(string(data), "https://t.me/BotFather", "")
 		for _, banned := range []string{"http://", "https://", "//"} {
-			if strings.Contains(string(data), banned) {
+			if strings.Contains(text, banned) {
 				t.Fatalf("%s contains banned external URL marker %q", path, banned)
 			}
 		}
@@ -522,6 +524,20 @@ func TestAdminPageSections(t *testing.T) {
 		`id="cluster-data-series"`,
 		`id="cluster-data-stale"`,
 		`id="cluster-data-newest"`,
+		`<section id="telegram"`,
+		`id="telegram-token-form"`,
+		`id="telegram-token"`,
+		`type="password"`,
+		`id="telegram-token-btn"`,
+		`id="telegram-token-ok"`,
+		`id="telegram-chatids-form"`,
+		`id="telegram-chatids"`,
+		`id="telegram-chatids-btn"`,
+		`id="telegram-chatids-ok"`,
+		`id="telegram-status"`,
+		`id="telegram-table"`,
+		`id="telegram-empty"`,
+		`https://t.me/BotFather`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin.html missing %q", want)
@@ -599,10 +615,14 @@ func TestAdminPageReadOnly(t *testing.T) {
 	}
 	html := string(data)
 	/* 2026-08-03: config 写面落地(配置设置表单,值只写不读)。
-	   除该表单外 admin 页保持只读——其余 section 无任何表单。 */
-	rest := strings.ReplaceAll(html, `<form id="config-set-form"`, "")
+	   2026-08-11: Telegram 接入向导再添两个写面表单(token/chat_ids,同 PRIVACY 语义)。
+	   除这三个表单外 admin 页保持只读——其余 section 无任何表单。 */
+	rest := html
+	for _, allowed := range []string{`<form id="config-set-form"`, `<form id="telegram-token-form"`, `<form id="telegram-chatids-form"`} {
+		rest = strings.ReplaceAll(rest, allowed, "")
+	}
 	if strings.Contains(rest, "<form") {
-		t.Fatal("admin.html contains a form other than config-set-form; admin page must stay read-only")
+		t.Fatal("admin.html contains a form other than the config/telegram write forms; admin page must stay read-only")
 	}
 }
 
@@ -1195,6 +1215,53 @@ func TestConfigWriteSurfaceJS(t *testing.T) {
 	/* PRIVACY: 成功路径清空输入,不保留值在 DOM。 */
 	if !strings.Contains(js, `val.value = ""`) {
 		t.Fatal("app.js must clear the config value input after save")
+	}
+}
+
+// TestTelegramWizardJS: Telegram 接入向导契约(2026-08-11)——token/chat_ids
+// 走既有 PUT /v1/admin/config/{key} 写面;保存即清空输入;「已配置」只渲染
+// set 元数据;页面从不请求/显示配置值(PRIVACY 红线)。
+func TestTelegramWizardJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		"initTelegramWizard",
+		"renderTelegramWizard",
+		`"credentials.telegram.token"`,
+		`"credentials.telegram.chat_ids"`,
+		`"telegram-token-form"`,
+		`"telegram-token-btn"`,
+		`"telegram-chatids-form"`,
+		`"telegram-chatids-btn"`,
+		`"telegram-status"`,
+		`getElementById(formId)`,
+		`"/v1/admin/config/" + encodeURIComponent(key)`,
+		`method: "PUT"`,
+		`JSON.stringify({value: val.value})`,
+		"已配置",
+		"未配置",
+		"保存中…",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing telegram wizard %q", want)
+		}
+	}
+	/* 向导输入同样走 password/清空语义:值不入 DOM,状态只来自 set。 */
+	htmlData, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(htmlData), `type="password"`) {
+		t.Fatal("admin.html must render the token input as password")
+	}
+	if !strings.Contains(js, `c.set`) {
+		t.Fatalf("app.js must render wizard status from set metadata")
+	}
+	if strings.Contains(js, "c.value") {
+		t.Fatal("app.js renders config values (PRIVACY red line)")
 	}
 }
 

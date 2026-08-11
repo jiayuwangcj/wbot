@@ -242,10 +242,11 @@ func runServe(prog string, argv []string) int {
 	wheelRun := fs.Bool("wheel-run", false, "run the wheel live loop for watchlist bindings (default off)")
 	wheelInterval := fs.Duration("wheel-interval", 5*time.Minute, "wheel live loop evaluation interval")
 	wheelEnv := fs.String("wheel-env", "sim", "wheel account env: sim (simulate) or real (read-only evaluation)")
+	telegramRun := fs.Bool("telegram-run", false, "run the wheel Telegram alert/confirm loop (default off; token/chat_ids from ~/.wbot/wbot.conf)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status.\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status. With -telegram-run, ALERT signals approved by the LLM gate are pushed to Telegram with yes/no/dismiss buttons (token/chat_ids from ~/.wbot/wbot.conf; yes places a sim-env market order).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -334,6 +335,9 @@ func runServe(prog string, argv []string) int {
 	}
 	if *wheelRun {
 		go startWheelRunner(runCtx, database, wheelEnvVal, *wheelInterval)
+	}
+	if *telegramRun {
+		go startTelegramScheduler(runCtx, database, wheelEnvVal)
 	}
 
 	<-runCtx.Done()

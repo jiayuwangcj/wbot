@@ -110,6 +110,8 @@ func TestActionValidation(t *testing.T) {
 	valid := []ActionRecord{
 		{SignalID: 1, Actor: "operator", Action: "NOTE"},
 		{SignalID: 1, Actor: "llm:gpt-4o", Action: " llm_review ", Details: map[string]any{"verdict": "APPROVE"}},
+		{SignalID: 1, Actor: "telegram:42", Action: "no"},
+		{SignalID: 1, Actor: "telegram:42", Action: "REJECTED", Note: "live env not allowed"},
 	}
 	for _, r := range valid {
 		rr := r
@@ -205,5 +207,45 @@ func TestNilDBValidation(t *testing.T) {
 	}
 	if _, err := s.ListActions(ctx, 1); !errors.Is(err, ErrNilDB) {
 		t.Errorf("ListActions: %v", err)
+	}
+	if _, err := s.LatestLLMReview(ctx, 1); !errors.Is(err, ErrNilDB) {
+		t.Errorf("LatestLLMReview: %v", err)
+	}
+	if _, err := s.QuerySignalsSince(ctx, "ALERT", 0, 10); !errors.Is(err, ErrNilDB) {
+		t.Errorf("QuerySignalsSince: %v", err)
+	}
+	if _, err := s.MaxSignalID(ctx); !errors.Is(err, ErrNilDB) {
+		t.Errorf("MaxSignalID: %v", err)
+	}
+	if err := s.Dismiss(ctx, "TEST", time.Now()); !errors.Is(err, ErrNilDB) {
+		t.Errorf("Dismiss: %v", err)
+	}
+	if _, err := s.IsDismissed(ctx, "TEST", time.Now()); !errors.Is(err, ErrNilDB) {
+		t.Errorf("IsDismissed: %v", err)
+	}
+}
+
+func TestDismissValidation(t *testing.T) {
+	s := New(&sql.DB{})
+	ctx := context.Background()
+	for _, tc := range []struct {
+		symbol string
+		date   time.Time
+	}{
+		{"", time.Now()},
+		{"TEST", time.Time{}},
+	} {
+		if err := s.Dismiss(ctx, tc.symbol, tc.date); !errors.Is(err, ErrInvalidRecord) {
+			t.Errorf("Dismiss(%q, %v): %v; want ErrInvalidRecord", tc.symbol, tc.date, err)
+		}
+		if _, err := s.IsDismissed(ctx, tc.symbol, tc.date); !errors.Is(err, ErrInvalidRecord) {
+			t.Errorf("IsDismissed(%q, %v): %v; want ErrInvalidRecord", tc.symbol, tc.date, err)
+		}
+	}
+	if _, err := s.LatestLLMReview(ctx, 0); !errors.Is(err, ErrInvalidRecord) {
+		t.Errorf("LatestLLMReview(0): %v; want ErrInvalidRecord", err)
+	}
+	if _, err := s.QuerySignalsSince(ctx, "NOPE", 0, 10); !errors.Is(err, ErrInvalidAction) {
+		t.Errorf("QuerySignalsSince(NOPE): %v; want ErrInvalidAction", err)
 	}
 }
