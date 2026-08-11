@@ -166,3 +166,9 @@ Futu 接入未确认的字段或权限必须留在 `INTEGRATION_BLOCKED`，不�
 重构不迁移旧模板语义。数据库升级后，旧 watchlist 行保留原 JSON 作为审计证据并标记不可执行；用户保存完整 Wheel 配置后产生新版本。回滚只回滚应用读取路径，不删除新配置、快照、信号或人工动作历史。
 
 每个发布批次在 `doc/tasks/2026-08-10-wheel-full-rewrite.md` 记录：提交、测试命令、浏览器证据、当前 capability status、尚未启用项和下一最小步骤。
+
+## 10. LLM 审核规则摘要（单一来源）
+
+> 此段为 LLM 审核规则唯一维护点，修改需同步 `internal/wheelrun/runner.go` 的 `wheelReviewRules` 常量。
+
+仅审核 wheel 策略；信号只能是 ALERT 或 HOLD；审核不得触发自动下单；候选必须有完整、及时的期权报价；不得超过最大库存、每日订单数或战略状态限制；数据不足时必须拒绝。

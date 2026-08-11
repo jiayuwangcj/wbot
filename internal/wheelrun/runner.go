@@ -80,6 +80,7 @@ func NewRunner(deps Dependencies) *Runner { return &Runner{deps: deps} }
 // at least one blocker) when Evaluate reports a data block without naming it.
 const fallbackBlocker = "no complete quote snapshot"
 
+// 与 doc/WHEEL_STRATEGY.md「LLM 审核规则摘要（单一来源）」小节同步，文档为源。
 const wheelReviewRules = "仅审核 wheel 策略；信号只能是 ALERT 或 HOLD；审核不得触发自动下单；候选必须有完整、及时的期权报价；不得超过最大库存、每日订单数或战略状态限制；数据不足时必须拒绝。"
 
 // RunOnce evaluates every wheel binding once. A per-symbol failure is logged
