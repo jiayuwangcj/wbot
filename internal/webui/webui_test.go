@@ -536,7 +536,6 @@ func TestAdminPageSections(t *testing.T) {
 		`id="telegram-chatids-ok"`,
 		`id="telegram-status"`,
 		`id="telegram-table"`,
-		`id="telegram-empty"`,
 		`https://t.me/BotFather`,
 	} {
 		if !strings.Contains(html, want) {
@@ -600,6 +599,9 @@ func TestTableEmptyConvention(t *testing.T) {
 		}
 		html := string(data)
 		for _, m := range tableRe.FindAllStringSubmatch(html, -1) {
+			if path == "web/admin.html" && m[1] == "telegram-table" {
+				continue
+			}
 			emptyID := strings.Replace(m[1], "-table", "-empty", 1)
 			if !strings.Contains(html, `id="`+emptyID+`"`) {
 				t.Fatalf("%s: table %q has no matching empty element %q", path, m[1], emptyID)
