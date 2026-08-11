@@ -50,6 +50,46 @@ func resetGreeksCache(t *testing.T) {
 	greeksCacheMu.Unlock()
 }
 
+func TestOptionQuotePageFlexibleIntegers(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		wantOI  int64
+		wantLot int
+	}{
+		{
+			name:    "floating-point literals from gateway",
+			payload: `{"option_quote_list":[{"open_interest":3204.0,"contract_size":100.0}]}`,
+			wantOI:  3204,
+			wantLot: 100,
+		},
+		{
+			name:    "integer literals",
+			payload: `{"option_quote_list":[{"open_interest":3204,"contract_size":100}]}`,
+			wantOI:  3204,
+			wantLot: 100,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var pg optionQuotePage
+			if err := json.Unmarshal([]byte(tt.payload), &pg); err != nil {
+				t.Fatalf("json.Unmarshal() error: %v", err)
+			}
+			if len(pg.OptionQuoteList) != 1 {
+				t.Fatalf("option_quote_list length = %d; want 1", len(pg.OptionQuoteList))
+			}
+			leg := pg.OptionQuoteList[0]
+			if got := int64(leg.OpenInterest); got != tt.wantOI {
+				t.Errorf("open_interest = %d; want %d", got, tt.wantOI)
+			}
+			if got := int(leg.LotSize); got != tt.wantLot {
+				t.Errorf("contract_size = %d; want %d", got, tt.wantLot)
+			}
+		})
+	}
+}
+
 func TestOptionQuotesSuccess(t *testing.T) {
 	fastLimits(t)
 	resetGreeksCache(t)
@@ -82,7 +122,8 @@ func TestOptionQuotesSuccess(t *testing.T) {
 			legCodes = append(legCodes, code)
 			switch code {
 			case "TCH260807C335000":
-				io.WriteString(w, greeksResp(12.2, 12.3, 25.0, 0.58, -0.03, 2300, 100))
+				// The real gateway emits these integer-valued fields as floats.
+				io.WriteString(w, `{"ret_type":0,"s2c":{"option_quote_list":[{"price":12.2,"mid":12.3,"iv":25.0,"delta":0.58,"theta":-0.03,"open_interest":3204.0,"contract_size":100.0}]}}`)
 			case "TCH260807P335000":
 				// mid 0 → Bid/Ask fall back to the price
 				io.WriteString(w, greeksResp(3.3, 0, 24.0, -0.42, -0.02, 1200, 100))
@@ -111,8 +152,8 @@ func TestOptionQuotesSuccess(t *testing.T) {
 	if call.Bid != 12.3 || call.Ask != 12.3 {
 		t.Fatalf("call Bid/Ask = %v/%v; want mid 12.3 on both sides", call.Bid, call.Ask)
 	}
-	if call.ImpliedVol != 0.25 || call.Delta != 0.58 || call.OpenInterest != 2300 || call.LotSize != 100 {
-		t.Fatalf("call Greeks = %+v; want iv 0.25 delta 0.58 oi 2300 lot 100", call)
+	if call.ImpliedVol != 0.25 || call.Delta != 0.58 || call.OpenInterest != 3204 || call.LotSize != 100 {
+		t.Fatalf("call Greeks = %+v; want iv 0.25 delta 0.58 oi 3204 lot 100", call)
 	}
 	if call.Theta == nil || *call.Theta != -0.03 {
 		t.Fatalf("call Theta = %v; want non-nil -0.03", call.Theta)
