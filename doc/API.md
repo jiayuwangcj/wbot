@@ -1,8 +1,16 @@
 # API 契约（wbot serve）
 
-本文件描述当前产品契约：每个 watchlist 标的只有一个结构化 `wheel` 配置，策略输出只有人工可读的 `ALERT` 或 `HOLD`。系统不下单、不确认订单，也不把缺失行情转换成可执行建议。
+本文件描述当前产品契约：每个 watchlist 标的只有一个结构化 `wheel` 配置，策略输出只有人工可读的 `ALERT` 或 `HOLD`。Wheel runner 不自动下单；通过 LLM 闸门后，已配置 Telegram 的人工 `yes` 仅允许模拟环境下单，缺失行情仍只能 `HOLD`。
 
 `wbot serve` 默认监听 `127.0.0.1:8080`，数据源由 `-dsn` 或 `$WBOT_PG_DSN` 提供。服务默认无鉴权，仅适合本机或由用户自行加认证的反向代理；账户数据和写接口不得直接暴露公网。
+
+## 实时 Wheel 与 Telegram
+
+`serve -wheel-run` 启动实时 Wheel runner，`-wheel-interval` 控制轮询周期（默认 5 分钟），`-wheel-env sim|real` 选择账户环境；runner 读取 `$FUTU_GATEWAY_URL` 的 REST 行情、`$FUTU_PROTO_ADDR` 的账户/持仓与期权链，并将每个标的的信号和执行状态写入 PostgreSQL。网关不可用或报价快照不完整时保持 `HOLD`/`DATA_BLOCKED`，服务本身仍保持健康。
+
+ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE_URL` 是 OpenAI-compatible API 的 base URL（客户端追加 `/chat/completions`），`LLM_API_KEY` 和 `LLM_MODEL` 分别提供认证 key 与模型名；三者任一缺失时，开启 `-wheel-run` 的 serve 会打印一行 warning，ALERT 不会推送。key 只从环境变量读取，不写入数据库或日志。
+
+`serve -telegram-run` 单独启动 Telegram 轮询：从 `~/.wbot/wbot.conf` 读取 `credentials.telegram.token` 与 `credentials.telegram.chat_ids`，只推送 LLM `APPROVE` 的 ALERT，并提供 `yes`/`no`/`今日不再提醒` 处置按钮。`yes` 只走 sim 账户；dismiss 按 symbol 和 UTC 当日写入静默记录。测试或受控环境可用 `WBOT_CONFIG_DIR` 指定配置目录、`TELEGRAM_API_BASE_URL` 指定兼容 Telegram API。
 
 ## 产品边界和能力状态
 
@@ -111,14 +119,15 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 - `GET /v1/wheel/signals?symbol=&action=ALERT|HOLD&capability=READY|DATA_BLOCKED&limit=`：读取信号、能力状态、阻塞依赖、库存和候选；`capability` 过滤能力状态（默认全部），`READY` 表示可提醒、`DATA_BLOCKED` 表示数据缺失被阻塞，非法值 `400`。
 - `GET /v1/wheel/signals/{id}/actions`：读取该信号已有的人工处置记录。
 
-时间统一 RFC3339 UTC，空集合返回 `[]`；非法查询为 `400`，未知路径为 `404`，非 GET 为 `405`。这些端点只依赖窄化的 read-only store。人工动作写入、身份认证和授权仍未提供，因此 UI 只能查看，不能确认、忽略、填单或备注。底层持久化契约如下：
+时间统一 RFC3339 UTC，空集合返回 `[]`；非法查询为 `400`，未知路径为 `404`，非 GET 为 `405`。这些端点只依赖窄化的 read-only store。HTTP/API 与 UI 仍只读，不提供人工动作写入、身份认证或授权端点；处置闭环由受配置 chat ID 限制的 Telegram runner 追加审计记录。底层持久化契约如下：
 
 | 表 | 必须保留 |
 | --- | --- |
 | `wheel_configs` | symbol、正整数 version、完整配置、战略状态 JSON、创建时间；版本不可变 |
 | `option_quote_snapshots` | underlying/contract、PUT/CALL、strike/expiry、source、snapshot key、underlying price、Delta、bid/ask、IV、Theta、volume、OI、lot size、observed/ingested time；允许缺字段留痕，但不可用于 `ALERT` |
 | `wheel_signals` | `ALERT`/`HOLD`、config version、capability status、blocked_by、完整库存 snapshot、候选、拒绝理由和 reason |
-| `wheel_signal_actions` | 人工 `CONFIRM`/`IGNORE`/`FILL`/`NOTE`、actor、备注和详情；append-only，不提交订单 |
+| `wheel_signal_actions` | `LLM_REVIEW` 及人工 `CONFIRM`/`IGNORE`/`FILL`/`NOTE`/`NO`/`REJECTED`、actor、备注和详情；append-only |
+| `wheel_signal_dismissals` | symbol、UTC 当日和唯一键；Telegram 的“今日不再提醒”按日生效 |
 
 库存 snapshot 至少包括 `current_price`、`actual_inventory`、`option_delta_stock`、`effective_inventory`、`target_inventory`、`inventory_gap`，并能追溯 stock shares、futures-equivalent shares 和期权腿。完整报价字段缺任一项、时间不一致、过期、倒挂或不满足 Delta/流动性边界时，信号必须是：
 
@@ -131,7 +140,7 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 }
 ```
 
-只有 `READY`、完整库存、至少一个通过风控的候选才允许 `ALERT`；系统永不调用交易 API。人工动作只记录人的处置或成交回填，不触发下单、自动确认或重算覆盖历史信号；当前只能通过 repository/受控内部流程追加，不能通过 HTTP/UI 写入。
+只有 `READY`、完整库存、至少一个通过风控的候选才允许 `ALERT`；系统永不自动调用交易 API。LLM 审核与 Telegram 人工处置只追加审计记录；Telegram `yes` 是受 chat ID 限制的 sim 环境人工操作，不重算或覆盖历史信号，HTTP/UI 仍不能写动作。
 
 ## 回测结果端点
 

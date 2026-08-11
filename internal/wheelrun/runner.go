@@ -147,7 +147,7 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	}
 	price, err := r.deps.Quoter.Quote(ctx, symbol)
 	if err != nil {
-		return fmt.Errorf("current price: %w", err)
+		return r.persistDataBlocked(ctx, symbol, rec.Version, "current_price", fmt.Errorf("current price: %w", err))
 	}
 	if price <= 0 {
 		return fmt.Errorf("current price %v is not positive", price)
@@ -205,6 +205,26 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	}
 	fmt.Fprintf(os.Stderr, "wheelrun: %s: %s capability=%s signal=%d\n", symbol, sig.Action, sig.CapabilityStatus, id)
 	return nil
+}
+
+func (r *Runner) persistDataBlocked(ctx context.Context, symbol string, version int, blocker string, err error) error {
+	reason := err.Error()
+	record := wheelstore.SignalRecord{
+		Symbol:           symbol,
+		Action:           "HOLD",
+		ConfigVersion:    version,
+		CapabilityStatus: wheel.CapabilityDataBlocked,
+		BlockedBy:        []string{blocker},
+		Reason:           reason,
+	}
+	id, appendErr := r.deps.Store.AppendSignal(ctx, record)
+	if appendErr != nil {
+		return fmt.Errorf("%s; append DATA_BLOCKED signal: %w", reason, appendErr)
+	}
+	if statusErr := r.deps.Watchlist.SetExecutionStatus(ctx, symbol, watchlist.StatusDataBlocked, blocker); statusErr != nil {
+		return fmt.Errorf("%s; signal %d stored, watchlist status sync: %w", reason, id, statusErr)
+	}
+	return fmt.Errorf("%s; signal %d DATA_BLOCKED", reason, id)
 }
 
 func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64) {

@@ -335,10 +335,9 @@ func TestRunOnceLLMGateStates(t *testing.T) {
 	assertAction(after, "LLM_REVIEW", "APPROVE")
 }
 
-// TestRunOnceNoPriceSkipsSymbol: a symbol without a current price (gateway
-// down or unparsable) is skipped with the failure aggregated, while the next
-// binding still runs to completion.
-func TestRunOnceNoPriceSkipsSymbol(t *testing.T) {
+// TestRunOnceNoPricePersistsDataBlocked: a symbol without a current price
+// records a fail-closed signal while the next binding still runs.
+func TestRunOnceNoPricePersistsDataBlocked(t *testing.T) {
 	const bad, good = "HK.00001", "HK.00002"
 	now := time.Now()
 	contract := callContract("HK.TCH260901C335000", good, 335, now.AddDate(0, 0, 7))
@@ -360,11 +359,15 @@ func TestRunOnceNoPriceSkipsSymbol(t *testing.T) {
 	if err == nil {
 		t.Fatal("RunOnce() = nil; want aggregate error for the missing price symbol")
 	}
-	if len(store.signals) != 1 || store.signals[0].Symbol != good {
-		t.Fatalf("signals = %+v; want only %s evaluated", store.signals, good)
+	if len(store.signals) != 2 || store.signals[0].Symbol != bad || store.signals[1].Symbol != good {
+		t.Fatalf("signals = %+v; want DATA_BLOCKED %s and completed %s", store.signals, bad, good)
 	}
-	if len(wl.status) != 1 || wl.status[0].symbol != good {
-		t.Fatalf("watchlist status = %+v; want only %s synced", wl.status, good)
+	if store.signals[0].Action != "HOLD" || store.signals[0].CapabilityStatus != "DATA_BLOCKED" ||
+		len(store.signals[0].BlockedBy) != 1 || store.signals[0].BlockedBy[0] != "current_price" {
+		t.Fatalf("blocked signal = %+v; want HOLD/DATA_BLOCKED/current_price", store.signals[0])
+	}
+	if len(wl.status) != 2 || wl.status[0].symbol != bad || wl.status[0].status != "DATA_BLOCKED" || wl.status[1].symbol != good {
+		t.Fatalf("watchlist status = %+v; want both symbols synced", wl.status)
 	}
 }
 

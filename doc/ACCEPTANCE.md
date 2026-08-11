@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | 单测 + 静态 | `scripts/verify.sh`（= CI `test` job） | 全部 Go 包单测、gofmt、契约测试 + 零依赖 accept（paper/agent-federation） | 每次提交前；CI 自动 |
 | 本地全链冒烟 | `scripts/dev-up.sh`（25 项） | `wbot serve` 全部 DB 本地 HTTP 端点（health/datacheck/runs/bars/account/snapshots/admin·status/config/watchlist/wheel·audit 等）+ CLI ingest file/url/status/bars 三维补漏 | 每次 dev 环境启动 |
-| 逐端点 e2e | `scripts/accept-*.sh`（13 个，156 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
+| 逐端点 e2e | `scripts/accept-*.sh`（14 个，180 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
 
 **原则**：dev-up 只冒烟不逐端点验收；accept 脚本只覆盖不冒烟的部分（如 futu 系依赖网关，刻意不入 dev-up，由 accept 覆盖）。CLI 面按「verify.sh 有无冒烟 + dev-up 有无覆盖 + accept 有无脚本」三维对账（#47/#49/#50 经验）。
 
@@ -26,6 +26,7 @@
 | `accept-watchlist.sh` | `wbot watchlist` CLI（add/remove/list + buy-hold + 写面→读面联动） | 16 | serve + PG。`scripts/accept-watchlist.sh [bin] [dsn] [base-url]` | ✅ db-integration |
 | `accept-futu-data.sh` | futu 数据面 HTTP（quote/orders/account） | 15 | serve + 网关可达。`scripts/accept-futu-data.sh [base-url]` |
 | `accept-wheel-audit.sh` | wheel 只读审计面（写面→configs 版本不可变联动、signals/actions 过滤与 400/405 契约、绑定删除后审计保留） | 22 | serve + PG。`scripts/accept-wheel-audit.sh [base-url]` |
+| `accept-wheel-live.sh` | Wheel 实时 runner：死网关 DATA_BLOCKED、fake 报价→LLM 闸门→Telegram dismiss 闭环及 CLI 默认档 | 24 | 临时 serve + PG + fake Futu/LLM/Telegram。`scripts/accept-wheel-live.sh [bin] [dsn] [base-url]` |
 | `accept-futu-cli.sh` | `wbot futu` CLI（status/quote/funds/position/order + 安全红线） | 21 | 网关可达。`scripts/accept-futu-cli.sh [bin] [rest-addr] [proto-addr]` |
 
 地址参数缺省取 dev-up 已导出的环境变量（`$FUTU_GATEWAY_URL` / `$FUTU_PROTO_ADDR` / `$WBOT_PG_DSN`）；OrbStack 桥接地址实测见 [[FUTU]]。
@@ -41,7 +42,10 @@
 | paper | accept-paper 12 | — | 纯本地无网络 |
 | watchlist | accept-watchlist 16 | dev-up（PUT/GET /v1/watchlist）+ 联动断言 | 独立 symbol 不留痕 |
 | wheel 审计 | accept-wheel-audit 22 | dev-up（GET /v1/wheel/configs·signals 冒烟） | 配置版本 append-only 按契约保留为审计证据（无删除端点，时间戳/PID 唯一 symbol 保持断言精确） |
+| wheel 实时闭环 | accept-wheel-live 24 | `/v1/health`、严格 PUT、wheel signals/actions | 死网关 fail-closed；fake 报价、LLM_REVIEW、Telegram 当日 dismiss；PID 唯一 symbol 并自清理 |
 | agent/master | accept-agent-federation 11 | 同上 | 无 PG 依赖 |
 | configyaml / admin | dev-up（admin·status/config） | 同上 | 配置写面「只写不读」语义见 [[PRIVACY]] |
 
 **对账纪律**（每轮 AUTO_ADVANCE 巡检）：① 端点清单 grep 二进制全部 HTTP 面（含独立子命令）对照 API.md；② CLI 子命令按 verify.sh/dev-up/accept 三维核对；③ 验收脚本断言 vs 真实数据分支找零覆盖分支（「验收覆盖扩展」引擎）；④ 总表计数由矩阵行求和派生——先逐脚本 `grep -c 'check "'` 实计、再矩阵求和、最后改总表，**不许手算增量**（#79 曾 126+9=135 误写，实为 126+(15-10)+(7-4)=134，#84 修正）。经验与盲区案例见各闭环归档（#40-#50）。
+
+本次对账实计：14 个 `accept-*.sh`，检查项为 `11+12+6+4+4+2+15+7+21+16+15+22+24+21=180`；其中 `accept-wheel-live.sh` 的 24 项由脚本自身 `grep -c 'check "'` 复核。

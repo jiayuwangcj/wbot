@@ -23,6 +23,9 @@ import (
 func startWheelRunner(ctx context.Context, database *sql.DB, env futu.Env, interval time.Duration) {
 	client := futu.NewClient(resolveFutuGateway(""))
 	reviewer, model := llmReviewerFromEnv()
+	if reviewer == nil {
+		fmt.Fprintln(os.Stderr, "wheel: WARN LLM reviewer disabled; set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL; ALERT signals cannot be pushed")
+	}
 	runner := wheelrun.NewRunner(wheelrun.Dependencies{
 		Quoter:      futuQuoter{client: client},
 		Positions:   futuPositions{addr: futuProtoAddr(), env: env},
