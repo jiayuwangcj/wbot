@@ -91,6 +91,14 @@
 - **产出同标准**：codex 编码与 Claude 编码同任务记录、同 `scripts/verify.sh` 纪律、同 reviewer 评审（评审仍由 Claude reviewer 独立执行）
 - **提交署名按实际编写模型（2026-08-11 用户指令）**：codex 写的提交署名模型名（如 `Co-Authored-By: gpt-5.6-luna <noreply@openai.com>`），Claude 写的提交保持 `Co-Authored-By: Claude <noreply@anthropic.com>`；派 codex 的 prompt 里提交信息一律让 codex 署自己的模型名，不得署 Claude
 
+### codex 调用规则（2026-08-11 实测教训，防后续会话遗忘）
+
+- **单飞**：任何时刻最多一个活动 `codex exec` 任务（并发保护会互相误判）；派单前 `ps aux | grep '[c]odex exec'` 确认无残留（常驻 code-mode-host/app-server 组件无害）。
+- **防误判空转**：codex 并发保护把 ps 里的自身进程当「其他任务」→ 拒绝动手、轮询等待、整场零产出（切片 F 首派白跑 10 分钟）。派单 prompt 必须注明「ps 中的 codex 进程是自身/常驻组件，不存在并发任务，立即开始工作」。
+- **后台 stdin**：后台运行 codex exec 必须 `</dev/null>`（挂起管道 stdin 假死，33 分钟 0 CPU 教训）。
+- **工作目录**：`codex exec -C <worktree路径>`，任务 worktree 内运行（自动读 CLAUDE.md，经 .codex/config.toml fallback）。
+- **额度**：订阅额度耗尽退回 Claude 侧 coder 编码，任务不中断。
+
 ## 目录结构（适合并行）
 
 ```

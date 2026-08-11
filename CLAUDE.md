@@ -52,3 +52,12 @@ wbot = futu 行情/模拟盘 + Wheel 策略实时提醒 + LLM 审核闸门 + Tel
 - 用 codex 在本仓库开发时,项目指令直接读**本文件**:`.codex/config.toml` 配置了 `project_doc_fallback_filenames = ["CLAUDE.md"]`。codex 不支持 `@` include(AGENTS.md 内 `@path` 是惰性文本),每目录按 `AGENTS.override.md` → `AGENTS.md` → fallback 顺序只取第一个命中——因此本仓库**不设 AGENTS.md**,避免复制式内容漂移;新机器 clone 后 codex 即可读本文件,无需其他配置。
 - codex 全局环境:审批规则白名单 `~/.codex/rules/default.rules`(verify.sh、docker 测试容器等已放行);`~/.codex/config.toml` model=gpt-5.6-sol、approval_policy=never、sandbox=danger-full-access、本仓库 trusted。
 - **编码执行优先级(2026-08-11 用户指令)**:编码任务默认由 codex CLI 执行(`gpt-5.6-luna` + `model_reasoning_effort=max` 最高思考等级);ChatGPT 订阅额度用完时退回 Claude 侧当前模型编码;提交署名按实际编写模型(codex 写的署模型名,Claude 写的署 Claude);详见 doc/ORGS.md「编码执行优先级」。
+
+## codex 调用规则(2026-08-11 实测教训,防后续会话遗忘)
+
+- **单飞**:任何时刻最多一个活动 `codex exec` 任务(并发保护会互相误判);派单前 `ps aux | grep '[c]odex exec'` 确认无残留(常驻 code-mode-host/app-server 组件无害,可忽略)。
+- **防误判空转**:codex 有并发保护,ps 输出中的 codex 进程含它自己 → 误判「其他任务在跑」→ 拒绝动手、轮询等待、整场零产出(切片 F 首派白跑 10 分钟)。派单 prompt 必须注明:「ps 中的 codex 进程是自身/常驻组件,不存在并发任务,立即开始工作」。
+- **后台 stdin**:后台运行 codex exec 必须 `</dev/null`(挂起管道 stdin 会假死,33 分钟 0 CPU 教训)。
+- **工作目录**:`codex exec -C <worktree路径>`,在任务 worktree 内运行(自动读 CLAUDE.md,经 .codex/config.toml fallback)。
+- **提交署名**:codex 写的提交署实际模型(`Co-Authored-By: gpt-5.6-luna <noreply@openai.com>`),Claude 写署 Claude。
+- **额度**:订阅额度耗尽(codex 报 usage limit)退回 Claude 侧 coder 编码,任务不中断。
