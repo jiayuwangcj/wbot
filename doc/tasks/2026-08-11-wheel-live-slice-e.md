@@ -51,3 +51,8 @@ C/D 合入后:在 worktree `.claude/worktrees/slice-e-telegram`(branch `feat/sli
 - **P2 修复轮并入**:runPush MaxSignalID 失败仅 log→回放历史(cursor 0)、confirmOrder 无 CONFIRM 去重(双击/双用户重复下单)
 - **P3**:no 路径英文文案统一中文;游标内存态重启丢窗口(设计内);迁移 010 说明见本文件;webui telegram-empty 死元素;ci.yml binary smoke 补 serve --telegram-run 行(排期)
 - 工具建议:webui 前端行为测试设施(jsdom/node 冒烟)排期;webui 重复监听类运行时缺陷静态契约测不到
+
+## 合入记录(2026-08-11)
+
+- 修复轮 `6cde23d`(P1-2 webui 绑定守卫 / P2-1 游标种子重试 / P2-2 CONFIRM 去重+HasAction / P3 文案)经主会话核验后合入基线 `eba65de`(16 文件 +2145);merge 无冲突,合入后 go build + 5 包测试全绿
+- **status: delivered**
