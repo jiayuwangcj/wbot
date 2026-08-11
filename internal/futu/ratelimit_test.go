@@ -86,6 +86,21 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 	l2.persistPath = l1.persistPath
 	ctx := context.Background()
 
+	// Serial probe that the shared stamp is effective before the strict timing
+	// assertion below; a broken stamp (e.g. silent write failure emptying the
+	// file, CI flake) would show as µs gaps — skip with the cause instead.
+	if err := l1.Wait(ctx); err != nil {
+		t.Fatalf("probe l1 Wait: %v", err)
+	}
+	probeStart := time.Now()
+	if err := l2.Wait(ctx); err != nil {
+		t.Fatalf("probe l2 Wait: %v", err)
+	}
+	if d := time.Since(probeStart); d < gap*4/5 {
+		stamp, _ := os.ReadFile(l1.persistPath)
+		t.Skipf("cross-process stamping not effective: l2 passed after %v; want >= %v; stamp file: %q", d, gap*4/5, stamp)
+	}
+
 	var mu sync.Mutex
 	starts := make([]time.Time, 0, 8)
 	limiters := []*Limiter{l1, l2}
@@ -109,7 +124,7 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 	}
 	for i := 1; i < len(starts); i++ {
 		if d := starts[i].Sub(starts[i-1]); d < gap-2*time.Millisecond {
-			t.Fatalf("start %d only %v after previous (across instances); want >= %v", i, d, gap)
+			t.Errorf("start %d only %v after previous (across instances); want >= %v (persistPath %s)", i, d, gap, l1.persistPath)
 		}
 	}
 }

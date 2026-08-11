@@ -69,10 +69,12 @@ func (l *Limiter) Wait(ctx context.Context) error {
 func (l *Limiter) crossProcessNext(inMemoryNext time.Time) (time.Time, time.Time) {
 	f, err := os.OpenFile(l.persistPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "futu: ratelimit: %s: open: %v; degrading to in-memory\n", l.persistPath, err)
 		return time.Now(), inMemoryNext
 	}
 	defer f.Close()
 	if err := flockExclusive(f); err != nil {
+		fmt.Fprintf(os.Stderr, "futu: ratelimit: %s: flock: %v; degrading to in-memory\n", l.persistPath, err)
 		return time.Now(), inMemoryNext
 	}
 	defer func() { _ = flockRelease(f) }()
@@ -93,11 +95,15 @@ func (l *Limiter) crossProcessNext(inMemoryNext time.Time) (time.Time, time.Time
 		return now, inMemoryNext
 	}
 	// This iteration passes: record it as the new last stamp (truncate first:
-	// the file may hold a longer prior value).
-	if err := f.Truncate(0); err == nil {
-		if _, err := f.Seek(0, io.SeekStart); err == nil {
-			_, _ = fmt.Fprintf(f, "%d", now.UnixNano())
-		}
+	// the file may hold a longer prior value). A silent write failure would
+	// leave the file empty and let the next pass through early (CI flake), so
+	// surface it on the failure path only.
+	if err := f.Truncate(0); err != nil {
+		fmt.Fprintf(os.Stderr, "futu: ratelimit: %s: stamp write failed: %v\n", l.persistPath, err)
+	} else if _, err := f.Seek(0, io.SeekStart); err != nil {
+		fmt.Fprintf(os.Stderr, "futu: ratelimit: %s: stamp write failed: %v\n", l.persistPath, err)
+	} else if _, err := fmt.Fprintf(f, "%d", now.UnixNano()); err != nil {
+		fmt.Fprintf(os.Stderr, "futu: ratelimit: %s: stamp write failed: %v\n", l.persistPath, err)
 	}
 	return now, inMemoryNext
 }
