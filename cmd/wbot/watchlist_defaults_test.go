@@ -25,7 +25,7 @@ func TestApplyWheelDefaultsUsesCurrentPrice(t *testing.T) {
 		case "/api/subscribe":
 			io.WriteString(w, `{"ret_type":0,"s2c":{}}`)
 		case "/api/quote":
-			io.WriteString(w, `{"ret_type":0,"s2c":{"basic_qot_list":[{"last_price":250}]}}`)
+			io.WriteString(w, `{"ret_type":0,"s2c":{"basic_qot_list":[{"cur_price":250}]}}`)
 		default:
 			http.NotFound(w, r)
 		}

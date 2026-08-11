@@ -31,12 +31,18 @@
 
 ## State
 
-- **status**: `planned`(计划批准 + Sol 对比完成;等待切片 F 合入)
-- **last step**: Sol 评估完成(6 项分歧已吸收进计划);等 codex F 完成 → 评审 → 合入
+- **status**: `slice0-complete`(React 基线已在独立 worktree 完成并通过本地工程门禁)
+- **last step**: 切片 0 已交付：Vite MPA、共享层、dashboard 参考页、dist embed、CI artifact 链路和构建脚本完成
 
 ## Next
 
-1. 切片 F 完成通知 → 验证署名 → reviewer 评审 → 合入主基线
-2. 派切片 0(codex luna max 或 Claude coder;基线:脚手架/FRONTEND.md/共享层/dashboard 参考页/Go 集成/CI 构建链;含功能等价对照清单落盘)
-3. P1–P4 并行派发(4 个 worktree,文件零重叠),按 watchlist → data → results → admin 顺序合入
-4. 切片 5 收尾(契约强化/视觉走查/深链冒烟/体积记录)
+1. reviewer 复核切片 0 的功能等价和 dist 构建链，随后按 watchlist → data → results → admin 顺序派发 P1–P4
+2. P1–P4 并行派发(4 个 worktree,文件零重叠),共享层按冻结签名消费
+3. 切片 5 收尾(契约强化/视觉走查/深链冒烟/体积记录)
+
+## 切片 0 交付记录
+
+- React 入口、共享 API/hooks/lib/components 和 dashboard 参考页已实现；其余页面明确显示「迁移中，切片 N 交付」。
+- Go embed 已切换到 `web/dist/*`，旧 HTML/app.js/vendor 已删除；`style.css` 与 favicon 字节不变迁移到 `web/public/`。
+- Node 构建已接入 dev-up、verify、release、Makefile 和 CI frontend artifact；Go test/db-integration 下载 artifact 后编译。
+- 提交序列：`e2bcd10`、`4ff47e7`、`66d9c72`、`cbadb05`、`bf5bd7d`、`f930a4c`、`0d16c43`、`2fc5986`。

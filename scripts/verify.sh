@@ -5,6 +5,9 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+echo "verify: building frontend"
+(cd web && npm ci && npx tsc --noEmit && npm run build)
+
 # gofmt（与 ci.yml test job "Check gofmt" 步骤一致;含未跟踪文件——2026-08-03
 # 实测新增 .go 在提交前逃过仅跟踪文件的检查）
 files=$(git ls-files -c -o --exclude-standard '*.go')

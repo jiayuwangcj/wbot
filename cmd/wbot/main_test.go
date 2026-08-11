@@ -1098,12 +1098,28 @@ func TestServeMuxUIServesPages(t *testing.T) {
 
 func TestServeMuxUIServesAssets(t *testing.T) {
 	top := serveMuxForTest()
+	index := serveGet(t, top, "/ui/")
+	if index.Code != http.StatusOK {
+		t.Fatalf("/ui/: status = %d; want 200", index.Code)
+	}
+	html := index.Body.String()
+	marker := `src="/ui/assets/`
+	start := strings.Index(html, marker)
+	if start < 0 {
+		t.Fatalf("index missing generated module asset: %s", html)
+	}
+	end := strings.Index(html[start+len(`src="`):], `"`)
+	if end < 0 {
+		t.Fatalf("index module asset is not quoted: %s", html)
+	}
+	asset := html[start+len(`src="`) : start+len(`src="`)+end]
 	tests := []struct {
 		path string
 		ct   string
 	}{
 		{"/ui/style.css", "text/css"},
-		{"/ui/app.js", "text/javascript"},
+		{"/ui/favicon.svg", "image/svg+xml"},
+		{asset, "text/javascript"},
 	}
 	for _, tt := range tests {
 		rec := serveGet(t, top, tt.path)

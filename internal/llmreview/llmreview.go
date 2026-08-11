@@ -40,7 +40,9 @@ func New(baseURL, apiKey, model string) (*Client, error) {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
 		model:   model,
-		http:    &http.Client{Timeout: 10 * time.Second},
+		// reasoning models answer slowly: deepseek-v4-pro took ~12.5s 实测
+		// 2026-08-11, so the 10s default would time out the review gate.
+		http: &http.Client{Timeout: 60 * time.Second},
 	}, nil
 }
 

@@ -82,6 +82,11 @@ while [[ $# -gt 0 ]]; do
 	esac
 done
 
+if [[ "$cmd" != "deploy" ]]; then
+	 echo "release: building frontend"
+	(cd web && npm ci && npm run build)
+fi
+
 if [[ -z "$rel_version" ]]; then
 	rel_version="$(git describe --tags --always --dirty 2>/dev/null || echo "0.0.0-dev")"
 fi
