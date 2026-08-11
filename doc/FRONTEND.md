@@ -60,4 +60,12 @@ web/public/                  URL 不变的 favicon.svg、style.css
 
 Go 编译依赖 `internal/webui/web/dist`，顺序固定为：`cd web && npm ci && npm run build`，再运行 `gofmt`、Go 测试或构建。`scripts/dev-up.sh`、`scripts/verify.sh`、`scripts/release.sh` 和 Makefile 都必须先生成 dist；CI 的 frontend job 生成并上传 dist，`test` 与 `db-integration` 下载同一 artifact 后再编译 Go。dist 不允许手工编辑，旧 `app.js`、vendor chart 和旧 HTML 不得回归。
 
-每页首屏 bundle 目标为 `<800 KB`。切片 0 首次构建后用 `du -k internal/webui/web/dist/assets/*` 记录 dashboard、watchlist、results、data、admin 的 JS 基线；后续页面切片若超标，必须说明 antd/chart 引入原因并优化 shared chunk 或入口依赖。
+每页首屏 bundle 目标为 `<800 KB`，按 Vite 的页面入口 JS 记录；切片 0 基线如下（原始字节，括号内为 gzip）：
+
+| 页面入口 | JS | gzip |
+| --- | ---: | ---: |
+| dashboard | 638.5 KB | 200.5 KB |
+| watchlist / results / data / admin | 0.4 KB | 0.3 KB |
+| 所有页面共享 AppLayout | 452.9 KB | 148.6 KB |
+
+共享入口另计，页面入口均低于 800 KB；后续页面切片若增加独有 bundle，必须说明 antd/chart 引入原因并优化 shared chunk 或入口依赖。
