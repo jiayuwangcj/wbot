@@ -22,6 +22,12 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
+say() { printf '\033[1;34m[dev-up]\033[0m %s\n' "$*"; }
+fail() { printf '\033[1;31m[dev-up] FAIL\033[0m %s\n' "$*" >&2; }
+
+say "building frontend"
+(cd web && npm ci && npm run build)
+
 # 仅绑 loopback(2026-08-03, 安全边界收敛): 默认形态无鉴权,不暴露
 # 到局域网; API.md「安全边界」段同声明。base_url/port 提取兼容两格式。
 listen="127.0.0.1:8080"
@@ -44,9 +50,6 @@ while [[ $# -gt 0 ]]; do
 	esac
 	shift
 done
-
-say() { printf '\033[1;34m[dev-up]\033[0m %s\n' "$*"; }
-fail() { printf '\033[1;31m[dev-up] FAIL\033[0m %s\n' "$*" >&2; }
 
 # tcp_ok <host> <port> — bash /dev/tcp probe, no nc needed.
 tcp_ok() {
