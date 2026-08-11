@@ -245,6 +245,10 @@ func TestRunOnceAlertReady(t *testing.T) {
 	if len(sig.Candidates) == 0 {
 		t.Fatal("ALERT requires at least one candidate")
 	}
+	quote, ok := sig.Candidates[0]["quote"].(map[string]any)
+	if !ok || quote["last"] != 4.05 {
+		t.Fatalf("candidate last = %v; want 4.05", quote["last"])
+	}
 	if len(wl.status) != 1 || wl.status[0] != (statusCall{symbol, "READY", ""}) {
 		t.Fatalf("watchlist status = %+v; want READY with empty reason", wl.status)
 	}

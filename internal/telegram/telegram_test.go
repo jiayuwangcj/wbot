@@ -103,6 +103,9 @@ func TestSendMessageWithKeyboard(t *testing.T) {
 	if fake.lastSend["chat_id"] != "42" || fake.lastSend["text"] != "hello" {
 		t.Fatalf("send payload = %+v", fake.lastSend)
 	}
+	if fake.lastSend["parse_mode"] != "HTML" {
+		t.Fatalf("parse_mode = %v; want HTML", fake.lastSend["parse_mode"])
+	}
 	markup, ok := fake.lastSend["reply_markup"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing reply_markup: %+v", fake.lastSend)
