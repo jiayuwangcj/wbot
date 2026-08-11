@@ -777,6 +777,28 @@ ORDER BY created_at DESC, id DESC LIMIT 1`, signalID))
 	return &r, nil
 }
 
+// HasAction reports whether the signal already carries the action (the
+// Telegram yes path dedups on CONFIRM before placing an order).
+func (s *Store) HasAction(ctx context.Context, signalID int64, action string) (bool, error) {
+	if err := s.check(); err != nil {
+		return false, err
+	}
+	if signalID <= 0 {
+		return false, fmt.Errorf("%w: positive signal id required", ErrInvalidRecord)
+	}
+	if !validAction(action) {
+		return false, ErrInvalidOp
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS (SELECT 1 FROM wheel_signal_actions WHERE signal_id = $1 AND action = $2)`,
+		signalID, strings.ToUpper(strings.TrimSpace(action))).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("wheelstore: has action: %w", err)
+	}
+	return exists, nil
+}
+
 // QuerySignalsSince returns signals with id > afterID in id order (the
 // Telegram push loop's cursor query; action filters when non-empty).
 func (s *Store) QuerySignalsSince(ctx context.Context, action string, afterID int64, limit int) ([]SignalRecord, error) {

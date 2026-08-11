@@ -33,6 +33,7 @@ var errLiveEnvNotAllowed = errors.New("live env not allowed")
 type wheelTelegramStore interface {
 	GetSignal(ctx context.Context, id int64) (*wheelstore.SignalRecord, error)
 	LatestLLMReview(ctx context.Context, signalID int64) (*wheelstore.ActionRecord, error)
+	HasAction(ctx context.Context, signalID int64, action string) (bool, error)
 	AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error)
 	QuerySignalsSince(ctx context.Context, action string, afterID int64, limit int) ([]wheelstore.SignalRecord, error)
 	MaxSignalID(ctx context.Context) (int64, error)
@@ -153,11 +154,23 @@ func startTelegramScheduler(ctx context.Context, database *sql.DB, env futu.Env)
 // runPush polls new ALERT signals and pushes those whose latest LLM review is
 // APPROVE. The in-memory cursor starts at the newest signal id so a restart
 // never replays history; the cursor advances regardless of push outcome so a
-// rejected/unapproved signal is not retried forever.
+// rejected/unapproved signal is not retried forever. A failed MaxSignalID
+// retries before the ticker starts: polling with a zero cursor would replay
+// every historical ALERT once the DB recovers.
 func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration) error {
-	cursor, err := s.store.MaxSignalID(ctx)
-	if err != nil {
+	var cursor int64
+	for {
+		var err error
+		cursor, err = s.store.MaxSignalID(ctx)
+		if err == nil {
+			break
+		}
 		s.logf("push: max signal id: %v", err)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(interval):
+		}
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -227,7 +240,7 @@ func (s *telegramScheduler) handleCallback(ctx context.Context, cq *telegram.Cal
 	case "yes":
 		s.confirmOrder(ctx, cq, signalID)
 	case "no":
-		if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "NO", Actor: telegramActor(cq), Note: "operator continues waiting"}); err != nil {
+		if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "NO", Actor: telegramActor(cq), Note: "继续等待机会"}); err != nil {
 			s.logf("callback %s: no: %v", cq.ID, err)
 			_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, "记录失败")
 			return
@@ -256,6 +269,15 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 	review, err := s.store.LatestLLMReview(ctx, signalID)
 	if err != nil || verdictOf(review) != "APPROVE" {
 		s.reject(ctx, cq, signalID, "llm review not approved", "LLM 审核未通过")
+		return
+	}
+	// Dedup: a second chat or a double-press in the same freshness window
+	// must not place a second order on the same signal.
+	if confirmed, err := s.store.HasAction(ctx, signalID, "CONFIRM"); err != nil {
+		s.reject(ctx, cq, signalID, "confirm check failed", "下单状态检查失败")
+		return
+	} else if confirmed {
+		s.reject(ctx, cq, signalID, "already confirmed", "该信号已下单,请勿重复确认")
 		return
 	}
 	if s.orders == nil {

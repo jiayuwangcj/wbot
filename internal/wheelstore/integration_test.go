@@ -217,6 +217,22 @@ func TestWheelTelegramDispositionIntegration(t *testing.T) {
 			t.Fatalf("AppendAction %s: %v", action, err)
 		}
 	}
+	// HasAction powers the Telegram yes-path dedup.
+	if has, err := store.HasAction(ctx, signalID, "CONFIRM"); err != nil || has {
+		t.Fatalf("HasAction(CONFIRM) before confirm = %v, %v; want false", has, err)
+	}
+	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: signalID, Action: "CONFIRM", Actor: "telegram:42"}); err != nil {
+		t.Fatalf("AppendAction CONFIRM: %v", err)
+	}
+	if has, err := store.HasAction(ctx, signalID, "CONFIRM"); err != nil || !has {
+		t.Fatalf("HasAction(CONFIRM) after confirm = %v, %v; want true", has, err)
+	}
+	if has, err := store.HasAction(ctx, signalID, "NO"); err != nil || !has {
+		t.Fatalf("HasAction(NO) = %v, %v; want true", has, err)
+	}
+	if _, err := store.HasAction(ctx, signalID, "HACK"); err != ErrInvalidOp {
+		t.Fatalf("HasAction(HACK) = %v; want ErrInvalidOp", err)
+	}
 	if _, err := database.Exec(`INSERT INTO wheel_signal_actions (signal_id, action, actor) VALUES ($1, 'HACK', 'test')`, signalID); err == nil {
 		t.Fatal("database accepted HACK action; CHECK constraint from migration 010 missing")
 	}

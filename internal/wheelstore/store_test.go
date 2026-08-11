@@ -211,6 +211,9 @@ func TestNilDBValidation(t *testing.T) {
 	if _, err := s.LatestLLMReview(ctx, 1); !errors.Is(err, ErrNilDB) {
 		t.Errorf("LatestLLMReview: %v", err)
 	}
+	if _, err := s.HasAction(ctx, 1, "CONFIRM"); !errors.Is(err, ErrNilDB) {
+		t.Errorf("HasAction: %v", err)
+	}
 	if _, err := s.QuerySignalsSince(ctx, "ALERT", 0, 10); !errors.Is(err, ErrNilDB) {
 		t.Errorf("QuerySignalsSince: %v", err)
 	}
@@ -244,6 +247,12 @@ func TestDismissValidation(t *testing.T) {
 	}
 	if _, err := s.LatestLLMReview(ctx, 0); !errors.Is(err, ErrInvalidRecord) {
 		t.Errorf("LatestLLMReview(0): %v; want ErrInvalidRecord", err)
+	}
+	if _, err := s.HasAction(ctx, 0, "CONFIRM"); !errors.Is(err, ErrInvalidRecord) {
+		t.Errorf("HasAction(0): %v; want ErrInvalidRecord", err)
+	}
+	if _, err := s.HasAction(ctx, 1, "NOPE"); !errors.Is(err, ErrInvalidOp) {
+		t.Errorf("HasAction(NOPE): %v; want ErrInvalidOp", err)
 	}
 	if _, err := s.QuerySignalsSince(ctx, "NOPE", 0, 10); !errors.Is(err, ErrInvalidAction) {
 		t.Errorf("QuerySignalsSince(NOPE): %v; want ErrInvalidAction", err)

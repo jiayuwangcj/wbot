@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,11 +53,15 @@ func (f *fakeTGServer) lastToast(t *testing.T) string {
 
 // fakeTGStore is an in-memory wheelTelegramStore for handler tests.
 type fakeTGStore struct {
-	mu        sync.Mutex
-	signals   map[int64]*wheelstore.SignalRecord
-	reviews   map[int64]*wheelstore.ActionRecord
-	dismissed map[string]bool
-	appended  []wheelstore.ActionRecord
+	mu            sync.Mutex
+	signals       map[int64]*wheelstore.SignalRecord
+	reviews       map[int64]*wheelstore.ActionRecord
+	dismissed     map[string]bool
+	appended      []wheelstore.ActionRecord
+	maxID         int64
+	maxIDFailures int
+	querySince    []wheelstore.SignalRecord
+	queryCalls    []int64
 }
 
 func newFakeTGStore() *fakeTGStore {
@@ -90,11 +95,33 @@ func (f *fakeTGStore) AppendAction(_ context.Context, r wheelstore.ActionRecord)
 	return int64(len(f.appended)), nil
 }
 
-func (f *fakeTGStore) QuerySignalsSince(context.Context, string, int64, int) ([]wheelstore.SignalRecord, error) {
-	return nil, nil
+func (f *fakeTGStore) HasAction(_ context.Context, signalID int64, action string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.appended {
+		if a.SignalID == signalID && a.Action == action {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-func (f *fakeTGStore) MaxSignalID(context.Context) (int64, error) { return 0, nil }
+func (f *fakeTGStore) QuerySignalsSince(_ context.Context, _ string, afterID int64, _ int) ([]wheelstore.SignalRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queryCalls = append(f.queryCalls, afterID)
+	return append([]wheelstore.SignalRecord(nil), f.querySince...), nil
+}
+
+func (f *fakeTGStore) MaxSignalID(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.maxIDFailures > 0 {
+		f.maxIDFailures--
+		return 0, errors.New("max id: db blip")
+	}
+	return f.maxID, nil
+}
 
 func (f *fakeTGStore) Dismiss(_ context.Context, symbol string, date time.Time) error {
 	f.dismissed[symbol+"|"+date.Format("2006-01-02")] = true
@@ -450,5 +477,69 @@ func TestVerdictOf(t *testing.T) {
 	}
 	if verdictOf(&wheelstore.ActionRecord{Details: map[string]any{"verdict": 42}}) != "" {
 		t.Fatal("verdictOf non-string detail accepted")
+	}
+}
+
+func TestRunPushSeedsCursorFromMaxSignalID(t *testing.T) {
+	_, server := startFakeTG(t)
+	store := newFakeTGStore()
+	store.maxIDFailures = 2 // DB blip at startup
+	store.maxID = 7
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, time.Now())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.runPush(ctx, 5*time.Millisecond) }()
+	deadline := time.After(5 * time.Second)
+	for {
+		store.mu.Lock()
+		n := len(store.queryCalls)
+		store.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("push loop never polled")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	cancel()
+	<-done
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.queryCalls) == 0 || store.queryCalls[0] != 7 {
+		t.Fatalf("first poll cursor = %v; want 7 (must retry MaxSignalID, never poll with 0)", store.queryCalls)
+	}
+	for _, c := range store.queryCalls {
+		if c == 0 {
+			t.Fatal("polled with cursor 0 (would replay history after DB recovery)")
+		}
+	}
+}
+
+func TestCallbackYesDoubleConfirmRejected(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{orderID: 12345}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	first := callback(42, "wheel:7:yes")
+	second := callback(42, "wheel:7:yes")
+	s.handleCallback(context.Background(), first)
+	s.handleCallback(context.Background(), second)
+	if placer.calls != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want 1 (second press must be refused)", placer.calls)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "REJECTED" || act.Note != "already confirmed" {
+		t.Fatalf("last action = %+v; want REJECTED already confirmed", act)
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "请勿重复确认") {
+		t.Fatalf("toast = %q; want 请勿重复确认", toast)
 	}
 }

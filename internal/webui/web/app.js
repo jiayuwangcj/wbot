@@ -631,8 +631,13 @@ function initConfigForm() {
 
 /* Telegram 接入向导 (2026-08-11): BotFather 指引 + token/chat_ids 保存。
    PUT /v1/admin/config/{key} 只写不读:输入保存即清空,「已配置」只来自
-   set 元数据;页面从不请求或显示值(PRIVACY 红线)。 */
+   set 元数据;页面从不请求或显示值(PRIVACY 红线)。绑定只做一次:
+   renderTelegramWizard 随每次配置刷新触发,重复绑定会让 submit 监听器
+   累积(第 N 次保存触发 N+1 次 PUT)——2026-08-11 评审 P1-2。 */
+let telegramWizardBound = false;
 function initTelegramWizard() {
+  if (telegramWizardBound) return;
+  telegramWizardBound = true;
   const bind = (formId, btnId, key, okId) => {
     const form = document.getElementById(formId);
     const btn = document.getElementById(btnId);

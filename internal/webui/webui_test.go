@@ -1260,6 +1260,11 @@ func TestTelegramWizardJS(t *testing.T) {
 	if !strings.Contains(js, `c.set`) {
 		t.Fatalf("app.js must render wizard status from set metadata")
 	}
+	/* 绑定只做一次(评审 P1-2):renderTelegramWizard 随刷新触发,重复绑定
+	会让 submit 监听器累积、第 N 次保存触发 N+1 次 PUT。 */
+	if !strings.Contains(js, "telegramWizardBound") {
+		t.Fatal("app.js must guard initTelegramWizard with a one-time bound flag")
+	}
 	if strings.Contains(js, "c.value") {
 		t.Fatal("app.js renders config values (PRIVACY red line)")
 	}
