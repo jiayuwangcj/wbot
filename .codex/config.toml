@@ -1,0 +1,4 @@
+# codex 项目级配置(2026-08-11):项目指令直接读 CLAUDE.md,与 Claude Code 共用单一来源。
+# codex 不支持 AGENTS.md 内 @ include;每目录按 AGENTS.override.md → AGENTS.md → fallback 顺序只取第一个命中,
+# 故本仓库不设 AGENTS.md,由本配置让 codex 回退读取 CLAUDE.md,避免复制式内容漂移。
+project_doc_fallback_filenames = ["CLAUDE.md"]

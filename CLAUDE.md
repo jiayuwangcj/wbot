@@ -45,3 +45,8 @@ wbot = futu 行情/模拟盘 + Wheel 策略实时提醒 + LLM 审核闸门 + Tel
 - 敏感目录 `~/.wbot/`(wbot.conf 运行时配置、config.yaml 部署级凭证、releases/ 产物);`.wbot` 不提交仓库。
 - CI 纪律:禁用原生 `[skip ci]` 提交标记;文档/组织类改动走 ci.yml check-skip 自动检测。
 - 详细契约:doc/API.md(HTTP)、doc/WHEEL_STRATEGY.md(wheel 产品边界:wheel-only、ALERT/HOLD 人工处置、DATA_BLOCKED capability)、doc/BACKTEST.md。
+
+## codex 集成(2026-08-11)
+
+- 用 codex 在本仓库开发时,项目指令直接读**本文件**:`.codex/config.toml` 配置了 `project_doc_fallback_filenames = ["CLAUDE.md"]`。codex 不支持 `@` include(AGENTS.md 内 `@path` 是惰性文本),每目录按 `AGENTS.override.md` → `AGENTS.md` → fallback 顺序只取第一个命中——因此本仓库**不设 AGENTS.md**,避免复制式内容漂移;新机器 clone 后 codex 即可读本文件,无需其他配置。
+- codex 全局环境:审批规则白名单 `~/.codex/rules/default.rules`(verify.sh、docker 测试容器等已放行);`~/.codex/config.toml` model=gpt-5.6-sol、approval_policy=never、sandbox=danger-full-access、本仓库 trusted。
