@@ -77,7 +77,7 @@ beforeEach(() => {
   apiMocks.postIngest.mockImplementation(async () => ({ status: "ok" }));
 });
 
-function metricCard(label: string): HTMLElement {
+function metricCard(label: string): Element {
   const heading = screen.getByText(label);
   const card = heading.closest(".metric-card");
   if (!card) throw new Error(`metric card for ${label} not found`);
@@ -276,6 +276,9 @@ describe("DataPage ingest actions", () => {
 
     expect(apiMocks.postIngest).toHaveBeenCalledWith({ kind: "bar", symbol: "HK.00700", timeframe: "1d", adjust: "fwd", from: "2026-08-11T08:00:00Z" });
     await waitFor(() => expect(apiMocks.getAdminCluster).toHaveBeenCalledTimes(2));
+    // 防误触:点击补数据不触发该行 drill-in(旧版 stopPropagation 语义保留)
+    expect(apiMocks.getBars).not.toHaveBeenCalled();
+    expect(screen.queryByText("HK.00700 · 1d · fwd")).not.toBeInTheDocument();
   });
 
   it("shows 拉取中… while refilling and restores the button on failure with the error", async () => {

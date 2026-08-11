@@ -293,7 +293,15 @@ export function DataPage(): ReactNode {
       render: (_value: unknown, row: CoverageRow) => {
         const key = coverageKey(row);
         return (
-          <Button type="link" size="small" disabled={refillStates[key] === "busy"} onClick={() => void handleRefill(row)}>
+          <Button
+            type="link"
+            size="small"
+            disabled={refillStates[key] === "busy"}
+            onClick={(event) => {
+              event.stopPropagation();
+              void handleRefill(row);
+            }}
+          >
             {refillLabel(key, "补数据")}
           </Button>
         );
