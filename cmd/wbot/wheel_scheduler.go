@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/futu"
+	"github.com/jiayu/wbot/internal/llmreview"
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/wheelrun"
 	"github.com/jiayu/wbot/internal/wheelstore"
@@ -21,16 +22,34 @@ import (
 // logged inside the runner; only assembly-level errors surface here.
 func startWheelRunner(ctx context.Context, database *sql.DB, env futu.Env, interval time.Duration) {
 	client := futu.NewClient(resolveFutuGateway(""))
+	reviewer, model := llmReviewerFromEnv()
 	runner := wheelrun.NewRunner(wheelrun.Dependencies{
-		Quoter:    futuQuoter{client: client},
-		Positions: futuPositions{addr: futuProtoAddr(), env: env},
-		Chain:     client,
-		Store:     wheelstore.New(database),
-		Watchlist: watchlistStore{db: database},
+		Quoter:      futuQuoter{client: client},
+		Positions:   futuPositions{addr: futuProtoAddr(), env: env},
+		Chain:       client,
+		Store:       wheelstore.New(database),
+		Watchlist:   watchlistStore{db: database},
+		LLMReviewer: reviewer,
+		LLMModel:    model,
 	})
 	if err := runner.Run(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(os.Stderr, "wheel: runner: %v\n", err)
 	}
+}
+
+func llmReviewerFromEnv() (wheelrun.LLMReviewer, string) {
+	baseURL := strings.TrimSpace(os.Getenv("LLM_BASE_URL"))
+	apiKey := os.Getenv("LLM_API_KEY")
+	model := strings.TrimSpace(os.Getenv("LLM_MODEL"))
+	if baseURL == "" || strings.TrimSpace(apiKey) == "" || model == "" {
+		return nil, ""
+	}
+	reviewer, err := llmreview.New(baseURL, apiKey, model)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wheel: LLM reviewer disabled: %v\n", err)
+		return nil, ""
+	}
+	return reviewer, model
 }
 
 // futuQuoter adapts the REST gateway to wheelrun.Quoter: the underlying's

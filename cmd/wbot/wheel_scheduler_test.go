@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/futu"
+	"github.com/jiayu/wbot/internal/llmreview"
 )
 
 func TestQualifySymbol(t *testing.T) {
@@ -60,6 +61,25 @@ func TestParseWheelEnv(t *testing.T) {
 				t.Fatalf("parseWheelEnv(%q) error = %v; want unknown-environment error", tt.input, err)
 			}
 		})
+	}
+}
+
+func TestLLMReviewerFromEnv(t *testing.T) {
+	t.Setenv("LLM_BASE_URL", "http://llm.test/v1")
+	t.Setenv("LLM_API_KEY", "test-key")
+	t.Setenv("LLM_MODEL", "test-model")
+	reviewer, model := llmReviewerFromEnv()
+	if model != "test-model" {
+		t.Fatalf("model = %q; want test-model", model)
+	}
+	if _, ok := reviewer.(*llmreview.Client); !ok {
+		t.Fatalf("reviewer = %T; want *llmreview.Client", reviewer)
+	}
+
+	t.Setenv("LLM_API_KEY", "")
+	reviewer, model = llmReviewerFromEnv()
+	if reviewer != nil || model != "" {
+		t.Fatalf("missing key result = (%T, %q); want (nil, empty)", reviewer, model)
 	}
 }
 
