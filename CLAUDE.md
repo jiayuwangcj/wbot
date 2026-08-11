@@ -55,8 +55,8 @@ wbot = futu 行情/模拟盘 + Wheel 策略实时提醒 + LLM 审核闸门 + Tel
 
 ## codex 调用规则(2026-08-11 实测教训,防后续会话遗忘)
 
-- **单飞**:任何时刻最多一个活动 `codex exec` 任务(并发保护会互相误判);派单前 `ps aux | grep '[c]odex exec'` 确认无残留(常驻 code-mode-host/app-server 组件无害,可忽略)。
-- **防误判空转**:codex 有并发保护,ps 输出中的 codex 进程含它自己 → 误判「其他任务在跑」→ 拒绝动手、轮询等待、整场零产出(切片 F 首派白跑 10 分钟)。派单 prompt 必须注明:「ps 中的 codex 进程是自身/常驻组件,不存在并发任务,立即开始工作」。
+- **并发控制是调用方职责(已固化 Claude 全局规则)**:单飞/串行派单/派单前 `ps aux | grep '[c]odex exec'` 确认、被拒即停——已写入 **`~/.claude/CLAUDE.md`**(所有 Claude 会话自动加载,跨项目)。codex 自己不会控制自己是否被并发调用,别把并发规则写进 codex 指令。
+- **防误判空转(已固化 codex 全局指令)**:codex 并发保护把 ps 里的自身进程当「其他任务」→ 空转零产出(F 首派白跑 10 分钟)。修复已固化到 **`~/.codex/AGENTS.md`**(自身进程识别/立即开工/不嵌套,已验证 codex 自动加载生效),派单 prompt 无需手写。
 - **后台 stdin**:后台运行 codex exec 必须 `</dev/null`(挂起管道 stdin 会假死,33 分钟 0 CPU 教训)。
 - **工作目录**:`codex exec -C <worktree路径>`,在任务 worktree 内运行(自动读 CLAUDE.md,经 .codex/config.toml fallback)。
 - **提交署名**:codex 写的提交署实际模型(`Co-Authored-By: gpt-5.6-luna <noreply@openai.com>`),Claude 写署 Claude。
