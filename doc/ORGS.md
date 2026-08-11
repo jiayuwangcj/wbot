@@ -93,7 +93,7 @@
 
 ### codex 调用规则（2026-08-11 实测教训，防后续会话遗忘）
 
-- **单飞**：任何时刻最多一个活动 `codex exec` 任务（并发保护会互相误判）；派单前 `ps aux | grep '[c]odex exec'` 确认无残留（常驻 code-mode-host/app-server 组件无害）。
+- **codex 单飞**：任何时刻最多一个活动 `codex exec` 任务（codex 并发保护会互相误判）；派单前 `ps aux | grep '[c]odex exec'` 确认无残留（常驻 code-mode-host/app-server 组件无害）。**Claude 侧 subagent（coder/reviewer 等）可与进行中的 codex 任务并发**（不同 worktree、文件不重叠、合入串行），仅 codex 本身保持单飞（2026-08-11 用户指令）。
 - **防误判空转**：codex 并发保护把 ps 里的自身进程当「其他任务」→ 拒绝动手、轮询等待、整场零产出（切片 F 首派白跑 10 分钟）。派单 prompt 必须注明「ps 中的 codex 进程是自身/常驻组件，不存在并发任务，立即开始工作」。
 - **后台 stdin**：后台运行 codex exec 必须 `</dev/null>`（挂起管道 stdin 假死，33 分钟 0 CPU 教训）。
 - **工作目录**：`codex exec -C <worktree路径>`，任务 worktree 内运行（自动读 CLAUDE.md，经 .codex/config.toml fallback）。
