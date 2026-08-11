@@ -4,7 +4,7 @@ import { Alert, Button, Card, Empty, Input, Select, Table, Tabs, Typography } fr
 import type { TableColumnsType } from "antd";
 import { ReloadOutlined } from "@ant-design/icons";
 import { getAdminCluster, getBars, getDatacheck, postIngest } from "../../api";
-import type { Bar, BarCoverage, ClusterResponse, DatacheckItem, DatacheckReport, OptionFreshness } from "../../api/types";
+import type { Bar, BarCoverage, ClusterResponse, DatacheckReport, OptionFreshness } from "../../api/types";
 import { DataTable } from "../../components/DataTable";
 import { KlineChart, type KlinePoint } from "../../components/Chart/KlineChart";
 import { useAutoRefresh } from "../../hooks/useAutoRefresh";
@@ -63,11 +63,6 @@ function freshnessClass(fresh: string): string {
 
 function toError(caught: unknown): Error {
   return caught instanceof Error ? caught : new Error("unexpected server response");
-}
-
-function itemLatestTs(item: DatacheckItem): string {
-  const raw = item as unknown as Record<string, unknown>;
-  return typeof raw.max_ts === "string" ? raw.max_ts : "";
 }
 
 export function DataPage(): ReactNode {
@@ -265,7 +260,7 @@ export function DataPage(): ReactNode {
         timeframe: item.timeframe,
         adjust: item.adjust,
         state: item.state,
-        latest: itemLatestTs(item),
+        latest: item.max_ts ?? "",
       }));
     rows.sort((a, b) => {
       const priority = (state: string): number => (state === "missing" ? 0 : 1);

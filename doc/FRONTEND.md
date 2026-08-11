@@ -69,3 +69,31 @@ Go 编译依赖 `internal/webui/web/dist`，顺序固定为：`cd web && npm ci 
 | 所有页面共享 AppLayout | 452.9 KB | 148.6 KB |
 
 共享入口另计，页面入口均低于 800 KB；后续页面切片若增加独有 bundle，必须说明 antd/chart 引入原因并优化 shared chunk 或入口依赖。
+
+## 体积基线
+
+2026-08-11 在干净依赖上执行 `cd web && npm ci && npm run build`，Vite 7.3.6 输出的五个页面入口如下。入口均低于 `<800 kB/页` 目标；数值为构建输出的原始 JS 与 gzip 大小。
+
+| 页面入口 | JS | gzip |
+| --- | ---: | ---: |
+| dashboard | 19.33 kB | 7.30 kB |
+| watchlist | 32.56 kB | 11.81 kB |
+| results | 16.67 kB | 6.42 kB |
+| data | 14.77 kB | 5.12 kB |
+| admin | 57.61 kB | 17.12 kB |
+
+antd 和 Lightweight Charts 当前位于共享 chunk，页面入口大小不包含它们。此次构建的共享 chunk 现状如下；`format-*.js` 为 React/antd 等共享 UI 依赖，`ChartBase-*.js` 为 `lightweight-charts` v4 图表基座。
+
+| 共享 chunk | JS | gzip |
+| --- | ---: | ---: |
+| format-PPd-6bXd.js（React/antd/shared UI） | 897.95 kB | 285.69 kB |
+| ChartBase-cVVnrGN_.js（lightweight-charts v4） | 162.73 kB | 51.86 kB |
+| WheelForm-DuKOgTnY.js | 31.55 kB | 10.92 kB |
+| index-Qx-QsdRw.js | 24.34 kB | 8.73 kB |
+| index-BpqrcOpL.js | 11.99 kB | 4.37 kB |
+| index-D7IjhCe0.js | 11.38 kB | 4.63 kB |
+| LineChart-s0Blyfoj.js | 6.60 kB | 2.88 kB |
+| ReloadOutlined-M1DDbBQ_.js | 0.99 kB | 0.61 kB |
+| useAsyncData-CMbrHPGg.js | 0.63 kB | 0.37 kB |
+
+Vite 会对约 500 kB 以上的共享 chunk 发出提示；本次 `format-*.js` 的体积是现状基线，后续若拆分 antd 或图表依赖，应同时更新本表和入口预算复核。

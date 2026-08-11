@@ -164,7 +164,9 @@ export interface DatacheckItem {
   timeframe: string;
   adjust: string;
   state: string;
-  latest: string;
+  max_ts?: string;
+  max_expiry?: string;
+  age_seconds?: number;
 }
 
 export interface DatacheckReport {
