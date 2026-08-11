@@ -258,6 +258,10 @@ func runServe(prog string, argv []string) int {
 		fs.Usage()
 		return 0
 	}
+	if err := validateWheelInterval(*wheelInterval); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+		return 2
+	}
 	datacheckHour, datacheckMinute, err := parseDailyTime(strings.TrimSpace(*datacheckAt))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "serve: -datacheck-at: %v\n", err)

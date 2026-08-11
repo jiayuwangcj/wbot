@@ -148,3 +148,10 @@ func parseWheelEnv(s string) (futu.Env, error) {
 	}
 	return 0, fmt.Errorf("serve: unknown -wheel-env %q (want sim or real)", s)
 }
+
+func validateWheelInterval(interval time.Duration) error {
+	if interval <= 0 {
+		return fmt.Errorf("invalid -wheel-interval %q (must be > 0)", interval.String())
+	}
+	return nil
+}
