@@ -85,6 +85,7 @@
 | P1-A event backtest | pending | pending | pending | `DATA_BLOCKED` | 先取得完整历史 snapshot/事件覆盖，再跑固定样本 |
 | 发布前复扫（Next#5） | e7f97e5 | `go test ./cmd/wbot ./internal/httpapi` passed；dev-up 25/25 | N/A | `READY`（文档/验收面） | 旧术语边界保持；datacheck 端点补入 serve -h 与 dev-up 冒烟 |
 | 信号审计能力过滤+排序（Next#6） | e9a23b5 | `go test ./...` 23/23 passed；真实 PG integration passed；dev-up 25/25；accept-watchlist 16/16、accept-backtest 21/21 | capability select + 表排序（默认时间倒序） | `READY`（只读审计） | capability 过滤服务端化（非法值 400）；信号表排序键含 effective_inventory；mux fake 同步 5 参签名 |
+| 信号详情展开+深链（Next#7） | 25765d2 | `go test ./...` 23/23 passed；真实 PG integration passed；dev-up 25/25 | headless Chrome desktop + 390px 动态断言（#signal-45 展开阻塞依赖/拒绝原因/候选报价，缺失值 "—"） | `READY`（只读审计） | 行内详情只读不改写；#signal-<id> 与 results #bt-<id> 同深链惯例；sort 重渲染重建 tbody，展开态自然重置 |
 
 ## Next
 
