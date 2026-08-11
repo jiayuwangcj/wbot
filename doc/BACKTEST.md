@@ -1,111 +1,105 @@
-# 回测（v2 骨架）
+# Wheel 回测契约
 
-消费 [[DATA_PIPELINE]] 落地数据的确定性回测运行器：逐根 bar 按 ts 升序推进，策略回调决定交易，结算后输出绩效与约束检查。
+回测必须复用动态 Wheel 的库存语义：价格—目标库存曲线、最大库存、战略状态、有效库存和候选质量门槛均来自完整的版本化 Wheel 配置。回测只记录 bar-time 的信号/机械结算 trace，不发送订单。当前运行器以 bars 为时间轴，从 `option_quote_snapshots` 选择 `observed_at <= bar.ts` 的最新原子批次（同一时点按 `snapshot_key` 稳定选择），再调用 Wheel；它不是按 quote 或成交事件驱动的历史执行回放。缺少可信 snapshot 时，运行固定为 `DATA_BLOCKED/HOLD`，不可用日线收盘、固定 Greeks 或默认盘口“跑通”。
 
-## 命令
+## 能力状态
+
+| 能力 | 状态 | 阻塞原因 | 启用闸门 | 禁止降级 |
+| --- | --- | --- | --- | --- |
+| Wheel 领域决策（曲线插值、库存缺口、状态、候选风控） | `READY` | P0-A 单测已通过 | 保持确定性单测和回归样例 | 不把回测状态当作实时提醒 |
+| bar-time 最新原子 snapshot 回放 | `READY`（研究/验证） | 已实现按 bar 选择最新批次；它不提供事件级成交时序 | 同输入同 trace、批次不混用、过期 → HOLD 的回归证据 | 不宣称实时执行或事件驱动历史回测 |
+| 真实供应商 adapter / 实时 Wheel 输入 | `DATA_BLOCKED` | 尚无经过验收的供应商 adapter 提供同一时点完整 bid/ask、Delta、IV、Theta、OI、volume、lot size 和 freshness | 字段映射、真实只读采样、原子性、断线/限流/陈旧测试通过 | 不用日线收盘、固定 Delta/IV/OI、默认 Theta 或拼接不同时间数据 |
+| 历史事件 Wheel 回测 | `DATA_BLOCKED` | 历史覆盖不足以还原逐 quote/成交事件及同一时点盘口/Greeks | 历史 snapshot 覆盖目标日期/DTE，事件 trace 可复现并通过质量验收 | 不用 OHLC 猜 bid/ask/Greeks，不把 bar-time 回放冒充事件回测 |
+| 覆盖率/参数面研究 | `RESEARCH_ONLY` | 依赖事件回测和足够历史快照 | P1-A 完成、滚动窗口和可复现 seed 验收 | 研究结果不写 `ALERT`，不改写用户配置 |
+| 期货等价库存/保证金 | `INTEGRATION_BLOCKED` | 乘数、实时 Delta、币种和券商规则未接通 | 账户/合约元数据与边界测试验收 | 不估算保证金，不把缺失期货数据视为零 |
+| 回测详情浏览器验证 | `READY` | Mac Chrome desktop/390px、5-row 动态 trace、批量模式和 rerun 参数回填已验证 | 保持 DOM/CDP 与前端契约回归 | 不把 bar-time UI 冒充事件回测或人工写动作 |
+
+`DATA_BLOCKED`、`INTEGRATION_BLOCKED`、`RESEARCH_ONLY` 和 `OUT_OF_SCOPE` 都是产品状态，不是可由默认值绕过的错误。每次运行应保留 `capability_status`、`blocked_by`、缺失字段和下一启用条件。
+
+## 命令边界
+
+CLI 入口保留确定性运行器参数，但产品策略名只有 `wheel`：
 
 ```bash
 wbot backtest \
-  -dsn "$WBOT_PG_DSN" -symbol DEMO.US -timeframe 1d \   # 或 -file <bars.json>（与 -dsn 互斥）
-  -from 2024-06-01T00:00:00Z -to 2024-07-01T00:00:00Z \  # 仅 -dsn 生效
-  -cash 10000 -strategy buy-hold -fee 1 -max-drawdown 0.2
+  -dsn "$WBOT_PG_DSN" -symbol HK.00700 -timeframe 1d \
+  -strategy wheel \
+  -params '{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":480,"target_inventory":600},{"price":550,"target_inventory":0}],"max_inventory":1200,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":50,"strategic_state":"NORMAL"}'
 ```
 
 | flag | 默认 | 说明 |
 | --- | --- | --- |
-| `-file` / `-dsn` | — | 输入二选一（互斥）：JSON bars 文件（`ingest bars -json` 格式）或 PostgreSQL 直读（回落 `$WBOT_PG_DSN`） |
-| `-symbol` / `-timeframe` | `DEMO.US` / `1d` | `-dsn` 输入的选择条件 |
-| `-symbols` | 空 | 逗号分隔的多 symbol 列表（如 `HK.00700,US.AAPL`；2+ 个才走多 symbol 路径，1 个等价于 `-symbol`） |
-| `-from` / `-to` | 不限 | RFC3339 时间范围（`-dsn` 输入） |
-| `-limit` | 10000 | `-dsn` 输入最大 bars 数 |
-| `-cash` | 10000 | 初始资金（>0） |
-| `-strategy` | `hold` | `hold` / `buy-hold` / `covered-call` / `cash-secured-put`（模板参数见 `-params`） |
-| `-params` | — | 策略参数 JSON（仅模板策略），如 `{"strike_pct_otm":0.05}`；非法参数报错 exit 2 |
-| `-fee` | 0 | 每笔正股交易固定费用（买入从现金扣、卖出从所得扣） |
-| `-max-drawdown` | 0 | 约束检查（0..1）：结果最大回撤超限 → exit 1；0 = 不检查 |
-| `-save` | false | 落库 `backtest_results`（要求 `-dsn` 输入）：metrics + equity_curve/trades 明细（migration 003/004），经 `GET /v1/backtests` 读取（doc/API.md） |
-| `-export` | 0 | 导出模式：把已保存运行（`-export <id>`）写到 stdout，不再运行（要求 `-dsn` 输入；与 `-file` 互斥） |
-| `-format` | `csv` | 与 `-export` 配合：`csv` 或 `json`；非法值 exit 2 |
+| `-file` / `-dsn` | — | 输入二选一；Wheel 需要 DB 中的期权快照，bars 文件不能产生 `ALERT` |
+| `-symbol` / `-timeframe` | `DEMO.US` / `1d` | DB 输入的标的和周期 |
+| `-symbols` | 空 | 多标的仅用于内部 benchmark；不支持 Wheel 的期权快照语义 |
+| `-from` / `-to` | 不限 | RFC3339 时间范围（DB 输入） |
+| `-limit` | 10000 | DB 输入最大 bars 数 |
+| `-cash` | 10000 | 初始现金（>0） |
+| `-strategy` | `hold` | CLI 实际默认是内部 `hold` 基准；显式 `-strategy wheel` 才运行 Wheel。产品 API/watchlist 只接受 `wheel` |
+| `-params` | — | `wheel` 使用完整结构化配置；`price_position_curve` 与 `max_inventory` 必填，不能猜测；内部 `hold`/`buy-hold` 不接参数 |
+| `-fee` | 0 | 回测费用占位；不改变提醒契约 |
+| `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
+| `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
+| `-export` / `-format` | 0 / `csv` | 导出已保存结果，格式为 `csv` 或 `json` |
 
-输出一行摘要：`final_equity=... total_return=... max_drawdown=... bars=...`（确定性：同输入同输出）。`-save` 时另打印 `saved result id=...`；落库的 equity_curve 为每根 bar 结算后市值、trades 为正股买卖/期权开平仓/行权（ITM 行权、OTM 作废）逐笔明细（同输入同输出，见 `internal/backtest` 确定性单测）。
+`hold`/`buy-hold` 由 CLI 底层运行器保留为内部 benchmark；CLI 默认就是 `hold`，但它们不是 Wheel 策略，不出现在 `/v1/strategies` 或 `/v1/watchlist`，产品 API 也拒绝它们。旧策略名称只在迁移审计中保留，不得作为新配置或新 watchlist 请求。
 
-## 结果导出（draft 2026-08-02）
+## Wheel 配置和事件
 
-```bash
-wbot backtest -dsn "$WBOT_PG_DSN" -export 7              # csv 到 stdout
-wbot backtest -dsn "$WBOT_PG_DSN" -export 7 -format json # json 到 stdout
+`params` 是单一配置对象，至少包含：
+
+```json
+{
+  "strategy": "wheel",
+  "params": {
+    "price_position_curve": [
+      {"price": 400, "target_inventory": 1200},
+      {"price": 480, "target_inventory": 600},
+      {"price": 550, "target_inventory": 0}
+    ],
+    "max_inventory": 1200,
+    "lot_size": 100,
+    "min_dte": 5,
+    "max_dte": 10,
+    "min_option_quality": 0.6,
+    "max_daily_orders": 1,
+    "extreme_max_daily_orders": 2,
+    "no_trade_gap": 50,
+    "strategic_state": "NORMAL"
+  }
+}
 ```
 
-与 `GET /v1/backtests/{id}/export` **同序列化器、同输出**（roundtrip 契约，doc/API.md）：`json` 即详情端点 body、`csv` 为 equity_curve/trades 两段（空行分隔）。缺 id（`-export 0`/负数）或格式非法 → exit 2；id 不存在 → exit 1 + 可读错误。
+曲线价格严格递增，目标库存单调不增且位于 `[0,max_inventory]`；价格区间内线性插值、区间外钳制。库存事件至少记录：`stock_shares`、`futures_equivalent_shares`、`option_delta_stock`、`actual_inventory`、`effective_inventory`、`target_inventory`、`inventory_gap`。有效库存为实际库存加带符号期权 Delta；空 Put 增加、空 Call 减少有效库存。
 
-## 服务端执行（v4 阶段 A 切片 4）
+每个事件必须保留原子快照标识、配置版本、候选列表、拒绝原因和动作。动作只有：
 
-`wbot serve` 的 `POST /v1/backtests`（doc/API.md）与 CLI `-dsn` 路径共用同一运行器（`internal/backtestexec`，draft-2026-08-02-oneclick-backtest）：同一套策略/参数校验（`Build`）、同一查询/运行路径（`Run`）、同一落库 params 形状（`SaveParams`），同输入同输出。单进程互斥（busy → 409）+ 执行超时（默认 5 分钟 → 503）；`from_watchlist` 全量模式逐条串行执行并分别落库。
+- `ALERT`：快照完整、能力状态为 `READY`、候选通过全部硬门槛，供人工评估；
+- `HOLD`：数据不完整、状态不允许、库存缺口在无交易区间，或所有候选被拒绝。
 
-## 多 symbol 组合（v2 最小语义）
+候选至少需要 `expiry`、`strike`、`delta`、`bid`、`ask`、`implied_vol`、`theta`、`volume`、`open_interest`、`lot_size`、`observed_at`、`source`。缺任一字段、盘口过期/倒挂、零流动性、DTE 越界、质量分不足或风险约束失败，必须写入拒绝原因并保持 `HOLD`。
 
-`-symbols A,B,C`（逗号分隔，仅 `-dsn` 输入）把初始资金等分（cash/N）为 N 个独立子账户，各自运行同一策略，输出组合汇总 + 每 symbol 一行子账户汇总：
+## 当前 trace 语义与事件级阻塞
 
-```bash
-wbot backtest -dsn "$WBOT_PG_DSN" -symbols HK.00700,US.AAPL -timeframe 1d -strategy buy-hold
-# final_equity=... total_return=... max_drawdown=... bars=... symbols=2
-#   HK.00700: final_equity=... total_return=... max_drawdown=... bars=...
-#   US.AAPL: final_equity=... total_return=... max_drawdown=... bars=...
-```
+当前每根 bar 的顺序是：读取 bar → 选择截至该 bar 时点的最新原子 snapshot → 运行 Wheel → 在 bar close 机械结算 → 写入 equity/trade/signal trace。snapshot loader 的 `limit` 表示完整批次数，不在 SQL 行级截断多合约批次；若设置开始时间，还会向前读取一个配置 freshness 窗口，使首根 bar 能使用仍新鲜的前置 snapshot。snapshot 不会跨批次拼接，未来时间的 snapshot 不会泄漏到当前 bar；没有所需方向的 `observed_at <= bar.ts` 可信批次时，Wheel signal 为 `DATA_BLOCKED/HOLD`。普通风险限制产生的 HOLD 保持 `capability_status=READY`，两者不可混为一类。这是一种可复现的 bar-time replay，不是事件驱动回测。
 
-- **时间对齐**：intersection——各 symbol 按 `[from,to]`（`QueryBars`）取数后，只有每个 symbol 都有的 ts 参与回测（按时刻对齐，跨时区等价 ts 亦对齐）；窗口外/缺失的 bar 不参与。
-- **静态等权**：每个子账户初始资金 = cash/N，不自动再平衡（非目标，待产品组确认后续语义）。
-- **估值**：每 bar 按各 symbol 自己的 close 估值（复用单 symbol 运行器 `RunOptions`）；组合 equity = 各子账户逐 bar 求和，组合回撤按求和曲线计算。
-- **状态隔离**：每个子账户一个全新策略实例（有状态策略如 buy-hold 不可跨账户复用）；`-symbols` 单 symbol 与 `-symbol` 行为完全一致，`Run`/`RunOptions` 签名与单 symbol 行为不变（入口：`backtest.RunMulti`，DB 路径：`backtestexec.RunMulti`）。
-- **限制（最小语义）**：多 symbol 不支持 `-file` 输入、期权模板策略（covered-call/cash-secured-put 需 per-symbol option_quotes）、`-save`；`-max-drawdown` 按组合曲线检查。
+事件驱动的到期、指派、人工确认和成交回填指标仍是 `DATA_BLOCKED`：它们需要覆盖目标日期/DTE 的完整历史 snapshot、quote/成交事件顺序和人工审计事实。已保留 snapshot schema、runner trace、机械到期结算和 deterministic fixtures；解锁证据必须包含供应商/历史数据字段映射、原子性/新鲜度测试、端到端可复现 trace 和最大库存违规为零。禁止用 OHLC、固定 Delta、默认流动性、事后中间价或 bar-time replay 冒充事件证据。
 
-## 期权腿与策略模板（slice ⑫-b）
+## 指标与 trace
 
-- **期权腿**（`internal/backtest`）：`Action` 增 `sell-call / buy-call / sell-put / buy-put`（size = 合约数）；`State.Options` 存开仓腿（`Code/Kind/Strike/Expiry/Lot/Contracts/AvgPremium`，Contracts 负 = 短腿）；腿的**到期结算由 runner 机械执行**：`bar.Ts ≥ Expiry` 时 ITM 按 strike 行权（Call 卖出/买入 `lot×contracts` 股，Put 反向），OTM 作废移除；CSP 开仓强制现金储备校验（`Cash ≥ strike×lot×contracts`）。
-- **期权腿数据**：`RunOptions` 注入 `OptionsData{Chain, Bars}`（CLI 从 `option_quotes` 读，映射见 `backtest.OptionsDataFromQuotes`）；腿按「主 symbol 时间轴 + 最新 `close ≤ bar.Ts`」估值，`State.Equity` 纳入市值。`Run` 签名与行为不变（无腿时等价）。
-- **策略模板**（`internal/strategy` 注册表）：`Templates()` / `Factory(name, params)`，参数 schema 校验（未知参数/类型/范围报错）。
-- **covered-call**：买 `lot_size` 股正股 + 卖 1 张价外看涨，到期结算后滚仓（被行权则先补回正股再卖）。
-- **cash-secured-put**：现金担保卖价外看跌，张数 = `cash / (cash_reserve × strike × lot)`（不足 1 张报错）；被行权按 strike 买入，下一 bar 市价卖出后滚仓。
+事件回测完成后，若数据闸门已启用，至少报告：总收益、最大回撤、指派率、Call 被行权机会成本、订单/提醒频率、库存偏差和最大库存违规数。trace 至少区分：信号、未执行信号、人工确认、人工回填成交、到期和指派；系统不生成 broker order id，也不调用交易 API。
 
-| 参数 | 默认 | 说明 |
-| --- | --- | --- |
-| `strike_pct_otm` | 0.03 | 目标行权价偏离率：call = 现价×(1+pct)，put = 现价×(1-pct)，就近选 chain 档 |
-| `expiry_rule` | `next_expiry` | `next_expiry`（最近到期）或 `days`（按 `days_to_expiry` 天选最近档） |
-| `days_to_expiry` | 28 | `expiry_rule=days` 的目标到期天数 |
-| `fee_per_contract` | 0 | 每张合约费用（从权利金中扣除） |
-| `lot_size` | 100 | 合约乘数（`option_quotes` 无 lot 列，以参数为准） |
-| `cash_reserve` | 1 | 仅 cash-secured-put：现金担保倍率（≥1） |
+参数研究只允许在离线数据上改变 DTE、候选映射、质量门槛、频率和覆盖率（100%、固定覆盖、随机漏 30%/50%，随机种子可复现）。曲线、最大库存、战略状态和资产配置不参与优化。
 
-```bash
-wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00700 -adjust none \
-  -strategy covered-call -params '{"strike_pct_otm":0.05,"fee_per_contract":5}'
-wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00700 -adjust none \
-  -strategy cash-secured-put -params '{"cash_reserve":1.2}'
-```
+## CLI/API 一致性与导出
 
-模板策略必须 `-dsn` 输入（读 `option_quotes`），`-file` 仅支持 `hold`/`buy-hold`。
+`wbot backtest -save`、`GET /v1/backtests`、`GET /v1/backtests/{id}` 和 export 共用同一落库 trace。详情包含 `equity_curve`、`trades` 和逐 bar `signals`；运行参数包含完整 `strategy_params`。新 trace 同时保存 `capability_status`、`blocked_by`、`snapshot_key`、`snapshot_observed_at`、实际/有效库存和期权 Delta 库存，UI 与 CSV/JSON 导出均保留这些审计字段。人工动作与 watchlist `config_version` 属于独立审计表，尚未接入回测详情，不得宣称已包含。导出时间统一 RFC3339 UTC `Z`。服务端执行超时、数据缺失或阻塞时应返回可执行的 `code/message/action`，不能把阻塞伪装为成功。
 
-## 行为保证
+## 实现对账
 
-- **输入校验**：空 bars、`cash<=0`、`fee<0`、超买/超卖、非法 `-max-drawdown` 值均报错拒绝。
-- **结算**：按每根 bar 的 close 价成交；buy/sell/hold 三态；`Strategy` 接口可扩展自定义策略（`internal/backtest/strategy.go`）。
-- **指标**：最终 equity、总收益 `(equity-cash)/cash`、最大回撤（equity 曲线峰值到谷值最大跌幅；equity 峰非正时 max_drawdown 为 0）。
-- **约束**：`CheckMaxDrawdown`（`internal/backtest/constraint.go`）纯函数判定，CLI 超限 exit 1，便于脚本化门禁（如 CI 里「回撤不得超 X%」）。
+- `internal/wheel`：曲线、库存、状态、候选校验和 `ALERT/HOLD` 决策；P0-A `READY`。
+- `internal/strategy`：唯一注册项 `wheel`；bar-time 适配器只消费当前最新原子 snapshot，缺失/过期时固定产生 `DATA_BLOCKED/HOLD`。
+- `internal/wheelstore`、`internal/watchlist` 与 migrations 005/007：版本配置、不可变 snapshot、signal/action 审计表、`READY/DATA_BLOCKED` 数据库约束和 watchlist 版本指针；P0-B/P0-C repository 与 PostgreSQL integration `READY`，真实供应商 adapter 与人工写动作仍受阻塞。
+- `internal/backtest` / `internal/backtestexec` 与 `internal/db/migrations/006_backtest_signals.sql`：确定性 bar-time replay、完整策略输入、逐 bar signal 保存/导出路径；不能替代事件级 Wheel 快照回测或实时执行。
 
-## 示例（本地全流程）
-
-```bash
-docker compose -f configs/docker-compose.yml up -d
-export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmode=disable'
-wbot ingest mock
-wbot backtest -symbol DEMO.US -timeframe 1d -strategy buy-hold
-# final_equity=12100 total_return=0.21 max_drawdown=0 bars=3
-```
-
-## 实现
-
-- `internal/backtest/`：`state.go`（State/Equity/期权腿）、`strategy.go`（Action/Strategy/Hold/BuyHold）、`backtest.go`（Run/RunOptions/到期结算）、`multi.go`（RunMulti：intersection 对齐 + 等权子账户 + 组合曲线）、`options_data.go`（option_quotes → OptionsData）、`constraint.go`（CheckMaxDrawdown）
-- `internal/strategy/`：模板注册表（`strategy.go`）+ covered-call / cash-secured-put（`options.go`）
-- 任务轨迹：`doc/tasks/2026-07-31-backtest-runner-slice1.md` → `-dsn-input` → `-fee-placeholder` → `-constraint` → 期权腿 + 策略模板（slice ⑫-b，[[draft-2026-08-01-strategy-options]]）
-
-关联：[[DATA_PIPELINE]] [[API]] [[ROADMAP]]（v2）
+关联：[[API]] [[DATA_PIPELINE]] [[WHEEL_STRATEGY]] [[ROADMAP]]

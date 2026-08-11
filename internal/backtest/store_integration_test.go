@@ -104,8 +104,8 @@ func TestSaveLoadResultsIntegration(t *testing.T) {
 	}
 }
 
-// TestSaveLoadResultDetailIntegration: the equity_curve/trades trace (migration
-// 004) round-trips through SaveResult/LoadResult; stock trades get the symbol
+// TestSaveLoadResultDetailIntegration: equity_curve/trades/signals traces
+// round-trip through SaveResult/LoadResult; stock trades get the symbol
 // filled, list rows stay curve-free, and a metrics-only row reads back clean.
 func TestSaveLoadResultDetailIntegration(t *testing.T) {
 	database := openTestDB(t)
@@ -127,6 +127,7 @@ func TestSaveLoadResultDetailIntegration(t *testing.T) {
 			{Ts: start, Action: "buy", Size: 100, Price: 100, CashAfter: 0},
 			{Ts: end, Action: "sell-call", Symbol: "C105", Size: 1, Price: 2.5, CashAfter: 250},
 		},
+		Signals: []SignalTrace{{Ts: start, Action: "ALERT", Direction: "PUT", Reason: "inventory below target", CandidateCode: "P95", Candidates: []string{"P95"}, Quantity: 1}},
 	}
 	id, err := SaveResult(ctx, database, strategy, symbol,
 		map[string]any{"cash": 10000.0, "fee": 0.0}, res, start, end)
@@ -152,13 +153,16 @@ func TestSaveLoadResultDetailIntegration(t *testing.T) {
 	if rec.Trades[1].Symbol != "C105" || rec.Trades[1].Action != "sell-call" {
 		t.Fatalf("trades[1] = %+v; want sell-call on C105", rec.Trades[1])
 	}
+	if len(rec.Signals) != 1 || rec.Signals[0].Action != "ALERT" || rec.Signals[0].CandidateCode != "P95" || !rec.Signals[0].Ts.Equal(start) {
+		t.Fatalf("signals = %+v; want persisted ALERT P95", rec.Signals)
+	}
 
 	// The list view stays curve-free (summary only).
 	recs, err := LoadResults(ctx, database, symbol, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(recs) != 1 || recs[0].EquityCurve != nil || recs[0].Trades != nil {
+	if len(recs) != 1 || recs[0].EquityCurve != nil || recs[0].Trades != nil || recs[0].Signals != nil {
 		t.Fatalf("list row = %+v; want no trace loaded", recs)
 	}
 
@@ -171,7 +175,7 @@ func TestSaveLoadResultDetailIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if oldRec.EquityCurve != nil || oldRec.Trades != nil {
+	if oldRec.EquityCurve != nil || oldRec.Trades != nil || oldRec.Signals != nil {
 		t.Fatalf("metrics-only row = %+v; want nil trace", oldRec)
 	}
 
@@ -238,7 +242,7 @@ func TestListResultsQueryIntegration(t *testing.T) {
 		}
 	}()
 	for i, s := range symbols {
-		id, err := SaveResult(ctx, database, "covered-call", s,
+		id, err := SaveResult(ctx, database, "wheel", s,
 			map[string]any{"cash": 10000.0},
 			&Result{Equity: 10000.0 + float64(i), TotalReturn: 0, MaxDrawdown: 0, Bars: 1},
 			base, base.Add(time.Hour))
@@ -248,7 +252,7 @@ func TestListResultsQueryIntegration(t *testing.T) {
 		t.Cleanup(func() { database.Exec(`DELETE FROM backtest_results WHERE id = $1`, id) })
 	}
 
-	// 断言一律用 ZZ* 专属符号前缀:本地 dev 库含历史 covered-call 记录,
+	// 断言一律用 ZZ* 专属符号前缀，避免共享开发库中的历史记录污染。
 	// 共享环境下 count 断言会被污染,专属前缀保证只命中本测试插入的行。
 	cases := []struct {
 		name      string
@@ -271,13 +275,13 @@ func TestListResultsQueryIntegration(t *testing.T) {
 	}
 
 	// strategy 命中时每条都应包含 q(全库历史记录不算数,只查专属符号)。
-	recs, err := ListResults(ctx, database, "", "", "covered", 0, 0, "", false)
+	recs, err := ListResults(ctx, database, "", "", "wheel", 0, 0, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	zz := map[string]bool{}
 	for _, r := range recs {
-		if r.Strategy != "covered-call" {
+		if r.Strategy != "wheel" {
 			t.Fatalf("strategy match: unexpected %q %s", r.Strategy, r.Symbol)
 		}
 		if r.Symbol != "" && len(r.Symbol) > 2 && r.Symbol[:2] == "ZZ" {

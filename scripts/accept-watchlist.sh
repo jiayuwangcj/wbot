@@ -18,6 +18,8 @@ if [[ -z "$dsn" ]]; then
   exit 2
 fi
 sym="ACCEPT.US"
+params_a='{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"no_trade_gap":10}'
+params_b='{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"no_trade_gap":20}'
 pass=0; failed=0
 check() { local d="$1" w="$2" g="$3"; if [[ "$g" == "$w" ]]; then pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$d"; else failed=$((failed+1)); printf '  \033[31mFAIL\033[0m %s (want %s, got %s)\n' "$d" "$w" "$g"; fi; }
 
@@ -28,34 +30,36 @@ check "add 缺 -symbol → exit 2 (got $?)" 2 "$?"
 check "add 缺 -strategy → exit 2 (got $?)" 2 "$?"
 
 # 2. 错误契约: 非法 -params JSON / 非法 strategy → exit 2。
-"$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy buy-hold -params '{' >/dev/null 2>&1
+"$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy wheel -params '{' >/dev/null 2>&1
 check "add 非法 -params JSON → exit 2 (got $?)" 2 "$?"
 "$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy nope >/dev/null 2>&1
 check "add 非法 strategy → exit 2 (got $?)" 2 "$?"
+"$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy covered-call -params "$params_a" >/dev/null 2>&1
+check "旧 covered-call 明确拒绝 → exit 2 (got $?)" 2 "$?"
+"$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy buy-hold >/dev/null 2>&1
+check "产品 watchlist 不接受 buy-hold → exit 2 (got $?)" 2 "$?"
 
 # 3. add: 成功 + 输出形状。
-out="$( "$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy covered-call \
-  -params '{"strike_pct_otm":0.03}' 2>&1 )"
+out="$( "$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy wheel -params "$params_a" 2>&1 )"
 rc=$?
-check "add ACCEPT.US covered-call exit 0 (got $rc)" 0 "$rc"
+check "add ACCEPT.US wheel exit 0 (got $rc)" 0 "$rc"
 check "add 输出形状 watchlist: SYM strategy=… params=…" \
-  1 "$(echo "$out" | grep -cE "^watchlist: $sym strategy=covered-call params=\{\"strike_pct_otm\":0\.03\}$")"
+  1 "$(echo "$out" | grep -cE "^watchlist: $sym strategy=wheel params=\{")"
 
 # 4. 写面→读面联动: HTTP GET /v1/watchlist 可见该条目。
 check "HTTP GET /v1/watchlist 含 $sym (联动)" \
   1 "$(curl -s -m 5 "$base/v1/watchlist" | grep -c "\"symbol\":\"$sym\"")"
 
 # 5. add 幂等: 重复 add 同条目(改 params) → exit 0,策略更新生效。
-out="$( "$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy covered-call \
-  -params '{"strike_pct_otm":0.05}' 2>&1 )"
+out="$( "$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy wheel -params "$params_b" 2>&1 )"
 rc=$?
 check "add 重复(幂等 Upsert)exit 0 (got $rc)" 0 "$rc"
-check "重复 add 更新 params 为 0.05" \
-  1 "$(echo "$out" | grep -c 'strike_pct_otm":0.05')"
+check "重复 add 追加新版本并更新 no_trade_gap 为 20" \
+  1 "$(echo "$out" | grep -c 'no_trade_gap":20')"
 
 # 6. list: 含该条目行(SYM STRAT params)。
 check "list 含 $sym 行" \
-  1 "$("$bin" watchlist list -dsn "$dsn" 2>/dev/null | grep -c "^$sym covered-call ")"
+  1 "$("$bin" watchlist list -dsn "$dsn" 2>/dev/null | grep -c "^$sym wheel ")"
 
 # 7. remove: 成功 + 输出;不存在 → exit 1。
 out="$( "$bin" watchlist remove -dsn "$dsn" -symbol "$sym" 2>&1 )"
@@ -65,15 +69,6 @@ check "remove 输出 watchlist: removed $sym" \
   1 "$(echo "$out" | grep -c "^watchlist: removed $sym$")"
 "$bin" watchlist remove -dsn "$dsn" -symbol "$sym" >/dev/null 2>&1
 check "remove 不存在 → exit 1 (got $?)" 1 "$?"
-
-# 7b. buy-hold: 无 params 策略可 add(引擎一等策略,模板注册表放行;
-#     2026-08-03 修复:此前 buy-hold PUT/add 400,dev-up 种子被 || true 静默吞掉)。
-out="$( "$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy buy-hold 2>&1 )"
-rc=$?
-check "add buy-hold(无 params)exit 0 (got $rc)" 0 "$rc"
-check "add buy-hold 输出无 params 段" \
-  1 "$(echo "$out" | grep -cE "^watchlist: $sym strategy=buy-hold params=\{\}$")"
-"$bin" watchlist remove -dsn "$dsn" -symbol "$sym" >/dev/null 2>&1
 
 # 8. 清理验证: HTTP 读面不再含该条目(grep 计数 0 = 不含)。
 check "清理后 HTTP /v1/watchlist 不含 $sym" \

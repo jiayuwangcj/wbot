@@ -29,6 +29,7 @@ import (
 	"github.com/jiayu/wbot/internal/httpregister"
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/master"
+	"github.com/jiayu/wbot/internal/notify"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
 	"github.com/jiayu/wbot/internal/watchlist"
@@ -68,6 +69,8 @@ func run(argv []string) int {
 		return runBacktest(argv[0], argv[2:])
 	case "watchlist":
 		return runWatchlist(argv[0], argv[2:])
+	case "datacheck":
+		return runDataCheck(argv[0], argv[2:])
 	case "configyaml":
 		return runConfigYAML(argv[0], argv[2:])
 	case "serve":
@@ -233,10 +236,17 @@ func runServe(prog string, argv []string) int {
 	listen := fs.String("listen", "127.0.0.1:8080", "HTTP listen address")
 	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
 	duration := fs.Duration("duration", 0, "run wall-clock; 0 means until SIGINT")
+	datacheckAt := fs.String("datacheck-at", "17:30", "daily watchlist data check/repair time in local HH:MM")
+	datacheckDisable := fs.Bool("datacheck-disable", false, "disable the built-in daily data check/repair scheduler")
+	datacheckNotify := fs.Bool("datacheck-notify", false, "send scheduled datacheck alerts via configured Telegram/Discord endpoints")
+	wheelRun := fs.Bool("wheel-run", false, "run the wheel live loop for watchlist bindings (default off)")
+	wheelInterval := fs.Duration("wheel-interval", 5*time.Minute, "wheel live loop evaluation interval")
+	wheelEnv := fs.String("wheel-env", "sim", "wheel account env: sim (simulate) or real (read-only evaluation)")
+	telegramRun := fs.Bool("telegram-run", false, "run the wheel Telegram alert/confirm loop (default off; token/chat_ids from ~/.wbot/wbot.conf)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status. With -telegram-run, ALERT signals approved by the LLM gate are pushed to Telegram with yes/no/dismiss buttons (token/chat_ids from ~/.wbot/wbot.conf; yes places a sim-env market order).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -248,6 +258,28 @@ func runServe(prog string, argv []string) int {
 		fs.SetOutput(os.Stderr)
 		fs.Usage()
 		return 0
+	}
+	if err := validateWheelInterval(*wheelInterval); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+		return 2
+	}
+	datacheckHour, datacheckMinute, err := parseDailyTime(strings.TrimSpace(*datacheckAt))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve: -datacheck-at: %v\n", err)
+		return 2
+	}
+	var datacheckNotifier notify.Sender
+	if *datacheckNotify {
+		datacheckNotifier, err = dataCheckNotifierFromEnv(nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "serve: -datacheck-notify: %v\n", err)
+			return 2
+		}
+	}
+	wheelEnvVal, err := parseWheelEnv(*wheelEnv)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+		return 2
 	}
 
 	startedAt := time.Now()
@@ -302,6 +334,15 @@ func runServe(prog string, argv []string) int {
 		runCtx, runCancel = signal.NotifyContext(context.Background(), os.Interrupt)
 	}
 	defer runCancel()
+	if !*datacheckDisable {
+		go startDataCheckScheduler(runCtx, database, datacheckHour, datacheckMinute, datacheckNotifier)
+	}
+	if *wheelRun {
+		go startWheelRunner(runCtx, database, wheelEnvVal, *wheelInterval)
+	}
+	if *telegramRun {
+		go startTelegramScheduler(runCtx, database, wheelEnvVal)
+	}
 
 	<-runCtx.Done()
 
@@ -375,8 +416,8 @@ func runBacktest(prog string, argv []string) int {
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
 	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
-	strat := fs.String("strategy", "hold", "strategy to run: hold, buy-hold, covered-call or cash-secured-put")
-	params := fs.String("params", "", `strategy params as JSON, e.g. {"strike_pct_otm":0.05}; validated against the template schema (option strategies only)`)
+	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
+	params := fs.String("params", "", `Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md`)
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
@@ -386,11 +427,10 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file (-file) or directly from the\n")
 		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
-		fmt.Fprintf(os.Stderr, "Option strategies (covered-call, cash-secured-put) read contract prices and\n")
-		fmt.Fprintf(os.Stderr, "chain metadata from option_quotes, so they require -dsn input.\n")
+		fmt.Fprintf(os.Stderr, "The wheel strategy reads quote snapshots and contract metadata, so it requires -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
-		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades trace) is stored in backtest_results (migrations 003/004).\n")
+		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
 		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
 		fmt.Fprintf(os.Stderr, "Exactly one of -file and -dsn must be set; -symbol/-symbols/-timeframe/-adjust/-from/-to/-limit apply to -dsn input.\n")
@@ -479,7 +519,7 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 	if templ != nil && templ.NeedsOptions && fp != "" {
-		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads option_quotes; -file input has no option data (use -dsn)\n", stratName)
+		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads atomic option_quote_snapshots; -file input has no option snapshot data (use -dsn)\n", stratName)
 		return 2
 	}
 
@@ -488,7 +528,7 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 	if multi && templ != nil && templ.NeedsOptions {
-		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads option_quotes; not supported for multi-symbol runs (use hold or buy-hold)\n", stratName)
+		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads atomic option_quote_snapshots; not supported for multi-symbol runs (use hold or buy-hold)\n", stratName)
 		return 2
 	}
 	if multi && *save {
@@ -680,8 +720,8 @@ func runWatchlistAdd(prog string, argv []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
 	symbol := fs.String("symbol", "", "instrument symbol (required, e.g. HK.00700)")
-	strategy := fs.String("strategy", "", "strategy template name (required, e.g. covered-call)")
-	params := fs.String("params", "", "strategy params as JSON object, e.g. '{\"strike_pct_otm\":0.03}'")
+	strategy := fs.String("strategy", "", "strategy name (required; wheel is the only product strategy)")
+	params := fs.String("params", "", "Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s watchlist add [flags]\n\n", prog)
@@ -714,6 +754,12 @@ func runWatchlistAdd(prog string, argv []string) int {
 	if s := strings.TrimSpace(*params); s != "" {
 		if err := json.Unmarshal([]byte(s), &paramsMap); err != nil {
 			fmt.Fprintf(os.Stderr, "watchlist add: -params: %v\n", err)
+			return 2
+		}
+	}
+	if strat == "wheel" {
+		if err := applyWheelDefaults(context.Background(), sym, paramsMap); err != nil {
+			fmt.Fprintf(os.Stderr, "watchlist add: %v\n", err)
 			return 2
 		}
 	}
@@ -1572,6 +1618,14 @@ func serveMux(meta httpapi.ProcessMeta, pinger httpapi.Pinger, store httpapi.Sto
 	top.Handle("/v1/strategies", wl)
 	top.Handle("/v1/watchlist", wl)
 	top.Handle("/v1/watchlist/", wl)
+	// Wheel audit endpoints are intentionally read-only. NewDBStore's dbStore
+	// implements the narrow WheelAuditStore interface; test stores that do not
+	// opt in receive a structured 500 instead of gaining write access.
+	var auditStore httpapi.WheelAuditStore
+	if candidate, ok := store.(httpapi.WheelAuditStore); ok {
+		auditStore = candidate
+	}
+	top.Handle("/v1/wheel/", httpapi.WheelAuditHandler(auditStore))
 	// Backtest results: saved runs list + detail with equity/trades + csv/json
 	// export (one handler mux); the method-specific pattern wins for POST, so
 	// the execute endpoint runs one backtest synchronously (manual body or
@@ -1669,5 +1723,5 @@ func usage(argv []string) {
 	fmt.Fprintf(os.Stdout, "wbot - trading bot (v1 slice)\n\n")
 	fmt.Fprintf(os.Stdout, "Usage:\n  %s <command|flag>\n\n", prog)
 	fmt.Fprintf(os.Stdout, "Flags:\n  -h, -help, --help    Show help\n  -version, --version Print version\n\n")
-	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  futu                futu-opend-rs gateway client: status/quote/funds/position/order (try futu -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  watchlist           Watchlist management: add/remove/list (try watchlist -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               HTTP server: data API + write endpoints + futu proxies + Web UI (try -h)\n")
+	fmt.Fprintf(os.Stdout, "Commands:\n  help, version       Same as flags above\n  agent               poll.Run heartbeat (in-memory or -master-url; try -h)\n  master              HTTP registration server (try -h)\n  paper               One-shot paper.Engine submit (try -h)\n  ingest              Data ingestion (try ingest -h)\n  futu                futu-opend-rs gateway client: status/quote/funds/position/order (try futu -h)\n  backtest            Strategy backtest over a JSON bars file (try -h)\n  watchlist           Watchlist management: add/remove/list (try watchlist -h)\n  datacheck           Check watchlist market-data completeness (try -h)\n  configyaml          Render ~/.wbot/config.yaml to dotenv lines (try -h)\n  serve               HTTP server: data API + write endpoints + futu proxies + Web UI (try -h)\n")
 }

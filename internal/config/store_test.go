@@ -103,10 +103,45 @@ func TestSetRejectsUnknownKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"credentials.wechat.foo", "credentials.schwab", "nope", "system.other"} {
+	for _, key := range []string{"credentials.wechat.foo", "credentials.schwab", "credentials.telegram.foo", "nope", "system.other"} {
 		if err := s.Set(key, "x"); err != ErrUnknownKey {
 			t.Fatalf("%s: err = %v; want ErrUnknownKey", key, err)
 		}
+	}
+}
+
+// TestTelegramKeysWhitelisted: Telegram 接入向导的两个键(2026-08-11)可写、
+// 归组 credentials.telegram、值不回显只可 Lookup(消费侧 internal/telegram)。
+func TestTelegramKeysWhitelisted(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set("credentials.telegram.token", "123456:ABC-secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set("credentials.telegram.chat_ids", "111, 222"); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := map[string]Entry{}
+	for _, e := range entries {
+		byKey[e.Key] = e
+	}
+	for _, key := range []string{"credentials.telegram.token", "credentials.telegram.chat_ids"} {
+		e, ok := byKey[key]
+		if !ok || !e.Set || e.Group != "credentials.telegram" {
+			t.Fatalf("%s entry = %+v; want set with group credentials.telegram", key, e)
+		}
+	}
+	if got, ok, err := s.Lookup("credentials.telegram.token"); err != nil || !ok || got != "123456:ABC-secret" {
+		t.Fatalf("token Lookup = %q, %v, %v", got, ok, err)
+	}
+	if got, ok, err := s.Lookup("credentials.telegram.chat_ids"); err != nil || !ok || got != "111, 222" {
+		t.Fatalf("chat_ids Lookup = %q, %v, %v", got, ok, err)
 	}
 }
 

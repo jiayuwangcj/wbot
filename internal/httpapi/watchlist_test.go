@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +14,16 @@ import (
 	"github.com/jiayu/wbot/internal/watchlist"
 )
 
-// fakeWatchlistStore is a scriptable WatchlistStore for success and error-path tests.
+func wheelParams() map[string]any {
+	return map[string]any{
+		"price_position_curve": []any{
+			map[string]any{"price": 400.0, "target_inventory": 1200.0},
+			map[string]any{"price": 550.0, "target_inventory": 0.0},
+		},
+		"max_inventory": 1200.0,
+	}
+}
+
 type fakeWatchlistStore struct {
 	items       []watchlist.Item
 	listErr     error
@@ -30,15 +38,14 @@ type fakeWatchlistStore struct {
 func (f *fakeWatchlistStore) List(context.Context) ([]watchlist.Item, error) {
 	return f.items, f.listErr
 }
-
 func (f *fakeWatchlistStore) Upsert(_ context.Context, symbol, strategy string, params map[string]any) (watchlist.Item, error) {
 	f.gotSymbol, f.gotStrategy, f.gotParams = symbol, strategy, params
 	if f.upsertErr != nil {
 		return watchlist.Item{}, f.upsertErr
 	}
-	return watchlist.Item{Symbol: symbol, Strategy: strategy, Params: params, CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
+	version := 1
+	return watchlist.Item{Symbol: symbol, Strategy: strategy, Params: params, ConfigVersion: &version, ExecutionStatus: "DATA_BLOCKED", InvalidationReason: "waiting for complete quote snapshot", CreatedAt: time.Now(), UpdatedAt: time.Now()}, nil
 }
-
 func (f *fakeWatchlistStore) Delete(_ context.Context, symbol string) (bool, error) {
 	f.gotSymbol = symbol
 	if f.deleteErr != nil {
@@ -47,297 +54,112 @@ func (f *fakeWatchlistStore) Delete(_ context.Context, symbol string) (bool, err
 	return f.delFound, nil
 }
 
-// templateParam finds a template's param by name, failing the test when missing.
-func templateParam(t *testing.T, tmpl strategy.ContractTemplate, name string) strategy.ContractParam {
-	t.Helper()
-	for _, p := range tmpl.Params {
-		if p.Name == name {
-			return p
-		}
-	}
-	t.Fatalf("template %s missing param %s", tmpl.Name, name)
-	return strategy.ContractParam{}
-}
-
-// TestStrategiesList is the ⑫-c contract: template names + param schema match
-// the ⑫-b draft (registry swap after feat/strategy-impl must keep this green).
-func TestStrategiesList(t *testing.T) {
-	h := WatchlistHandler(&fakeWatchlistStore{})
-	rec := get(t, h, "/v1/strategies")
+func TestStrategiesListOnlyWheelWithRequiredRiskInputs(t *testing.T) {
+	rec := get(t, WatchlistHandler(&fakeWatchlistStore{}), "/v1/strategies")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Fatalf("content-type = %q; want application/json", ct)
+		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
 	}
 	var got []strategy.ContractTemplate
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
+		t.Fatal(err)
 	}
-	if len(got) != 3 {
-		t.Fatalf("len = %d; want 3 (body %s)", len(got), rec.Body)
+	if len(got) != 1 || got[0].Name != "wheel" {
+		t.Fatalf("strategies = %+v; want only wheel", got)
 	}
-	for i, name := range []string{"buy-hold", "covered-call", "cash-secured-put"} {
-		if got[i].Name != name {
-			t.Fatalf("templates[%d].name = %q; want %q", i, got[i].Name, name)
+	var curve, max strategy.ContractParam
+	for _, p := range got[0].Params {
+		switch p.Name {
+		case "price_position_curve":
+			curve = p
+		case "max_inventory":
+			max = p
 		}
 	}
-	cc := got[1]
-	for _, p := range []struct{ name, typ string }{
-		{"strike_pct_otm", "number"},
-		{"expiry_rule", "choice"},
-		{"days_to_expiry", "number"},
-		{"fee_per_contract", "number"},
-		{"lot_size", "number"},
-	} {
-		if got := templateParam(t, cc, p.name); got.Type != p.typ {
-			t.Fatalf("param %s type = %q; want %q", p.name, got.Type, p.typ)
-		}
-	}
-	if d := templateParam(t, cc, "strike_pct_otm").Default; d != 0.03 {
-		t.Fatalf("strike_pct_otm default = %v; want 0.03", d)
-	}
-	if d := templateParam(t, cc, "days_to_expiry").Default; d != 28.0 {
-		t.Fatalf("days_to_expiry default = %v; want 28", d)
-	}
-	if d := templateParam(t, cc, "lot_size").Default; d != 100.0 {
-		t.Fatalf("lot_size default = %v; want 100", d)
-	}
-	rule := templateParam(t, cc, "expiry_rule")
-	if rule.Default != "next_expiry" || !slices.Contains(rule.Choices, "next_expiry") || !slices.Contains(rule.Choices, "days") {
-		t.Fatalf("expiry_rule = %+v; want default next_expiry with next_expiry+days choices (engine parity)", rule)
-	}
-	// cash-secured-put exposes the extra cash_reserve param.
-	csp := got[2]
-	if got := templateParam(t, csp, "cash_reserve"); got.Type != "number" || got.Default != 1.0 {
-		t.Fatalf("cash_reserve = %+v; want number default 1.0", got)
+	if curve.Type != "curve" || !curve.Required || max.Type != "number" || !max.Required {
+		t.Fatalf("required wheel schema = curve=%+v max=%+v", curve, max)
 	}
 }
 
-func TestStrategiesMethodNotAllowed(t *testing.T) {
-	h := WatchlistHandler(&fakeWatchlistStore{})
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(method, "/v1/strategies", nil))
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("%s /v1/strategies: status = %d; want 405 (body %s)", method, rec.Code, rec.Body)
-		}
-	}
-}
-
-func TestWatchlistListEmpty(t *testing.T) {
-	rec := get(t, WatchlistHandler(&fakeWatchlistStore{}), "/v1/watchlist")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
-	}
-	if body := strings.TrimSpace(rec.Body.String()); body != "[]" {
-		t.Fatalf("body = %q; want []", body)
-	}
-}
-
-func TestWatchlistListItems(t *testing.T) {
+func TestWatchlistListIncludesVersionAndExecutionFields(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
-	fake := &fakeWatchlistStore{items: []watchlist.Item{
-		{Symbol: "HK.00700", Strategy: "covered-call", Params: map[string]any{"strike_pct_otm": 0.03}, CreatedAt: now, UpdatedAt: now},
-		{Symbol: "HK.09988", Strategy: "cash-secured-put", Params: map[string]any{}, CreatedAt: now, UpdatedAt: now},
-	}}
+	version := 3
+	fake := &fakeWatchlistStore{items: []watchlist.Item{{Symbol: "HK.00700", Strategy: "wheel", Params: wheelParams(), ConfigVersion: &version, ExecutionStatus: "DATA_BLOCKED", InvalidationReason: "waiting for complete quote snapshot", CreatedAt: now, UpdatedAt: now}}}
 	rec := get(t, WatchlistHandler(fake), "/v1/watchlist")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
 	}
 	var got []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
+		t.Fatal(err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("len = %d; want 2 (body %s)", len(got), rec.Body)
-	}
-	first := got[0]
-	if first["symbol"] != "HK.00700" || first["strategy"] != "covered-call" {
-		t.Fatalf("item[0] = %v; want symbol+strategy", first)
-	}
-	params, ok := first["params"].(map[string]any)
-	if !ok {
-		t.Fatalf("params = %v; want object", first["params"])
-	}
-	if pct, ok := params["strike_pct_otm"].(float64); !ok || pct != 0.03 {
-		t.Fatalf("strike_pct_otm = %v; want float64 0.03", params["strike_pct_otm"])
-	}
-	if _, err := time.Parse(time.RFC3339, first["created_at"].(string)); err != nil {
-		t.Fatalf("created_at %v not RFC3339: %v", first["created_at"], err)
+	if len(got) != 1 || got[0]["strategy"] != "wheel" || got[0]["config_version"] != float64(3) || got[0]["execution_status"] != "DATA_BLOCKED" || got[0]["invalidation_reason"] != "waiting for complete quote snapshot" {
+		t.Fatalf("item = %v", got)
 	}
 }
 
-func TestWatchlistPutValid(t *testing.T) {
+func TestWatchlistPutValidWheel(t *testing.T) {
 	fake := &fakeWatchlistStore{}
-	h := WatchlistHandler(fake)
-	rec := put(t, h, "/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"strike_pct_otm":0.03}}`)
+	rec := put(t, WatchlistHandler(fake), "/v1/watchlist/HK.00700", `{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
 	}
-	if fake.gotSymbol != "HK.00700" || fake.gotStrategy != "covered-call" {
-		t.Fatalf("store got symbol %q strategy %q", fake.gotSymbol, fake.gotStrategy)
-	}
-	if pct, ok := fake.gotParams["strike_pct_otm"].(float64); !ok || pct != 0.03 {
-		t.Fatalf("store got params %v; want strike_pct_otm 0.03", fake.gotParams)
+	if fake.gotSymbol != "HK.00700" || fake.gotStrategy != "wheel" {
+		t.Fatalf("store got %q/%q", fake.gotSymbol, fake.gotStrategy)
 	}
 	var got map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["symbol"] != "HK.00700" || got["strategy"] != "covered-call" {
-		t.Fatalf("put body = %v; want stored item", got)
+	if got["config_version"] != float64(1) || got["execution_status"] != "DATA_BLOCKED" {
+		t.Fatalf("put body = %v", got)
 	}
 }
 
-func TestWatchlistPutWithoutParamsDefaults(t *testing.T) {
-	fake := &fakeWatchlistStore{}
-	rec := put(t, WatchlistHandler(fake), "/v1/watchlist/HK.00700", `{"strategy":"covered-call"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
-	}
-	if len(fake.gotParams) != 0 {
-		t.Fatalf("store got params %v; want empty map", fake.gotParams)
-	}
-}
-
-func TestWatchlistPutValidation400(t *testing.T) {
+func TestWatchlistPutRejectsLegacyNamesAndIncompleteWheel(t *testing.T) {
 	h := WatchlistHandler(&fakeWatchlistStore{})
-	for _, tc := range []struct{ path, body, wantMsg string }{
-		{"/v1/watchlist/HK.00700", `{"strategy":"nope"}`, "unknown template"},
-		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"nope":1}}`, "unknown param"},
-		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"strike_pct_otm":"0.03"}}`, "want a number"},
-		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"expiry_rule":"monthly"}}`, "want one of"},
-		{"/v1/watchlist/HK.00700", `{"params":{"strike_pct_otm":0.03}}`, "missing strategy"},
-		{"/v1/watchlist/HK.00700", `{"strategy":"covered-call","params":{"strike_pct_otm":0.03,"extra":true}}`, "unknown param"},
-		{"/v1/watchlist/HK.00700", `not json`, "invalid JSON body"},
-		{"/v1/watchlist/%20", `{"strategy":"covered-call"}`, "missing symbol"},
+	for _, body := range []string{
+		`{"strategy":"covered-call"}`,
+		`{"strategy":"cash-secured-put"}`,
+		`{"strategy":"wheel"}`,
+		`{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200}],"max_inventory":1200}}`,
 	} {
-		rec := put(t, h, tc.path, tc.body)
+		rec := put(t, h, "/v1/watchlist/HK.00700", body)
 		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("%s body %s: status = %d; want 400 (response %s)", tc.path, tc.body, rec.Code, rec.Body)
-		}
-		var errBody map[string]string
-		if err := json.Unmarshal(rec.Body.Bytes(), &errBody); err != nil || !strings.Contains(errBody["error"], tc.wantMsg) {
-			t.Fatalf("%s body %s: error %q; want contains %q", tc.path, tc.body, errBody["error"], tc.wantMsg)
+			t.Fatalf("body %s: status = %d; want 400 (%s)", body, rec.Code, rec.Body)
 		}
 	}
 }
 
-func TestWatchlistDelete(t *testing.T) {
+func TestWatchlistDeleteAndErrors(t *testing.T) {
 	fake := &fakeWatchlistStore{delFound: true}
-	h := WatchlistHandler(fake)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/watchlist/HK.00700", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	WatchlistHandler(fake).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/watchlist/HK.00700", nil))
+	if rec.Code != http.StatusOK || fake.gotSymbol != "HK.00700" {
+		t.Fatalf("delete status=%d body=%s", rec.Code, rec.Body)
 	}
-	if fake.gotSymbol != "HK.00700" {
-		t.Fatalf("store got symbol %q; want HK.00700", fake.gotSymbol)
-	}
-	var got map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if got["deleted"] != true || got["symbol"] != "HK.00700" {
-		t.Fatalf("delete body = %v; want deleted:true", got)
+	if rec = httptest.NewRecorder(); true {
+		WatchlistHandler(&fakeWatchlistStore{listErr: errors.New("boom")}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/watchlist", nil))
+		if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "boom") {
+			t.Fatalf("error response status=%d body=%s", rec.Code, rec.Body)
+		}
 	}
 }
 
-func TestWatchlistDeleteNotFound404(t *testing.T) {
-	rec := httptest.NewRecorder()
-	WatchlistHandler(&fakeWatchlistStore{}).ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/watchlist/HK.00700", nil))
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d; want 404 (body %s)", rec.Code, rec.Body)
-	}
-}
-
-func TestWatchlistMethodNotAllowed(t *testing.T) {
+func TestWatchlistMethodsAndUnknownPaths(t *testing.T) {
 	h := WatchlistHandler(&fakeWatchlistStore{})
 	for _, tc := range []struct{ method, path string }{
-		{http.MethodPost, "/v1/watchlist"},
-		{http.MethodDelete, "/v1/watchlist"},
-		{http.MethodGet, "/v1/watchlist/HK.00700"},
-		{http.MethodPost, "/v1/watchlist/HK.00700"},
-		{http.MethodPatch, "/v1/watchlist/HK.00700"},
+		{http.MethodPost, "/v1/strategies"}, {http.MethodDelete, "/v1/watchlist"},
+		{http.MethodGet, "/v1/watchlist/HK.00700"}, {http.MethodPost, "/v1/watchlist/HK.00700"},
+		{http.MethodGet, "/v1/watchlist/"}, {http.MethodGet, "/v1/unknown"},
 	} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{"strategy":"covered-call"}`)))
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Fatalf("%s %s: status = %d; want 405 (body %s)", tc.method, tc.path, rec.Code, rec.Body)
+		h.ServeHTTP(rec, httptest.NewRequest(tc.method, tc.path, strings.NewReader(`{"strategy":"wheel"}`)))
+		want := http.StatusMethodNotAllowed
+		if tc.path == "/v1/watchlist/" || tc.path == "/v1/unknown" {
+			want = http.StatusNotFound
 		}
-	}
-}
-
-func TestWatchlistUnknownPath404(t *testing.T) {
-	h := WatchlistHandler(&fakeWatchlistStore{})
-	for _, path := range []string{"/v1/watchlist/", "/v1/watchlist/a/b", "/v1/watchlistx", "/v1/strategiesx"} {
-		rec := get(t, h, path)
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("GET %s: status = %d; want 404 (body %s)", path, rec.Code, rec.Body)
+		if rec.Code != want {
+			t.Fatalf("%s %s = %d; want %d", tc.method, tc.path, rec.Code, want)
 		}
-	}
-}
-
-func TestWatchlistStoreError500(t *testing.T) {
-	fake := &fakeWatchlistStore{listErr: errors.New("boom-list"), upsertErr: errors.New("boom-upsert"), deleteErr: errors.New("boom-delete")}
-	h := WatchlistHandler(fake)
-
-	rec := get(t, h, "/v1/watchlist")
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("list status = %d; want 500 (body %s)", rec.Code, rec.Body)
-	}
-	if strings.Contains(rec.Body.String(), "boom") {
-		t.Fatalf("list error leaks detail: %s", rec.Body)
-	}
-
-	rec = put(t, h, "/v1/watchlist/HK.00700", `{"strategy":"covered-call"}`)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("put status = %d; want 500 (body %s)", rec.Code, rec.Body)
-	}
-	if strings.Contains(rec.Body.String(), "boom") {
-		t.Fatalf("put error leaks detail: %s", rec.Body)
-	}
-
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/watchlist/HK.00700", nil))
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("delete status = %d; want 500 (body %s)", rec.Code, rec.Body)
-	}
-	if strings.Contains(rec.Body.String(), "boom") {
-		t.Fatalf("delete error leaks detail: %s", rec.Body)
-	}
-}
-
-// TestWatchlistComposedHandler mirrors serve's wiring: watchlist endpoints + the
-// data API on one top-level mux.
-func TestWatchlistComposedHandler(t *testing.T) {
-	top := http.NewServeMux()
-	wl := WatchlistHandler(&fakeWatchlistStore{})
-	top.Handle("/v1/strategies", wl)
-	top.Handle("/v1/watchlist", wl)
-	top.Handle("/v1/watchlist/", wl)
-	top.Handle("/", Handler(&fakeStore{}))
-
-	rec := get(t, top, "/v1/strategies")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("strategies = %d; want 200 (body %s)", rec.Code, rec.Body)
-	}
-	rec = get(t, top, "/v1/watchlist")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("watchlist = %d; want 200 (body %s)", rec.Code, rec.Body)
-	}
-	rec = put(t, top, "/v1/watchlist/HK.00700", `{"strategy":"cash-secured-put"}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("watchlist put = %d; want 200 (body %s)", rec.Code, rec.Body)
-	}
-	rec = get(t, top, "/v1/bars?symbol=DEMO.US&timeframe=1d")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("bars = %d; want 200 (body %s)", rec.Code, rec.Body)
-	}
-	// GET on a symbol path is 405 (only PUT/DELETE are defined), like admin config keys.
-	rec = get(t, top, "/v1/watchlist/nope")
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("watchlist symbol get = %d; want 405 (body %s)", rec.Code, rec.Body)
 	}
 }

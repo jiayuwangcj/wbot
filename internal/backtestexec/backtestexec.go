@@ -15,13 +15,16 @@ import (
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/strategy"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 // ErrNoBars reports a run whose symbol has no bars in the requested range.
 var ErrNoBars = errors.New("backtest: no bars in range")
 
-// ErrNoOptionData reports a run whose symbol has bars but no option_quotes rows.
-var ErrNoOptionData = errors.New("backtest: no option quote rows in range")
+// ErrNoOptionData reports a Wheel run whose symbol has bars but no trusted
+// option quote snapshot rows. Legacy option_quotes rows are intentionally not
+// a fallback because they cannot supply executable Greeks or market sides.
+var ErrNoOptionData = errors.New("backtest: no option quote snapshots in range")
 
 // Options is one DB-backed run's inputs; zero values are not defaults — the
 // caller must set Timeframe/Adjust/Cash/Fee/Limit explicitly (the CLI from
@@ -39,10 +42,15 @@ type Options struct {
 	Fee       float64
 }
 
-// SaveParams returns the run params map persisted by `wbot backtest -save` and
-// POST /v1/backtests (cash/fee/timeframe/adjust; same shape on both paths).
+// SaveParams returns the run inputs persisted by `wbot backtest -save` and
+// POST /v1/backtests. Wheel's complete structured configuration is retained
+// under strategy_params so a saved run can be reproduced and audited.
 func SaveParams(o Options) map[string]any {
-	return map[string]any{"cash": o.Cash, "fee": o.Fee, "timeframe": o.Timeframe, "adjust": o.Adjust}
+	out := map[string]any{"cash": o.Cash, "fee": o.Fee, "timeframe": o.Timeframe, "adjust": o.Adjust}
+	if len(o.Params) > 0 {
+		out["strategy_params"] = o.Params
+	}
+	return out
 }
 
 // Outcome is one executed run: the Result plus the bar range it consumed
@@ -102,14 +110,18 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 	}
 	var opts *backtest.OptionsData
 	if templ != nil && templ.NeedsOptions {
-		rows, err := ingest.QueryOptionQuotes(ctx, db, o.Symbol, o.Adjust, o.From, o.To, o.Limit)
+		// Filter by underlying in SQL before LIMIT. This is important when the
+		// database contains several underlyings: truncating a global stream
+		// first can otherwise manufacture an ErrNoOptionData.
+		quoteFrom := quoteRangeStart(o.From, s)
+		rows, err := wheelstore.New(db).QueryUnderlyingQuoteSnapshots(ctx, o.Symbol, quoteFrom, o.To, o.Limit)
 		if err != nil {
 			return nil, err
 		}
 		if len(rows) == 0 {
 			return nil, fmt.Errorf("%w: %s", ErrNoOptionData, o.Symbol)
 		}
-		opts, err = backtest.OptionsDataFromQuotes(rows)
+		opts, err = backtest.OptionsDataFromQuoteSnapshots(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -119,6 +131,13 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 		return nil, err
 	}
 	return &Outcome{Result: res, StartTs: bars[0].Ts, EndTs: bars[len(bars)-1].Ts}, nil
+}
+
+func quoteRangeStart(from time.Time, s backtest.Strategy) time.Time {
+	if wheelStrategy, ok := s.(*strategy.WheelStrategy); ok && !from.IsZero() {
+		return from.Add(-wheelStrategy.Config.QuoteMaxAge())
+	}
+	return from
 }
 
 // MultiOutcome is one multi-symbol run: the combined result plus the aligned

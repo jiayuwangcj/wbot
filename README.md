@@ -1,46 +1,49 @@
 # wbot
 
-`wbot` 是一个面向个人交易的 Go 量化交易机器人项目。
+`wbot` 是一个面向个人交易的 Go 数据与策略工作台。当前产品策略只有动态 Wheel：用户定义价格—目标库存曲线和最大库存，系统根据有效库存与完整期权快照生成 `ALERT` 或 `HOLD`，最终处置由人工完成。系统不自动下单。
 
-当前版本只做工程自动化基线，不交付业务功能。
+## 当前边界
 
-## v0 目标（仅流程）
+- `/v1/strategies` 和 `/v1/watchlist` 只提供结构化 `wheel` 配置。
+- 配置必须显式包含 `price_position_curve` 与 `max_inventory`；旧行不会被猜测或静默转换，迁移状态为 `NEEDS_RECONFIGURATION`。
+- 信号必须带配置版本、实际/有效库存、完整 snapshot、候选、拒绝理由和 capability status。
+- `GET /v1/wheel/configs`、`GET /v1/wheel/signals`、`GET /v1/wheel/signals/{id}/actions` 提供只读审计；没有匿名写动作。
+- 缺少 bid/ask、Delta、IV、OI、Theta、volume、lot size 或新鲜度不满足时，安全结果是 `DATA_BLOCKED/HOLD`。
+- 提醒只供人工确认、忽略或成交回填；系统没有交易 API 写路径。
 
-- Go 单体工程（all-in-one）基础可运行
-- GitHub Actions CI 全绿
-- TDD 标准工作流落地
-- PR 通过后支持 auto-merge（需在仓库设置中开启分支保护规则）
-- 生成第一份 proposal 文档，作为后续架构演进基线
+当前已完成并有测试证据的部分包括 Wheel 领域决策、唯一策略注册表、watchlist 校验/版本配置、不可变快照 schema、signal/action repository，以及确定性的 bar-time 回放适配器。真实供应商 adapter、实时提醒、事件级历史回测、人工操作 HTTP/UI 闭环和期货腿仍受能力闸门阻塞；详见 [Wheel 策略基线](doc/WHEEL_STRATEGY.md)、[API 契约](doc/API.md)、[回测契约](doc/BACKTEST.md) 和 [当前任务](doc/tasks/2026-08-10-wheel-full-rewrite.md)。
 
-## 项目约束（已确认）
+`wbot backtest` 的 CLI 默认策略实际是 `hold`，仅作为内部基准；显式指定 `-strategy wheel` 才运行 Wheel。产品 API、`/v1/strategies` 和 `/v1/watchlist` 只接受 `wheel`，不把 `hold`/`buy-hold` 暴露为产品策略。
 
-- 主要语言：Go
-- 部署形态：单二进制，前台 serve（dev-up/日构建脚本以守护方式启动）
-- 架构：master/agent 占位子系统已实现（见 `doc/API.md` Agent federation）；多机 HTTPS 部署待后续
-- 市场：港股/美股，现货 + 期权（已接入，见 `doc/FUTU.md`）
-- 交易接入：富途已接入（见 `doc/FUTU.md`）；IBKR 抽象层待后续
-- 存储：PostgreSQL（后续可扩展）
-- 日志：`zerolog`（当前 std log/fmt 输出；结构化日志随 v3 执行路径阶段按需收紧，见 `doc/ROADMAP.md`）
-- Web：后端 Go API，前端原生 HTML/CSS/JS 经 `go:embed` 内嵌
-- 外部通知：Telegram / Discord（后续实现）
+当前回测按 bars 的时间轴运行：每根 bar 选择 `observed_at <= bar.ts` 的最新完整原子 quote snapshot（同一时点按 snapshot key 稳定选择），再调用 Wheel。它不是按 quote/成交事件驱动的历史执行回放；没有完整快照时只能 `DATA_BLOCKED/HOLD`。
+
+## 工程约束
+
+- 主要语言：Go；部署为单二进制，前台 `serve`。
+- 存储：PostgreSQL；Web 为 Go `embed` 的原生 HTML/CSS/JS。
+- 市场数据：港股/美股现货与期权；供应商接入必须经过可替换 adapter 和快照完整性闸门。
+- 交易接入保持只读边界；自动交易属于 `OUT_OF_SCOPE`。
 
 ## 本地开发
 
 ```bash
 go test ./... -count=1
 go vet ./...
-scripts/verify.sh   # 提交前全量校验：单测 + gofmt + race/staticcheck + 零依赖 accept（≡ CI test job）
-scripts/dev-up.sh   # 本地全链冒烟：PG + serve，22 项
+scripts/verify.sh
+scripts/dev-up.sh
 ```
 
-逐端点验收：`scripts/accept-*.sh`（12 个脚本，134 项检查；零依赖对与 PG 依赖对已在 CI 自动跑），索引见 `doc/ACCEPTANCE.md`。
+逐端点验收脚本见 `scripts/accept-*.sh`，总表见 [doc/ACCEPTANCE.md](doc/ACCEPTANCE.md)。提交前同时运行：
 
-## 协作规则（v0）
-
-- 功能/计划/缺陷/发布，统一由 GitHub 留言驱动
-- 留言之外的执行动作，默认由 Agent 自动完成
-- 文档统一放在 `doc/`，保持 tiny、独立、可双向链接
+```bash
+git diff --check
+```
 
 ## 文档入口
 
-- 总览：`doc/README.md`
+- [文档索引](doc/README.md)
+- [Wheel 策略](doc/WHEEL_STRATEGY.md)
+- [API](doc/API.md)
+- [回测](doc/BACKTEST.md)
+- [数据管道](doc/DATA_PIPELINE.md)
+- [Futu/OpenD](doc/FUTU.md)

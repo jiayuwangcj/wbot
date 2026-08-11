@@ -60,6 +60,7 @@ func TestDataPageContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		`<main class="full">`,
 		`id="bars-form"`,
 		`id="bars-symbol"`,
 		`id="bars-timeframe"`,
@@ -81,6 +82,11 @@ func TestDataPageContract(t *testing.T) {
 		`涨跌幅`,
 		`id="data-refresh"`,
 		`id="data-updated"`,
+		`id="datacheck-summary"`,
+		`id="datacheck-total"`,
+		`id="datacheck-checked"`,
+		`id="datacheck-table"`,
+		`id="datacheck-error"`,
 	} {
 		if !strings.Contains(string(html), want) {
 			t.Fatalf("data.html missing %q", want)
@@ -111,6 +117,16 @@ func TestDataPageContract(t *testing.T) {
 		`"/v1/admin/cluster"`,
 		`stampUpdated("data-updated")`,
 		"renderOptionsFreshness",
+		"renderDatacheck",
+		"loadDatacheck",
+		`"/v1/datacheck"`,
+		`document.getElementById("datacheck-error")`,
+		`status.textContent = "读取失败"`,
+		`await loadDataCoverage()`,
+		`item.kind === "options" ? "期权" : "K 线"`,
+		`item.state === "missing" ? "缺失" : "过期"`,
+		`status.textContent = "未配置"`,
+		`stateCell.className = item.state === "missing" ? "state-down" : "state-warn"`,
 		`data.components.data_plane.options_freshness || []`,
 		"optionsFreshSorter",
 		"ingestOptions",
@@ -275,8 +291,10 @@ func TestNoExternalURLs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
+		// 2026-08-11: Telegram 接入向导显式外链 @BotFather(任务要求),是唯一例外。
+		text := strings.ReplaceAll(string(data), "https://t.me/BotFather", "")
 		for _, banned := range []string{"http://", "https://", "//"} {
-			if strings.Contains(string(data), banned) {
+			if strings.Contains(text, banned) {
 				t.Fatalf("%s contains banned external URL marker %q", path, banned)
 			}
 		}
@@ -399,7 +417,8 @@ func TestMobileBreakpointStyles(t *testing.T) {
 		"width: 100%",
 		"min-height: 44px", // touch targets >= 44px
 		"min-width: 600px", // tables scroll inside .table-scroll
-		"display: block",   // nav links stack instead of overflowing
+		"header nav",       // nav gets its own wrapping mobile row
+		"flex-wrap: wrap",
 	} {
 		if !strings.Contains(mobile, want) {
 			t.Fatalf("mobile media query missing %q", want)
@@ -505,6 +524,19 @@ func TestAdminPageSections(t *testing.T) {
 		`id="cluster-data-series"`,
 		`id="cluster-data-stale"`,
 		`id="cluster-data-newest"`,
+		`<section id="telegram"`,
+		`id="telegram-token-form"`,
+		`id="telegram-token"`,
+		`type="password"`,
+		`id="telegram-token-btn"`,
+		`id="telegram-token-ok"`,
+		`id="telegram-chatids-form"`,
+		`id="telegram-chatids"`,
+		`id="telegram-chatids-btn"`,
+		`id="telegram-chatids-ok"`,
+		`id="telegram-status"`,
+		`id="telegram-table"`,
+		`https://t.me/BotFather`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("admin.html missing %q", want)
@@ -567,6 +599,9 @@ func TestTableEmptyConvention(t *testing.T) {
 		}
 		html := string(data)
 		for _, m := range tableRe.FindAllStringSubmatch(html, -1) {
+			if path == "web/admin.html" && m[1] == "telegram-table" {
+				continue
+			}
 			emptyID := strings.Replace(m[1], "-table", "-empty", 1)
 			if !strings.Contains(html, `id="`+emptyID+`"`) {
 				t.Fatalf("%s: table %q has no matching empty element %q", path, m[1], emptyID)
@@ -582,10 +617,14 @@ func TestAdminPageReadOnly(t *testing.T) {
 	}
 	html := string(data)
 	/* 2026-08-03: config 写面落地(配置设置表单,值只写不读)。
-	   除该表单外 admin 页保持只读——其余 section 无任何表单。 */
-	rest := strings.ReplaceAll(html, `<form id="config-set-form"`, "")
+	   2026-08-11: Telegram 接入向导再添两个写面表单(token/chat_ids,同 PRIVACY 语义)。
+	   除这三个表单外 admin 页保持只读——其余 section 无任何表单。 */
+	rest := html
+	for _, allowed := range []string{`<form id="config-set-form"`, `<form id="telegram-token-form"`, `<form id="telegram-chatids-form"`} {
+		rest = strings.ReplaceAll(rest, allowed, "")
+	}
 	if strings.Contains(rest, "<form") {
-		t.Fatal("admin.html contains a form other than config-set-form; admin page must stay read-only")
+		t.Fatal("admin.html contains a form other than the config/telegram write forms; admin page must stay read-only")
 	}
 }
 
@@ -604,15 +643,83 @@ func TestWatchlistPageElements(t *testing.T) {
 		`data-sort="symbol"`,
 		`data-sort="strategy"`,
 		`data-sort="updated_at"`,
+		`配置版本`,
+		`能力状态 / 原因`,
 		`id="watchlist-empty"`,
 		`id="watchlist-error"`,
 		`id="watchlist-form-error"`,
 		`id="watchlist-form-ok"`,
 		`id="watchlist-count"`,
+		`id="wheel-audit"`,
+		`id="wheel-signals-filter"`,
+		`id="wheel-signals-table"`,
+		`id="wheel-signals-error"`,
+		`id="wheel-signals-empty"`,
+		`id="wheel-signal-actions"`,
+		`name="capability"`,
+		`data-sort="created_at"`,
+		`data-sort="capability_status"`,
+		`data-sort="effective_inventory"`,
+		`id="wheel-configs"`,
+		`id="wheel-configs-filter"`,
+		`id="wheel-configs-table"`,
+		`id="wheel-configs-error"`,
+		`id="wheel-configs-empty"`,
+		`data-sort="version"`,
 		`/ui/app.js`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("watchlist.html missing %q", want)
+		}
+	}
+}
+
+func TestWatchlistWheelAuditJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		"function renderWheelSignals(items, onActions, onConfig) {",
+		"function loadWheelSignals() {",
+		`loadJSON("/v1/wheel/signals?" + query.join("&")`,
+		`loadJSON("/v1/wheel/signals/" + item.id + "/actions"`,
+		`item.capability_status`,
+		`item.blocked_by.join(", ")`,
+		`audit.textContent = "人工记录"`,
+		`makeTableSorter("wheel-signals-table", WHEEL_SIGNALS_SORT_KEYS)`,
+		`signalsSorter.state.key = "created_at"`,
+		`if (capability) query.push("capability=" + encodeURIComponent(capability))`,
+		`detailToggle.textContent = "详情"`,
+		`toggleWheelSignalDetail(tbody, row, item, detailToggle)`,
+		`function wheelSignalDetail(item) {`,
+		`detailRow.className = "detail-row"`,
+		`row.insertAdjacentElement("afterend", detailRow)`,
+		`function wheelCandidateLine(c) {`,
+		`"阻塞依赖: " + blocked.join("、")`,
+		`"拒绝原因: " + rejections.join("；")`,
+		`function applySignalDetailHash(rowsById) {`,
+		`/^#signal-(\d+)$/.exec(location.hash)`,
+		`rowsById.set(item.id, {tbody, row, item, toggle: detailToggle})`,
+		`applySignalDetailHash(rowsById)`,
+		`function toggleDetailRow(row, button, build, colSpan) {`,
+		`loadJSON("/v1/wheel/configs?" + query.join("&")`,
+		`function renderWheelConfigs(items) {`,
+		`function wheelConfigDetail(item) {`,
+		`wheelConfigSummary(item.config || {})`,
+		`makeTableSorter("wheel-configs-table", WHEEL_CONFIGS_SORT_KEYS)`,
+		`configsSorter.state.key = "created_at"`,
+		`function applyConfigDetailHash(rowsById) {`,
+		`/^#config-(.+)-v(\d+)$/.exec(location.hash)`,
+		`configLink.textContent = "v" + item.config_version`,
+		`configLink.addEventListener("click", () => onConfig(item))`,
+		`function jumpToConfigVersion(item) {`,
+		`configsFilter.symbol.value = item.symbol`,
+		`renderWheelSignals(signalsSorter.sortItems(items), loadSignalActions, jumpToConfigVersion)`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("app.js missing Wheel audit contract %q", want)
 		}
 	}
 }
@@ -636,6 +743,9 @@ func TestWatchlistBacktestJS(t *testing.T) {
 		`method: "POST"`,
 		"location.href = \"/ui/results.html#bt-\" + res.id",
 		"renderWatchlist(watchlistSorter.sortItems(items), beginEdit, deleteItem, runBacktest)",
+		`const status = item.execution_status || "UNKNOWN"`,
+		`const blockedReason = item.invalidation_reason || "未登记原因"`,
+		`item.config_version ? "v" + item.config_version : "—"`,
 		`location.hash.match(/^#bt-(\d+)$/)`,
 		"openDetail(Number(bt[1]))",
 	} {
@@ -711,8 +821,8 @@ func TestIngestRefillJS(t *testing.T) {
 	}
 }
 
-// TestRerunJS: 详情「重新运行」——回填表单(symbol/strategy/params)后
-// 滚动到表单,参数迭代闭环。
+// TestRerunJS: 详情「重新运行」——回填 Wheel 表单(symbol/params)后
+// 滚动到表单，参数迭代闭环。
 func TestRerunJS(t *testing.T) {
 	jsData, err := fs.ReadFile(webFiles, "web/app.js")
 	if err != nil {
@@ -725,12 +835,11 @@ func TestRerunJS(t *testing.T) {
 		`rerunHandler = (d) => {`,
 		`document.getElementById("rerun-btn").onclick`,
 		"symbolInput.value = d.symbol",
-		"const st = strategyByName(d.strategy)",
-		"select.value = d.strategy",
-		`renderParamFields(st, d.params, "run-param-fields")`,
+		`if (d.strategy === "wheel")`,
+		`renderWheelFields(strategyParams, form, "run-")`,
 		`document.getElementById("run").scrollIntoView()`,
 		"symbolInput.focus()",
-		`策略「" + d.strategy + "」不在当前注册表,请手动选择策略。`,
+		"该回测不是 Wheel 策略，无法回填。",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
@@ -843,8 +952,7 @@ func TestBacktestExportJS(t *testing.T) {
 	}
 }
 
-// TestStrategyCardsSection: options chain 已删(老板 2026-08-02,不需看盘工具),
-// 策略页页首为策略说明卡(/v1/strategies schema 渲染)。
+// TestStrategyCardsSection: options chain 已删；策略页页首为 Wheel 说明卡。
 func TestStrategyCardsSection(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/watchlist.html")
 	if err != nil {
@@ -882,24 +990,123 @@ func TestAppJSOptionsRemoved(t *testing.T) {
 	}
 }
 
-// TestAppJSStrategyCards: 策略卡渲染 + 点击联动编辑表单。
+// TestAppJSStrategyCards: 策略页固定展示单一 Wheel 卡片并联动编辑器。
 func TestAppJSStrategyCards(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/watchlist.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(data)
+	for _, want := range []string{
+		`data-strategy="wheel"`,
+		"动态 Wheel",
+		"仅提醒",
+		"不调用交易 API",
+		"HOLD",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("watchlist.html missing Wheel strategy card %q", want)
+		}
+	}
+}
+
+// TestWheelEditorContract pins the structured P0-D editor: the page must
+// expose every Wheel risk field and app.js must validate and submit the
+// nested {strategy: "wheel", params: ...} watchlist body.
+func TestWheelEditorContract(t *testing.T) {
+	htmlBytes, err := fs.ReadFile(webFiles, "web/watchlist.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlBytes)
+	for _, want := range []string{
+		`data-strategy="wheel"`,
+		`仅提醒`,
+		`id="curve-add"`,
+		`id="curve-rows"`,
+		`id="max-inventory"`,
+		`id="lot-size"`,
+		`id="min-dte"`,
+		`id="max-dte"`,
+		`id="min-option-quality"`,
+		`id="max-daily-orders"`,
+		`id="extreme-max-daily-orders"`,
+		`id="no-trade-gap"`,
+		`id="strategic-state"`,
+		`placeholder="例如 1200"`,
+		`HOLD`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("watchlist.html missing Wheel editor contract %q", want)
+		}
+	}
+	jsBytes, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(jsBytes)
+	for _, want := range []string{
+		"renderWheelCurve",
+		"collectWheelParams",
+		"曲线价格必须严格递增",
+		"曲线目标库存必须单调不增",
+		`JSON.stringify({strategy: "wheel", params: params})`,
+		`price_position_curve`,
+		`WHEEL_STATES`,
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing Wheel editor contract %q", want)
+		}
+	}
+}
+
+func TestResultsWheelEditorContract(t *testing.T) {
+	htmlBytes, err := fs.ReadFile(webFiles, "web/results.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := string(htmlBytes)
+	for _, want := range []string{
+		`id="run-strategy"`,
+		`id="run-curve-add"`,
+		`id="run-curve-rows"`,
+		`id="run-max-inventory"`,
+		`id="run-lot-size"`,
+		`id="run-min-dte"`,
+		`id="run-max-dte"`,
+		`id="run-min-option-quality"`,
+		`id="run-max-daily-orders"`,
+		`id="run-extreme-max-daily-orders"`,
+		`id="run-no-trade-gap"`,
+		`id="run-strategic-state"`,
+		`placeholder="例如 1200"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("results.html missing Wheel editor contract %q", want)
+		}
+	}
+	for _, gone := range []string{`id="run-strategy-select"`, "covered-call", "cash-secured-put", "buy-hold"} {
+		if strings.Contains(html, gone) {
+			t.Fatalf("results.html still contains removed product contract %q", gone)
+		}
+	}
+}
+
+func TestResultsWheelRunModeAndRerunContract(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := string(data)
 	for _, want := range []string{
-		"renderStrategyCards",
-		`s.params`,
-		"strategy-card",
-		"dataset.strategy",
-		"strategySelect.value = card.dataset.strategy",
-		"p.default",
-		"p.description",
+		`const wheelFields = document.getElementById("run-param-fields")`,
+		"wheelFields.disabled = watchlistCheck.checked",
+		"watchlistCheck.addEventListener(\"change\", syncRunMode)",
+		"d.params && d.params.strategy_params ? d.params.strategy_params : d.params",
+		`renderWheelFields(strategyParams, form, "run-")`,
 	} {
 		if !strings.Contains(js, want) {
-			t.Fatalf("app.js missing strategy-card logic %q", want)
+			t.Fatalf("app.js missing run-mode/rerun contract %q", want)
 		}
 	}
 }
@@ -924,11 +1131,10 @@ func TestAppJSQueriesWatchlistAPI(t *testing.T) {
 	js := string(data)
 	for _, want := range []string{
 		`"/v1/watchlist`,
-		`"/v1/strategies`,
 		`method: "PUT"`,
 		`method: "DELETE"`,
 		"initWatchlistPage",
-		"renderStrategyCards",
+		"renderWheelFields",
 	} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing %q", want)
@@ -936,20 +1142,13 @@ func TestAppJSQueriesWatchlistAPI(t *testing.T) {
 	}
 }
 
-func TestAppJSDynamicParamForm(t *testing.T) {
+func TestAppJSWheelEditor(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/app.js")
 	if err != nil {
 		t.Fatal(err)
 	}
 	js := string(data)
-	for _, want := range []string{
-		`p.type === "choice"`,
-		`p.type === "number"`,
-		`"params." + p.name`,
-		"p.choices",
-		"p.default",
-		"invalid number for ",
-	} {
+	for _, want := range []string{"renderWheelFields", "collectWheelParams", "renderWheelCurve", "wheelElement", "WHEEL_STATES"} {
 		if !strings.Contains(js, want) {
 			t.Fatalf("app.js missing schema-driven param form logic %q", want)
 		}
@@ -1021,6 +1220,58 @@ func TestConfigWriteSurfaceJS(t *testing.T) {
 	}
 }
 
+// TestTelegramWizardJS: Telegram 接入向导契约(2026-08-11)——token/chat_ids
+// 走既有 PUT /v1/admin/config/{key} 写面;保存即清空输入;「已配置」只渲染
+// set 元数据;页面从不请求/显示配置值(PRIVACY 红线)。
+func TestTelegramWizardJS(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		"initTelegramWizard",
+		"renderTelegramWizard",
+		`"credentials.telegram.token"`,
+		`"credentials.telegram.chat_ids"`,
+		`"telegram-token-form"`,
+		`"telegram-token-btn"`,
+		`"telegram-chatids-form"`,
+		`"telegram-chatids-btn"`,
+		`"telegram-status"`,
+		`getElementById(formId)`,
+		`"/v1/admin/config/" + encodeURIComponent(key)`,
+		`method: "PUT"`,
+		`JSON.stringify({value: val.value})`,
+		"已配置",
+		"未配置",
+		"保存中…",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing telegram wizard %q", want)
+		}
+	}
+	/* 向导输入同样走 password/清空语义:值不入 DOM,状态只来自 set。 */
+	htmlData, err := fs.ReadFile(webFiles, "web/admin.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(htmlData), `type="password"`) {
+		t.Fatal("admin.html must render the token input as password")
+	}
+	if !strings.Contains(js, `c.set`) {
+		t.Fatalf("app.js must render wizard status from set metadata")
+	}
+	/* 绑定只做一次(评审 P1-2):renderTelegramWizard 随刷新触发,重复绑定
+	会让 submit 监听器累积、第 N 次保存触发 N+1 次 PUT。 */
+	if !strings.Contains(js, "telegramWizardBound") {
+		t.Fatal("app.js must guard initTelegramWizard with a one-time bound flag")
+	}
+	if strings.Contains(js, "c.value") {
+		t.Fatal("app.js renders config values (PRIVACY red line)")
+	}
+}
+
 func TestResultsPageElements(t *testing.T) {
 	data, err := fs.ReadFile(webFiles, "web/results.html")
 	if err != nil {
@@ -1031,8 +1282,11 @@ func TestResultsPageElements(t *testing.T) {
 		`id="backtest-form"`,
 		`id="run-symbol"`,
 		`id="run-watchlist"`,
-		`id="run-strategy-select"`,
+		`id="run-strategy"`,
 		`id="run-param-fields"`,
+		`id="run-curve-rows"`,
+		`id="run-max-inventory"`,
+		`id="run-strategic-state"`,
 		`id="run-btn"`,
 		`id="run-error"`,
 		`id="run-ok"`,
@@ -1053,12 +1307,35 @@ func TestResultsPageElements(t *testing.T) {
 		`id="trades-empty"`,
 		`id="trades-limit-hint"`,
 		`id="trades-show-all"`,
+		`id="backtest-signals-table"`,
+		`id="backtest-signals-empty"`,
 		`id="detail-params"`,
 		`id="detail-back"`,
 		`/ui/app.js`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("results.html missing %q", want)
+		}
+	}
+}
+
+func TestAppJSBacktestSignalAuditContract(t *testing.T) {
+	data, err := fs.ReadFile(webFiles, "web/app.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	js := string(data)
+	for _, want := range []string{
+		"function renderBacktestSignals(signals)",
+		`"backtest-signals-table"`,
+		`signal.capability_status || "READY"`,
+		`signal.blocked_by || []`,
+		"signal.snapshot_key",
+		"signal.snapshot_observed_at",
+		"renderBacktestSignals(d.signals || [])",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("app.js missing %q", want)
 		}
 	}
 }
@@ -1237,12 +1514,14 @@ func TestBacktestRunFormJS(t *testing.T) {
 	}
 	js := string(data)
 	for _, want := range []string{
-		`"run-param-fields"`,
+		`"curve-rows"`,
+		`"run-curve-add"`,
 		`{from_watchlist: true}`,
 		`method: "POST"`,
 		`"/v1/backtests"`,
 		"setupBacktestRunForm",
-		"renderParamFields(strategyByName(select.value), null, \"run-param-fields\")",
+		`collectWheelParams(form, form, "run-")`,
+		`renderWheelFields(undefined, form, "run-")`,
 		"symbolInput.disabled = watchlistCheck.checked",
 		"openDetail(res.id)",
 		"res.runs",
@@ -1251,7 +1530,7 @@ func TestBacktestRunFormJS(t *testing.T) {
 			t.Fatalf("app.js missing %q", want)
 		}
 	}
-	if !strings.Contains(js, `{symbol: symbol, strategy: strategy.name, params: collected.params}`) {
+	if !strings.Contains(js, `{symbol: symbol, strategy: "wheel", params: params}`) {
 		t.Fatal("app.js run form must build {symbol, strategy, params} body")
 	}
 }
@@ -1379,7 +1658,7 @@ func TestUICopyLocalized(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"请选择策略", "运行中", "详情"} {
+	for _, want := range []string{"Wheel", "运行中", "详情"} {
 		if !strings.Contains(string(js), want) {
 			t.Fatalf("app.js missing %q", want)
 		}
@@ -1429,8 +1708,8 @@ func TestJSChineseResidue(t *testing.T) {
 		`td.textContent = "正常"`, // freshnessCell
 		`c.set ? "是" : "否"`,     // renderConfig
 		`c.updated_at === null ? "未设置" : c.updated_at`,
-		`legend.textContent = "参数"`, // renderParamFields
-		`edit.textContent = "编辑"`,   // renderWatchlist
+		`renderWheelFields`,       // structured Wheel configuration editor
+		`edit.textContent = "编辑"`, // renderWatchlist
 		`del.textContent = "删除"`,
 		`"期末权益", fmtMoney`, // COMPARE_METRICS
 		`"总收益率", fmtPct`,

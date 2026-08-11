@@ -8,11 +8,29 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/strategy"
+	"github.com/jiayu/wbot/internal/wheel"
 )
 
 func TestBuild(t *testing.T) {
+	wheelParams := func() map[string]any {
+		return map[string]any{
+			"price_position_curve": []any{
+				map[string]any{"price": 100.0, "target_inventory": 1000.0},
+				map[string]any{"price": 200.0, "target_inventory": 0.0},
+			},
+			"max_inventory": 1000.0,
+		}
+	}
+	unknown := wheelParams()
+	unknown["bogus"] = 1
+	wrongType := wheelParams()
+	wrongType["max_inventory"] = "1000"
+	outOfRange := wheelParams()
+	outOfRange["max_inventory"] = -1
 	tests := []struct {
 		name      string
 		strategy  string
@@ -24,13 +42,12 @@ func TestBuild(t *testing.T) {
 		{"buy-hold", "buy-hold", map[string]any{}, false, ""},
 		{"hold rejects params", "hold", map[string]any{"a": 1}, false, "no params"},
 		{"buy-hold rejects params", "buy-hold", map[string]any{"a": 1}, false, "no params"},
-		{"covered-call", "covered-call", nil, true, ""},
-		{"covered-call defaults", "covered-call", map[string]any{"strike_pct_otm": 0.05}, true, ""},
-		{"cash-secured-put", "cash-secured-put", map[string]any{"cash_reserve": 1.2}, true, ""},
+		{"wheel", "wheel", wheelParams(), true, ""},
+		{"wheel defaults", "wheel", wheelParams(), true, ""},
 		{"unknown strategy", "nope", nil, false, "unknown template"},
-		{"unknown param", "covered-call", map[string]any{"bogus": 1}, false, "unknown param"},
-		{"wrong type", "covered-call", map[string]any{"strike_pct_otm": "0.03"}, false, "want a number"},
-		{"out of range", "covered-call", map[string]any{"strike_pct_otm": -1}, false, "want in"},
+		{"unknown param", "wheel", unknown, false, "unknown param"},
+		{"wrong type", "wheel", wrongType, false, "want a number"},
+		{"out of range", "wheel", outOfRange, false, "want in"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,16 +78,31 @@ func TestBuild(t *testing.T) {
 	}
 }
 
+func TestQuoteRangeStartIncludesFreshPreBarSnapshot(t *testing.T) {
+	from := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	wheelStrategy := &strategy.WheelStrategy{Config: wheel.Config{MaxQuoteAgeSeconds: 3600}}
+	if got, want := quoteRangeStart(from, wheelStrategy), from.Add(-time.Hour); !got.Equal(want) {
+		t.Fatalf("quoteRangeStart = %s; want %s", got, want)
+	}
+	if got := quoteRangeStart(from, backtest.HoldStrategy{}); !got.Equal(from) {
+		t.Fatalf("benchmark quoteRangeStart = %s; want unchanged %s", got, from)
+	}
+}
+
 func TestSaveParams(t *testing.T) {
-	got := SaveParams(Options{Cash: 10000, Fee: 1.5, Timeframe: "1d", Adjust: "fwd"})
+	strategyParams := map[string]any{"max_inventory": 1200.0}
+	got := SaveParams(Options{Cash: 10000, Fee: 1.5, Timeframe: "1d", Adjust: "fwd", Params: strategyParams})
 	want := map[string]any{"cash": 10000.0, "fee": 1.5, "timeframe": "1d", "adjust": "fwd"}
-	if len(got) != len(want) {
+	if len(got) != len(want)+1 {
 		t.Fatalf("SaveParams = %v; want %v", got, want)
 	}
 	for k, v := range want {
 		if got[k] != v {
 			t.Fatalf("SaveParams[%q] = %v; want %v", k, got[k], v)
 		}
+	}
+	if got["strategy_params"].(map[string]any)["max_inventory"] != 1200.0 {
+		t.Fatalf("SaveParams strategy_params = %v; want reproducible Wheel config", got["strategy_params"])
 	}
 }
 
@@ -103,7 +135,10 @@ func TestRunMultiRejects(t *testing.T) {
 		{"empty symbols", Options{Strategy: "hold"}, nil, "empty symbols"},
 		{"no strategy", Options{}, []string{"A.US"}, "strategy is required"},
 		{"unknown strategy", Options{Strategy: "nope"}, []string{"A.US"}, "unknown template"},
-		{"option strategy", Options{Strategy: "covered-call"}, []string{"A.US"}, "needs option_quotes"},
+		{"option strategy", Options{Strategy: "wheel", Params: map[string]any{
+			"price_position_curve": []any{map[string]any{"price": 100.0, "target_inventory": 1000.0}, map[string]any{"price": 200.0, "target_inventory": 0.0}},
+			"max_inventory":        1000.0,
+		}}, []string{"A.US"}, "needs option_quotes"},
 		{"hold rejects params", Options{Strategy: "hold", Params: map[string]any{"a": 1}}, []string{"A.US"}, "no params"},
 		{"nil db", Options{Strategy: "hold"}, []string{"A.US"}, "nil db"},
 		{"empty symbol", Options{Strategy: "hold"}, []string{""}, "empty symbol"},

@@ -85,6 +85,38 @@
       </table>
     </div>
   </section>
+  <section id="telegram">
+    <h2>Telegram 接入向导</h2>
+    <p class="notice">wheel 实时提醒:ALERT 信号推送 + 按钮处置(是,下单 / 否,等待机会 / 今日不再提醒)。token 与 chat_ids 落盘 <code>~/.wbot/wbot.conf</code>,只写不读——值不回显。</p>
+    <ol>
+      <li>在 <a href="https://t.me/BotFather" target="_blank" rel="noopener">@BotFather</a> 创建机器人,复制 token。</li>
+      <li>给机器人发一条消息,把消息里的 chat id(如 <code>12345678</code>)填入下方 chat_ids。</li>
+      <li>保存后重启 <code>serve --telegram-run</code> 生效。</li>
+    </ol>
+    <form id="telegram-token-form">
+      <label>Bot token
+        <input id="telegram-token" type="password" autocomplete="off" placeholder="仅写入,不会回显">
+      </label>
+      <button type="submit" id="telegram-token-btn">保存 token</button>
+      <span id="telegram-token-ok" class="notice" hidden>已保存。</span>
+    </form>
+    <form id="telegram-chatids-form">
+      <label>chat_ids(逗号分隔,可多个)
+        <input id="telegram-chatids" type="text" autocomplete="off" placeholder="仅写入,不会回显">
+      </label>
+      <button type="submit" id="telegram-chatids-btn">保存 chat_ids</button>
+      <span id="telegram-chatids-ok" class="notice" hidden>已保存。</span>
+    </form>
+    <p id="telegram-status" class="muted"></p>
+    <div class="table-scroll">
+      <table id="telegram-table" hidden>
+        <thead>
+          <tr><th>键</th><th>已配置</th><th>更新时间</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 <script src="/ui/app.js"></script>
 </body>

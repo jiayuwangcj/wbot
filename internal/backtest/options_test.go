@@ -115,7 +115,7 @@ func TestShortCallITMExercise(t *testing.T) {
 	sc := &scriptStrategy{
 		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
 		sizes:   []float64{100, 1, 0},
-		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 200}, nil},
+		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
 	}
 	// 100 shares in @100, premium 200, then ITM at 120: shares out at strike 105.
 	res, err := RunOptions(context.Background(), mkBars(100, 110, 120), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"C105": {2, 2}}))
@@ -135,7 +135,7 @@ func TestShortCallOTMExpiry(t *testing.T) {
 	sc := &scriptStrategy{
 		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
 		sizes:   []float64{100, 1, 0},
-		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 200}, nil},
+		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
 	}
 	res, err := RunOptions(context.Background(), mkBars(100, 102, 101), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"C105": {2, 2}}))
 	if err != nil {
@@ -155,7 +155,7 @@ func TestShortPutITMExercise(t *testing.T) {
 	sc := &scriptStrategy{
 		actions: []Action{ActionSellPut, ActionHold, ActionHold},
 		sizes:   []float64{1, 0, 0},
-		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 300}, nil, nil},
+		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 3}, nil, nil},
 	}
 	// premium 300, assigned at strike 95 on close 85: cash 10000+300-9500, stock 100.
 	res, err := RunOptions(context.Background(), mkBars(100, 90, 85), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"P95": {3, 3}}))
@@ -175,7 +175,7 @@ func TestShortPutOTMExpiry(t *testing.T) {
 	sc := &scriptStrategy{
 		actions: []Action{ActionSellPut, ActionHold, ActionHold},
 		sizes:   []float64{1, 0, 0},
-		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 300}, nil, nil},
+		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 3}, nil, nil},
 	}
 	res, err := RunOptions(context.Background(), mkBars(100, 103, 102), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"P95": {3, 3}}))
 	if err != nil {
@@ -195,7 +195,7 @@ func TestLongCallExercise(t *testing.T) {
 	sc := &scriptStrategy{
 		actions: []Action{ActionBuyCall, ActionHold, ActionHold},
 		sizes:   []float64{1, 0, 0},
-		pending: []*OptionPosition{{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 200}, nil, nil},
+		pending: []*OptionPosition{{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil, nil},
 	}
 	// long call: paid 200, exercise at 105 on close 120 -> buy 100 shares.
 	res, err := RunOptions(context.Background(), mkBars(100, 105, 120), 20000, 0, sc, mkOptionsData(chain, map[string][]float64{"C105": {2, 2}}))
@@ -215,7 +215,7 @@ func TestLongPutExercise(t *testing.T) {
 	sc := &scriptStrategy{
 		actions: []Action{ActionBuyPut, ActionHold, ActionHold},
 		sizes:   []float64{1, 0, 0},
-		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 150}, nil, nil},
+		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 1.5}, nil, nil},
 	}
 	// long put: paid 150, exercise at 95 on close 90 -> sell 100 shares short.
 	res, err := RunOptions(context.Background(), mkBars(100, 95, 90), 20000, 0, sc, mkOptionsData(chain, map[string][]float64{"P95": {1.5, 1.5}}))
@@ -235,7 +235,7 @@ func TestSellPutCashReserveError(t *testing.T) {
 	sc := &scriptStrategy{
 		actions: []Action{ActionSellPut},
 		sizes:   []float64{1},
-		pending: []*OptionPosition{{Code: "P105", Kind: OptionPut, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 200}},
+		pending: []*OptionPosition{{Code: "P105", Kind: OptionPut, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}},
 	}
 	// cash 10000 + premium 200 < 10500 required.
 	_, err := RunOptions(context.Background(), mkBars(100, 101), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"P105": {2}}))
@@ -244,11 +244,30 @@ func TestSellPutCashReserveError(t *testing.T) {
 	}
 }
 
+func TestSellPutCashReserveIncludesExistingShortPuts(t *testing.T) {
+	chain := map[string]OptionContract{
+		"P95":  {Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2)},
+		"P100": {Code: "P100", Kind: OptionPut, Strike: 100, Expiry: expiryAt(2)},
+	}
+	sc := &scriptStrategy{
+		actions: []Action{ActionSellPut, ActionSellPut},
+		sizes:   []float64{1, 1},
+		pending: []*OptionPosition{
+			{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2},
+			{Code: "P100", Kind: OptionPut, Strike: 100, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2},
+		},
+	}
+	_, err := RunOptions(context.Background(), mkBars(100, 101), 15_000, 0, sc, mkOptionsData(chain, map[string][]float64{"P95": {2, 2}, "P100": {2, 2}}))
+	if err == nil || !strings.Contains(err.Error(), "cumulative across open short puts") {
+		t.Fatalf("RunOptions() error = %v; want cumulative cash reserve rejection", err)
+	}
+}
+
 func TestOptionTradeValidation(t *testing.T) {
 	chain := map[string]OptionContract{"C1": {Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
 	bars := mkOptionsData(chain, map[string][]float64{"C1": {2}})
 	opt := func() *OptionPosition {
-		return &OptionPosition{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 200}
+		return &OptionPosition{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}
 	}
 	tests := []struct {
 		name    string
@@ -264,7 +283,7 @@ func TestOptionTradeValidation(t *testing.T) {
 		{"negative contracts", ActionSellCall, -1, opt(), bars, "want > 0 contracts"},
 		{"incomplete contract", ActionSellCall, 1, &OptionPosition{Kind: OptionCall}, bars, "incomplete"},
 		{"no price data", ActionSellCall, 1, opt(), &OptionsData{Chain: chain}, "no option price data"},
-		{"buy exceeds cash", ActionBuyCall, 1, &OptionPosition{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 50000}, bars, "exceeds cash"},
+		{"buy exceeds cash", ActionBuyCall, 1, &OptionPosition{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 500}, bars, "exceeds cash"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -283,15 +302,15 @@ func TestOptionLegMerge(t *testing.T) {
 		actions: []Action{ActionSellCall, ActionSellCall},
 		sizes:   []float64{1, 1},
 		pending: []*OptionPosition{
-			{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 200},
-			{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 220},
+			{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2},
+			{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2.2},
 		},
 	}
 	if _, err := RunOptions(context.Background(), mkBars(100, 101), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"C1": {2, 2}})); err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
 	pos, ok := sc.st.Options["C1"]
-	if !ok || pos.Contracts != -2 || math.Abs(pos.AvgPremium-210) > 1e-9 || math.Abs(sc.st.Cash-10420) > 1e-9 {
+	if !ok || pos.Contracts != -2 || math.Abs(pos.AvgPremium-2.1) > 1e-9 || math.Abs(sc.st.Cash-10420) > 1e-9 {
 		t.Fatalf("merged leg = %+v cash %v; want contracts -2, avg 210, cash 10420", pos, sc.st.Cash)
 	}
 }

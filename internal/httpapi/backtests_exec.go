@@ -132,7 +132,13 @@ func (h *backtestExecuteHandler) execOne(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	if strategyName == "" {
-		writeErrorBody(w, http.StatusUnprocessableEntity, errorJSON{Code: "invalid_request", Message: "missing strategy", Action: `add "strategy": "covered-call" to the body`})
+		writeErrorBody(w, http.StatusUnprocessableEntity, errorJSON{Code: "invalid_request", Message: "missing strategy", Action: `add "strategy": "wheel" to the body`})
+		return
+	}
+	// hold/buy-hold remain CLI-only benchmark helpers. The product API has one
+	// strategy contract, so callers cannot bypass Wheel inventory controls.
+	if strategyName != "wheel" {
+		writeErrorBody(w, http.StatusUnprocessableEntity, errorJSON{Code: "invalid_request", Message: fmt.Sprintf("strategy: unknown template %q (want wheel)", strategyName), Action: "use the wheel contract from GET /v1/strategies"})
 		return
 	}
 	if req.Params == nil {
@@ -211,7 +217,13 @@ func (h *backtestExecuteHandler) writeExecError(w http.ResponseWriter, ctx conte
 	case errors.Is(err, backtestexec.ErrNoBars):
 		writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{Code: "no_data", Message: fmt.Sprintf("no bars data for %s", symbol), Action: fmt.Sprintf("ingest first: `wbot ingest futu -symbol %s -timeframe 1d`", symbol)})
 	case errors.Is(err, backtestexec.ErrNoOptionData):
-		writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{Code: "no_data", Message: fmt.Sprintf("no option quote data for %s", symbol), Action: fmt.Sprintf("ingest first: `wbot ingest futu-option -symbol %s`", symbol)})
+		writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{
+			Code:             "no_data",
+			Message:          fmt.Sprintf("no complete atomic option quote snapshots for %s", symbol),
+			Action:           "keep the run DATA_BLOCKED until a verified read-only provider adapter writes complete option_quote_snapshots; legacy futu-option daily bars are not a substitute",
+			CapabilityStatus: "DATA_BLOCKED",
+			BlockedBy:        []string{"option_quote_snapshots"},
+		})
 	default:
 		writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{Code: "dependency_failed", Message: "the backtest run failed", Action: "check server logs and retry"})
 	}

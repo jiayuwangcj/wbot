@@ -13,6 +13,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/config"
+	"github.com/jiayu/wbot/internal/datacheck"
 	"github.com/jiayu/wbot/internal/ingest"
 )
 
@@ -24,6 +25,7 @@ type fakeStore struct {
 	coverage []ingest.BarCoverage
 	opts     []ingest.OptionFreshness
 	err      error
+	report   datacheck.Report
 
 	gotSymbol   string
 	gotTimefram string
@@ -86,6 +88,13 @@ func (f *fakeStore) AccountSnapshots(context.Context, string, int) ([]ingest.Acc
 
 func (f *fakeStore) LatestOptionQuote(context.Context, string) (*ingest.OptionQuoteRow, error) {
 	return nil, nil
+}
+
+func (f *fakeStore) Datacheck(context.Context) (datacheck.Report, error) {
+	if f.err != nil {
+		return datacheck.Report{}, f.err
+	}
+	return f.report, nil
 }
 
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {
@@ -331,6 +340,52 @@ func TestHealthMethodNotAllowed(t *testing.T) {
 	Handler(&fakeStore{}).ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d; want 405 (body %s)", rec.Code, rec.Body)
+	}
+}
+
+func TestDatacheckOK(t *testing.T) {
+	now := time.Date(2026, 8, 9, 9, 0, 0, 0, time.UTC)
+	store := &fakeStore{report: datacheck.Report{CheckedAt: now, Symbols: 1, Total: 2, Missing: 1, Items: []datacheck.Item{{Symbol: "US.AAPL", Kind: "bars", State: datacheck.StateMissing}}}}
+	rec := get(t, Handler(store), "/v1/datacheck")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var got datacheck.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Symbols != 1 || got.Total != 2 || got.Missing != 1 || len(got.Items) != 1 || got.Items[0].State != datacheck.StateMissing {
+		t.Fatalf("report = %+v", got)
+	}
+	if strings.Contains(rec.Body.String(), `"max_ts"`) || strings.Contains(rec.Body.String(), `"max_expiry"`) {
+		t.Fatalf("missing item exposes zero timestamps: %s", rec.Body)
+	}
+}
+
+func TestDatacheckEmptyWatchlist(t *testing.T) {
+	rec := get(t, Handler(&fakeStore{report: datacheck.Report{Items: []datacheck.Item{}}}), "/v1/datacheck")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	var got datacheck.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Symbols != 0 || got.Total != 0 || got.Items == nil {
+		t.Fatalf("empty report = %+v (body %s)", got, rec.Body)
+	}
+}
+
+func TestDatacheckStoreError(t *testing.T) {
+	rec := get(t, Handler(&fakeStore{err: errors.New("db down")}), "/v1/datacheck")
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d; want 500", rec.Code)
+	}
+}
+
+func TestDatacheckMethodNotAllowed(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/datacheck", strings.NewReader("{}"))
+	rec := httptest.NewRecorder()
+	Handler(&fakeStore{}).ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d; want 405", rec.Code)
 	}
 }
 

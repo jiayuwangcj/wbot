@@ -1,32 +1,41 @@
 # Doc Index
 
-**Agent 根任务循环**（取任务 → Subagent 执行 → verify/CI → 更新 `doc/tasks` → 下一入口）：可读摘要见 [[AUTO_ADVANCE]]（内含 **任务来源**：Issue / Discussion / 长期目标，与 **取用优先级** ①～⑤）；机器与 Cursor 始终应用的完整规则见仓库根目录 `.cursor/rules/supervisor-subagent.mdc`。
+## 当前产品入口
 
-入口与导航：
+- [[WHEEL_STRATEGY]]：单一动态 Wheel 的配置、库存、候选、快照和安全边界
+- [[API]]：`wbot serve` HTTP 契约；`/v1/strategies`、`/v1/watchlist` 只面向 Wheel
+- [[BACKTEST]]：事件回测边界、`DATA_BLOCKED` 闸门、指标和 trace
+- [[tasks/2026-08-10-wheel-full-rewrite]]：替换式重构计划、阻塞登记和验收 ledger
+- [[DATA_PIPELINE]]：bars、期权数据和 ingestion
+- [[DATA_STANDARD]]：source、复权、时间和字段标准
+- [[FUTU]]：富途 OpenD/只读数据接入
+- [[ACCEPTANCE]]：verify、集成和浏览器验收总表
+- [[PRIVACY]]：配置、账户数据和凭证边界
 
-- [[WORKFLOW]]
-- [[FEATURE_SCOPE]]（功能切片规模 · 验收必须可测 · 与 CI 的关系）
-- [[SOURCE_TO_FEATURE]]（Issue/Discussion → 文档与功能的消化路径）
-- [[AUTO_ADVANCE]]（根循环摘要 + 与 CI / 停机的说明）
-- [[CRON_CONTINUE]]（外部 cron 守护续跑：cron-claude-continue.sh 用法与 /loop 关系）
-- [[CI_REPORT]]（Actions Summary：无 LLM 的确定性报告）
-- [[RELEASE_DAILY]]（日构建与本地部署：0 点后阻碍清零 → daily tag → 运维部署）
-- [`doc/issues/`](issues/)（Issue/Discussion 待发草稿）
-- [[tasks/README]]
-- [[GITHUB_MCP]]
-- [[WORKFLOW_GITHUB_DRIVEN]]
-- [[ORGS]]（组织架构与并行协议：产品组/开发组/PM 组/运维组、角色分工、worktree 并行）
-- [[PRIVACY]]（敏感配置与密钥安全：`~/.wbot/` 存放、不入库、评审必查）
-- [[pinned_discussion]]（协作入口帖建议标题；发帖正文模板见 [[pinned_discussion_body]]，引用方式见 [[GITHUB_DISCUSSION_OPS]]）
-- [[GITHUB_DISCUSSION_OPS]]
-- [[ROADMAP]]
-- [[DATA_PIPELINE]]（数据管道 v1：命令/行为/调度方式）
-- [[DATA_STANDARD]]（数据标准：复权/source/时间基准/字段规范）
-- [[FUTU]]（富途 OpenD 容器部署：凭证注入/启动/验证码/常见错误）
-- [[ACCEPTANCE]]（验收体系总表：verify.sh / dev-up 冒烟 / 12 个 accept 脚本 + 覆盖矩阵）
-- [[API]]（`wbot serve` HTTP 接口契约）
-- [[BACKTEST]]（v2 回测骨架：命令/指标/约束）
-- [[PLAN_V0]]
-- [[TDD_WORKFLOW]]
-- [[GITHUB_SETUP]]
-- [[proposals/0001-automation-baseline]]
+## 实时 Wheel 部署环境
+
+启动实时评估使用 `wbot serve -wheel-run`；`-wheel-interval` 控制轮询周期，`-wheel-env sim|real` 选择账户环境。行情与账户读取分别使用 `$FUTU_GATEWAY_URL`、`$FUTU_PROTO_ADDR`。
+
+LLM 审核闸门需要同时设置以下环境变量：
+
+```bash
+export LLM_BASE_URL='https://llm.example/v1'
+export LLM_API_KEY="$SECRET_LLM_API_KEY"
+export LLM_MODEL='审核模型名'
+```
+
+`LLM_BASE_URL` 应指向 OpenAI-compatible API base URL，客户端会请求 `/chat/completions`。任一变量缺失时，开启 Wheel 的 serve 会打印 warning，并保持 ALERT 不推送；key 只从环境变量读取，不落库、不打印。
+
+需启用 Telegram 人工处置时，另加 `-telegram-run`，并在 `~/.wbot/wbot.conf` 配置 `credentials.telegram.token` 与 `credentials.telegram.chat_ids`。Telegram 只接收 LLM `APPROVE` 的 ALERT；`yes` 仅允许模拟环境下单，`no` 和“今日不再提醒”均写入审计记录。受控测试可用 `WBOT_CONFIG_DIR` 与 `TELEGRAM_API_BASE_URL` 指向临时配置和 fake endpoint。
+
+## 工程与协作
+
+- [[WORKFLOW]]、[[TDD_WORKFLOW]]、[[FEATURE_SCOPE]]：开发与验收规则
+- [[AUTO_ADVANCE]]、[[CRON_CONTINUE]]、[[CI_REPORT]]：任务推进和 CI
+- [[RELEASE_DAILY]]：日构建与部署
+- [[ROADMAP]]、[[PLAN_V0]]：路线与历史背景
+- [`doc/issues/`](issues/)：Issue/Discussion 历史草稿（不作为当前产品契约）
+- [[tasks/README]]：任务索引
+- [[GITHUB_MCP]]、[[GITHUB_SETUP]]、[[WORKFLOW_GITHUB_DRIVEN]]：GitHub 驱动协作
+
+当前主文档只描述单一 Wheel 产品；历史 issue/task 保留原文供审计，不自动升级为现行 API 契约。所有不可执行能力必须同时记录阻塞原因、启用闸门和禁止降级；没有验收证据不得标记 `READY`。

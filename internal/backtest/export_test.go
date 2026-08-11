@@ -34,17 +34,36 @@ func TestDetailShape(t *testing.T) {
 	}
 }
 
+func TestDetailAndCSVNormalizeTimestampsToUTC(t *testing.T) {
+	r := exportSample()
+	plusEight := time.FixedZone("CST", 8*60*60)
+	r.StartTs = r.StartTs.In(plusEight)
+	r.EndTs = r.EndTs.In(plusEight)
+	r.CreatedAt = r.CreatedAt.In(plusEight)
+	r.EquityCurve[0].Ts = r.EquityCurve[0].Ts.In(plusEight)
+	r.Trades[0].Ts = r.Trades[0].Ts.In(plusEight)
+
+	detail := Detail(r)
+	if detail.StartTs != "2026-08-01T00:00:00Z" || detail.EquityCurve[0].Ts.Location() != time.UTC || detail.Trades[0].Ts.Location() != time.UTC {
+		t.Fatalf("detail timestamps = %s / %s / %s; want UTC", detail.StartTs, detail.EquityCurve[0].Ts, detail.Trades[0].Ts)
+	}
+	csv := string(ExportCSV(r))
+	if strings.Contains(csv, "+08:00") || !strings.Contains(csv, "2026-08-01T00:00:00Z") {
+		t.Fatalf("csv timestamps not normalized: %q", csv)
+	}
+}
+
 func TestDetailNilTraceStaysReadable(t *testing.T) {
 	r := exportSample()
-	r.EquityCurve, r.Trades = nil, nil
+	r.EquityCurve, r.Trades, r.Signals = nil, nil, nil
 	d := Detail(r)
-	if d.EquityCurve == nil || d.Trades == nil || len(d.EquityCurve) != 0 || len(d.Trades) != 0 {
+	if d.EquityCurve == nil || d.Trades == nil || d.Signals == nil || len(d.EquityCurve) != 0 || len(d.Trades) != 0 || len(d.Signals) != 0 {
 		t.Fatalf("nil trace = %+v; want empty arrays", d.EquityCurve)
 	}
 }
 
 func TestExportCSVSections(t *testing.T) {
-	want := "equity_curve\nts,equity\n2026-08-01T00:00:00Z,10000\n2026-08-02T00:00:00Z,10500\n\ntrades\nts,action,symbol,size,price,cash_after\n2026-08-01T00:00:00Z,buy,DEMO.US,100,100,0\n"
+	want := "equity_curve\nts,equity\n2026-08-01T00:00:00Z,10000\n2026-08-02T00:00:00Z,10500\n\ntrades\nts,action,symbol,size,price,cash_after\n2026-08-01T00:00:00Z,buy,DEMO.US,100,100,0\n\nsignals\nts,action,direction,reason,capability_status,blocked_by,snapshot_key,snapshot_observed_at,actual_inventory,effective_inventory,option_delta_stock,candidate_code,quantity,candidates\n"
 	if got := string(ExportCSV(exportSample())); got != want {
 		t.Fatalf("csv = %q; want %q", got, want)
 	}
@@ -52,13 +71,13 @@ func TestExportCSVSections(t *testing.T) {
 
 func TestExportCSVEmptyCurve(t *testing.T) {
 	r := exportSample()
-	r.EquityCurve, r.Trades = nil, nil
+	r.EquityCurve, r.Trades, r.Signals = nil, nil, nil
 	got := string(ExportCSV(r))
-	if !strings.Contains(got, "equity_curve\nts,equity\n") || !strings.Contains(got, "trades\nts,action,symbol,size,price,cash_after\n") {
+	if !strings.Contains(got, "equity_curve\nts,equity\n") || !strings.Contains(got, "trades\nts,action,symbol,size,price,cash_after\n") || !strings.Contains(got, "signals\nts,action,direction,reason") {
 		t.Fatalf("empty-trace csv missing section headers: %q", got)
 	}
-	if strings.Count(got, "\n") != 5 {
-		t.Fatalf("empty-trace csv has %d lines; want 5 (2 section names + 2 headers + blank)", strings.Count(got, "\n"))
+	if strings.Count(got, "\n") != 8 {
+		t.Fatalf("empty-trace csv has %d lines; want 8 (3 section names + 3 headers + blanks)", strings.Count(got, "\n"))
 	}
 }
 
@@ -83,5 +102,21 @@ func TestExportFormats(t *testing.T) {
 	}
 	if _, _, err := Export(r, "xml"); err == nil {
 		t.Fatal("Export(xml) = nil error; want unsupported format error")
+	}
+}
+
+func TestDetailNormalizesSignalBlockedByToEmptyArray(t *testing.T) {
+	r := exportSample()
+	r.Signals = []SignalTrace{{Action: "HOLD", CapabilityStatus: "READY"}}
+	detail := Detail(r)
+	if detail.Signals[0].BlockedBy == nil {
+		t.Fatal("Detail signal blocked_by = nil; want []")
+	}
+	b, _, err := Export(r, "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"blocked_by":[]`) {
+		t.Fatalf("JSON = %s; want stable empty blocked_by array", b)
 	}
 }

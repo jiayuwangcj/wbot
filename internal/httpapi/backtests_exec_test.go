@@ -20,6 +20,22 @@ import (
 	"github.com/jiayu/wbot/internal/watchlist"
 )
 
+const validWheelParamsJSON = `"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200`
+
+func wheelExecBody(symbol string) string {
+	return `{"symbol":"` + symbol + `","strategy":"wheel","params":{` + validWheelParamsJSON + `}}`
+}
+
+func validWheelParams() map[string]any {
+	return map[string]any{
+		"price_position_curve": []any{
+			map[string]any{"price": 400.0, "target_inventory": 1200.0},
+			map[string]any{"price": 550.0, "target_inventory": 0.0},
+		},
+		"max_inventory": 1200.0,
+	}
+}
+
 // fakeExecutor is a scriptable BacktestExecutor for the execute-endpoint tests.
 type fakeExecutor struct {
 	rec         *backtest.ResultRecord
@@ -60,7 +76,7 @@ func TestBacktestExecuteManual(t *testing.T) {
 	fake := newFakeExecutor()
 	fake.rec = &rec
 	h := BacktestExecuteHandler(fake, &fakeWatchlistStore{})
-	got := postExec(t, h, `{"symbol":"DEMO.US","strategy":"buy-hold"}`)
+	got := postExec(t, h, wheelExecBody("DEMO.US"))
 	if got.Code != http.StatusCreated {
 		t.Fatalf("status = %d; want 201 (body %s)", got.Code, got.Body)
 	}
@@ -77,11 +93,11 @@ func TestBacktestExecuteManual(t *testing.T) {
 	if len(detail.EquityCurve) != 2 || len(detail.Trades) != 1 {
 		t.Fatalf("detail trace = curve %d trades %d; want 2/1", len(detail.EquityCurve), len(detail.Trades))
 	}
-	if fake.gotSymbol != "DEMO.US" || fake.gotStrategy != "buy-hold" {
-		t.Fatalf("executor got (%q, %q); want (DEMO.US, buy-hold)", fake.gotSymbol, fake.gotStrategy)
+	if fake.gotSymbol != "DEMO.US" || fake.gotStrategy != "wheel" {
+		t.Fatalf("executor got (%q, %q); want (DEMO.US, wheel)", fake.gotSymbol, fake.gotStrategy)
 	}
-	if fake.gotParams == nil || len(fake.gotParams) != 0 {
-		t.Fatalf("executor params = %v; want empty map (template defaults)", fake.gotParams)
+	if fake.gotParams == nil || len(fake.gotParams) != 2 {
+		t.Fatalf("executor params = %v; want required Wheel inputs", fake.gotParams)
 	}
 }
 
@@ -90,13 +106,12 @@ func TestBacktestExecuteManualParams(t *testing.T) {
 	fake := newFakeExecutor()
 	fake.rec = &rec
 	got := postExec(t, BacktestExecuteHandler(fake, &fakeWatchlistStore{}),
-		`{"symbol":"HK.00700","strategy":"covered-call","params":{"strike_pct_otm":0.05}}`)
+		`{"symbol":"HK.00700","strategy":"wheel","params":{`+validWheelParamsJSON+`,"strategic_state":"CAUTION"}}`)
 	if got.Code != http.StatusCreated {
 		t.Fatalf("status = %d; want 201 (body %s)", got.Code, got.Body)
 	}
-	want := map[string]any{"strike_pct_otm": 0.05}
-	if len(fake.gotParams) != len(want) || fake.gotParams["strike_pct_otm"] != 0.05 {
-		t.Fatalf("executor params = %v; want %v", fake.gotParams, want)
+	if len(fake.gotParams) != 3 || fake.gotParams["strategic_state"] != "CAUTION" {
+		t.Fatalf("executor params = %v; want Wheel params with CAUTION", fake.gotParams)
 	}
 }
 
@@ -111,12 +126,13 @@ func TestBacktestExecuteValidation(t *testing.T) {
 		{"empty body", ``, "invalid_request", "invalid JSON body"},
 		{"no fields", `{}`, "invalid_request", "missing symbol"},
 		{"only symbol", `{"symbol":"DEMO.US"}`, "invalid_request", "missing strategy"},
-		{"only strategy", `{"strategy":"buy-hold"}`, "invalid_request", "missing symbol"},
+		{"only strategy", `{"strategy":"wheel"}`, "invalid_request", "missing symbol"},
 		{"unknown strategy", `{"symbol":"DEMO.US","strategy":"nope"}`, "invalid_request", "unknown template"},
-		{"hold with params", `{"symbol":"DEMO.US","strategy":"hold","params":{"a":1}}`, "invalid_request", "no params"},
-		{"bad param type", `{"symbol":"DEMO.US","strategy":"covered-call","params":{"strike_pct_otm":"0.03"}}`, "invalid_request", "want a number"},
-		{"param out of range", `{"symbol":"DEMO.US","strategy":"covered-call","params":{"strike_pct_otm":-1}}`, "invalid_request", "want in"},
-		{"unknown param", `{"symbol":"DEMO.US","strategy":"covered-call","params":{"bogus":1}}`, "invalid_request", "unknown param"},
+		{"benchmark hidden", `{"symbol":"DEMO.US","strategy":"hold"}`, "invalid_request", "unknown template"},
+		{"missing strategic inputs", `{"symbol":"DEMO.US","strategy":"wheel","params":{}}`, "invalid_request", "required"},
+		{"bad param type", `{"symbol":"DEMO.US","strategy":"wheel","params":{` + validWheelParamsJSON + `,"lot_size":"100"}}`, "invalid_request", "want a number"},
+		{"param out of range", `{"symbol":"DEMO.US","strategy":"wheel","params":{` + validWheelParamsJSON + `,"min_option_quality":-1}}`, "invalid_request", "want in"},
+		{"unknown param", `{"symbol":"DEMO.US","strategy":"wheel","params":{` + validWheelParamsJSON + `,"bogus":1}}`, "invalid_request", "unknown param"},
 		{"from_watchlist exclusive", `{"from_watchlist":true,"symbol":"DEMO.US"}`, "invalid_request", "mutually exclusive"},
 		{"from_watchlist with params", `{"from_watchlist":true,"params":{}}`, "invalid_request", "mutually exclusive"},
 		{"empty watchlist", `{"from_watchlist":true}`, "empty_watchlist", "watchlist is empty"},
@@ -155,7 +171,7 @@ func TestBacktestExecuteBusy(t *testing.T) {
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		done <- postExec(t, h, `{"symbol":"DEMO.US","strategy":"buy-hold"}`)
+		done <- postExec(t, h, wheelExecBody("DEMO.US"))
 	}()
 	// Wait until the first run holds the mutex (inside RunOne).
 	select {
@@ -164,7 +180,7 @@ func TestBacktestExecuteBusy(t *testing.T) {
 		t.Fatal("first run never entered the executor")
 	}
 
-	got := postExec(t, h, `{"symbol":"DEMO.US","strategy":"buy-hold"}`)
+	got := postExec(t, h, wheelExecBody("DEMO.US"))
 	if got.Code != http.StatusConflict {
 		t.Fatalf("status = %d; want 409 (body %s)", got.Code, got.Body)
 	}
@@ -180,7 +196,7 @@ func TestBacktestExecuteTimeout(t *testing.T) {
 	fake := newFakeExecutor()
 	fake.waitCtx = true
 	h := newBacktestExecuteHandler(fake, &fakeWatchlistStore{}, 50*time.Millisecond)
-	got := postExec(t, h, `{"symbol":"DEMO.US","strategy":"buy-hold"}`)
+	got := postExec(t, h, wheelExecBody("DEMO.US"))
 	if got.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503 (body %s)", got.Code, got.Body)
 	}
@@ -194,14 +210,14 @@ func TestBacktestExecuteNoData(t *testing.T) {
 		wantMsg string
 	}{
 		{"no bars", fmt.Errorf("%w: DEMO.US", backtestexec.ErrNoBars), "no bars"},
-		{"no options", fmt.Errorf("%w: DEMO.US", backtestexec.ErrNoOptionData), "no option quote"},
+		{"no options", fmt.Errorf("%w: DEMO.US", backtestexec.ErrNoOptionData), "no complete atomic option quote snapshots"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fake := newFakeExecutor()
 			fake.err = tt.err
 			got := postExec(t, BacktestExecuteHandler(fake, &fakeWatchlistStore{}),
-				`{"symbol":"DEMO.US","strategy":"buy-hold"}`)
+				wheelExecBody("DEMO.US"))
 			if got.Code != http.StatusServiceUnavailable {
 				t.Fatalf("status = %d; want 503 (body %s)", got.Code, got.Body)
 			}
@@ -212,6 +228,9 @@ func TestBacktestExecuteNoData(t *testing.T) {
 			if errBody.Code != "no_data" || !strings.Contains(errBody.Message, tt.wantMsg) || errBody.Action == "" {
 				t.Fatalf("error body = %+v; want no_data with %q and an action", errBody, tt.wantMsg)
 			}
+			if tt.name == "no options" && (errBody.CapabilityStatus != "DATA_BLOCKED" || len(errBody.BlockedBy) != 1 || errBody.BlockedBy[0] != "option_quote_snapshots" || strings.Contains(errBody.Action, "ingest futu-option")) {
+				t.Fatalf("error body = %+v; want explicit DATA_BLOCKED without a legacy ingestion fallback", errBody)
+			}
 		})
 	}
 }
@@ -220,7 +239,7 @@ func TestBacktestExecuteDependencyError(t *testing.T) {
 	fake := newFakeExecutor()
 	fake.err = errBoom
 	got := postExec(t, BacktestExecuteHandler(fake, &fakeWatchlistStore{}),
-		`{"symbol":"DEMO.US","strategy":"buy-hold"}`)
+		wheelExecBody("DEMO.US"))
 	if got.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d; want 503 (body %s)", got.Code, got.Body)
 	}
@@ -229,8 +248,8 @@ func TestBacktestExecuteDependencyError(t *testing.T) {
 
 func TestBacktestExecuteFromWatchlist(t *testing.T) {
 	items := []watchlist.Item{
-		{Symbol: "HK.00700", Strategy: "covered-call", Params: map[string]any{"strike_pct_otm": 0.03}},
-		{Symbol: "HK.09988", Strategy: "cash-secured-put", Params: map[string]any{}},
+		{Symbol: "HK.00700", Strategy: "wheel", Params: validWheelParams()},
+		{Symbol: "HK.09988", Strategy: "wheel", Params: validWheelParams()},
 	}
 	wstore := &fakeWatchlistStore{items: items}
 	rec := sampleRecord(3)
@@ -259,8 +278,8 @@ func TestBacktestExecuteFromWatchlist(t *testing.T) {
 	if len(fake.callsLog) != 2 || fake.callsLog[0] != wantOrder[0] || fake.callsLog[1] != wantOrder[1] {
 		t.Fatalf("executor call order = %v; want %v (serial)", fake.callsLog, wantOrder)
 	}
-	if fake.gotStrategy != "cash-secured-put" {
-		t.Fatalf("last run strategy = %q; want cash-secured-put", fake.gotStrategy)
+	if fake.gotStrategy != "wheel" {
+		t.Fatalf("last run strategy = %q; want wheel", fake.gotStrategy)
 	}
 }
 
@@ -276,8 +295,8 @@ func TestBacktestExecuteWatchlistDependencyError(t *testing.T) {
 
 func TestBacktestExecuteWatchlistRunFailureAborts(t *testing.T) {
 	items := []watchlist.Item{
-		{Symbol: "HK.00700", Strategy: "covered-call", Params: nil},
-		{Symbol: "HK.09988", Strategy: "buy-hold", Params: nil},
+		{Symbol: "HK.00700", Strategy: "wheel", Params: validWheelParams()},
+		{Symbol: "HK.09988", Strategy: "wheel", Params: validWheelParams()},
 	}
 	rec := sampleRecord(3)
 	fake := newFakeExecutor()

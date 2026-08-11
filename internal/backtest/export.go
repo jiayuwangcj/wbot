@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// DetailJSON is one run's full detail: summary fields + equity_curve/trades
+// DetailJSON is one run's full detail: summary fields + equity_curve/trades/signals
 // (same shape as GET /v1/backtests/{id}); pre-004 rows (nil trace) come back
 // as empty arrays for read compatibility.
 type DetailJSON struct {
@@ -28,6 +28,7 @@ type DetailJSON struct {
 	CreatedAt   string         `json:"created_at"`
 	EquityCurve []EquityPoint  `json:"equity_curve"`
 	Trades      []Trade        `json:"trades"`
+	Signals     []SignalTrace  `json:"signals"`
 }
 
 // Detail converts one record to the export/detail shape: RFC3339 timestamps,
@@ -42,15 +43,30 @@ func Detail(r ResultRecord) DetailJSON {
 	d := DetailJSON{
 		ID: r.ID, Strategy: r.Strategy, Symbol: r.Symbol,
 		Params: r.Params, Metrics: r.Metrics,
-		StartTs: r.StartTs.Format(time.RFC3339), EndTs: r.EndTs.Format(time.RFC3339),
-		CreatedAt:   r.CreatedAt.Format(time.RFC3339),
-		EquityCurve: r.EquityCurve, Trades: r.Trades,
+		StartTs: r.StartTs.UTC().Format(time.RFC3339), EndTs: r.EndTs.UTC().Format(time.RFC3339),
+		CreatedAt: r.CreatedAt.UTC().Format(time.RFC3339),
 	}
-	if d.EquityCurve == nil {
-		d.EquityCurve = []EquityPoint{}
+	d.EquityCurve = make([]EquityPoint, len(r.EquityCurve))
+	for i, point := range r.EquityCurve {
+		point.Ts = point.Ts.UTC()
+		d.EquityCurve[i] = point
 	}
-	if d.Trades == nil {
-		d.Trades = []Trade{}
+	d.Trades = make([]Trade, len(r.Trades))
+	for i, trade := range r.Trades {
+		trade.Ts = trade.Ts.UTC()
+		d.Trades[i] = trade
+	}
+	d.Signals = make([]SignalTrace, len(r.Signals))
+	for i, signal := range r.Signals {
+		signal.Ts = signal.Ts.UTC()
+		if signal.BlockedBy == nil {
+			signal.BlockedBy = []string{}
+		}
+		if signal.SnapshotObservedAt != nil {
+			observedAt := signal.SnapshotObservedAt.UTC()
+			signal.SnapshotObservedAt = &observedAt
+		}
+		d.Signals[i] = signal
 	}
 	return d
 }
@@ -74,22 +90,23 @@ func Export(r ResultRecord, format string) ([]byte, string, error) {
 	}
 }
 
-// ExportCSV renders one run as two blank-line-separated sections, each with a
+// ExportCSV renders one run as blank-line-separated sections, each with a
 // section name line and a header row; rows mirror the JSON arrays 1:1
 // (RFC3339 ts, shortest float form).
 func ExportCSV(r ResultRecord) []byte {
+	detail := Detail(r)
 	var b strings.Builder
 	cw := csv.NewWriter(&b)
 	cw.Write([]string{"equity_curve"})
 	cw.Write([]string{"ts", "equity"})
-	for _, p := range r.EquityCurve {
+	for _, p := range detail.EquityCurve {
 		cw.Write([]string{p.Ts.Format(time.RFC3339), strconv.FormatFloat(p.Equity, 'g', -1, 64)})
 	}
 	cw.Flush()
 	b.WriteString("\n")
 	cw.Write([]string{"trades"})
 	cw.Write([]string{"ts", "action", "symbol", "size", "price", "cash_after"})
-	for _, tr := range r.Trades {
+	for _, tr := range detail.Trades {
 		cw.Write([]string{
 			tr.Ts.Format(time.RFC3339),
 			tr.Action,
@@ -97,6 +114,34 @@ func ExportCSV(r ResultRecord) []byte {
 			strconv.FormatFloat(tr.Size, 'g', -1, 64),
 			strconv.FormatFloat(tr.Price, 'g', -1, 64),
 			strconv.FormatFloat(tr.CashAfter, 'g', -1, 64),
+		})
+	}
+	cw.Flush()
+	b.WriteString("\n")
+	cw.Write([]string{"signals"})
+	cw.Write([]string{"ts", "action", "direction", "reason", "capability_status", "blocked_by", "snapshot_key", "snapshot_observed_at", "actual_inventory", "effective_inventory", "option_delta_stock", "candidate_code", "quantity", "candidates"})
+	for _, signal := range detail.Signals {
+		candidates, _ := json.Marshal(signal.Candidates)
+		blockedBy, _ := json.Marshal(signal.BlockedBy)
+		observedAt := ""
+		if signal.SnapshotObservedAt != nil {
+			observedAt = signal.SnapshotObservedAt.Format(time.RFC3339)
+		}
+		cw.Write([]string{
+			signal.Ts.Format(time.RFC3339),
+			signal.Action,
+			signal.Direction,
+			signal.Reason,
+			signal.CapabilityStatus,
+			string(blockedBy),
+			signal.SnapshotKey,
+			observedAt,
+			strconv.FormatFloat(signal.ActualInventory, 'g', -1, 64),
+			strconv.FormatFloat(signal.EffectiveInventory, 'g', -1, 64),
+			strconv.FormatFloat(signal.OptionDeltaStock, 'g', -1, 64),
+			signal.CandidateCode,
+			strconv.FormatFloat(signal.Quantity, 'g', -1, 64),
+			string(candidates),
 		})
 	}
 	cw.Flush()

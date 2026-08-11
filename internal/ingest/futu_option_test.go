@@ -164,12 +164,6 @@ func TestOptionCacheHelpersValidation(t *testing.T) {
 	if _, _, err := BarsCached(ctx, stubDB(), "HK.00700", "", "fwd", from, to); err == nil {
 		t.Fatal("BarsCached(empty timeframe) = nil error; want error")
 	}
-	if err := UpsertWatchlist(ctx, nil, "HK.00700", "option-watch", nil); err == nil {
-		t.Fatal("UpsertWatchlist(nil db) = nil error; want error")
-	}
-	if err := UpsertWatchlist(ctx, stubDB(), "", "option-watch", nil); err == nil {
-		t.Fatal("UpsertWatchlist(empty symbol) = nil error; want error")
-	}
 }
 
 func TestRunOptionIngestionIntegration(t *testing.T) {
@@ -218,6 +212,14 @@ SELECT COUNT(*) FROM option_quotes WHERE underlying = $1 AND adjust = $2`, "HK.0
 	if n != 20 {
 		t.Fatalf("option_quotes rows = %d; want 20", n)
 	}
+	var wl int
+	err = database.QueryRow(`SELECT COUNT(*) FROM watchlist WHERE symbol = $1`, "HK.00700").Scan(&wl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wl != 0 {
+		t.Fatalf("watchlist rows after ingestion = %d; want 0 (ingestion must not write watchlist)", wl)
+	}
 	var ot, sym string
 	var strike float64
 	err = database.QueryRow(`
@@ -233,17 +235,21 @@ WHERE underlying = $1 AND ts = $2 LIMIT 1`, "HK.00700", time.Unix(1785427200, 0)
 		t.Fatalf("row = (%s, %v, %s); want sane strike and HK.TCH26... symbol", ot, strike, sym)
 	}
 
-	// Watchlist upsert: second pull must not duplicate it.
-	if err := UpsertWatchlist(ctx, database, "HK.00700", "option-watch", map[string]any{"expiries": 2}); err != nil {
+	// A configured wheel row must not be replaced by an ingestion run.
+	const configuredParams = `{"max_inventory":1200,"min_dte":5}`
+	if _, err := database.Exec(`
+INSERT INTO watchlist (symbol, strategy, params)
+VALUES ($1, $2, $3::jsonb)`, "HK.00700", "wheel", configuredParams); err != nil {
 		t.Fatal(err)
 	}
-	var wl int
-	err = database.QueryRow(`SELECT COUNT(*) FROM watchlist WHERE symbol = $1`, "HK.00700").Scan(&wl)
+	var strategy string
+	var paramsOK bool
+	err = database.QueryRow(`SELECT strategy, params::jsonb = $2::jsonb FROM watchlist WHERE symbol = $1`, "HK.00700", configuredParams).Scan(&strategy, &paramsOK)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wl != 1 {
-		t.Fatalf("watchlist rows = %d; want 1 (upsert)", wl)
+	if strategy != "wheel" || !paramsOK {
+		t.Fatalf("watchlist before second ingestion = (strategy %q, params match %v); want wheel config", strategy, paramsOK)
 	}
 
 	// Cache helpers: the window is covered now.
@@ -269,6 +275,71 @@ WHERE underlying = $1 AND ts = $2 LIMIT 1`, "HK.00700", time.Unix(1785427200, 0)
 	}
 	if stats.Rows != 0 {
 		t.Fatalf("re-run stats = %+v; want rows=0 (all ON CONFLICT DO NOTHING)", stats)
+	}
+	err = database.QueryRow(`SELECT strategy, params::jsonb = $2::jsonb FROM watchlist WHERE symbol = $1`, "HK.00700", configuredParams).Scan(&strategy, &paramsOK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strategy != "wheel" || !paramsOK {
+		t.Fatalf("watchlist after second ingestion = (strategy %q, params match %v); want unchanged wheel config", strategy, paramsOK)
+	}
+}
+
+func TestRunOptionIngestionRollsBackOnInsertError(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+
+	// The trigger fails after the first contract's rows have been inserted;
+	// RunOptionIngestion must roll those rows back with the transaction.
+	if _, err := database.Exec(`
+DROP TRIGGER IF EXISTS ingest_option_quotes_test_reject ON option_quotes;
+DROP FUNCTION IF EXISTS ingest_option_quotes_test_reject_fn();
+CREATE FUNCTION ingest_option_quotes_test_reject_fn() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.symbol LIKE '%P335000' THEN
+    RAISE EXCEPTION 'ingest rollback test';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER ingest_option_quotes_test_reject
+BEFORE INSERT ON option_quotes
+FOR EACH ROW EXECUTE FUNCTION ingest_option_quotes_test_reject_fn();`); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_, _ = database.Exec(`DROP TRIGGER IF EXISTS ingest_option_quotes_test_reject ON option_quotes`)
+		_, _ = database.Exec(`DROP FUNCTION IF EXISTS ingest_option_quotes_test_reject_fn()`)
+	}()
+	if _, err := database.Exec(`DELETE FROM option_quotes WHERE underlying = $1`, "HK.00700"); err != nil {
+		t.Fatal(err)
+	}
+
+	fastFutuLimits(t)
+	srv := optionGatewayServer(t, func(code string) string { return klineForCode(code) })
+	defer srv.Close()
+	from := time.Date(2026, 7, 25, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := RunOptionIngestion(context.Background(), database, futu.NewClient(srv.URL), "HK.00700", "fwd", from, to, 2); err == nil {
+		t.Fatal("RunOptionIngestion = nil error; want trigger error")
+	}
+	var n int
+	if err := database.QueryRow(`SELECT COUNT(*) FROM option_quotes WHERE underlying = $1`, "HK.00700").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("option_quotes rows after failed ingestion = %d; want 0 (transaction rollback)", n)
 	}
 }
 

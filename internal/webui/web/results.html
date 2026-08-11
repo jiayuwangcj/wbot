@@ -22,18 +22,43 @@
 <main class="full">
   <section id="run">
     <h2>启动回测</h2>
-    <p class="notice">选择策略与参数,回测将用已缓存行情同步执行(约数秒)。</p>
+    <p class="notice">Wheel 只生成回测提醒，不会自动下单；缺少同一原子快照中的 bid/ask、Delta、IV、OI、Theta、volume、lot size 或 freshness 时明确记录 DATA_BLOCKED/HOLD。</p>
     <form id="backtest-form">
       <label>代码 <input type="text" id="run-symbol" name="symbol" placeholder="HK.00700 / US.AAPL"></label>
       <label class="check">
         <input type="checkbox" id="run-watchlist" name="watchlist">
         使用观察列表全部标的
       </label>
-      <label>策略
-        <select name="strategy" id="run-strategy-select" required></select>
-      </label>
-      <fieldset id="run-param-fields">
-        <legend>参数</legend>
+      <input type="hidden" name="strategy" id="run-strategy" value="wheel">
+      <p class="strategy-fixed">策略：<strong>wheel</strong> · 仅提醒</p>
+      <fieldset id="run-param-fields" class="wheel-fields">
+        <legend>Wheel 配置</legend>
+        <div class="curve-editor">
+          <div class="curve-heading">
+            <span>价格—目标库存曲线</span>
+            <button type="button" id="run-curve-add" class="ghost">添加锚点</button>
+          </div>
+          <p class="field-help">价格必须严格递增，目标库存必须单调不增且位于 0 与最大库存之间。</p>
+          <div id="run-curve-rows" class="curve-rows" aria-live="polite"></div>
+        </div>
+        <div class="wheel-grid">
+          <label>最大库存 <input type="number" name="max_inventory" id="run-max-inventory" min="0" step="any" placeholder="例如 1200" required></label>
+          <label>合约乘数 <input type="number" name="lot_size" id="run-lot-size" min="1" step="1" required></label>
+          <label>最小 DTE <input type="number" name="min_dte" id="run-min-dte" min="5" max="10" step="1" required></label>
+          <label>最大 DTE <input type="number" name="max_dte" id="run-max-dte" min="5" max="10" step="1" required></label>
+          <label>最低期权质量 <input type="number" name="min_option_quality" id="run-min-option-quality" min="0" max="1" step="any" required></label>
+          <label>正常日最多张数 <input type="number" name="max_daily_orders" id="run-max-daily-orders" min="1" max="1" step="1" required></label>
+          <label>极端日最多张数 <input type="number" name="extreme_max_daily_orders" id="run-extreme-max-daily-orders" min="1" max="2" step="1" required></label>
+          <label>不交易缺口 <input type="number" name="no_trade_gap" id="run-no-trade-gap" min="0" step="any" required></label>
+          <label>战略状态
+            <select name="strategic_state" id="run-strategic-state" required>
+              <option value="NORMAL">NORMAL · 双向工作</option>
+              <option value="CAUTION">CAUTION · 谨慎增仓</option>
+              <option value="PAUSE_BUY">PAUSE_BUY · 暂停 Put</option>
+              <option value="EXIT">EXIT · 仅退出库存</option>
+            </select>
+          </label>
+        </div>
       </fieldset>
       <button type="submit" id="run-btn">运行回测</button>
     </form>
@@ -43,7 +68,7 @@
   <section id="list">
     <h2>回测结果</h2>
     <p id="results-error" class="notice error" hidden></p>
-    <input type="search" id="results-filter" placeholder="搜索代码/策略(全库,如 00700 或 covered-call)" autocomplete="off">
+    <input type="search" id="results-filter" placeholder="搜索代码/策略(全库,如 00700 或 wheel)" autocomplete="off">
     <p id="results-empty" class="notice" hidden>暂无回测结果。可在上方运行,或使用 wbot backtest -save 导入。</p>
     <div class="table-scroll">
       <table id="results-table" hidden>
@@ -93,6 +118,16 @@
       </div>
       <p id="trades-limit-hint" class="notice" hidden></p>
       <button type="button" id="trades-show-all" class="link" hidden>显示全部</button>
+      <h3>Wheel 信号轨迹</h3>
+      <p id="backtest-signals-empty" class="notice" hidden>该回测未保存逐 bar 信号轨迹（旧数据）。</p>
+      <div class="table-scroll">
+        <table id="backtest-signals-table" hidden>
+          <thead>
+            <tr><th>时间</th><th>动作</th><th>能力状态</th><th>原子快照</th><th>方向</th><th>库存</th><th>候选</th><th class="num">数量</th><th>原因</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
       <h3>参数</h3>
       <pre id="detail-params"></pre>
     </div>

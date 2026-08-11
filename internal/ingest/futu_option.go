@@ -7,7 +7,6 @@ package ingest
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -162,35 +161,6 @@ FROM option_quotes WHERE symbol = $1 ORDER BY ts DESC LIMIT 1`, symbol)
 	return &r, nil
 }
 
-// sqlExecutor is the minimal DB surface UpsertWatchlist needs (*sql.DB or *sql.Tx).
-type sqlExecutor interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
-// UpsertWatchlist registers or refreshes symbol in watchlist (strategy+params).
-func UpsertWatchlist(ctx context.Context, db sqlExecutor, symbol, strategy string, params map[string]any) error {
-	if db == nil {
-		return errors.New("ingest: watchlist: nil db")
-	}
-	if symbol == "" || strategy == "" {
-		return errors.New("ingest: watchlist: empty symbol or strategy")
-	}
-	encoded, err := json.Marshal(params)
-	if err != nil {
-		return fmt.Errorf("ingest: watchlist: params: %w", err)
-	}
-	_, err = db.ExecContext(ctx, `
-INSERT INTO watchlist (symbol, strategy, params)
-VALUES ($1, $2, $3::jsonb)
-ON CONFLICT (symbol) DO UPDATE
-SET strategy = EXCLUDED.strategy, params = EXCLUDED.params, updated_at = now()`,
-		symbol, strategy, string(encoded))
-	if err != nil {
-		return fmt.Errorf("ingest: watchlist: upsert %s: %w", symbol, err)
-	}
-	return nil
-}
-
 // RunOptionIngestion pulls the underlying's listed future expiries and chain
 // (maxExpiries <= 0 = all), then one daily K-line per contract in [from, to],
 // writing option_quotes rows in one transaction. Adjust follows
@@ -263,14 +233,6 @@ ON CONFLICT (symbol, ts, adjust, source) DO NOTHING`
 		if n, err := res.RowsAffected(); err == nil {
 			inserted += int(n)
 		}
-	}
-	if err := UpsertWatchlist(ctx, tx, underlying, "option-watch", map[string]any{
-		"expiries": len(window),
-		"adjust":   adjust,
-		"from":     from.UTC().Format(time.RFC3339),
-		"to":       to.UTC().Format(time.RFC3339),
-	}); err != nil {
-		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

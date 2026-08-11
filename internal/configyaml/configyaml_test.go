@@ -160,6 +160,11 @@ func TestLoadPermissionCheck(t *testing.T) {
 	if err := os.WriteFile(p, []byte("a: b\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// os.WriteFile applies the process umask, so force the insecure mode this
+	// test intends to reject. Codex/CI may run with an owner-only 0077 umask.
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	_, err := Load(p)
 	if err == nil || !strings.Contains(err.Error(), "0600") {
 		t.Fatalf("err = %v; want 0600 permission error", err)

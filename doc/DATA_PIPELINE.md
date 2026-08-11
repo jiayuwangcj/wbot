@@ -14,6 +14,7 @@
 | `wbot ingest account` | 经 OpenD protobuf（只读 funds 查询）把账户资金快照写入 `account_snapshots`（资产曲线数据层；见下文 §账户资产快照、[[FUTU]] §9） |
 | `wbot ingest status` | 只读列出最近 `ingestion_runs`（`-limit` 可调） |
 | `wbot ingest freshness` | 数据新鲜度检查：各 symbol×timeframe 的 max_ts 年龄与三态状态 + 期权区块（underlying×source）；**任一 stale → exit 1**（可接 cron 门禁） |
+| `wbot datacheck` | 检查 watchlist 每个标的的完整 bars 矩阵与最新期权链；缺失/过期 → exit 1，`-json` 输出完整报告，`-repair` 经富途网关补拉后复查 |
 
 通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-every`（间隔重复）、`-from`/`-to`（RFC3339 时间范围，零值=不限）。
 
@@ -56,6 +57,19 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 ```
 
 > 注：示例中的 `$(...)` 由 cron 的 shell 求值；更稳的写法是包一层脚本（参考 `scripts/verify.sh` 的脚本化风格）。`-every` 与外部 cron 二选一即可，不要叠加。
+
+## 每日数据齐全检查
+
+`internal/datacheck` 独立于 HTTP 与 ingestion 包，负责把 watchlist 转成逐标的完整性报告。默认矩阵为 **8 个周期**（`1m/5m/15m/30m/60m/1d/1w/1mo`）× **3 种复权**（`none/fwd/back`），另要求一条时间有效、含未到期期限的期权链；账户快照不属于本轮行情完整性矩阵。
+
+- 手动只读门禁：`wbot datacheck [-dsn ...] [-now RFC3339]`；仅打印缺失/过期项与汇总，完整为 exit 0，否则 exit 1。
+- 手动补拉：显式加 `-repair`，逐项调用富途 REST 网关（`-addr` > `$FUTU_GATEWAY_URL` > 默认地址），单项失败不阻断其余项，全部尝试后重新读取数据库并报告最终状态。
+- 只读观察面：`GET /v1/datacheck` 返回同一份完整报告；Data 页展示摘要与 missing/stale 列表。HTTP 端点不会触发 repair。
+- 内置调度：`wbot serve` 默认按进程本地时间每天 `17:30` 检查并自动补拉；`-datacheck-at HH:MM` 改时刻，`-datacheck-disable` 关闭。调度只在进程持续运行并到达该时刻时触发；临时进程不会因启动时间已过而补跑，避免重启造成大批重复网关请求。
+- 外部告警：默认关闭。显式使用 `wbot serve -datacheck-notify` 后，按 `DATACHECK_TELEGRAM_BOT_TOKEN` + `DATACHECK_TELEGRAM_CHAT_ID` 和/或 `DATACHECK_DISCORD_WEBHOOK_URL` 启用通道；仅调度失败、repair 有错误或 repair 后仍缺失/过期时发送。未加开关时不读取凭证；一个通道失败不阻断另一个，也不改变 repair 结果。通知错误只记录通道名/HTTP 状态，不回显 token、chat id、webhook URL 或响应体。
+- 交易时段：分钟/日线与期权按标的市场的最新应有交易日判断（港股 16:30、沪深 15:30、美股纽约 16:30 收盘缓冲）；周/月线沿用 timeframe 新鲜度阈值。默认离线日历内建 2026 年沪深、港股、NYSE 官方休市日，并识别港股半日市和 NYSE 提前收市；`Policy.Calendar` 可注入更新。覆盖年份外安全降级为 market-local 工作日，不把网络日历变成服务启动依赖。
+
+bars 补拉窗口为最近 14 天（周线 60 天、月线 180 天），写入 source=`datacheck-futu`；期权补最近 7 天、最近一个到期日。所有落库继续复用 ingest 的事务、校验、限频与 `ON CONFLICT` 幂等语义。
 
 ## 账户资产快照（资产曲线）
 
