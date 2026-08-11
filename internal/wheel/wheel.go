@@ -501,10 +501,15 @@ type CandidateEvaluation struct {
 }
 
 type Signal struct {
-	Action              Action                `json:"action"`
-	Direction           Direction             `json:"direction"`
-	Quantity            int                   `json:"quantity"`
-	SignedContracts     int                   `json:"signed_contracts"`
+	Action          Action    `json:"action"`
+	Direction       Direction `json:"direction"`
+	Quantity        int       `json:"quantity"`
+	SignedContracts int       `json:"signed_contracts"`
+	// ExpectedGain is the conservative gross premium estimate for the
+	// proposed short-option alert: executable bid * lot size * quantity.
+	// It excludes fees, slippage, assignment losses and tax, and remains zero
+	// when the required market data is unavailable.
+	ExpectedGain        float64               `json:"expected_gain,omitempty"`
 	Quote               *OptionQuote          `json:"quote,omitempty"`
 	Quality             float64               `json:"quality"`
 	TargetInventory     float64               `json:"target_inventory"`
@@ -697,11 +702,19 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	})
 	chosen := accepted[0]
 	base.Action, base.Quantity, base.SignedContracts, base.Quality = ActionAlert, chosen.Quantity, chosen.SignedContracts, chosen.Quality
+	base.ExpectedGain = expectedGain(chosen.Quote, chosen.Quantity)
 	base.Quote = &chosen.Quote
 	base.PostTradeEffective, base.AssignmentInventory = chosen.PostTradeEffective, chosen.AssignmentInventory
 	base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds no-trade gap %.2f", direction, gap, cfg.NoTradeGap)
 	base.Reasons = []string{base.Reason}
 	return base, nil
+}
+
+func expectedGain(q OptionQuote, quantity int) float64 {
+	if quantity <= 0 || q.LotSize <= 0 || !finite(q.Bid) || q.Bid <= 0 {
+		return 0
+	}
+	return q.Bid * float64(q.LotSize) * float64(quantity)
 }
 
 // Decide is a convenience wrapper for callers that want an always-safe HOLD

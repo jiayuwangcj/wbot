@@ -19,6 +19,18 @@ func TestWheelReviewRulesSingleSource(t *testing.T) {
 	}
 }
 
+func TestWheelReviewRulesCoverRequiredAuditDimensions(t *testing.T) {
+	for _, want := range []string{
+		"wheel 区间策略", "当前情况", "expected_gain", "预期", "方向反转检查（硬性项）",
+		"inventory_gap", "价格-目标库存曲线", "min_dte/max_dte", "Bid/Ask",
+		"Volume/OI", "资金与库存", "系统性错误", "DATA_BLOCKED", "必须 REJECT",
+	} {
+		if !strings.Contains(wheelReviewRules, want) {
+			t.Errorf("wheelReviewRules missing %q", want)
+		}
+	}
+}
+
 func normalizeSpace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }

@@ -1,8 +1,10 @@
 package wheel
 
 import (
+	"encoding/json"
 	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -135,6 +137,51 @@ func TestEvaluateStateAndDirectionTable(t *testing.T) {
 				t.Fatalf("signed contracts=%d", s.SignedContracts)
 			}
 		})
+	}
+}
+
+func TestExpectedGainEstimateAndMissingData(t *testing.T) {
+	quote := OptionQuote{Bid: 4, LotSize: 100}
+	if got, want := expectedGain(quote, 2), 800.0; got != want {
+		t.Fatalf("expectedGain() = %v; want %v", got, want)
+	}
+	for _, tc := range []struct {
+		name     string
+		quote    OptionQuote
+		quantity int
+	}{
+		{name: "missing bid", quote: OptionQuote{LotSize: 100}, quantity: 1},
+		{name: "missing lot size", quote: OptionQuote{Bid: 4}, quantity: 1},
+		{name: "missing quantity", quote: quote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := expectedGain(tc.quote, tc.quantity); got != 0 {
+				t.Fatalf("expectedGain() = %v; want 0", got)
+			}
+		})
+	}
+
+	b, err := json.Marshal(Signal{Action: ActionHold})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "expected_gain") {
+		t.Fatalf("zero expected gain must be omitted: %s", b)
+	}
+}
+
+func TestEvaluateAlertIncludesExpectedGain(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	signal, err := Evaluate(testConfig(StateNormal), DecisionInput{
+		CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put},
+		HasCashAvailable: true, CashAvailable: 1_000_000,
+	})
+	if err != nil || signal.Action != ActionAlert {
+		t.Fatalf("signal = %+v err=%v; want ALERT", signal, err)
+	}
+	if got, want := signal.ExpectedGain, 400.0; got != want {
+		t.Fatalf("ExpectedGain = %v; want %v", got, want)
 	}
 }
 

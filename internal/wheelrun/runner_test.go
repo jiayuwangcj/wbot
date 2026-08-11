@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -337,6 +338,36 @@ func TestRunOnceLLMGateStates(t *testing.T) {
 		t.Fatalf("failed review details = %+v", failedAction.Details)
 	}
 	assertAction(after, "LLM_REVIEW", "APPROVE")
+}
+
+func TestReviewAlertDirectionReversalIsRejected(t *testing.T) {
+	const symbol = "HK.00700"
+	store := &fakeStore{}
+	reviewer := &fakeReviewer{results: map[string]llmreview.ReviewResult{
+		symbol: {Verdict: "REJECT", Reasons: []string{"方向反转: 正库存缺口却给出 CALL"}},
+	}}
+	r := testRunner(t, Dependencies{Store: store, LLMReviewer: reviewer, LLMModel: "fake-risk"})
+	reversed := wheel.Signal{
+		Action: wheel.ActionAlert, Direction: wheel.DirectionCall, Quantity: 1, SignedContracts: -1,
+		TargetInventory: 600, EffectiveInventory: 400, InventoryGap: 200,
+		CapabilityStatus: wheel.CapabilityReady,
+	}
+	r.reviewAlert(context.Background(), symbol, 42, 1, wheel.Config{Strategy: "wheel"}, reversed, wheelstore.SignalRecord{Symbol: symbol, Action: "ALERT"}, nil, 450)
+
+	if len(reviewer.requests) != 1 {
+		t.Fatalf("review requests = %d; want 1", len(reviewer.requests))
+	}
+	gotSignal, ok := reviewer.requests[0].Signal.(wheel.Signal)
+	if !ok || gotSignal.Direction != wheel.DirectionCall || gotSignal.InventoryGap <= 0 {
+		t.Fatalf("fake scenario did not carry reversed signal: %#v", reviewer.requests[0].Signal)
+	}
+	if len(store.actions) != 1 || store.actions[0].Action != "REJECTED" || store.actions[0].Details["verdict"] != "REJECT" {
+		t.Fatalf("actions = %+v; want fail-closed REJECTED", store.actions)
+	}
+	reasons, ok := store.actions[0].Details["reasons"].([]string)
+	if !ok || len(reasons) != 1 || !strings.Contains(reasons[0], "方向反转") {
+		t.Fatalf("reasons = %#v; want direction reversal", store.actions[0].Details["reasons"])
+	}
 }
 
 // TestRunOnceNoPricePersistsDataBlocked: a symbol without a current price
