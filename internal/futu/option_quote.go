@@ -9,12 +9,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 )
 
 // OptionQuoteEx is one contract's realtime quote: basic market data plus
 // Greeks. Zero fields mean the gateway did not provide them; callers then
 // treat the snapshot as DATA_BLOCKED (the runner falls back, never errors).
+// Theta is a pointer like wheel.OptionQuote.Theta: nil = provider field
+// missing, non-nil zero = a real observed value of zero.
 type OptionQuoteEx struct {
 	Symbol       string
 	Bid          float64
@@ -24,7 +27,7 @@ type OptionQuoteEx struct {
 	OpenInterest int64
 	ImpliedVol   float64
 	Delta        float64
-	Theta        float64
+	Theta        *float64
 	QuoteTime    time.Time
 	LotSize      int
 }
@@ -43,11 +46,11 @@ type quotePage struct {
 		Volume     int64   `json:"volume"`
 		UpdateTime string  `json:"update_time"`
 		ExData     struct {
-			ImpliedVolatility float64 `json:"implied_volatility"`
-			Delta             float64 `json:"delta"`
-			Theta             float64 `json:"theta"`
-			OpenInterest      int64   `json:"open_interest"`
-			LotSize           int     `json:"lot_size"`
+			ImpliedVolatility float64  `json:"implied_volatility"`
+			Delta             float64  `json:"delta"`
+			Theta             *float64 `json:"theta"`
+			OpenInterest      int64    `json:"open_interest"`
+			LotSize           int      `json:"lot_size"`
 		} `json:"ex_data"`
 	} `json:"basic_qot_list"`
 }
@@ -88,7 +91,11 @@ func (c *Client) OptionQuotes(ctx context.Context, symbols []string) (map[string
 	if err := json.Unmarshal(s2c, &pg); err != nil {
 		return nil, fmt.Errorf("option-quotes: bad s2c: %w", err)
 	}
+	bidAskZero := 0
 	for _, q := range pg.BasicQotList {
+		if q.BidPrice == 0 && q.AskPrice == 0 {
+			bidAskZero++
+		}
 		sym := marketPrefix(q.Security.Market) + q.Security.Code
 		if sym == "" {
 			continue
@@ -106,6 +113,11 @@ func (c *Client) OptionQuotes(ctx context.Context, symbols []string) (map[string
 			QuoteTime:    parseQuoteTime(q.UpdateTime),
 			LotSize:      q.ExData.LotSize,
 		}
+	}
+	// warn on mismatched shapes so ops can tell a wrong field path (always-zero
+	// bid/ask → permanent DATA_BLOCKED) apart from a real market halt
+	if len(pg.BasicQotList) != len(symbols) || bidAskZero > 0 {
+		fmt.Fprintf(os.Stderr, "futu: option-quotes: requested=%d answered=%d bidask_zero=%d\n", len(symbols), len(pg.BasicQotList), bidAskZero)
 	}
 	return out, nil
 }
