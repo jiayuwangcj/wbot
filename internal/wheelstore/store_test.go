@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -102,6 +103,35 @@ func TestSignalAndActionValidation(t *testing.T) {
 	}
 	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: 1, Actor: "human", Action: "ORDER"}); !errors.Is(err, ErrInvalidOp) {
 		t.Fatalf("invalid operator action error=%v", err)
+	}
+}
+
+func TestActionValidation(t *testing.T) {
+	valid := []ActionRecord{
+		{SignalID: 1, Actor: "operator", Action: "NOTE"},
+		{SignalID: 1, Actor: "llm:gpt-4o", Action: " llm_review ", Details: map[string]any{"verdict": "APPROVE"}},
+	}
+	for _, r := range valid {
+		rr := r
+		if err := validateAction(&rr); err != nil {
+			t.Errorf("valid action %+v: %v", r, err)
+		}
+		if rr.Action != strings.ToUpper(strings.TrimSpace(r.Action)) {
+			t.Errorf("action not normalized: %q -> %q", r.Action, rr.Action)
+		}
+	}
+	for _, r := range []ActionRecord{
+		{SignalID: 0, Actor: "human", Action: "NOTE"},
+		{SignalID: 1, Actor: "", Action: "NOTE"},
+		{SignalID: 1, Actor: "human", Action: "HACK"},
+	} {
+		if err := validateAction(&r); err == nil {
+			t.Errorf("invalid action %+v accepted", r)
+		}
+	}
+	// nil details must fall back to an empty JSON object, not an error.
+	if _, err := validateJSONMap("details", nil, true); err != nil {
+		t.Fatalf("nil details: %v", err)
 	}
 }
 
