@@ -249,7 +249,8 @@ func CalculateInventory(stockShares, futuresEquivalentShares float64, positions 
 // OptionQuote is a real-time quote snapshot. Bid/ask, IV, Theta, delta,
 // volume and OI are mandatory for an actionable reminder; a daily close is
 // not a substitute. Theta is a pointer because zero can be a valid observed
-// value and must remain distinguishable from a missing provider field.
+// value and must remain distinguishable from a missing provider field. Last
+// is the latest trade and the estimated limit-price anchor when available.
 type OptionQuote struct {
 	Symbol       string     `json:"symbol"`
 	Code         string     `json:"code,omitempty"`
@@ -263,6 +264,7 @@ type OptionQuote struct {
 	MarketDelta  float64    `json:"market_delta,omitempty"`
 	Bid          float64    `json:"bid"`
 	Ask          float64    `json:"ask"`
+	Last         float64    `json:"last,omitempty"`
 	ImpliedVol   float64    `json:"implied_vol"`
 	Theta        *float64   `json:"theta"`
 	Volume       int64      `json:"volume"`

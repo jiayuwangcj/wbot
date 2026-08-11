@@ -52,6 +52,7 @@ func (c *Client) SendMessage(ctx context.Context, chatID, text string, buttons [
 	payload := map[string]any{
 		"chat_id":                  chatID,
 		"text":                     text,
+		"parse_mode":               "HTML",
 		"disable_web_page_preview": true,
 	}
 	if len(buttons) > 0 {
