@@ -88,6 +88,8 @@
 | 信号详情展开+深链（Next#7） | 25765d2 | `go test ./...` 23/23 passed；真实 PG integration passed；dev-up 25/25 | headless Chrome desktop + 390px 动态断言（#signal-45 展开阻塞依赖/拒绝原因/候选报价，缺失值 "—"） | `READY`（只读审计） | 行内详情只读不改写；#signal-<id> 与 results #bt-<id> 同深链惯例；sort 重渲染重建 tbody，展开态自然重置 |
 | 配置版本审计视图（Next#8） | 2f4e47e | `go test ./...` 23/23 passed；真实 PG integration passed；dev-up 25/25 | headless Chrome 深链 #config-<symbol>-v<ver> 展开完整 config/state JSON | `READY`（只读审计） | 配置摘要（曲线锚点/最大库存/战略状态）+ JSON 原文；toggleDetailRow 与信号详情共用 |
 | 信号→配置审计闭环（Next#9） | 2c3fba9 | `go test ./...` 23/23 passed；真实 PG integration passed；dev-up 25/25 | headless Chrome 深链 #config-LINK.US-v2 展开 | `READY`（只读审计） | 信号 vN 列链接过滤并定位配置视图；ListConfigs 改 created_at DESC 使最近审计活动进默认 50 行窗口 |
+| 语义色（Next#10） | 6b5c7ed | `go test ./...` 23/23 passed；真实 PG integration passed；dev-up 25/25；accept-watchlist 16/16、accept-backtest 21/21 | 状态/动作语义色（READY ok、DATA_BLOCKED warn、ALERT accent、HOLD muted） | `READY`（只读审计） | 色块用设计令牌 + font-weight 600；webui_test 契约含 data-status/data-action 选择器 |
+| wheel 审计验收脚本（Next#11） | 97de654 | `go test ./...` 23/23 passed；accept-wheel-audit 22/22 连跑四遍 | N/A（HTTP 契约面） | `READY`（运维面） | 写面→不可变版本联动、400/405 契约、绑定删除后审计保留；每轮 PID 唯一 symbol；ACCEPTANCE.md 12→13 脚本、134→156 项（逐脚本实计） |
 
 ## Next
 
