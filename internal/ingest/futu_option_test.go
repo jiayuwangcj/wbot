@@ -242,13 +242,14 @@ INSERT INTO watchlist (symbol, strategy, params)
 VALUES ($1, $2, $3::jsonb)`, "HK.00700", "wheel", configuredParams); err != nil {
 		t.Fatal(err)
 	}
-	var strategy, params string
-	err = database.QueryRow(`SELECT strategy, params::text FROM watchlist WHERE symbol = $1`, "HK.00700").Scan(&strategy, &params)
+	var strategy string
+	var paramsOK bool
+	err = database.QueryRow(`SELECT strategy, params::jsonb = $2::jsonb FROM watchlist WHERE symbol = $1`, "HK.00700", configuredParams).Scan(&strategy, &paramsOK)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strategy != "wheel" || params != configuredParams {
-		t.Fatalf("watchlist before second ingestion = (%q, %q); want wheel config", strategy, params)
+	if strategy != "wheel" || !paramsOK {
+		t.Fatalf("watchlist before second ingestion = (strategy %q, params match %v); want wheel config", strategy, paramsOK)
 	}
 
 	// Cache helpers: the window is covered now.
@@ -275,12 +276,12 @@ VALUES ($1, $2, $3::jsonb)`, "HK.00700", "wheel", configuredParams); err != nil 
 	if stats.Rows != 0 {
 		t.Fatalf("re-run stats = %+v; want rows=0 (all ON CONFLICT DO NOTHING)", stats)
 	}
-	err = database.QueryRow(`SELECT strategy, params::text FROM watchlist WHERE symbol = $1`, "HK.00700").Scan(&strategy, &params)
+	err = database.QueryRow(`SELECT strategy, params::jsonb = $2::jsonb FROM watchlist WHERE symbol = $1`, "HK.00700", configuredParams).Scan(&strategy, &paramsOK)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strategy != "wheel" || params != configuredParams {
-		t.Fatalf("watchlist after second ingestion = (%q, %q); want unchanged wheel config", strategy, params)
+	if strategy != "wheel" || !paramsOK {
+		t.Fatalf("watchlist after second ingestion = (strategy %q, params match %v); want unchanged wheel config", strategy, paramsOK)
 	}
 }
 
