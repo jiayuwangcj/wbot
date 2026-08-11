@@ -81,6 +81,20 @@ type quotePage struct {
 	} `json:"basic_qot_list"`
 }
 
+// flexInt accepts both integer and floating-point JSON numbers because the
+// gateway serializes some integer-valued option fields as floats (for example,
+// contract_size: 100.0 and open_interest: 3204.0).
+type flexInt int64
+
+func (i *flexInt) UnmarshalJSON(data []byte) error {
+	var n float64
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*i = flexInt(int64(n))
+	return nil
+}
+
 // optionQuotePage mirrors the /api/option-quote s2c (one contract per call).
 type optionQuotePage struct {
 	OptionQuoteList []struct {
@@ -89,8 +103,8 @@ type optionQuotePage struct {
 		IV           float64  `json:"iv"`
 		Delta        float64  `json:"delta"`
 		Theta        *float64 `json:"theta"`
-		OpenInterest int64    `json:"open_interest"`
-		LotSize      int      `json:"contract_size"`
+		OpenInterest flexInt  `json:"open_interest"`
+		LotSize      flexInt  `json:"contract_size"`
 	} `json:"option_quote_list"`
 }
 
@@ -209,8 +223,8 @@ func (c *Client) fetchOptionQuote(ctx context.Context, sym string, quote *Option
 		IV:      leg.IV / 100, // gateway iv is percent; wheel convention is fraction
 		Delta:   leg.Delta,
 		Theta:   leg.Theta,
-		OI:      leg.OpenInterest,
-		LotSize: leg.LotSize,
+		OI:      int64(leg.OpenInterest),
+		LotSize: int(leg.LotSize),
 	}
 	if leg.Mid > 0 {
 		e.Bid, e.Ask = leg.Mid, leg.Mid
