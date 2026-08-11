@@ -50,3 +50,4 @@ wbot = futu 行情/模拟盘 + Wheel 策略实时提醒 + LLM 审核闸门 + Tel
 
 - 用 codex 在本仓库开发时,项目指令直接读**本文件**:`.codex/config.toml` 配置了 `project_doc_fallback_filenames = ["CLAUDE.md"]`。codex 不支持 `@` include(AGENTS.md 内 `@path` 是惰性文本),每目录按 `AGENTS.override.md` → `AGENTS.md` → fallback 顺序只取第一个命中——因此本仓库**不设 AGENTS.md**,避免复制式内容漂移;新机器 clone 后 codex 即可读本文件,无需其他配置。
 - codex 全局环境:审批规则白名单 `~/.codex/rules/default.rules`(verify.sh、docker 测试容器等已放行);`~/.codex/config.toml` model=gpt-5.6-sol、approval_policy=never、sandbox=danger-full-access、本仓库 trusted。
+- **编码执行优先级(2026-08-11 用户指令)**:编码任务默认由 codex CLI 执行(`gpt-5.6-luna` + `model_reasoning_effort=max` 最高思考等级);ChatGPT 订阅额度用完时退回 Claude 侧当前模型编码;详见 doc/ORGS.md「编码执行优先级」。

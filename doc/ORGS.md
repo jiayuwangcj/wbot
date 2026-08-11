@@ -82,6 +82,13 @@
 - 进度贴/分诊等 GitHub 协作由 robot 执行，可与编码并行
 - 每轮迭代：manager 评审进度与优先级 → 主会话按并行协议派多个 coder（不同 worktree）→ 各任务 verify → reviewer 逐 PR 评审 → 主会话合入决策
 
+## 编码执行优先级（2026-08-11 用户指令）
+
+- **编码任务默认由 codex CLI 执行**：官方 OpenAI Codex，模型 `gpt-5.6-luna` + **最高思考等级**（`model_reasoning_effort=max`）。派编码单时优先 `codex exec -m gpt-5.6-luna -c 'model_reasoning_effort=max'`（项目根运行，自动读 CLAUDE.md 与 .codex/config.toml 的 fallback 配置）
+- **订阅额度用完时退回 Claude 侧编码**：codex 报 usage limit/credits 耗尽（或用户告知额度问题）→ 改用 coder subagent / 主会话当前模型编码，任务继续不中断
+- **合规边界**（2026-08-11 核实）：codex exec 是官方 CLI 正常用法，ChatGPT 订阅（Plus）个人使用合规；额度与 ChatGPT web 会话共享（5 小时滚动窗口 + 周上限），注意别拖垮 web 会话；大规模/持续自动化建议 API key 计费
+- **产出同标准**：codex 编码与 Claude 编码同任务记录、同 `scripts/verify.sh` 纪律、同 reviewer 评审（评审仍由 Claude reviewer 独立执行）
+
 ## 目录结构（适合并行）
 
 ```
