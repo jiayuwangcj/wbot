@@ -584,6 +584,12 @@ func TestServeHelpMentionsWheelRunnerFlags(t *testing.T) {
 	}
 }
 
+func TestServeHelpMentionsTelegramRun(t *testing.T) {
+	if out := serveHelpOutput(t); !strings.Contains(out, "-telegram-run") {
+		t.Fatalf("serve help missing -telegram-run: %q", out)
+	}
+}
+
 func TestServeHelpMentionsBacktests(t *testing.T) {
 	out := serveHelpOutput(t)
 	for _, want := range []string{"/v1/backtests", "/v1/backtests/{id}", "/v1/backtests/{id}/export", "POST /v1/backtests"} {

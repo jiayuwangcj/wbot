@@ -589,6 +589,12 @@ function renderConfig(keys) {
     form.hidden = false;
   }
   renderTable("config-table", keys.map((c) => [c.key, c.group, c.set ? "是" : "否", c.updated_at === null ? "未设置" : c.updated_at]));
+  renderTelegramWizard(keys);
+}
+
+/* Admin 配置读取(GET 只回元数据,值永不回显);写面与向导共用。 */
+function loadConfig() {
+  return loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
 }
 
 /* Admin 配置写面 (2026-08-03): PUT /v1/admin/config/{key} 只写不读——
@@ -623,10 +629,69 @@ function initConfigForm() {
   });
 }
 
+/* Telegram 接入向导 (2026-08-11): BotFather 指引 + token/chat_ids 保存。
+   PUT /v1/admin/config/{key} 只写不读:输入保存即清空,「已配置」只来自
+   set 元数据;页面从不请求或显示值(PRIVACY 红线)。绑定只做一次:
+   renderTelegramWizard 随每次配置刷新触发,重复绑定会让 submit 监听器
+   累积(第 N 次保存触发 N+1 次 PUT)——2026-08-11 评审 P1-2。 */
+let telegramWizardBound = false;
+function initTelegramWizard() {
+  if (telegramWizardBound) return;
+  telegramWizardBound = true;
+  const bind = (formId, btnId, key, okId) => {
+    const form = document.getElementById(formId);
+    const btn = document.getElementById(btnId);
+    const val = form && form.querySelector("input");
+    const ok = document.getElementById(okId);
+    const errEl = document.getElementById("config-error");
+    if (!form || !btn || !val || !ok || !errEl) return;
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      clearError(errEl);
+      ok.hidden = true;
+      if (!val.value.trim()) { showError(errEl, new Error("值不能为空")); return; }
+      btn.disabled = true;
+      btn.textContent = "保存中…";
+      fetchJSON("/v1/admin/config/" + encodeURIComponent(key), {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({value: val.value}),
+      })
+        .then(() => { val.value = ""; ok.hidden = false; loadConfig(); })
+        .catch((err) => showError(errEl, err))
+        .finally(() => { btn.disabled = false; btn.textContent = "保存"; });
+    });
+  };
+  bind("telegram-token-form", "telegram-token-btn", "credentials.telegram.token", "telegram-token-ok");
+  bind("telegram-chatids-form", "telegram-chatids-btn", "credentials.telegram.chat_ids", "telegram-chatids-ok");
+}
+
+/* 向导状态:只读 set/updated_at 元数据渲染「已配置」提示与两键表格。 */
+function renderTelegramWizard(keys) {
+  const status = document.getElementById("telegram-status");
+  if (!status) return;
+  const byKey = Object.fromEntries(keys.map((c) => [c.key, c]));
+  const token = byKey["credentials.telegram.token"];
+  const ids = byKey["credentials.telegram.chat_ids"];
+  if (token && token.set && ids && ids.set) {
+    status.textContent = "已配置:提醒将推送到白名单 chat_ids;重启 serve --telegram-run 生效。";
+  } else if (token && token.set) {
+    status.textContent = "token 已配置,还差 chat_ids。";
+  } else if (ids && ids.set) {
+    status.textContent = "chat_ids 已配置,还差 token。";
+  } else {
+    status.textContent = "未配置:按上面三步填入 token 与 chat_ids。";
+  }
+  const rows = ["credentials.telegram.token", "credentials.telegram.chat_ids"]
+    .filter((k) => byKey[k])
+    .map((k) => [k, byKey[k].set ? "是" : "否", byKey[k].updated_at === null ? "未设置" : byKey[k].updated_at]);
+  renderTable("telegram-table", rows);
+  initTelegramWizard();
+}
+
 function initAdminPage() {
   const clusterError = document.getElementById("cluster-error");
   if (!clusterError) return;
-  const loadConfig = () => loadJSON("/v1/admin/config", document.getElementById("config-error"), renderConfig);
   const loadAll = () => Promise.all([
     loadJSON("/v1/admin/cluster", clusterError, renderCluster),
     loadConfig(),

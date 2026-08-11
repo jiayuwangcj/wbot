@@ -177,6 +177,127 @@ VALUES ($1, $2, 1, $3, $4::jsonb, 'invalid fixture')`, symbol, tc.action, tc.sta
 	}
 }
 
+// TestWheelTelegramDispositionIntegration covers migrations 009/010 and the
+// Telegram confirm-loop store surface: dismissals (idempotent, per-day),
+// LatestLLMReview, QuerySignalsSince/MaxSignalID cursor semantics, and the
+// NO/REJECTED action vocabulary.
+func TestWheelTelegramDispositionIntegration(t *testing.T) {
+	database := openIntegrationDB(t)
+	ctx := context.Background()
+	symbol := "WHEELSTORE.TG"
+	cleanIntegrationWheel(t, database, symbol)
+	t.Cleanup(func() { cleanIntegrationWheel(t, database, symbol) })
+
+	store := New(database)
+	if _, err := store.AppendConfig(ctx, ConfigRecord{
+		Symbol: symbol, Version: 1, Config: map[string]any{"strategy": "wheel"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	inv := validInventory()
+	signalID, err := store.AppendSignal(ctx, SignalRecord{
+		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
+		Inventory: inv, Candidates: []map[string]any{{"quote_snapshot_id": 1, "direction": "PUT", "quantity": 1}},
+		Reason: "inventory gap exceeds no-trade gap",
+	})
+	if err != nil || signalID <= 0 {
+		t.Fatalf("AppendSignal id=%d err=%v", signalID, err)
+	}
+	holdID, err := store.AppendSignal(ctx, SignalRecord{
+		Symbol: symbol, Action: "HOLD", ConfigVersion: 1, CapabilityStatus: "DATA_BLOCKED",
+		BlockedBy: []string{"missing_iv"}, Reason: "incomplete quote",
+	})
+	if err != nil || holdID <= 0 {
+		t.Fatalf("AppendSignal HOLD id=%d err=%v", holdID, err)
+	}
+
+	// NO/REJECTED (migration 010) pass the Go validation and the DB CHECK.
+	for _, action := range []string{"NO", "REJECTED"} {
+		if _, err := store.AppendAction(ctx, ActionRecord{SignalID: signalID, Action: action, Actor: "telegram:42"}); err != nil {
+			t.Fatalf("AppendAction %s: %v", action, err)
+		}
+	}
+	// HasAction powers the Telegram yes-path dedup.
+	if has, err := store.HasAction(ctx, signalID, "CONFIRM"); err != nil || has {
+		t.Fatalf("HasAction(CONFIRM) before confirm = %v, %v; want false", has, err)
+	}
+	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: signalID, Action: "CONFIRM", Actor: "telegram:42"}); err != nil {
+		t.Fatalf("AppendAction CONFIRM: %v", err)
+	}
+	if has, err := store.HasAction(ctx, signalID, "CONFIRM"); err != nil || !has {
+		t.Fatalf("HasAction(CONFIRM) after confirm = %v, %v; want true", has, err)
+	}
+	if has, err := store.HasAction(ctx, signalID, "NO"); err != nil || !has {
+		t.Fatalf("HasAction(NO) = %v, %v; want true", has, err)
+	}
+	if _, err := store.HasAction(ctx, signalID, "HACK"); err != ErrInvalidOp {
+		t.Fatalf("HasAction(HACK) = %v; want ErrInvalidOp", err)
+	}
+	if _, err := database.Exec(`INSERT INTO wheel_signal_actions (signal_id, action, actor) VALUES ($1, 'HACK', 'test')`, signalID); err == nil {
+		t.Fatal("database accepted HACK action; CHECK constraint from migration 010 missing")
+	}
+	if _, err := store.LatestLLMReview(ctx, signalID); err != ErrNotFound {
+		t.Fatalf("LatestLLMReview without review = %v; want ErrNotFound", err)
+	}
+	reviewID, err := store.AppendAction(ctx, ActionRecord{SignalID: signalID, Action: "LLM_REVIEW", Actor: "llm:test", Details: map[string]any{"verdict": "REJECT"}})
+	if err != nil || reviewID <= 0 {
+		t.Fatalf("AppendAction LLM_REVIEW id=%d err=%v", reviewID, err)
+	}
+	review, err := store.LatestLLMReview(ctx, signalID)
+	if err != nil || review.Details["verdict"] != "REJECT" {
+		t.Fatalf("LatestLLMReview=%+v err=%v", review, err)
+	}
+	// A newer review wins over an older one.
+	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: signalID, Action: "LLM_REVIEW", Actor: "llm:test", Details: map[string]any{"verdict": "APPROVE"}}); err != nil {
+		t.Fatal(err)
+	}
+	review, err = store.LatestLLMReview(ctx, signalID)
+	if err != nil || review.Details["verdict"] != "APPROVE" {
+		t.Fatalf("LatestLLMReview after second review=%+v err=%v", review, err)
+	}
+
+	// Cursor semantics: seeded cursor skips history, later signals appear.
+	maxID, err := store.MaxSignalID(ctx)
+	if err != nil || maxID != holdID {
+		t.Fatalf("MaxSignalID=%d err=%v; want %d", maxID, err, holdID)
+	}
+	signals, err := store.QuerySignalsSince(ctx, "ALERT", maxID, 10)
+	if err != nil || len(signals) != 0 {
+		t.Fatalf("QuerySignalsSince after max = %d rows, err=%v", len(signals), err)
+	}
+	alert2, err := store.AppendSignal(ctx, SignalRecord{
+		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
+		Inventory: inv, Candidates: []map[string]any{{"quote_snapshot_id": 1, "direction": "PUT"}},
+		Reason: "gap again",
+	})
+	if err != nil || alert2 <= holdID {
+		t.Fatalf("AppendSignal second alert id=%d err=%v", alert2, err)
+	}
+	signals, err = store.QuerySignalsSince(ctx, "ALERT", maxID, 10)
+	if err != nil || len(signals) != 1 || signals[0].ID != alert2 {
+		t.Fatalf("QuerySignalsSince = %+v err=%v; want one row id=%d", signals, err, alert2)
+	}
+
+	// Dismissals (migration 009): idempotent, per-symbol per-day.
+	today := time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC)
+	otherDay := today.AddDate(0, 0, 1)
+	if err := store.Dismiss(ctx, symbol, today); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Dismiss(ctx, symbol, today); err != nil {
+		t.Fatalf("second dismiss must be a no-op: %v", err)
+	}
+	if dismissed, err := store.IsDismissed(ctx, symbol, today); err != nil || !dismissed {
+		t.Fatalf("IsDismissed(today) = %v, %v; want true", dismissed, err)
+	}
+	if dismissed, err := store.IsDismissed(ctx, symbol, otherDay); err != nil || dismissed {
+		t.Fatalf("IsDismissed(other day) = %v, %v; want false", dismissed, err)
+	}
+	if dismissed, err := store.IsDismissed(ctx, symbol+"-OTHER", today); err != nil || dismissed {
+		t.Fatalf("IsDismissed(other symbol) = %v, %v; want false", dismissed, err)
+	}
+}
+
 func TestQueryUnderlyingQuoteSnapshotsPreservesAtomicBatchAtLimit(t *testing.T) {
 	database := openIntegrationDB(t)
 	ctx := context.Background()
