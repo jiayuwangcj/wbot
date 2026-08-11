@@ -16,6 +16,9 @@ func TestNewValidates(t *testing.T) {
 	if _, err := New("http://llm.local", "", "m"); err == nil {
 		t.Fatal("empty api key accepted")
 	}
+	if _, err := New("http://llm.local", "key", ""); err == nil {
+		t.Fatal("empty model accepted")
+	}
 	if c, err := New("http://llm.local/v1/", "key", "m"); err != nil || c.baseURL != "http://llm.local/v1" {
 		t.Fatalf("New baseURL err=%v got=%q", err, c.baseURL)
 	}
@@ -96,6 +99,7 @@ func TestReviewFailClosed(t *testing.T) {
 		wantPart string
 	}{
 		{"garbage content", 200, `{"choices":[{"message":{"content":"not json"}}]}`, "parse verdict JSON"},
+		{"truncated envelope", 200, `{"choices":`, "decode response"},
 		{"empty choices", 200, `{"choices":[]}`, "no choices"},
 		{"invalid verdict", 200, `{"choices":[{"message":{"content":"{\"verdict\":\"MAYBE\"}"}}]}`, "unexpected verdict"},
 		{"server error", 500, `{"error":"boom"}`, "status"},
@@ -115,5 +119,28 @@ func TestReviewFailClosed(t *testing.T) {
 				t.Fatalf("err=%v; want containing %q", err, tc.wantPart)
 			}
 		})
+	}
+}
+
+func TestReviewNetworkFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := server.URL
+	server.Close()
+	c, err := New(url, "key", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Review(context.Background(), ReviewRequest{Symbol: "HK.TCH"}); err == nil || !strings.Contains(err.Error(), "llmreview: request") {
+		t.Fatalf("Review against closed server err=%v", err)
+	}
+}
+
+func TestReviewMarshalDataFailure(t *testing.T) {
+	c, err := New("http://llm.local", "key", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Review(context.Background(), ReviewRequest{Signal: make(chan int)}); err == nil || !strings.Contains(err.Error(), "marshal review data") {
+		t.Fatalf("err=%v; want marshal failure", err)
 	}
 }

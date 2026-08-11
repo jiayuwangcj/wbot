@@ -33,6 +33,9 @@ func New(baseURL, apiKey, model string) (*Client, error) {
 	if strings.TrimSpace(apiKey) == "" {
 		return nil, errors.New("llmreview: api key is required")
 	}
+	if strings.TrimSpace(model) == "" {
+		return nil, errors.New("llmreview: model is required")
+	}
 	return &Client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		apiKey:  apiKey,
@@ -62,11 +65,15 @@ type ReviewResult struct {
 // Review asks the model to audit the decision and parses its JSON reply.
 // Any failure returns an error so the caller can fail closed.
 func (c *Client) Review(ctx context.Context, req ReviewRequest) (ReviewResult, error) {
+	content, err := userContent(req)
+	if err != nil {
+		return ReviewResult{}, err
+	}
 	payload := map[string]any{
 		"model": c.model,
 		"messages": []map[string]string{
 			{"role": "system", "content": systemPrompt},
-			{"role": "user", "content": userContent(req)},
+			{"role": "user", "content": content},
 		},
 		"response_format": map[string]string{"type": "json_object"},
 	}
@@ -107,7 +114,7 @@ type chatCompletion struct {
 	} `json:"choices"`
 }
 
-func userContent(req ReviewRequest) string {
+func userContent(req ReviewRequest) (string, error) {
 	data := map[string]any{
 		"symbol":          req.Symbol,
 		"strategy_config": req.StrategyConfig,
@@ -118,9 +125,9 @@ func userContent(req ReviewRequest) string {
 	}
 	b, err := json.MarshalIndent(data, "", "  ")
 	if err != nil {
-		return fmt.Sprintf(`{"symbol":%q}`, req.Symbol)
+		return "", fmt.Errorf("llmreview: marshal review data: %w", err)
 	}
-	return string(b)
+	return string(b), nil
 }
 
 func parseResult(content string) (ReviewResult, error) {
