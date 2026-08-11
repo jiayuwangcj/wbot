@@ -26,9 +26,19 @@
 
 ## State
 
-- **status**: `queued`
+- **status**: `delivered`(评审批准,已合入基线 `b3a787c` merge)
 - **last step**: 主会话已探索:main.go:324-326(datacheck 协程后加 runner)、flags 区 232-241(datacheck 系列为模式参考)、watchlist.Upsert 写死 DATA_BLOCKED(无 status 更新方法,需新增 SetExecutionStatus)、AppendSignal 契约(store.go:558,ALERT 需 READY+6 字段+候选,DATA_BLOCKED 需非空 blocked)、wheel.Evaluate(cfg, DecisionInput) 输入字段全清单(CurrentPrice/AsOf/StockShares/FuturesEquivalentShares/Positions/DailyOrders/ExtremeDay/CashAvailable/HasCashAvailable)、futu Quote 模式(client.go:92)、datacheck_scheduler.go:67(startDataCheckScheduler 为 serve 协程模式参考)
+
+## 评审结论(2026-08-11,reviewer 批准)
+
+- **结论**:批准合入;达到可使用阶段;功能类型 **feature**;无 P0/P1(代码已于 b3a787c 合入基线,评审为合入后收尾)
+- 已验证:`go build/vet/test ./...`、`-race` 相关包、5 个 runner 场景测试真实断言
+- **P2 移交**:
+  1. CI wheel live 冒烟缺失:`serve -wheel-run`(死网关)+ `/v1/health` 200 断言不在任何 acceptance 脚本 → 并入切片 F(accept-wheel-live.sh 已有「网关不可用跑 DATA_BLOCKED 路径」约束,补 /v1/health 断言)
+  2. `cmd/wbot` 适配器零单测:`qualifySymbol` 表驱动(HK/US/SH/SZ)、`parseWheelEnv`、`futuQuoter.Quote` s2c fixture 解析、`dailyOrders` 边界(昨日/今日 ALERT 计数)→ 并入切片 F
+  3. `-wheel-interval 0/负值` 仅 goroutine 内拒绝(循环静默失效)→ 并入切片 F,flag 解析处 fail-fast(exit 2)
+- **P3 观察**:HasCashAvailable 恒 false(PUT 方向必 DATA_BLOCKED,fail-closed 刻意合理);持仓每 symbol 重拉/每 pass 新建 proto 连接(可上提一次);price<=0 直接返回 vs NaN 穿透落 DATA_BLOCKED 行为不一致;每 pass 每 symbol 落 HOLD(默认 5m 约 288 条/日/标的,可考虑仅状态变化落库);proto 无 per-call 超时;日志无等级(并入分级日志路线)
 
 ## Next
 
-等切片 B 交付后:在 worktree `.claude/worktrees/slice-c-wheel-runner`(branch `feat/slice-c-wheel-runner`,基于 B 合入后 HEAD)实现 runner + SetExecutionStatus + serve 集成 + 单测(fake quoter/positions,参照 wheel 现有测试模式;SetExecutionStatus 单测)→ `scripts/verify.sh` 等价自测 → 独立分支提交(push)→ 报告改动文件/测试结果/遗留问题。
+(收口)切片 F 需吸收上述 P2 移交项;P3 观察项排期评估(日志分级/落库节流可进 backlog)。

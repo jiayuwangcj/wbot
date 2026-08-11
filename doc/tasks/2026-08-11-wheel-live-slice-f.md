@@ -6,7 +6,7 @@
 
 ## Goal
 
-① CLI 默认档:`watchlist add` wheel 缺 `price_position_curve`/`max_inventory` 时,拉现价生成默认曲线 `[{0.8×P,100},{1.2×P,0}]`,max_inventory=100,其余字段用模板默认;HTTP PUT 保持严格 400(不放松)。② 新 `scripts/accept-wheel-live.sh [bin] [dsn] [base-url]`:自己起临时 serve(`--wheel-run --wheel-interval 10s`,LLM/Telegram 用 fake 端点 env)→ 绑定 wheel → 轮询 wheel_signals 有行(90s)→ 信号 capability ∈ {READY,DATA_BLOCKED} 合法 → watchlist status 同步 → LLM 审核记录存在(fake LLM)→ dismiss 当日静默生效 → 清理;连跑两遍。③ **核对期权报价字段路径(评审 P1-1 显式验收步骤)**:futu 网关恢复后,对 1 个期权合约 `curl /api/quote` dump 原始响应,diff 键名与 `internal/futu/option_quote.go` fixture(bid_price/ask_price/last_price + ex_data),不一致则改 struct + fixture 后重跑测试,并把核对结果记入 task ledger(核对前实时运行器可能 DATA_BLOCKED,运行器诊断日志 requested/answered/bidask_zero 定位形态不匹配)。④ 对账:ACCEPTANCE.md 13→14 脚本、156→新和(逐脚本 `grep -c 'check "'` 实计);文档同步 doc/WHEEL_STRATEGY.md(实时链路+LLM 闸门+Telegram 处置)、doc/API.md(serve flags/新表/动作类型/**动作词表补 LLM_REVIEW(评审 P2,doc/API.md:121)**)、task ledger。
+① CLI 默认档:`watchlist add` wheel 缺 `price_position_curve`/`max_inventory` 时,拉现价生成默认曲线 `[{0.8×P,100},{1.2×P,0}]`,max_inventory=100,其余字段用模板默认;HTTP PUT 保持严格 400(不放松)。② 新 `scripts/accept-wheel-live.sh [bin] [dsn] [base-url]`:自己起临时 serve(`--wheel-run --wheel-interval 10s`,LLM/Telegram 用 fake 端点 env)→ 绑定 wheel → 轮询 wheel_signals 有行(90s)→ 信号 capability ∈ {READY,DATA_BLOCKED} 合法 → watchlist status 同步 → LLM 审核记录存在(fake LLM)→ dismiss 当日静默生效 → 清理;连跑两遍。③ **核对期权报价字段路径(评审 P1-1 显式验收步骤)**:futu 网关恢复后,对 1 个期权合约 `curl /api/quote` dump 原始响应,diff 键名与 `internal/futu/option_quote.go` fixture(bid_price/ask_price/last_price + ex_data),不一致则改 struct + fixture 后重跑测试,并把核对结果记入 task ledger(核对前实时运行器可能 DATA_BLOCKED,运行器诊断日志 requested/answered/bidask_zero 定位形态不匹配)。④ 对账:ACCEPTANCE.md 13→14 脚本、156→新和(逐脚本 `grep -c 'check "'` 实计);文档同步 doc/WHEEL_STRATEGY.md(实时链路+LLM 闸门+Telegram 处置)、doc/API.md(serve flags/新表/动作类型/**动作词表补 LLM_REVIEW(评审 P2,doc/API.md:121)**)、task ledger。⑤ **切片 C 评审 P2 移交(2026-08-11)**:a) `cmd/wbot` 适配器单测——`qualifySymbol` 表驱动(HK/US/SH/SZ,CN 前缀启发式注明)、`parseWheelEnv`、`futuQuoter.Quote` s2c fixture 解析、`dailyOrders` 边界(昨日/今日 ALERT 计数);b) `-wheel-interval 0/负值` 在 flag 解析处 fail-fast(exit 2,与 parseWheelEnv 同模式);c) accept-wheel-live.sh 补「死网关 + `serve -wheel-run` 启动时 `/v1/health` 仍 200、stderr 出现 per-symbol 失败」断言(容灾冒烟)。
 
 ## Constraints
 
@@ -26,6 +26,11 @@
 
 - **status**: `queued`
 - **last step**: 主会话已确认 CLI `watchlist add` 现有行为与模板默认值位置;accept 脚本纪律(逐脚本 grep -c 实计、矩阵求和、总表)在 doc/ACCEPTANCE.md 与 memory 双链
+- **P2 移交已由 codex 完成(2026-08-11,待 F 收口评审)**:
+  - P2-2 适配器单测:`25ea2da`(wheel_scheduler_test.go + runner_test.go)
+  - P2-3 interval fail-fast:`ed7332a`(main.go 启动前校验 exit 2 + validateWheelInterval + wheel_interval_test.go)
+  - 均由 codex CLI(gpt-5.6-luna)实现并自测全绿,主会话已验收复跑;评审并入本切片交付
+  - 另:切片 A 引入的 ingest jsonb 断言 bug(CI db-integration 必挂)已修复合入基线 `bd4a700`(非本切片工作,记录备查)
 
 ## Next
 
