@@ -366,6 +366,14 @@ th {
   overflow-wrap: anywhere;
 }
 
+/* 配置版本 JSON 原文(审计证据):等宽小字号,长行折行不撑破卡片。 */
+.signal-detail pre {
+  margin: 0;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .notice {
   color: var(--muted);
 }

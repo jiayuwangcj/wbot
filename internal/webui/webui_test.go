@@ -638,6 +638,12 @@ func TestWatchlistPageElements(t *testing.T) {
 		`data-sort="created_at"`,
 		`data-sort="capability_status"`,
 		`data-sort="effective_inventory"`,
+		`id="wheel-configs"`,
+		`id="wheel-configs-filter"`,
+		`id="wheel-configs-table"`,
+		`id="wheel-configs-error"`,
+		`id="wheel-configs-empty"`,
+		`data-sort="version"`,
 		`/ui/app.js`,
 	} {
 		if !strings.Contains(html, want) {
@@ -675,6 +681,15 @@ func TestWatchlistWheelAuditJS(t *testing.T) {
 		`/^#signal-(\d+)$/.exec(location.hash)`,
 		`rowsById.set(item.id, {tbody, row, item, toggle: detailToggle})`,
 		`applySignalDetailHash(rowsById)`,
+		`function toggleDetailRow(row, button, build, colSpan) {`,
+		`loadJSON("/v1/wheel/configs?" + query.join("&")`,
+		`function renderWheelConfigs(items) {`,
+		`function wheelConfigDetail(item) {`,
+		`wheelConfigSummary(item.config || {})`,
+		`makeTableSorter("wheel-configs-table", WHEEL_CONFIGS_SORT_KEYS)`,
+		`configsSorter.state.key = "version"`,
+		`function applyConfigDetailHash(rowsById) {`,
+		`/^#config-(.+)-v(\d+)$/.exec(location.hash)`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing Wheel audit contract %q", want)

@@ -118,6 +118,22 @@
     </div>
     <div id="wheel-signal-actions" class="notice" hidden></div>
   </section>
+  <section id="wheel-configs">
+    <h2>Wheel 配置版本 <span class="section-tag">只读审计</span></h2>
+    <p class="notice">配置保存后即生成不可变版本,信号通过 config_version 引用当时的配置;这里可查每个版本保存时的完整配置与战略状态。</p>
+    <form id="wheel-configs-filter" class="inline-form">
+      <label>代码 <input type="text" name="symbol" placeholder="留空查看全部"></label>
+      <button type="submit">刷新配置</button>
+    </form>
+    <p id="wheel-configs-error" class="notice error" hidden></p>
+    <p id="wheel-configs-empty" class="notice" hidden>暂无配置版本记录。</p>
+    <div class="table-scroll">
+      <table id="wheel-configs-table" hidden>
+        <thead><tr><th data-sort="symbol" title="点击按此列排序">代码</th><th class="num" data-sort="version" title="点击按此列排序">版本</th><th data-sort="created_at" title="点击按此列排序">保存时间</th><th>配置摘要</th><th>战略状态</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 <script src="/ui/app.js"></script>
 </body>

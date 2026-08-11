@@ -1442,8 +1442,9 @@ function wheelSignalDetail(item) {
   return div;
 }
 
-/* 展开/收起信号详情行。sort 重渲染会重建 tbody,展开态自然重置。 */
-function toggleWheelSignalDetail(tbody, row, item, button) {
+/* 通用行内详情切换(信号/配置版本共用)。sort 重渲染会重建 tbody,
+   展开态自然重置。 */
+function toggleDetailRow(row, button, build, colSpan) {
   const next = row.nextElementSibling;
   if (next && next.classList.contains("detail-row")) {
     next.remove();
@@ -1453,11 +1454,74 @@ function toggleWheelSignalDetail(tbody, row, item, button) {
   const detailRow = document.createElement("tr");
   detailRow.className = "detail-row";
   const td = document.createElement("td");
-  td.colSpan = 8;
-  td.appendChild(wheelSignalDetail(item));
+  td.colSpan = colSpan;
+  td.appendChild(build());
   detailRow.appendChild(td);
   row.insertAdjacentElement("afterend", detailRow);
   button.textContent = "收起";
+}
+
+function toggleWheelSignalDetail(tbody, row, item, button) {
+  toggleDetailRow(row, button, () => wheelSignalDetail(item), 8);
+}
+
+/* 配置版本摘要:曲线锚点数 + 最大库存,一眼识别版本意图。 */
+function wheelConfigSummary(cfg) {
+  const anchors = Array.isArray(cfg.price_position_curve) ? cfg.price_position_curve.length : "?";
+  return "wheel · 曲线 " + anchors + " 锚点 · 最大库存 " + (cfg.max_inventory != null ? fmtNum(cfg.max_inventory) : "?");
+}
+
+/* 配置版本行内详情:完整 config 与 state JSON(版本不可变,原文即审计证据)。 */
+function wheelConfigDetail(item) {
+  const div = document.createElement("div");
+  div.className = "signal-detail";
+  const configPre = document.createElement("pre");
+  configPre.textContent = "config: " + JSON.stringify(item.config, null, 2);
+  const statePre = document.createElement("pre");
+  statePre.textContent = "state: " + JSON.stringify(item.state, null, 2);
+  div.append(configPre, statePre);
+  return div;
+}
+
+function renderWheelConfigs(items) {
+  const table = document.getElementById("wheel-configs-table");
+  const empty = document.getElementById("wheel-configs-empty");
+  const tbody = table.tBodies[0];
+  tbody.replaceChildren();
+  if (items.length === 0) {
+    table.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  const rowsById = new Map();
+  for (const item of items) {
+    const version = document.createElement("td");
+    version.className = "num";
+    version.textContent = "v" + item.version;
+    const detailToggle = document.createElement("button");
+    detailToggle.type = "button";
+    detailToggle.className = "link";
+    detailToggle.textContent = "详情";
+    const auditCell = document.createElement("td");
+    auditCell.appendChild(detailToggle);
+    appendRow(tbody, [item.symbol, version, fmtTime(item.created_at), wheelConfigSummary(item.config || {}), (item.config && item.config.strategic_state) || "—", auditCell]);
+    const row = tbody.lastElementChild;
+    rowsById.set(item.symbol + "#" + item.version, {tbody, row, item, toggle: detailToggle});
+    detailToggle.addEventListener("click", () => toggleDetailRow(row, detailToggle, () => wheelConfigDetail(item), 6));
+  }
+  applyConfigDetailHash(rowsById);
+  empty.hidden = true;
+  table.hidden = false;
+  mirrorNumericColumns(table);
+}
+
+/* 配置版本深链:#config-<symbol>-v<version> 自动展开该版本原文。
+   symbol 贪婪匹配,尾部 -v<数字> 是版本号(代码本身不会带 -v<数字>)。 */
+function applyConfigDetailHash(rowsById) {
+  const m = /^#config-(.+)-v(\d+)$/.exec(location.hash);
+  if (!m) return;
+  const hit = rowsById.get(m[1] + "#" + Number(m[2]));
+  if (hit) toggleDetailRow(hit.row, hit.toggle, () => wheelConfigDetail(hit.item), 6);
 }
 
 /* 深链展开:hash #signal-<id> 时自动展开对应信号详情(与 results 页
@@ -1592,6 +1656,30 @@ function initWatchlistPage() {
   signalsSorter.state.key = "created_at";
   signalsSorter.state.dir = -1;
   signalsSorter.renderIndicators();
+
+  /* 配置版本审计:只读表格 + 行内 JSON 详情,排序默认版本降序。 */
+  const configsError = document.getElementById("wheel-configs-error");
+  const configsFilter = document.getElementById("wheel-configs-filter");
+  function loadWheelConfigs() {
+    clearError(configsError);
+    const query = ["limit=50"];
+    const symbol = configsFilter.symbol.value.trim();
+    if (symbol) query.push("symbol=" + encodeURIComponent(symbol));
+    loadJSON("/v1/wheel/configs?" + query.join("&"), configsError, (items) => {
+      wheelConfigItems = items;
+      renderWheelConfigs(configsSorter.sortItems(items));
+    });
+  }
+  const configsSorter = makeTableSorter("wheel-configs-table", WHEEL_CONFIGS_SORT_KEYS);
+  configsSorter.render = () => renderWheelConfigs(wheelConfigItems);
+  configsSorter.state.key = "version";
+  configsSorter.state.dir = -1;
+  configsSorter.renderIndicators();
+  configsFilter.addEventListener("submit", (e) => {
+    e.preventDefault();
+    loadWheelConfigs();
+  });
+  loadWheelConfigs();
 
   /* 观察列表排序(全站最后一列无排序的表):默认按更新时间降序,新更新在上。 */
   const watchlistSorter = makeTableSorter("watchlist-table", WATCHLIST_SORT_KEYS);
@@ -2011,10 +2099,18 @@ const WHEEL_SIGNALS_SORT_KEYS = {
   effective_inventory: (s) => (s.inventory && s.inventory.effective_inventory != null) ? s.inventory.effective_inventory : -Infinity,
 };
 
+/* 配置版本审计排序:版本数值比较,created_at 定长 RFC3339 字典序=时间序。 */
+const WHEEL_CONFIGS_SORT_KEYS = {
+  symbol: (c) => c.symbol,
+  version: (c) => c.version,
+  created_at: (c) => c.created_at,
+};
+
 let positionsSorter = null;
 let ordersSorter = null;
 let watchlistItems = []; /* 最近一次 /v1/watchlist 结果,排序 render 闭包引用 */
 let wheelSignalItems = []; /* 最近一次 /v1/wheel/signals 结果,排序 render 闭包引用 */
+let wheelConfigItems = []; /* 最近一次 /v1/wheel/configs 结果,排序 render 闭包引用 */
 let coverageSorter = null;
 let coverageRows = []; /* 最近一次覆盖表数据:sorter.render 本地重绘用 */
 
