@@ -83,6 +83,7 @@
 | Luna P1 correctness audit | working tree | 累计 Put reserve、方向缺失、批次 limit/lookback、signal DB CHECK、稳定空数组均有回归 | batch form valid；rerun 回填 symbol/curve/max inventory | `READY` | migration 007 已在真实 PG 应用；无 P0 遗留 |
 | Wheel-only acceptance/CI | working tree | `accept-watchlist` 16/16；`accept-backtest` 21/21；CI/dev-up 不再以简单策略作产品种子 | HTTP/CLI round-trip passed | `READY`（fixture） | `source=demo-fixture` 只用于测试，不宣称真实 provider |
 | P1-A event backtest | pending | pending | pending | `DATA_BLOCKED` | 先取得完整历史 snapshot/事件覆盖，再跑固定样本 |
+| 发布前复扫（Next#5） | e7f97e5 | `go test ./cmd/wbot ./internal/httpapi` passed；dev-up 25/25 | N/A | `READY`（文档/验收面） | 旧术语边界保持；datacheck 端点补入 serve -h 与 dev-up 冒烟 |
 
 ## Next
 
@@ -90,6 +91,6 @@
 2. 保持 P0-D 桌面/移动和 configs/signals/actions 只读 HTTP 回归；人工写动作仍需身份、权限和审计设计，在证据齐全前维持 `INTEGRATION_BLOCKED`。
 3. 取得覆盖目标日期/DTE 的完整历史 snapshot 与 quote/成交事件，才能解锁事件回测和参数研究；bar-time replay 继续标为研究/验证能力。
 4. 继续维持人工处置和期货腿阻塞；不得把 `CONFIRM` 当下单、把缺失期货等价库存当零或估算保证金。实时/自动执行永久 `OUT_OF_SCOPE`。
-5. 发布前复扫五份主文档与 acceptance：旧策略术语只能出现在迁移/拒绝测试，CLI 默认 `hold`/产品只接受 `wheel` 的边界必须保持。
+5. ✅ 发布前复扫五份主文档与 acceptance（2026-08-11, commit e7f97e5）：旧策略术语仅存于迁移/拒绝语境，CLI 默认 `hold`/产品只接受 `wheel` 的边界保持；修复 serve -h 漏列 GET /v1/datacheck、dev-up 冒烟补 datacheck 检查（24→25 项）、ACCEPTANCE/RELEASE_DAILY 计数 22→25 同步。
 
 迁移说明：历史资料中的旧策略名称只用于识别 legacy 行和审计，不构成当前产品 schema、CLI 示例或 `/v1/strategies`/`/v1/watchlist` 合法值。
