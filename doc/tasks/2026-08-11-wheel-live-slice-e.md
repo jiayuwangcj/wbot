@@ -42,3 +42,12 @@
 ## Next
 
 C/D 合入后:在 worktree `.claude/worktrees/slice-e-telegram`(branch `feat/slice-e-telegram`,基于合入后 HEAD)实现 telegram 交互包 + 迁移 008(或新迁移)wheel_signal_dismissals + serve 集成 + 回调 handler 单测(fake telegram server:getUpdates/callback;yes/no/dismiss/未知用户/审核过期)→ `scripts/verify.sh` 等价自测 → 独立分支提交(push)→ 报告改动文件/测试结果/遗留问题。
+
+## 评审结论(2026-08-11,reviewer 有条件批准)
+
+- **结论**:有条件合入;功能类型 **feature**(纯功能迭代,无 bugfix 混合;010 为增量扩展不破坏既有契约);迁移链 005→008→010 已验证干净、密钥零泄漏已验证
+- **P1-2 合入前必修(E 自身)**:app.js:658 向导 submit 监听器随渲染累积 → 重复 PUT(修复轮已派,参照既有 config 表单 form.hidden 守卫)
+- **P1-1 排独立切片(主会话决策)**:推送闸门依赖的 LLM_REVIEW 实时链路无写入方,提醒永不推送 → 排 `2026-08-11-wheel-live-slice-g`(runner 接线 llmreview)
+- **P2 修复轮并入**:runPush MaxSignalID 失败仅 log→回放历史(cursor 0)、confirmOrder 无 CONFIRM 去重(双击/双用户重复下单)
+- **P3**:no 路径英文文案统一中文;游标内存态重启丢窗口(设计内);迁移 010 说明见本文件;webui telegram-empty 死元素;ci.yml binary smoke 补 serve --telegram-run 行(排期)
+- 工具建议:webui 前端行为测试设施(jsdom/node 冒烟)排期;webui 重复监听类运行时缺陷静态契约测不到
