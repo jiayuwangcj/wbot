@@ -25,8 +25,8 @@
 | `accept-backtest.sh` | backtest 双面（CLI -dsn/-save/-export + GET detail/export；四条字节一致等价 + from_watchlist） | 21 | serve + PG + 种子 bars。`scripts/accept-backtest.sh [base-url] [bin] [dsn] [symbol]` | ✅ db-integration |
 | `accept-watchlist.sh` | `wbot watchlist` CLI（add/remove/list + buy-hold + 写面→读面联动） | 16 | serve + PG。`scripts/accept-watchlist.sh [bin] [dsn] [base-url]` | ✅ db-integration |
 | `accept-futu-data.sh` | futu 数据面 HTTP（quote/orders/account） | 15 | serve + 网关可达。`scripts/accept-futu-data.sh [base-url]` |
-| `accept-wheel-audit.sh` | wheel 只读审计面（写面→configs 版本不可变联动、signals/actions 过滤与 400/405 契约、绑定删除后审计保留） | 22 | serve + PG。`scripts/accept-wheel-audit.sh [base-url]` |
-| `accept-wheel-live.sh` | Wheel 实时 runner：死网关 DATA_BLOCKED、fake 报价→LLM 闸门→Telegram dismiss 闭环及 CLI 默认档 | 24 | 临时 serve + PG + fake Futu/LLM/Telegram。`scripts/accept-wheel-live.sh [bin] [dsn] [base-url]` |
+| `accept-wheel-audit.sh` | wheel 只读审计面（写面→configs 版本不可变联动、signals/actions 过滤与 400/405 契约、绑定删除后审计保留） | 22 | serve + PG。`scripts/accept-wheel-audit.sh [base-url]` | ✅ db-integration |
+| `accept-wheel-live.sh` | Wheel 实时 runner：死网关 DATA_BLOCKED、fake 报价→LLM 闸门→Telegram dismiss 闭环及 CLI 默认档 | 24 | 临时 serve + PG + fake Futu/LLM/Telegram。`scripts/accept-wheel-live.sh [bin] [dsn] [base-url]` | ✅ db-integration |
 | `accept-futu-cli.sh` | `wbot futu` CLI（status/quote/funds/position/order + 安全红线） | 21 | 网关可达。`scripts/accept-futu-cli.sh [bin] [rest-addr] [proto-addr]` |
 
 地址参数缺省取 dev-up 已导出的环境变量（`$FUTU_GATEWAY_URL` / `$FUTU_PROTO_ADDR` / `$WBOT_PG_DSN`）；OrbStack 桥接地址实测见 [[FUTU]]。

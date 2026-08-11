@@ -254,6 +254,8 @@ jobs:
           # Cluster options_freshness: seeds its own ACCCLUS* rows and
           # asserts fresh/stale statuses against the running serve.
           scripts/accept-options-cluster.sh http://127.0.0.1:8080 "$WBOT_PG_DSN"
+          # Wheel live e2e: self-managed serve (random port) + fake Futu/LLM/Telegram.
+          scripts/accept-wheel-live.sh "$bin" "$WBOT_PG_DSN"
 
   # Deterministic Markdown summary only (shell). No LLM APIs.
   ci-summary:
