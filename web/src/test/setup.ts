@@ -15,6 +15,7 @@ if (!window.matchMedia) {
 
 const nativeGetComputedStyle = window.getComputedStyle.bind(window);
 window.getComputedStyle = ((element: Element, pseudoElement?: string | null): CSSStyleDeclaration => {
+  if (pseudoElement) return nativeGetComputedStyle(element);
   try {
     return nativeGetComputedStyle(element, pseudoElement);
   } catch {

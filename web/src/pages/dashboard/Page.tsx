@@ -31,6 +31,19 @@ interface RunRow extends IngestionRun {
   key: string;
 }
 
+interface AccountRow {
+  key: string;
+  environment: string;
+  accountId: string;
+  total: string;
+  cash: string;
+  marketVal: string;
+  availableCash: string;
+  power: string;
+  positions: string;
+  status: string;
+}
+
 const ENVIRONMENTS: Environment[] = ["sim", "real"];
 
 function emptyEnvState(): EnvState {
@@ -122,7 +135,7 @@ export function DashboardPage(): ReactNode {
   const current = envState[environment];
   const selectedOrders = orders.data;
   const bothFailed = ENVIRONMENTS.every((env) => envState[env].error !== null);
-  const lineData: LinePoint[] = current.snapshots.map((point) => ({ time: point.captured_at, value: point.total_assets, label: formatTime(point.captured_at) }));
+  const lineData: LinePoint[] = current.snapshots.map((point) => ({ time: point.captured_at, value: point.total_assets, label: `${formatTime(point.captured_at)} · 总资产` }));
   const summaryCards = current.account ? [
     ["总资产", current.account.funds.total_assets],
     ["现金", current.account.funds.cash],
@@ -130,7 +143,34 @@ export function DashboardPage(): ReactNode {
     ["购买力", current.account.funds.power],
     ["可用资金", current.account.funds.available_cash],
   ] as const : [];
-  const curveReadout = useMemo(() => lineData.length >= 2 ? `${formatTime(lineData[0]?.time)} → ${formatTime(lineData.at(-1)?.time)} · ${lineData.length} 点` : "", [lineData]);
+  const curveReadout = useMemo(() => lineData.length >= 2 ? `${formatClock(new Date(lineData[0]?.time ?? ""))} → ${formatClock(new Date(lineData.at(-1)?.time ?? ""))} · ${lineData.length} 点` : "", [lineData]);
+  const accountRows: AccountRow[] = ENVIRONMENTS.map((env) => {
+    const item = envState[env];
+    const account = item.account;
+    return {
+      key: env,
+      environment: environmentLabel(env),
+      accountId: account ? String(account.acc_id) : "—",
+      total: account ? formatMoney(account.funds.total_assets) : "—",
+      cash: account ? formatMoney(account.funds.cash) : "—",
+      marketVal: account ? formatMoney(account.funds.market_val) : "—",
+      availableCash: account ? formatMoney(account.funds.available_cash) : "—",
+      power: account ? formatMoney(account.funds.power) : "—",
+      positions: account ? String(account.positions.length) : "—",
+      status: item.error ? "不可用" : account ? "可用" : "加载中",
+    };
+  });
+  const accountColumns: TableColumnsType<AccountRow> = [
+    { title: "环境", dataIndex: "environment", key: "environment" },
+    { title: "账户 ID", dataIndex: "accountId", key: "accountId" },
+    { title: "总资产", dataIndex: "total", key: "total", align: "right", className: "number-cell" },
+    { title: "现金", dataIndex: "cash", key: "cash", align: "right", className: "number-cell" },
+    { title: "市值", dataIndex: "marketVal", key: "marketVal", align: "right", className: "number-cell" },
+    { title: "可用资金", dataIndex: "availableCash", key: "availableCash", align: "right", className: "number-cell" },
+    { title: "购买力", dataIndex: "power", key: "power", align: "right", className: "number-cell" },
+    { title: "持仓数", dataIndex: "positions", key: "positions", align: "right", className: "number-cell" },
+    { title: "状态", dataIndex: "status", key: "status" },
+  ];
   const handleManualRefresh = async (): Promise<void> => {
     setRefreshing(true);
     try {
@@ -164,22 +204,12 @@ export function DashboardPage(): ReactNode {
           {summaryCards.map(([label, value]) => <Col key={label} xs={24} sm={12} lg={Math.floor(24 / 5)}><Card className="dashboard-stat-card"><Statistic title={label} value={formatMoney(value)} /></Card></Col>)}
           {summaryCards.length === 0 ? <Col span={24}><Card className="dashboard-card"><Alert type={current.error ? "error" : "info"} showIcon message={current.error?.message ?? "加载中…"} /></Card></Col> : null}
         </Row>
-        <div className="dashboard-grid">
-          <Card className="dashboard-card" title={<div className="dashboard-card-header"><span>资产曲线 · {environmentLabel(environment)}</span><Typography.Text type="secondary">{curveReadout}</Typography.Text></div>}>
-            {lineData.length >= 2 ? <LineChart ariaLabel="账户资产曲线（总资产历史快照）" data={lineData} /> : <div className="dashboard-chart-empty">暂无历史快照；可运行 <code>wbot ingest account</code> 开始记录（支持 -every 定时）。</div>}
-          </Card>
-          <Card className="dashboard-card" title="子账户明细">
-            <DataTable className="table-card" columns={[
-              { title: "环境", dataIndex: "environment", key: "environment" },
-              { title: "账户 ID", dataIndex: "accountId", key: "accountId" },
-              { title: "总资产", dataIndex: "total", key: "total", align: "right", className: "number-cell" },
-              { title: "状态", dataIndex: "status", key: "status" },
-            ]} data={ENVIRONMENTS.map((env) => {
-              const item = envState[env];
-              return { key: env, environment: environmentLabel(env), accountId: item.account ? String(item.account.acc_id) : "—", total: item.account ? formatMoney(item.account.funds.total_assets) : "—", status: item.error ? "不可用" : item.account ? "可用" : "加载中" };
-            })} rowKey="key" scrollX={430} />
-          </Card>
-        </div>
+        <Card className="dashboard-card" title={<div className="dashboard-card-header"><span>资产曲线 · {environmentLabel(environment)}</span><Typography.Text type="secondary">{curveReadout}</Typography.Text></div>}>
+          {lineData.length >= 2 ? <LineChart ariaLabel="账户资产曲线（总资产历史快照）" data={lineData} /> : <div className="dashboard-chart-empty">暂无历史快照；可运行 <code>wbot ingest account</code> 开始记录（支持 -every 定时）。</div>}
+        </Card>
+        <Card className="dashboard-card" title="子账户明细">
+          <DataTable className="table-card" columns={accountColumns} data={accountRows} rowKey="key" scrollX={900} />
+        </Card>
         <Card className="dashboard-card" title={`${environmentLabel(environment)}交易与数据审计`}>
           <Typography.Paragraph type="secondary">挂单列表为只读，来源 `/v1/futu/orders`；页面不会创建、修改或撤销订单。</Typography.Paragraph>
           <DashboardTable account={current.account} orders={selectedOrders} runs={runs.data} accountError={current.error} ordersError={orders.error} runsError={runs.error} loading={current.loading || orders.loading || runs.loading} />
