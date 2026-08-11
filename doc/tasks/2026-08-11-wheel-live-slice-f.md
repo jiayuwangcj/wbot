@@ -34,6 +34,19 @@
   - 均由 codex CLI(gpt-5.6-luna)实现并自测全绿,主会话已验收复跑;评审并入本切片交付
   - 另:切片 A 引入的 ingest jsonb 断言 bug(CI db-integration 必挂)已修复合入基线 `bd4a700`(非本切片工作,记录备查)
 
+## 评审结论(2026-08-11,reviewer 有条件通过)
+
+- 结论:合入;功能类型 **feature**(CLI 默认档新行为 + DATA_BLOCKED 持久化 + LLM env 启动告警 + 验收脚本/文档)
+- 实测复核:单测/构建通过;accept-wheel-live.sh 连跑两遍 24/24(首跑 22/24 系 OrbStack 宿主侧 5433 端口映射不可达,容器 IP 可达后全过,非脚本缺陷);对账实计 180 项与 ACCEPTANCE.md 三处一致
+- **P1-1(合入条件,已随合入处理)**:accept-wheel-live.sh 未挂 CI → 已追加 ci.yml db-integration + ACCEPTANCE.md CI 列补 ✅(提交 033abb9;顺手修 accept-wheel-audit 既有漏标)
+- P2×2(排期):① CLI 默认档用户面文档(API.md watchlist 节 + `watchlist add -h` Usage)② runner.go `price<=0` 路径统一走 `persistDataBlocked`(现仅 return error,网关存活但报价残缺无审计痕迹,与 WHEEL_STRATEGY.md 5.1 不符)
+- P3×3(观察):accept 脚本补 node 前置检查;dismiss 查询改 UTC 语义防非 UTC 时区跨午夜 flake;默认曲线浮点价四舍五入
+- 无 P0;API 兼容/密钥安全/日志可观测均达标(LLM env 三变量四处一致;仅假值凭证)
+
+## 合入记录(2026-08-11)
+
+- merge(no-ff,1d626d0,分支 feat/slice-f-default-cli)+ P1-1 提交 033abb9 → PR #323 最终 CI 验证后合入 main
+
 ## Next
 
-已完成 CLI 默认档 + accept-wheel-live.sh(两场景)+ LLM env 文档/warn + 对账/文档同步;`scripts/verify.sh`(含 race/staticcheck)通过,accept-wheel-live.sh 使用指定 PG DSN 连跑两遍均 24/24 通过。真实报价认证(③)仍是独立真实环境闸门:本轮网关不可用,未执行 `/api/quote` 原始字段核对,待网关恢复后按本记录步骤执行并回填结果。
+真实报价认证(③)仍是独立真实环境闸门:本轮网关不可用,未执行 `/api/quote` 原始字段核对,待网关恢复后按本记录步骤执行并回填结果。
