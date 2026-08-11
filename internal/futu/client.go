@@ -46,9 +46,10 @@ type Status struct {
 
 // envelope is the common REST response wrapper (ret_type 0 = success).
 type envelope struct {
-	RetType int             `json:"ret_type"`
-	RetMsg  string          `json:"ret_msg"`
-	ErrCode string          `json:"err_code"`
+	RetType int    `json:"ret_type"`
+	RetMsg  string `json:"ret_msg"`
+	// Gateway endpoints encode err_code inconsistently as a number or string.
+	ErrCode any             `json:"err_code"`
 	S2C     json.RawMessage `json:"s2c"`
 }
 
