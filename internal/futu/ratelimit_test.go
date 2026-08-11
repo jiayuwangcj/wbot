@@ -114,6 +114,45 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 	}
 }
 
+// TestLimiterCrossProcessTimestampAfterLock ensures a caller delayed behind
+// the file lock records the time at which it actually gets the lock, rather
+// than the time at which it started waiting. A stale stamp would let the next
+// process pass immediately after the lock is released.
+func TestLimiterCrossProcessTimestampAfterLock(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "shared.ts")
+	blocker, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatalf("open lock file: %v", err)
+	}
+	defer blocker.Close()
+	if err := flockExclusive(blocker); err != nil {
+		t.Skipf("flock unavailable: %v", err)
+	}
+
+	l := NewLimiter(10 * time.Millisecond)
+	l.persistPath = path
+	releaseAt := time.Now().Add(50 * time.Millisecond)
+	released := make(chan struct{})
+	go func() {
+		timer := time.NewTimer(time.Until(releaseAt))
+		defer timer.Stop()
+		<-timer.C
+		if err := flockRelease(blocker); err != nil {
+			t.Errorf("release lock: %v", err)
+		}
+		close(released)
+	}()
+
+	decisionAt, next := l.crossProcessNext(time.Time{})
+	<-released
+	if decisionAt.Before(releaseAt) {
+		t.Fatalf("decision timestamp %v predates lock release %v", decisionAt, releaseAt)
+	}
+	if !next.IsZero() {
+		t.Fatalf("first pass next = %v; want zero", next)
+	}
+}
+
 // TestLimiterCrossProcessDegrade: an unusable persist path (missing parent
 // dir) degrades to the pure in-memory limiter — Wait never fails.
 func TestLimiterCrossProcessDegrade(t *testing.T) {

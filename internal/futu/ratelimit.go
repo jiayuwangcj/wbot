@@ -35,9 +35,7 @@ func (l *Limiter) Wait(ctx context.Context) error {
 		now := time.Now()
 		next := l.next
 		if l.persistPath != "" {
-			if w := l.crossProcessNext(now, next); w.After(next) {
-				next = w
-			}
+			now, next = l.crossProcessNext(next)
 		}
 		if !now.Before(next) {
 			l.next = now.Add(l.gap)
@@ -55,22 +53,27 @@ func (l *Limiter) Wait(ctx context.Context) error {
 }
 
 // crossProcessNext extends the in-memory window with the shared on-disk
-// rhythm: the read-decision-mark runs in one flock session so concurrent
-// processes cannot both pass on a stale last-request stamp. Returns the next
-// allowed slot (zero = no extra cross-process wait). The file is stamped only
-// when the caller passes in this iteration (now >= both the file window and
-// inMemoryNext) — stamping on a would-be pass while the in-memory gate still
-// blocks would shorten the shared rhythm for other instances (CI flake
-// 2026-08-03: two passes 13.6ms apart under a 30ms gap). Unreadable/unwritable
-// state degrades to the pure in-memory limiter (never fails the request).
-func (l *Limiter) crossProcessNext(now, inMemoryNext time.Time) time.Time {
+// rhythm. It returns the clock reading used for the decision and the next
+// allowed slot. The clock is sampled after the flock is acquired and the file
+// is read, so a goroutine delayed while waiting for the lock cannot stamp an
+// old time and let the next caller pass too early. The read-decision-mark runs
+// in one flock session so concurrent processes cannot both pass on a stale
+// last-request stamp.
+//
+// The file is stamped only when the caller passes in this iteration (now >=
+// both the file window and inMemoryNext) — stamping on a would-be pass while
+// the in-memory gate still blocks would shorten the shared rhythm for other
+// instances (CI flake 2026-08-03: two passes 13.6ms apart under a 30ms gap).
+// Unreadable/unwritable state degrades to the pure in-memory limiter (never
+// fails the request).
+func (l *Limiter) crossProcessNext(inMemoryNext time.Time) (time.Time, time.Time) {
 	f, err := os.OpenFile(l.persistPath, os.O_RDWR|os.O_CREATE, 0o600)
 	if err != nil {
-		return time.Time{}
+		return time.Now(), inMemoryNext
 	}
 	defer f.Close()
 	if err := flockExclusive(f); err != nil {
-		return time.Time{}
+		return time.Now(), inMemoryNext
 	}
 	defer func() { _ = flockRelease(f) }()
 
@@ -80,13 +83,14 @@ func (l *Limiter) crossProcessNext(now, inMemoryNext time.Time) time.Time {
 			last = time.Unix(0, n)
 		}
 	}
+	now := time.Now()
 	window := last.Add(l.gap)
 	if now.Before(window) || now.Before(inMemoryNext) {
 		// This iteration must wait: return the tighter of the two gates.
 		if window.After(inMemoryNext) {
-			return window
+			return now, window
 		}
-		return inMemoryNext
+		return now, inMemoryNext
 	}
 	// This iteration passes: record it as the new last stamp (truncate first:
 	// the file may hold a longer prior value).
@@ -95,7 +99,7 @@ func (l *Limiter) crossProcessNext(now, inMemoryNext time.Time) time.Time {
 			_, _ = fmt.Fprintf(f, "%d", now.UnixNano())
 		}
 	}
-	return time.Time{}
+	return now, inMemoryNext
 }
 
 // persistedLimiter builds a package-level limiter whose rhythm is shared
