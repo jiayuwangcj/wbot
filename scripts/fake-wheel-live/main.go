@@ -93,32 +93,44 @@ func (s *fakeState) handleFutu(w http.ResponseWriter, r *http.Request) {
 		}
 		items := make([]map[string]any, 0, len(req.SecurityList))
 		for _, security := range req.SecurityList {
-			item := map[string]any{
+			price := 10.0
+			if !strings.Contains(security.Code, "C") && !strings.Contains(security.Code, "P") {
+				price = 100.0
+			}
+			items = append(items, map[string]any{
 				"security":    map[string]any{"market": security.Market, "code": security.Code},
-				"bid_price":   9.9,
-				"ask_price":   10.1,
-				"last_price":  10.0,
+				"cur_price":   price,
 				"volume":      1000,
 				"update_time": time.Now().Add(-30 * time.Second).In(time.FixedZone("UTC+8", 8*60*60)).Format("2006-01-02 15:04:05"),
-			}
-			if strings.Contains(security.Code, "C") || strings.Contains(security.Code, "P") {
-				delta := 0.5
-				if strings.Contains(security.Code, "P") {
-					delta = -0.5
-				}
-				item["ex_data"] = map[string]any{
-					"implied_volatility": 0.3,
-					"delta":              delta,
-					"theta":              -0.1,
-					"open_interest":      1000,
-					"lot_size":           100,
-				}
-			} else {
-				item["last_price"] = 100.0
-			}
-			items = append(items, item)
+			})
 		}
 		writeFutu(w, map[string]any{"basic_qot_list": items})
+	case "/api/option-quote":
+		// single-leg combo quote: mid stands in for the (absent) order book
+		var req struct {
+			MultiLegs []struct {
+				Security struct {
+					Code string `json:"code"`
+				} `json:"security"`
+			} `json:"multi_legs"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		delta := 0.5
+		if len(req.MultiLegs) > 0 && strings.Contains(req.MultiLegs[0].Security.Code, "P") {
+			delta = -0.5
+		}
+		writeFutu(w, map[string]any{"option_quote_list": []any{map[string]any{
+			"price":         10.0,
+			"mid":           10.05,
+			"iv":            30.0,
+			"delta":         delta,
+			"theta":         -0.1,
+			"open_interest": 1000,
+			"contract_size": 100,
+		}}})
 	case "/api/option-chain":
 		now := time.Now().UTC().AddDate(0, 0, 7)
 		date := now.Format("2006-01-02")
