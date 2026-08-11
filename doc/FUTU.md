@@ -334,6 +334,8 @@ wbot ingest futu-option -symbol HK.00700 [-days 7] [-expiries 1] [-adjust fwd|no
 
 `option-quote`（combo）实测：body `{"multi_legs":[{"security":{"market":1,"code":"..."},"side":1,"qty_ratio":1}]}`，s2c `option_quote_list[]` 含 `iv/delta/gamma/vega/theta/rho/open_interest/days_to_expiry`；**一次仅一个合约**（多腿=组合报价非批量），快照限频 1 次/3s——`implied_vol` 列保留可空，v1 管道不填充（逐合约 IV 拉取成本高，P3 排期）。
 
+**实时报价 adapter（切片 B，2026-08-11）**：`internal/futu.OptionQuotes`（wheel 运行器数据面）走 `POST /api/quote` 批量快照——先 `POST /api/subscribe`（`sub_types=[1]` SubType_Basic，一次订阅全部合约）再 `POST /api/quote`（`security_list` 多合约单次）；解析 `s2c.basic_qot_list[].bid_price/ask_price/last_price/volume/update_time` + 期权扩展 `ex_data` 的 `implied_volatility/delta/theta/open_interest/lot_size`。**字段路径为 fixture 假数据固化（2026-08-11 网关 offline），后端恢复后需实测核对**；字段缺失留零值，运行器走 [[WHEEL_STRATEGY]] DATA_BLOCKED 兜底；若 ex_data 在 basic 响应外，按 OpenD 惯例改订阅 SubType_Option（7）。
+
 **权利金（P3a，2026-08-03 落地）**：`/v1/futu/options` 的 `contracts[].premium_close` 取 `option_quotes` 该合约最近一行的日 K `close`（`QueryLatestOptionQuote`，`ingest futu-option` 落库数据，非实时）；无数据合约字段缺省。实时 `option-quote`/IV 填充仍 P3 排期。
 
 实测（HK.00700，2026-08-01）：到期日 9 个（`2026-07-31` 已到期 distance=-1 … `2027-06-29`）；链窗口 `[2026-08-07, 2026-08-28]` 返回 2 组 × 48 对（call+put）；合约日 K 正常（未成交深虚值合约 volume=0 属真实数据）。
