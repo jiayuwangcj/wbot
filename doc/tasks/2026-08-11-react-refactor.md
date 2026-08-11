@@ -27,7 +27,7 @@
 - Sol 产品评估: `doc/issues/draft-2026-08-11-react-refactor-sol-eval.md`(111 行;6 项吸收)
 - UI Goal(2026-08-02): 记忆 project-goal-2026-08-02-ui(富途/IB/嘉信参照、主题化、持续演进)
 - 现状事实: webui 5 页 + app.js 2703 行 + style.css 1016 行 + vendored lightweight-charts v4.2.3;webui_test.go 67 测试函数;embed webui.go:12 `web/*`
-- 功能等价对照清单(切片 0 落盘): Sol 已盘点 5 页约 70 项功能清单
+- 功能等价对照清单(已落盘 2026-08-11,提交 3385dca): `doc/tasks/2026-08-11-react-refactor-checklist.md`,实计 81 项(Dashboard 12/Watchlist 21/Results 18/Data 14/Admin 9/全站 7),逐项锚点+空态文案;P1-P4 每片验收核对单
 
 ## State
 
