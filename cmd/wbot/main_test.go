@@ -575,6 +575,15 @@ func TestServeHelpMentionsWatchlist(t *testing.T) {
 	}
 }
 
+func TestServeHelpMentionsWheelRunnerFlags(t *testing.T) {
+	out := serveHelpOutput(t)
+	for _, want := range []string{"-wheel-run", "-wheel-interval", "-wheel-env"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("serve help missing %s: %q", want, out)
+		}
+	}
+}
+
 func TestServeHelpMentionsBacktests(t *testing.T) {
 	out := serveHelpOutput(t)
 	for _, want := range []string{"/v1/backtests", "/v1/backtests/{id}", "/v1/backtests/{id}/export", "POST /v1/backtests"} {
