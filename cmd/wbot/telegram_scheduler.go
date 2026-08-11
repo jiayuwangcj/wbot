@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -214,15 +216,15 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 		s.logf("push: %s signal=%d: not pushed (LLM review not APPROVE: %v)", sig.Symbol, sig.ID, err)
 		return
 	}
-	text, err := alertMessage(&sig)
+	text, err := alertMessage(&sig, reviewReasons(review)...)
 	if err != nil {
 		s.logf("push: %s signal=%d: %v", sig.Symbol, sig.ID, err)
 		return
 	}
 	buttons := []telegram.Button{
-		{Text: "是,下单", Data: fmt.Sprintf("wheel:%d:yes", sig.ID)},
-		{Text: "否,等待机会", Data: fmt.Sprintf("wheel:%d:no", sig.ID)},
-		{Text: "今日不再提醒", Data: fmt.Sprintf("wheel:%d:dismiss", sig.ID)},
+		{Text: "✅ 下单", Data: fmt.Sprintf("wheel:%d:yes", sig.ID)},
+		{Text: "❌ 拒绝", Data: fmt.Sprintf("wheel:%d:no", sig.ID)},
+		{Text: "⚠️ Dismiss", Data: fmt.Sprintf("wheel:%d:dismiss", sig.ID)},
 	}
 	for chatID := range s.chatIDs {
 		if err := s.tg.SendMessage(ctx, strconv.FormatInt(chatID, 10), text, buttons); err != nil {
@@ -395,6 +397,7 @@ type candidateQuote struct {
 	Expiry       string
 	Bid          float64
 	Ask          float64
+	Last         float64
 	Delta        float64
 	ImpliedVol   float64
 	OpenInterest int64
@@ -421,6 +424,7 @@ func firstCandidate(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
 			Expiry       string  `json:"expiry"`
 			Bid          float64 `json:"bid"`
 			Ask          float64 `json:"ask"`
+			Last         float64 `json:"last"`
 			Delta        float64 `json:"delta"`
 			ImpliedVol   float64 `json:"implied_vol"`
 			OpenInterest int64   `json:"open_interest"`
@@ -442,33 +446,140 @@ func firstCandidate(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
 	}
 	return &candidateOrder{
 		Code: c.Quote.Symbol, Side: "sell", Quantity: qty, Direction: direction,
-		Quote: candidateQuote{Symbol: c.Quote.Symbol, OptionType: c.Quote.OptionType, Strike: c.Quote.Strike, Expiry: c.Quote.Expiry, Bid: c.Quote.Bid, Ask: c.Quote.Ask, Delta: c.Quote.Delta, ImpliedVol: c.Quote.ImpliedVol, OpenInterest: c.Quote.OpenInterest},
+		Quote: candidateQuote{Symbol: c.Quote.Symbol, OptionType: c.Quote.OptionType, Strike: c.Quote.Strike, Expiry: c.Quote.Expiry, Bid: c.Quote.Bid, Ask: c.Quote.Ask, Last: c.Quote.Last, Delta: c.Quote.Delta, ImpliedVol: c.Quote.ImpliedVol, OpenInterest: c.Quote.OpenInterest},
 	}, nil
 }
 
-// alertMessage renders the simple order instruction (方向/数量/候选期权 行权·
-// 到期·bid-ask·Δ·IV·OI/现价/库存缺口/信号 id/LLM 审核 APPROVE).
-func alertMessage(sig *wheelstore.SignalRecord) (string, error) {
+const (
+	alertOuterRule  = "━━━━━━━━━━━━━━━━━━━━"
+	alertInnerRule  = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
+	alertLabelWidth = 10
+)
+
+// alertMessage renders the v20 Telegram HTML layout. Review reasons are
+// variadic so callers that only need a structural preview may omit them.
+func alertMessage(sig *wheelstore.SignalRecord, reasons ...string) (string, error) {
 	c, err := firstCandidate(sig)
 	if err != nil {
 		return "", err
 	}
-	expiry := c.Quote.Expiry
-	if t, err := time.Parse(time.RFC3339, expiry); err == nil {
-		expiry = t.Format("2006-01-02")
+	expiry, expiryTime := expiryText(c.Quote.Expiry)
+	dte := "-"
+	if !expiryTime.IsZero() && !sig.CreatedAt.IsZero() {
+		days := int(math.Ceil(expiryTime.Sub(sig.CreatedAt).Hours() / 24))
+		if days < 0 {
+			days = 0
+		}
+		dte = strconv.Itoa(days)
 	}
+	limit := "-"
+	if c.Quote.Last > 0 {
+		limit = fmt.Sprintf("%.2f", c.Quote.Last)
+	}
+	created := "-"
+	if !sig.CreatedAt.IsZero() {
+		created = sig.CreatedAt.Format("01-02 15:04")
+	}
+	stock := countText(sig.Inventory.ActualInventory)
+	target := countText(sig.Inventory.TargetInventory)
+	gap := countText(sig.Inventory.InventoryGap)
+
 	lines := []string{
-		fmt.Sprintf("[WHEEL 提醒] %s", sig.Symbol),
-		fmt.Sprintf("方向: %s", directionLabel(c.Direction)),
-		fmt.Sprintf("数量: %d 张", c.Quantity),
-		fmt.Sprintf("候选: %s", c.Code),
-		fmt.Sprintf("  行权 %.2f | 到期 %s", c.Quote.Strike, expiry),
-		fmt.Sprintf("  bid %.2f | ask %.2f | Δ %.3f | IV %.2f | OI %d", c.Quote.Bid, c.Quote.Ask, c.Quote.Delta, c.Quote.ImpliedVol, c.Quote.OpenInterest),
-		fmt.Sprintf("现价: %s", priceText(sig.Inventory.CurrentPrice)),
-		fmt.Sprintf("库存缺口: %s", priceText(sig.Inventory.InventoryGap)),
-		fmt.Sprintf("信号 #%d | LLM 审核: APPROVE", sig.ID),
+		fmt.Sprintf("<b>📌 %s · %s</b>", html.EscapeString(sig.Symbol), directionLabel(c.Direction)),
+		alertOuterRule,
+		"🎯 <b>订单</b>",
+		alertRow("候选", fmt.Sprintf("<b><code>%s</code></b>", html.EscapeString(c.Code))),
+		alertRow("行权", fmt.Sprintf("<b><code>%.2f</code></b>", c.Quote.Strike)),
+		alertRow("到期", fmt.Sprintf("<code>%s</code> (剩 %s 天)", html.EscapeString(expiry), dte)),
+		alertRow("数量", fmt.Sprintf("<b><code>%s</code></b> 张", commaInt(int64(c.Quantity)))),
+		alertRow("限价", fmt.Sprintf("<b><code>%s</code></b> (估算)", limit)),
+		alertInnerRule,
+		"📊 <b>标的当前</b>",
+		alertRow("正股现价", fmt.Sprintf("<b><code>%s</code></b>", priceText(sig.Inventory.CurrentPrice))),
+		alertRow("bid/ask", fmt.Sprintf("<code>%.2f</code>/<code>%.2f</code>", c.Quote.Bid, c.Quote.Ask)),
+		alertRow("希腊", fmt.Sprintf("Δ <code>%.2f</code> · IV <code>%.2f</code> · OI <code>%s</code>", c.Quote.Delta, c.Quote.ImpliedVol, commaInt(c.Quote.OpenInterest))),
+		alertInnerRule,
+		"🧭 <b>持仓与策略参数</b>",
+		alertRow("正股持仓", fmt.Sprintf("<code>%s</code> 股", stock)),
+		alertRow("CALL 持仓", "<code>-</code> 张 · <code>-</code>"),
+		alertRow("PUT 持仓", "<code>-</code> 张"),
+		alertRow("目标持仓", fmt.Sprintf("<code>%s</code> 股", target)),
+		alertRow("库存缺口", fmt.Sprintf("<b><code>%s</code></b> 股", gap)),
+		alertInnerRule,
+		"🧠 <b>下单原因</b> · LLM 审核 <b>✅ APPROVE</b>",
 	}
+	for _, reason := range reasons {
+		if reason = strings.TrimSpace(reason); reason != "" {
+			lines = append(lines, "• "+html.EscapeString(reason))
+		}
+	}
+	lines = append(lines,
+		alertOuterRule,
+		fmt.Sprintf("信号 #%d · 配置 v%d · %s", sig.ID, sig.ConfigVersion, created),
+	)
 	return strings.Join(lines, "\n"), nil
+}
+
+func reviewReasons(review *wheelstore.ActionRecord) []string {
+	if review == nil {
+		return nil
+	}
+	var out []string
+	switch reasons := review.Details["reasons"].(type) {
+	case []any:
+		for _, reason := range reasons {
+			if text, ok := reason.(string); ok {
+				out = append(out, text)
+			}
+		}
+	case []string:
+		out = append(out, reasons...)
+	}
+	return out
+}
+
+func alertRow(label, value string) string {
+	return label + strings.Repeat(" ", max(1, alertLabelWidth-displayWidth(label))) + value
+}
+
+func displayWidth(s string) int {
+	width := 0
+	for _, r := range s {
+		if r <= 0x7f {
+			width++
+		} else {
+			width += 2
+		}
+	}
+	return width
+}
+
+func expiryText(raw string) (string, time.Time) {
+	for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+		if t, err := time.Parse(layout, raw); err == nil {
+			return t.Format("2006-01-02"), t
+		}
+	}
+	return raw, time.Time{}
+}
+
+func countText(p *float64) string {
+	if p == nil {
+		return "-"
+	}
+	return commaInt(int64(math.Round(*p)))
+}
+
+func commaInt(v int64) string {
+	s := strconv.FormatInt(v, 10)
+	start := 0
+	if strings.HasPrefix(s, "-") {
+		start = 1
+	}
+	for i := len(s) - 3; i > start; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }
 
 // directionLabel renders the wheel direction for the alert text (both

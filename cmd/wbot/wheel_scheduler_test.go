@@ -98,7 +98,7 @@ func TestFutuQuoterQuote(t *testing.T) {
 		case "/api/subscribe":
 			io.WriteString(w, `{"ret_type":0,"s2c":{}}`)
 		case "/api/quote":
-			io.WriteString(w, `{"ret_type":0,"s2c":{"basic_qot_list":[{"last_price":475.2},{"last_price":999.9}]}}`)
+			io.WriteString(w, `{"ret_type":0,"s2c":{"basic_qot_list":[{"cur_price":475.2},{"cur_price":999.9}]}}`)
 		default:
 			http.NotFound(w, r)
 		}

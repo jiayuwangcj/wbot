@@ -361,6 +361,7 @@ func assembleQuotes(underlying string, contracts []futu.OptionContract, quotes m
 			Delta:        q.Delta,
 			Bid:          q.Bid,
 			Ask:          q.Ask,
+			Last:         q.Last,
 			ImpliedVol:   q.ImpliedVol,
 			Theta:        q.Theta, // nil = missing -> quote fails validation -> HOLD
 			Volume:       q.Volume,

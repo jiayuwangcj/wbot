@@ -21,6 +21,7 @@ const tgTestToken = "bottest-token"
 type fakeTGServer struct {
 	mu      sync.Mutex
 	answers []map[string]any
+	sends   []map[string]any
 }
 
 func (f *fakeTGServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -34,10 +35,25 @@ func (f *fakeTGServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
 	case "sendMessage":
+		var p map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&p)
+		f.mu.Lock()
+		f.sends = append(f.sends, p)
+		f.mu.Unlock()
 		w.Write([]byte(`{"ok":true}`))
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (f *fakeTGServer) lastSend(t *testing.T) map[string]any {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.sends) == 0 {
+		t.Fatal("no sendMessage received")
+	}
+	return f.sends[len(f.sends)-1]
 }
 
 func (f *fakeTGServer) lastToast(t *testing.T) string {
@@ -183,13 +199,16 @@ func newTestScheduler(t *testing.T, server *httptest.Server, store *fakeTGStore,
 func signalFixture(id int64, symbol string, created time.Time) *wheelstore.SignalRecord {
 	return &wheelstore.SignalRecord{
 		ID: id, Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
-		Inventory: wheelstore.InventorySnapshot{CurrentPrice: f64ptr(248.5), InventoryGap: f64ptr(-300)},
+		Inventory: wheelstore.InventorySnapshot{
+			CurrentPrice: f64ptr(248.5), ActualInventory: f64ptr(5000),
+			TargetInventory: f64ptr(4700), InventoryGap: f64ptr(-300),
+		},
 		Candidates: []map[string]any{{
 			"direction": "PUT",
 			"quantity":  2,
 			"quote": map[string]any{
 				"symbol": "US.AAPL260815C250000", "option_type": "CALL", "strike": 250.0,
-				"expiry": "2026-08-15T00:00:00Z", "bid": 3.2, "ask": 3.35, "delta": 0.42,
+				"expiry": "2026-08-15T00:00:00Z", "bid": 3.2, "ask": 3.35, "last": 3.28, "delta": 0.42,
 				"implied_vol": 0.25, "open_interest": 1234.0,
 			},
 		}},
@@ -387,29 +406,87 @@ func TestCallbackMalformedDataRejected(t *testing.T) {
 }
 
 func TestAlertMessageFormat(t *testing.T) {
-	sig := signalFixture(7, "US.AAPL", time.Now())
+	created := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	sig := signalFixture(7, "US.AAPL", created)
+	text, err := alertMessage(sig, "IV 高位", "风险 < 可控")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `<b>📌 US.AAPL · 卖出认沽 (SELL PUT)</b>
+━━━━━━━━━━━━━━━━━━━━
+🎯 <b>订单</b>
+候选      <b><code>US.AAPL260815C250000</code></b>
+行权      <b><code>250.00</code></b>
+到期      <code>2026-08-15</code> (剩 4 天)
+数量      <b><code>2</code></b> 张
+限价      <b><code>3.28</code></b> (估算)
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+📊 <b>标的当前</b>
+正股现价  <b><code>248.50</code></b>
+bid/ask   <code>3.20</code>/<code>3.35</code>
+希腊      Δ <code>0.42</code> · IV <code>0.25</code> · OI <code>1,234</code>
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+🧭 <b>持仓与策略参数</b>
+正股持仓  <code>5,000</code> 股
+CALL 持仓 <code>-</code> 张 · <code>-</code>
+PUT 持仓  <code>-</code> 张
+目标持仓  <code>4,700</code> 股
+库存缺口  <b><code>-300</code></b> 股
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+🧠 <b>下单原因</b> · LLM 审核 <b>✅ APPROVE</b>
+• IV 高位
+• 风险 &lt; 可控
+━━━━━━━━━━━━━━━━━━━━
+信号 #7 · 配置 v1 · 08-11 15:30`
+	if text != want {
+		t.Fatalf("alert message mismatch\n--- got ---\n%s\n--- want ---\n%s", text, want)
+	}
+}
+
+func TestAlertMessageMissingLastUsesDash(t *testing.T) {
+	sig := signalFixture(7, "US.AAPL", time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC))
+	quote := sig.Candidates[0]["quote"].(map[string]any)
+	delete(quote, "last")
 	text, err := alertMessage(sig)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"[WHEEL 提醒] US.AAPL",
-		"方向: 卖出认沽",
-		"数量: 2 张",
-		"候选: US.AAPL260815C250000",
-		"行权 250.00",
-		"到期 2026-08-15",
-		"bid 3.20",
-		"ask 3.35",
-		"IV 0.25",
-		"OI 1234",
-		"现价: 248.50",
-		"库存缺口: -300.00",
-		"信号 #7",
-		"LLM 审核: APPROVE",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("alert message missing %q:\n%s", want, text)
+	if !strings.Contains(text, "限价      <b><code>-</code></b> (估算)") {
+		t.Fatalf("missing last did not use dash:\n%s", text)
+	}
+}
+
+func TestPushSignalRendersReviewReasonsAndV20Buttons(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = &wheelstore.ActionRecord{Details: map[string]any{
+		"verdict": "APPROVE", "reasons": []any{"reason one", "reason two"},
+	}}
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	s.pushSignal(context.Background(), *sig)
+	payload := fake.lastSend(t)
+	text, _ := payload["text"].(string)
+	if !strings.Contains(text, "• reason one\n• reason two") {
+		t.Fatalf("message reasons missing: %s", text)
+	}
+	markup, ok := payload["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("reply_markup = %#v", payload["reply_markup"])
+	}
+	rows, _ := markup["inline_keyboard"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("inline_keyboard = %#v", markup["inline_keyboard"])
+	}
+	buttons, _ := rows[0].([]any)
+	wantTexts := []string{"✅ 下单", "❌ 拒绝", "⚠️ Dismiss"}
+	wantData := []string{"wheel:7:yes", "wheel:7:no", "wheel:7:dismiss"}
+	for i := range wantTexts {
+		button, _ := buttons[i].(map[string]any)
+		if button["text"] != wantTexts[i] || button["callback_data"] != wantData[i] {
+			t.Fatalf("button %d = %#v", i, button)
 		}
 	}
 }

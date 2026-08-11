@@ -69,7 +69,7 @@ func (q futuQuoter) Quote(ctx context.Context, symbol string) (float64, error) {
 	}
 	var pg struct {
 		BasicQotList []struct {
-			LastPrice float64 `json:"last_price"`
+			CurPrice float64 `json:"cur_price"`
 		} `json:"basic_qot_list"`
 	}
 	if err := json.Unmarshal(s2c, &pg); err != nil {
@@ -78,7 +78,7 @@ func (q futuQuoter) Quote(ctx context.Context, symbol string) (float64, error) {
 	if len(pg.BasicQotList) == 0 {
 		return 0, fmt.Errorf("quote %s: empty response", symbol)
 	}
-	return pg.BasicQotList[0].LastPrice, nil
+	return pg.BasicQotList[0].CurPrice, nil
 }
 
 func (q futuQuoter) OptionQuotes(ctx context.Context, symbols []string) (map[string]futu.OptionQuoteEx, error) {
