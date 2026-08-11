@@ -88,6 +88,7 @@
 - **订阅额度用完时退回 Claude 侧编码**：codex 报 usage limit/credits 耗尽（或用户告知额度问题）→ 改用 coder subagent / 主会话当前模型编码，任务继续不中断
 - **合规边界**（2026-08-11 核实）：codex exec 是官方 CLI 正常用法，ChatGPT 订阅（Plus）个人使用合规；额度与 ChatGPT web 会话共享（5 小时滚动窗口 + 周上限），注意别拖垮 web 会话；大规模/持续自动化建议 API key 计费
 - **产出同标准**：codex 编码与 Claude 编码同任务记录、同 `scripts/verify.sh` 纪律、同 reviewer 评审（评审仍由 Claude reviewer 独立执行）
+- **提交署名按实际编写模型（2026-08-11 用户指令）**：codex 写的提交署名模型名（如 `Co-Authored-By: gpt-5.6-luna <noreply@openai.com>`），Claude 写的提交保持 `Co-Authored-By: Claude <noreply@anthropic.com>`；派 codex 的 prompt 里提交信息一律让 codex 署自己的模型名，不得署 Claude
 
 ## 目录结构（适合并行）
 
