@@ -204,6 +204,7 @@ if [[ "$smoke" == "1" ]]; then
 	check "POST /v1/backtests (Wheel 回测可跑)" 201 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base_url/v1/backtests" -H 'Content-Type: application/json' -d '{"symbol":"BTEXEC.US","strategy":"wheel","params":{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":10,"strategic_state":"NORMAL"}}')"
 	# DB-local 端点补齐(2026-08-03): 与网关无关,dev-up 种子数据后应恒 200;
 	# futu 系端点依赖网关,由 scripts/accept-*.sh 覆盖,不入 dev-up。
+	check "GET /v1/datacheck" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/datacheck")"
 	check "GET /v1/health" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/health")"
 	check "GET /v1/runs" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/runs")"
 	check "GET /v1/bars (DEMO.US 1d)" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/bars?symbol=DEMO.US&timeframe=1d")"
