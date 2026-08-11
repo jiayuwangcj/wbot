@@ -331,3 +331,22 @@ func TestRunRejectsNonPositiveInterval(t *testing.T) {
 		t.Fatal("Run(-1s) = nil; want interval error")
 	}
 }
+
+func TestDailyOrdersUTCDateAndAlertFilter(t *testing.T) {
+	now := time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)
+	store := &fakeStore{signals: []wheelstore.SignalRecord{
+		{Symbol: "HK.00700", Action: "ALERT", CreatedAt: now.Add(-time.Nanosecond)},
+		{Symbol: "HK.00700", Action: "HOLD", CreatedAt: now.Add(-time.Nanosecond)},
+		{Symbol: "HK.00700", Action: "ALERT", CreatedAt: now},
+		{Symbol: "HK.00700", Action: "HOLD", CreatedAt: now},
+	}}
+	r := testRunner(t, Dependencies{Store: store})
+
+	got, err := r.dailyOrders(context.Background(), "HK.00700", now.Add(12*time.Hour))
+	if err != nil {
+		t.Fatalf("dailyOrders() error: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("dailyOrders() = %d; want 1 today's ALERT only", got)
+	}
+}
