@@ -84,6 +84,7 @@
 | Wheel-only acceptance/CI | working tree | `accept-watchlist` 16/16；`accept-backtest` 21/21；CI/dev-up 不再以简单策略作产品种子 | HTTP/CLI round-trip passed | `READY`（fixture） | `source=demo-fixture` 只用于测试，不宣称真实 provider |
 | P1-A event backtest | pending | pending | pending | `DATA_BLOCKED` | 先取得完整历史 snapshot/事件覆盖，再跑固定样本 |
 | 发布前复扫（Next#5） | e7f97e5 | `go test ./cmd/wbot ./internal/httpapi` passed；dev-up 25/25 | N/A | `READY`（文档/验收面） | 旧术语边界保持；datacheck 端点补入 serve -h 与 dev-up 冒烟 |
+| 信号审计能力过滤+排序（Next#6） | e9a23b5 | `go test ./...` 23/23 passed；真实 PG integration passed；dev-up 25/25；accept-watchlist 16/16、accept-backtest 21/21 | capability select + 表排序（默认时间倒序） | `READY`（只读审计） | capability 过滤服务端化（非法值 400）；信号表排序键含 effective_inventory；mux fake 同步 5 参签名 |
 
 ## Next
 
