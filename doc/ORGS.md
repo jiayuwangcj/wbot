@@ -40,7 +40,7 @@
 | PM 组 | efficiency | `pm/engineering-efficiency.md` | CI/验证/工具链瓶颈评估与提效建议（轻 token） | 代码实施 |
 | PM 组 | engineering-admin | `pm/engineering-admin.md` | **工程结构管理（发起）**：目录树调整需求、远端分支管理/清理、发布发起（执行归 operator/robot/主会话） | 执行一切（编码/发版/清理 git） |
 | PM 组 | robot | `pm/github-robot.md` | GitHub 评论（[robot]）、分诊、进度贴同步 | 计划决策/代码 |
-| 运维组 | operator | `ops/operator.md` | 版本发布（release.sh）、**日构建部署到本地发布目录（~/.wbot/releases/）**、部署/巡检、阻碍提 bug、老板事项汇总给产品组 | 编码/老板发帖 |
+| 运维组 | operator | `ops/operator.md` | 版本发布（release.sh；功能迭代运维空闲时**合批发布**）、部署到本地发布目录（~/.wbot/releases/）、部署/巡检、**发布阻碍提 bug**、老板事项汇总给产品组 | 编码/老板发帖 |
 
 ## 主会话（Supervisor）
 
@@ -53,12 +53,18 @@
 
 **已移交**：取任务/派单/verify → PM 组（manager）；需求衍生 → 产品组（owner）。
 
-## 每日版本计划（日构建，2026-07-31 用户指令）
+## 版本发布（合批，2026-08-11 用户指令；废除 2026-07-31 日构建机制）
 
-- **每日 0 点后**（北京时间）：PM 组（manager）**高优先级完成阻碍性工作**（CI 红、阻断合入的 bug、解除 blocked 的最小改动——不因成本时段顺延）
-- 阻碍性工作完成后：**发布日构建 tag**（`daily-YYYYMMDD`，如 `daily-20260801`，经 `scripts/release.sh publish --version daily-YYYYMMDD`）
-- **运维组（operator）拿到日版本后部署到本地发布目录**（约定 `~/.wbot/releases/`；具体部署步骤见 [[RELEASE_DAILY]]）
-- 日构建 tag 为滚动性质：不冲突时保留，被正式版本（v1.x）取代后由 engineering-admin 发起清理
+- **废除日版本发布**（`daily-YYYYMMDD` tag 流程废止；历史日构建 tag/Release 保留为审计，清理归 engineering-admin）
+- **功能类型判定（reviewer）**：评审报告必须判定交付物类型——
+  - `bugfix`：修复缺陷、恢复既有契约/可用性，不引入新行为
+  - `feature`（功能迭代）：新能力、行为变化、契约扩展
+- **发布时机**：
+  - `bugfix`：可及时发布（保持可用优先）
+  - `feature`：**运维空闲时合批发布**——多个功能迭代合入主基线后攒批，由 PM 组/主会话与运维商定批次，一次发布（走正式语义化版本 `vX.Y.Z`，经 `scripts/release.sh publish --version vX.Y.Z`）
+- **始终保持可用**：发布前 CI 绿 + 评审通过；发布不破坏可用性
+- **发布障碍**：运维组（operator）提发布 bug 需求（GitHub issue，标题带 `[bug]`，正文含复现步骤/日志）→ 开发组修复 → 重新发布
+- **运维组（operator）部署到本地发布目录**（约定 `~/.wbot/releases/`；部署步骤见 [[RELEASE_DAILY]]）
 
 ## 成本时段（降本增效，2026-07-31 用户指令）
 
