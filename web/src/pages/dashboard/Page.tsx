@@ -99,6 +99,7 @@ function DashboardTable({ account, orders, runs, accountError, ordersError, runs
 export function DashboardPage(): ReactNode {
   const [environment, setEnvironment] = useState<Environment>("sim");
   const [envState, setEnvState] = useState<Record<Environment, EnvState>>({ sim: emptyEnvState(), real: emptyEnvState() });
+  const [curvePoint, setCurvePoint] = useState<LinePoint | null>(null);
   const [updatedAt, setUpdatedAt] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const orders = useAsyncData<FutuOrders>(() => getFutuOrders(environment), [environment]);
@@ -120,7 +121,9 @@ export function DashboardPage(): ReactNode {
       });
       return next;
     });
-    setUpdatedAt(formatClock());
+    if (accountResults.some((result) => result.status === "fulfilled") || snapshotResults.some((result) => result.status === "fulfilled")) {
+      setUpdatedAt(formatClock());
+    }
   }, []);
 
   const refreshAll = useCallback(async (): Promise<void> => {
@@ -130,12 +133,18 @@ export function DashboardPage(): ReactNode {
   useEffect(() => {
     void refreshAccounts();
   }, [refreshAccounts]);
+  useEffect(() => {
+    setCurvePoint(null);
+  }, [environment, envState[environment].snapshots]);
   useAutoRefresh(refreshAll);
 
   const current = envState[environment];
   const selectedOrders = orders.data;
   const bothFailed = ENVIRONMENTS.every((env) => envState[env].error !== null);
   const lineData: LinePoint[] = current.snapshots.map((point) => ({ time: point.captured_at, value: point.total_assets, label: `${formatTime(point.captured_at)} · 总资产` }));
+  const handleCurvePointChange = useCallback((point: LinePoint | null): void => {
+    setCurvePoint(point);
+  }, []);
   const summaryCards = current.account ? [
     ["总资产", current.account.funds.total_assets],
     ["现金", current.account.funds.cash],
@@ -205,7 +214,10 @@ export function DashboardPage(): ReactNode {
           {summaryCards.length === 0 ? <Col span={24}><Card className="dashboard-card"><Alert type={current.error ? "error" : "info"} showIcon message={current.error?.message ?? "加载中…"} /></Card></Col> : null}
         </Row>
         <Card className="dashboard-card" title={<div className="dashboard-card-header"><span>资产曲线 · {environmentLabel(environment)}</span><Typography.Text type="secondary">{curveReadout}</Typography.Text></div>}>
-          {lineData.length >= 2 ? <LineChart ariaLabel="账户资产曲线（总资产历史快照）" data={lineData} /> : <div className="dashboard-chart-empty">暂无历史快照；可运行 <code>wbot ingest account</code> 开始记录（支持 -every 定时）。</div>}
+          {lineData.length >= 2 ? <>
+            <LineChart ariaLabel="账户资产曲线（总资产历史快照）" data={lineData} onPointChange={handleCurvePointChange} />
+            {curvePoint ? <div aria-live="polite" className="chart-readout">{formatTime(curvePoint.time)} · {formatNumber(curvePoint.value)}</div> : null}
+          </> : <div className="dashboard-chart-empty">暂无历史快照；可运行 <code>wbot ingest account</code> 开始记录（支持 -every 定时）。</div>}
         </Card>
         <Card className="dashboard-card" title="子账户明细">
           <DataTable className="table-card" columns={accountColumns} data={accountRows} rowKey="key" scrollX={900} />
