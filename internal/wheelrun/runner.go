@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/futu"
+	"github.com/jiayu/wbot/internal/llmreview"
 	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/wheel"
@@ -35,10 +36,16 @@ type OptionChainer interface {
 	OptionChain(ctx context.Context, symbol string, begin, end time.Time) ([]futu.OptionContract, error)
 }
 
+// LLMReviewer audits an ALERT before it can pass the notification gate.
+type LLMReviewer interface {
+	Review(ctx context.Context, req llmreview.ReviewRequest) (llmreview.ReviewResult, error)
+}
+
 // SignalStore is the wheelstore subset the runner reads and writes.
 type SignalStore interface {
 	LatestConfig(ctx context.Context, symbol string) (*wheelstore.ConfigRecord, error)
 	AppendSignal(ctx context.Context, r wheelstore.SignalRecord) (int64, error)
+	AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error)
 	ListSignals(ctx context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error)
 }
 
@@ -52,11 +59,13 @@ type WatchlistLister interface {
 // Dependencies is the runner's full injectable surface. Positions is the
 // slice-B TradePositions interface (positions.go).
 type Dependencies struct {
-	Quoter    Quoter
-	Positions TradePositions
-	Chain     OptionChainer
-	Store     SignalStore
-	Watchlist WatchlistLister
+	Quoter      Quoter
+	Positions   TradePositions
+	Chain       OptionChainer
+	Store       SignalStore
+	Watchlist   WatchlistLister
+	LLMReviewer LLMReviewer
+	LLMModel    string
 }
 
 // Runner evaluates every wheel binding on one sequential pass. It is not
@@ -70,6 +79,8 @@ func NewRunner(deps Dependencies) *Runner { return &Runner{deps: deps} }
 // fallbackBlocker keeps the validateSignal contract (DATA_BLOCKED must have
 // at least one blocker) when Evaluate reports a data block without naming it.
 const fallbackBlocker = "no complete quote snapshot"
+
+const wheelReviewRules = "仅审核 wheel 策略；信号只能是 ALERT 或 HOLD；审核不得触发自动下单；候选必须有完整、及时的期权报价；不得超过最大库存、每日订单数或战略状态限制；数据不足时必须拒绝。"
 
 // RunOnce evaluates every wheel binding once. A per-symbol failure is logged
 // and does not stop the remaining symbols; the returned error (nil when all
@@ -185,11 +196,107 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	if err != nil {
 		return fmt.Errorf("append signal: %w", err)
 	}
+	if record.Action == "ALERT" {
+		r.reviewAlert(ctx, symbol, id, rec.Version, cfg, sig, record, positions, price)
+	}
 	if err := r.deps.Watchlist.SetExecutionStatus(ctx, symbol, status, reason); err != nil {
 		return fmt.Errorf("signal %d stored, watchlist status sync: %w", id, err)
 	}
 	fmt.Fprintf(os.Stderr, "wheelrun: %s: %s capability=%s signal=%d\n", symbol, sig.Action, sig.CapabilityStatus, id)
 	return nil
+}
+
+func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64) {
+	if r.deps.LLMReviewer == nil {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: LLM reviewer unavailable; skipping review signal=%d\n", symbol, signalID)
+		return
+	}
+	summary := map[string]any{
+		"symbol":           symbol,
+		"config_version":   configVersion,
+		"current_price":    price,
+		"strategy_config":  cfg,
+		"signal":           sig,
+		"persisted_signal": record,
+		"positions":        positions,
+		"cash_available":   nil,
+		"rules":            wheelReviewRules,
+	}
+	result, err := r.deps.LLMReviewer.Review(ctx, llmreview.ReviewRequest{
+		StrategyConfig: cfg,
+		Signal:         sig,
+		Positions:      positions,
+		CashAvailable:  nil,
+		RulesText:      wheelReviewRules,
+		Symbol:         symbol,
+	})
+	if err != nil {
+		r.recordReviewFailure(ctx, symbol, signalID, summary, err)
+		return
+	}
+	verdict := strings.ToUpper(strings.TrimSpace(result.Verdict))
+	switch verdict {
+	case "APPROVE":
+		r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
+			SignalID: signalID,
+			Action:   "LLM_REVIEW",
+			Actor:    r.llmActor(),
+			Details:  reviewDetails(verdict, result.Reasons, result.Notes, summary),
+		})
+	case "REJECT":
+		r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
+			SignalID: signalID,
+			Action:   "REJECTED",
+			Actor:    r.llmActor(),
+			Details:  reviewDetails(verdict, result.Reasons, result.Notes, summary),
+		})
+	default:
+		r.recordReviewFailure(ctx, symbol, signalID, summary, fmt.Errorf("unexpected LLM verdict %q", result.Verdict))
+	}
+}
+
+func (r *Runner) recordReviewFailure(ctx context.Context, symbol string, signalID int64, summary map[string]any, err error) {
+	reason := err.Error()
+	r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
+		SignalID: signalID,
+		Action:   "REJECTED",
+		Actor:    r.llmActor(),
+		Details: map[string]any{
+			"verdict":       "REJECT",
+			"reasons":       []string{reason},
+			"error":         reason,
+			"input_summary": summary,
+		},
+	})
+}
+
+func (r *Runner) appendReviewAction(ctx context.Context, symbol string, action wheelstore.ActionRecord) {
+	if _, err := r.deps.Store.AppendAction(ctx, action); err != nil {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: append LLM gate action %s: %v\n", symbol, action.Action, err)
+	}
+}
+
+func (r *Runner) llmActor() string {
+	model := strings.TrimSpace(r.deps.LLMModel)
+	if model == "" {
+		model = "unknown"
+	}
+	return "llm:" + model
+}
+
+func reviewDetails(verdict string, reasons []string, notes string, summary map[string]any) map[string]any {
+	if reasons == nil {
+		reasons = []string{}
+	}
+	details := map[string]any{
+		"verdict":       verdict,
+		"reasons":       reasons,
+		"input_summary": summary,
+	}
+	if notes != "" {
+		details["notes"] = notes
+	}
+	return details
 }
 
 // dailyOrders counts today's (UTC) ALERT signals as the day's order usage.

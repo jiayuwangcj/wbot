@@ -2,11 +2,19 @@ package wheelrun
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
+	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/futu"
+	"github.com/jiayu/wbot/internal/llmreview"
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/wheel"
 	"github.com/jiayu/wbot/internal/wheelstore"
@@ -87,9 +95,11 @@ func (f fakeChain) OptionChain(ctx context.Context, symbol string, begin, end ti
 }
 
 type fakeStore struct {
-	configs   map[string]*wheelstore.ConfigRecord
-	signals   []wheelstore.SignalRecord
-	appendErr error
+	configs         map[string]*wheelstore.ConfigRecord
+	signals         []wheelstore.SignalRecord
+	actions         []wheelstore.ActionRecord
+	appendErr       error
+	appendActionErr error
 }
 
 func (f *fakeStore) LatestConfig(ctx context.Context, symbol string) (*wheelstore.ConfigRecord, error) {
@@ -108,8 +118,46 @@ func (f *fakeStore) AppendSignal(ctx context.Context, r wheelstore.SignalRecord)
 	return int64(len(f.signals)), nil
 }
 
+func (f *fakeStore) AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error) {
+	if f.appendActionErr != nil {
+		return 0, f.appendActionErr
+	}
+	f.actions = append(f.actions, r)
+	return int64(len(f.actions)), nil
+}
+
 func (f *fakeStore) ListSignals(ctx context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error) {
-	return f.signals, nil
+	out := make([]wheelstore.SignalRecord, 0, len(f.signals))
+	for _, signal := range f.signals {
+		if symbol != "" && signal.Symbol != symbol {
+			continue
+		}
+		if action != "" && signal.Action != action {
+			continue
+		}
+		if capability != "" && signal.CapabilityStatus != capability {
+			continue
+		}
+		out = append(out, signal)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+type fakeReviewer struct {
+	results  map[string]llmreview.ReviewResult
+	errors   map[string]error
+	requests []llmreview.ReviewRequest
+}
+
+func (f *fakeReviewer) Review(ctx context.Context, req llmreview.ReviewRequest) (llmreview.ReviewResult, error) {
+	f.requests = append(f.requests, req)
+	if err, ok := f.errors[req.Symbol]; ok {
+		return llmreview.ReviewResult{}, err
+	}
+	return f.results[req.Symbol], nil
 }
 
 type statusCall struct {
@@ -179,6 +227,9 @@ func TestRunOnceAlertReady(t *testing.T) {
 	if len(store.signals) != 1 {
 		t.Fatalf("signals = %d; want 1", len(store.signals))
 	}
+	if len(store.actions) != 0 {
+		t.Fatalf("actions = %+v; want none when reviewer is not configured", store.actions)
+	}
 	sig := store.signals[0]
 	if sig.Symbol != symbol || sig.Action != "ALERT" || sig.CapabilityStatus != "READY" || sig.ConfigVersion != 1 {
 		t.Fatalf("signal = %+v; want ALERT/READY v1 for %s", sig, symbol)
@@ -197,6 +248,91 @@ func TestRunOnceAlertReady(t *testing.T) {
 	if len(wl.status) != 1 || wl.status[0] != (statusCall{symbol, "READY", ""}) {
 		t.Fatalf("watchlist status = %+v; want READY with empty reason", wl.status)
 	}
+}
+
+func TestRunOnceLLMGateStates(t *testing.T) {
+	const approved, rejected, failed, after = "HK.00710", "HK.00711", "HK.00712", "HK.00713"
+	symbols := []string{approved, rejected, failed, after}
+	now := time.Now()
+	contract := callContract("HK.TCH260901C335000", approved, 335, now.AddDate(0, 0, 7))
+	quoter := &fakeQuoter{
+		prices: map[string]float64{approved: 600, rejected: 600, failed: 600, after: 600},
+		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+	}
+	configs := map[string]*wheelstore.ConfigRecord{}
+	items := make([]watchlist.Item, 0, len(symbols))
+	positions := make(fakePositions, 0, len(symbols))
+	for _, symbol := range symbols {
+		configs[symbol] = configRecord(symbol)
+		items = append(items, wheelItem(symbol))
+		positions = append(positions, Position{Symbol: symbol, Code: symbol[3:], Qty: 500, Side: SideLong})
+	}
+	store := &fakeStore{configs: configs}
+	reviewer := &fakeReviewer{
+		results: map[string]llmreview.ReviewResult{
+			approved: {Verdict: "APPROVE", Reasons: []string{"within budget"}, Notes: "ok"},
+			rejected: {Verdict: "REJECT", Reasons: []string{"risk limit"}},
+			after:    {Verdict: "APPROVE", Reasons: []string{"after failure"}},
+		},
+		errors: map[string]error{failed: errors.New("fake llm timeout")},
+	}
+	r := testRunner(t, Dependencies{
+		Quoter: quoter, Positions: positions, Chain: fakeChain{contracts: []futu.OptionContract{contract}},
+		Store: store, Watchlist: &fakeWatchlist{items: items}, LLMReviewer: reviewer, LLMModel: "test-model",
+	})
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error: %v", err)
+	}
+	if len(store.signals) != len(symbols) {
+		t.Fatalf("signals = %d; want %d", len(store.signals), len(symbols))
+	}
+	if len(store.actions) != len(symbols) {
+		t.Fatalf("actions = %d; want %d", len(store.actions), len(symbols))
+	}
+	if len(reviewer.requests) != len(symbols) {
+		t.Fatalf("review requests = %d; want %d", len(reviewer.requests), len(symbols))
+	}
+	for _, req := range reviewer.requests {
+		if req.RulesText == "" || req.StrategyConfig == nil || req.Signal == nil || req.Positions == nil {
+			t.Fatalf("review request missing audit input: %+v", req)
+		}
+	}
+	ids := map[string]int64{}
+	for i, signal := range store.signals {
+		ids[signal.Symbol] = int64(i + 1)
+	}
+	actions := map[int64]wheelstore.ActionRecord{}
+	for _, action := range store.actions {
+		actions[action.SignalID] = action
+	}
+	assertAction := func(symbol, action, verdict string) wheelstore.ActionRecord {
+		t.Helper()
+		got, ok := actions[ids[symbol]]
+		if !ok {
+			t.Fatalf("no action for %s: %+v", symbol, actions)
+		}
+		if got.Action != action || got.Actor != "llm:test-model" || got.Details["verdict"] != verdict {
+			t.Fatalf("action for %s = %+v; want %s/llm:test-model/%s", symbol, got, action, verdict)
+		}
+		if got.Details["input_summary"] == nil {
+			t.Fatalf("action for %s lacks input summary: %+v", symbol, got)
+		}
+		return got
+	}
+	approvedAction := assertAction(approved, "LLM_REVIEW", "APPROVE")
+	if approvedAction.Details["reasons"].([]string)[0] != "within budget" {
+		t.Fatalf("approved reasons = %+v", approvedAction.Details["reasons"])
+	}
+	rejectedAction := assertAction(rejected, "REJECTED", "REJECT")
+	if rejectedAction.Details["reasons"].([]string)[0] != "risk limit" {
+		t.Fatalf("rejected reasons = %+v", rejectedAction.Details["reasons"])
+	}
+	failedAction := assertAction(failed, "REJECTED", "REJECT")
+	if failedAction.Details["error"] != "fake llm timeout" {
+		t.Fatalf("failed review details = %+v", failedAction.Details)
+	}
+	assertAction(after, "LLM_REVIEW", "APPROVE")
 }
 
 // TestRunOnceNoPriceSkipsSymbol: a symbol without a current price (gateway
@@ -348,5 +484,90 @@ func TestDailyOrdersUTCDateAndAlertFilter(t *testing.T) {
 	}
 	if got != 1 {
 		t.Fatalf("dailyOrders() = %d; want 1 today's ALERT only", got)
+	}
+}
+
+func openWheelrunIntegrationDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MigrateUp(database); err != nil {
+		database.Close()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	return database
+}
+
+func cleanWheelrunIntegration(t *testing.T, database *sql.DB, symbol string) {
+	t.Helper()
+	if _, err := database.Exec(`DELETE FROM wheel_signal_actions WHERE signal_id IN (SELECT id FROM wheel_signals WHERE symbol = $1)`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM wheel_signals WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`DELETE FROM wheel_configs WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunOnceLLMReviewVisibleToLatestLLMReview(t *testing.T) {
+	database := openWheelrunIntegrationDB(t)
+	ctx := context.Background()
+	symbol := "WHEELRUN.LLM"
+	cleanWheelrunIntegration(t, database, symbol)
+	t.Cleanup(func() { cleanWheelrunIntegration(t, database, symbol) })
+
+	store := wheelstore.New(database)
+	if _, err := store.AppendConfig(ctx, *configRecord(symbol)); err != nil {
+		t.Fatalf("AppendConfig: %v", err)
+	}
+	now := time.Now()
+	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"{\"verdict\":\"APPROVE\",\"reasons\":[\"integration ok\"],\"notes\":\"\"}"}}]}`)
+	}))
+	defer server.Close()
+	reviewer, err := llmreview.New(server.URL, "test-key", "pg-test")
+	if err != nil {
+		t.Fatalf("llmreview.New: %v", err)
+	}
+	r := testRunner(t, Dependencies{
+		Quoter: &fakeQuoter{
+			prices: map[string]float64{symbol: 600},
+			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		},
+		Positions:   fakePositions{{Symbol: symbol, Code: "LLM", Qty: 500, Side: SideLong}},
+		Chain:       fakeChain{contracts: []futu.OptionContract{contract}},
+		Store:       store,
+		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
+		LLMReviewer: reviewer,
+		LLMModel:    "pg-test",
+	})
+	if err := r.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	signals, err := store.ListSignals(ctx, symbol, "ALERT", "", 10)
+	if err != nil || len(signals) != 1 {
+		t.Fatalf("ListSignals = %+v, err=%v; want one ALERT", signals, err)
+	}
+	review, err := store.LatestLLMReview(ctx, signals[0].ID)
+	if err != nil {
+		t.Fatalf("LatestLLMReview: %v", err)
+	}
+	if review.Actor != "llm:pg-test" || review.Details["verdict"] != "APPROVE" || review.Details["input_summary"] == nil {
+		t.Fatalf("review = %+v; want persisted APPROVE audit", review)
 	}
 }
