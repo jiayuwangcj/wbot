@@ -103,7 +103,7 @@ func newTelegramScheduler(tg *telegram.Client, store wheelTelegramStore, orders 
 // written tmp+rename atomically, so a concurrent admin PUT never yields a
 // torn read). Missing config is logged once and the loop is skipped.
 func startTelegramScheduler(ctx context.Context, database *sql.DB, env futu.Env) {
-	cfg, err := config.OpenDefault()
+	cfg, err := openTelegramConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "telegram: config: %v\n", err)
 		return
@@ -127,7 +127,7 @@ func startTelegramScheduler(ctx context.Context, database *sql.DB, env futu.Env)
 		fmt.Fprintf(os.Stderr, "telegram: %v\n", err)
 		return
 	}
-	tg, err := telegram.New(token, "", nil)
+	tg, err := telegram.New(token, strings.TrimSpace(os.Getenv("TELEGRAM_API_BASE_URL")), nil)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "telegram: %v\n", err)
 		return
@@ -149,6 +149,13 @@ func startTelegramScheduler(ctx context.Context, database *sql.DB, env futu.Env)
 			s.logf("poll: %v", err)
 		}
 	}()
+}
+
+func openTelegramConfig() (*config.Store, error) {
+	if dir := strings.TrimSpace(os.Getenv("WBOT_CONFIG_DIR")); dir != "" {
+		return config.Open(dir)
+	}
+	return config.OpenDefault()
 }
 
 // runPush polls new ALERT signals and pushes those whose latest LLM review is

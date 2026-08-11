@@ -6,7 +6,7 @@
 
 - 战略层由人定义价格—目标库存曲线、最大库存和状态，不由回测优化。
 - 战术层根据目标库存与有效库存之差，只选择 5–10 DTE 的 Put 或 Call。
-- 执行层只产生提醒与日志，任何情况下都不自动下单。
+- 执行层只产生提醒与日志；LLM 审核通过后，Telegram 人工确认仅允许模拟环境下单，任何情况下都不自动下单。
 - 技术指标、方向预测、宏观预测和单点参数寻优不进入 v1。
 
 ## 2. 统一配置
@@ -92,11 +92,20 @@ inventory_gap       = target_inventory - effective_inventory
 - `wheel_configs`：版本化战略配置与状态。
 - `option_quote_snapshots`：盘口、Greeks、OI 与采集时间。
 - `wheel_signals`：包含 `ALERT/HOLD`、候选、库存快照、理由和配置版本。
-- `wheel_signal_actions`：人工确认、忽略、实际成交或备注；系统自身不下单。
+- `wheel_signal_actions`：LLM `LLM_REVIEW`、Telegram 人工确认/忽略/拒绝/成交或备注；系统自身不自动下单。
+- `wheel_signal_dismissals`：按 symbol 与 UTC 当日记录 Telegram 的“今日不再提醒”。
 - `backtest_results.signals`（migration 006）：保存逐 bar 的 `ALERT/HOLD` 决策轨迹，包括 `capability_status`、`blocked_by`、原子 `snapshot_key/observed_at` 和库存分解；回测输入同时保存完整 `strategy_params`，用于复现。
 - 只读审计 API：`GET /v1/wheel/configs`、`GET /v1/wheel/signals`、`GET /v1/wheel/signals/{id}/actions`。不提供写动作，不具备身份/授权闭环。
 
 历史 watchlist 参数迁移采用显式失效：旧策略行标记为需要重新配置，不猜测价格曲线或最大库存。
+
+### 5.1 实时链路与人工闸门
+
+`serve -wheel-run` 启动后，runner 按 `-wheel-interval` 为每个 Wheel watchlist 绑定读取当前价、账户持仓、期权链和同一批次合约报价，执行库存曲线与风险校验，并 append-only 写入 `wheel_signals`、同步 watchlist execution status。任一依赖失败或报价字段不完整都落 `HOLD`/`DATA_BLOCKED`，不生成可执行提醒。
+
+完整快照产生 `ALERT` 后，runner 使用 `$LLM_BASE_URL`、`$LLM_API_KEY`、`$LLM_MODEL` 调用 OpenAI-compatible 审核器；审核结果以 `LLM_REVIEW` action 保存，只有 `APPROVE` 才进入 Telegram 推送，`REJECT` 或调用失败保持 fail-closed。缺少任一 env 时 serve 启动告警，ALERT 不会静默地伪装成已推送。
+
+`serve -telegram-run` 读取配置的 token/chat ID，向允许的 chat 推送带 `yes`、`no`、`今日不再提醒` 的按钮。`yes` 由人工触发且只允许 sim 环境，失败或 real 环境写 `REJECTED`；`no` 写 `NO`；dismiss 写入当日静默表并抑制同一 symbol 当日后续提醒。Telegram loop 与 Wheel runner 独立启停。
 
 ## 6. 回测与验收
 

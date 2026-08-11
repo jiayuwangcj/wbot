@@ -26,8 +26,8 @@
 
 ## State
 
-- **status**: `in_progress`(2026-08-11 派单 codex gpt-5.6-luna max)
-- **last step**: 主会话已确认 CLI `watchlist add` 现有行为与模板默认值位置;accept 脚本纪律(逐脚本 grep -c 实计、矩阵求和、总表)在 doc/ACCEPTANCE.md 与 memory 双链
+- **status**: `completed`(2026-08-11, codex gpt-5.6-luna max)
+- **last step**: CLI 默认档、死网关/fake 闭环验收、LLM env 启动告警和文档对账已完成;全仓 verify 与 accept-wheel-live 连跑两遍全绿
 - **P2 移交已由 codex 完成(2026-08-11,待 F 收口评审)**:
   - P2-2 适配器单测:`25ea2da`(wheel_scheduler_test.go + runner_test.go)
   - P2-3 interval fail-fast:`ed7332a`(main.go 启动前校验 exit 2 + validateWheelInterval + wheel_interval_test.go)
@@ -36,4 +36,4 @@
 
 ## Next
 
-实现 CLI 默认档 + accept-wheel-live.sh(两场景)+ LLM env 文档/warn + 对账/文档同步 → `scripts/verify.sh` 等价自测 + accept-wheel-live 连跑两遍 → 独立分支提交(push)→ 报告改动文件/测试结果/遗留问题。真实报价认证(③)作为独立真实环境闸门,网关恢复后执行并记入 ledger。
+已完成 CLI 默认档 + accept-wheel-live.sh(两场景)+ LLM env 文档/warn + 对账/文档同步;`scripts/verify.sh`(含 race/staticcheck)通过,accept-wheel-live.sh 使用指定 PG DSN 连跑两遍均 24/24 通过。真实报价认证(③)仍是独立真实环境闸门:本轮网关不可用,未执行 `/api/quote` 原始字段核对,待网关恢复后按本记录步骤执行并回填结果。

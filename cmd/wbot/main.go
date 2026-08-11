@@ -757,6 +757,12 @@ func runWatchlistAdd(prog string, argv []string) int {
 			return 2
 		}
 	}
+	if strat == "wheel" {
+		if err := applyWheelDefaults(context.Background(), sym, paramsMap); err != nil {
+			fmt.Fprintf(os.Stderr, "watchlist add: %v\n", err)
+			return 2
+		}
+	}
 	if err := watchlist.Validate(strat, paramsMap); err != nil {
 		fmt.Fprintf(os.Stderr, "watchlist add: %v\n", err)
 		return 2
