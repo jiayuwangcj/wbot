@@ -1465,10 +1465,12 @@ function toggleWheelSignalDetail(tbody, row, item, button) {
   toggleDetailRow(row, button, () => wheelSignalDetail(item), 8);
 }
 
-/* 配置版本摘要:曲线锚点数 + 最大库存,一眼识别版本意图。 */
+/* 配置版本摘要:曲线锚点数 + 最大库存,一眼识别版本意图。
+   wheel_configs.config 是 {"strategy","params"} 信封,先取 params 再读字段。 */
 function wheelConfigSummary(cfg) {
-  const anchors = Array.isArray(cfg.price_position_curve) ? cfg.price_position_curve.length : "?";
-  return "wheel · 曲线 " + anchors + " 锚点 · 最大库存 " + (cfg.max_inventory != null ? fmtNum(cfg.max_inventory) : "?");
+  const p = (cfg && cfg.params) || cfg || {};
+  const anchors = Array.isArray(p.price_position_curve) ? p.price_position_curve.length : "?";
+  return "wheel · 曲线 " + anchors + " 锚点 · 最大库存 " + (p.max_inventory != null ? fmtNum(p.max_inventory) : "?");
 }
 
 /* 配置版本行内详情:完整 config 与 state JSON(版本不可变,原文即审计证据)。 */
@@ -1504,7 +1506,7 @@ function renderWheelConfigs(items) {
     detailToggle.textContent = "详情";
     const auditCell = document.createElement("td");
     auditCell.appendChild(detailToggle);
-    appendRow(tbody, [item.symbol, version, fmtTime(item.created_at), wheelConfigSummary(item.config || {}), (item.config && item.config.strategic_state) || "—", auditCell]);
+    appendRow(tbody, [item.symbol, version, fmtTime(item.created_at), wheelConfigSummary(item.config || {}), ((item.config && item.config.params && item.config.params.strategic_state) || (item.config && item.config.strategic_state)) || "—", auditCell]);
     const row = tbody.lastElementChild;
     rowsById.set(item.symbol + "#" + item.version, {tbody, row, item, toggle: detailToggle});
     detailToggle.addEventListener("click", () => toggleDetailRow(row, detailToggle, () => wheelConfigDetail(item), 6));
