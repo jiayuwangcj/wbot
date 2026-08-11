@@ -121,6 +121,35 @@ describe("WatchlistPage", () => {
     expect(await screen.findByText("symbol is required")).toBeInTheDocument();
   });
 
+  it("asks for delete confirmation and leaves the watchlist unchanged when cancelled", async () => {
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    render(<WatchlistPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: /删除/ }));
+
+    expect(confirm).toHaveBeenCalledWith("从观察列表移除 HK.00700?");
+    expect(apiMocks.deleteWatchlist).not.toHaveBeenCalled();
+  });
+
+  it("shows save feedback, resets the form, and focuses the symbol input", async () => {
+    render(<WatchlistPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /edit.*编辑/ }));
+
+    const symbolInput = document.getElementById("watchlist-symbol");
+    if (!symbolInput) throw new Error("missing symbol input");
+    const form = document.getElementById("watchlist-wheel-form");
+    if (!form) throw new Error("missing Wheel form");
+    fireEvent.submit(form);
+
+    expect(await screen.findByText("已保存 HK.00700(wheel)。")).toBeInTheDocument();
+    expect(symbolInput).toHaveValue("");
+    expect(symbolInput).toHaveFocus();
+    expect(screen.getByText("添加观察标的")).toBeInTheDocument();
+    const resetPriceInput = document.querySelector<HTMLInputElement>("#watchlist-wheel-form input[placeholder='例如 400']");
+    if (!resetPriceInput) throw new Error("missing reset price input");
+    expect(resetPriceInput).toHaveValue("");
+  });
+
   it("opens a config version from its independent deep link", async () => {
     window.location.hash = "#config-HK.00700-v3";
     render(<WatchlistPage />);

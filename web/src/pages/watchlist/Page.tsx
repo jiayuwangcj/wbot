@@ -191,6 +191,7 @@ export function WatchlistPage(): ReactNode {
   const [backtestLoading, setBacktestLoading] = useState<string | null>(null);
   const [listActionError, setListActionError] = useState<Error | null>(null);
   const symbolInputRef = useRef<InputRef>(null);
+  const lastAppliedDeepLinkHashRef = useRef<string | null>(null);
 
   const refreshAll = useCallback(async (): Promise<void> => {
     await Promise.all([watchlist.refresh(), signals.refresh(), configs.refresh()]);
@@ -204,6 +205,9 @@ export function WatchlistPage(): ReactNode {
   }, [configs.data, signals.data, watchlist.data]);
 
   const applyDeepLinks = useCallback((): void => {
+    const hash = window.location.hash;
+    if (lastAppliedDeepLinkHashRef.current === hash) return;
+    lastAppliedDeepLinkHashRef.current = hash;
     const signalId = parseSignalHash(window.location.hash);
     const configKey = parseConfigHash(window.location.hash);
     setExpandedSignalKeys(signalId === null ? [] : [signalId]);
@@ -215,16 +219,6 @@ export function WatchlistPage(): ReactNode {
     window.addEventListener("hashchange", applyDeepLinks);
     return () => window.removeEventListener("hashchange", applyDeepLinks);
   }, [applyDeepLinks]);
-
-  useEffect(() => {
-    const signalId = parseSignalHash(window.location.hash);
-    if (signalId !== null && signals.data?.some((signal) => signal.id === signalId)) setExpandedSignalKeys([signalId]);
-  }, [signals.data]);
-
-  useEffect(() => {
-    const configKey = parseConfigHash(window.location.hash);
-    if (configKey !== null && configs.data?.some((config) => `${config.symbol}#${config.version}` === configKey)) setExpandedConfigKeys([configKey]);
-  }, [configs.data]);
 
   useEffect(() => {
     if (!drawerOpen) return undefined;
@@ -288,6 +282,7 @@ export function WatchlistPage(): ReactNode {
       setEditingItem(null);
       setEditorSymbol("");
       setFormRevision((value) => value + 1);
+      symbolInputRef.current?.focus();
       await watchlist.refresh();
     } finally {
       setSaving(false);
