@@ -1492,10 +1492,22 @@ function initWatchlistPage() {
     const query = ["limit=50"];
     const symbol = signalFilter.symbol.value.trim();
     const action = signalFilter.action.value;
+    const capability = signalFilter.capability.value;
     if (symbol) query.push("symbol=" + encodeURIComponent(symbol));
     if (action) query.push("action=" + encodeURIComponent(action));
-    loadJSON("/v1/wheel/signals?" + query.join("&"), signalsError, (items) => renderWheelSignals(items, loadSignalActions));
+    if (capability) query.push("capability=" + encodeURIComponent(capability));
+    loadJSON("/v1/wheel/signals?" + query.join("&"), signalsError, (items) => {
+      wheelSignalItems = items;
+      renderWheelSignals(signalsSorter.sortItems(items), loadSignalActions);
+    });
   }
+
+  /* 信号审计表排序(全站表排序一致性):默认时间降序,最新在上。 */
+  const signalsSorter = makeTableSorter("wheel-signals-table", WHEEL_SIGNALS_SORT_KEYS);
+  signalsSorter.render = () => renderWheelSignals(wheelSignalItems, loadSignalActions);
+  signalsSorter.state.key = "created_at";
+  signalsSorter.state.dir = -1;
+  signalsSorter.renderIndicators();
 
   /* 观察列表排序(全站最后一列无排序的表):默认按更新时间降序,新更新在上。 */
   const watchlistSorter = makeTableSorter("watchlist-table", WATCHLIST_SORT_KEYS);
@@ -1904,9 +1916,21 @@ const WATCHLIST_SORT_KEYS = {
   updated_at: (i) => i.updated_at,
 };
 
+/* Wheel 信号审计排序:created_at 定长 RFC3339 字典序=时间序;库存数值
+   列缺省沉底(-Infinity),与全站数字列排序惯例一致。 */
+const WHEEL_SIGNALS_SORT_KEYS = {
+  created_at: (s) => s.created_at,
+  symbol: (s) => s.symbol,
+  action: (s) => s.action,
+  capability_status: (s) => s.capability_status,
+  config_version: (s) => s.config_version ?? -Infinity,
+  effective_inventory: (s) => (s.inventory && s.inventory.effective_inventory != null) ? s.inventory.effective_inventory : -Infinity,
+};
+
 let positionsSorter = null;
 let ordersSorter = null;
 let watchlistItems = []; /* 最近一次 /v1/watchlist 结果,排序 render 闭包引用 */
+let wheelSignalItems = []; /* 最近一次 /v1/wheel/signals 结果,排序 render 闭包引用 */
 let coverageSorter = null;
 let coverageRows = []; /* 最近一次覆盖表数据:sorter.render 本地重绘用 */
 

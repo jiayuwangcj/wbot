@@ -99,13 +99,20 @@
           <option value="HOLD">HOLD</option>
         </select>
       </label>
+      <label>能力状态
+        <select name="capability">
+          <option value="">全部</option>
+          <option value="READY">READY · 可提醒</option>
+          <option value="DATA_BLOCKED">DATA_BLOCKED · 数据阻塞</option>
+        </select>
+      </label>
       <button type="submit">刷新信号</button>
     </form>
     <p id="wheel-signals-error" class="notice error" hidden></p>
     <p id="wheel-signals-empty" class="notice" hidden>尚无 Wheel 信号记录；实时供应商未解锁时这是正常状态。</p>
     <div class="table-scroll">
       <table id="wheel-signals-table" hidden>
-        <thead><tr><th>时间</th><th>代码</th><th>动作</th><th>能力状态</th><th>配置</th><th class="num">实际 / 有效 / 目标</th><th>原因</th><th></th></tr></thead>
+        <thead><tr><th data-sort="created_at" title="点击按此列排序">时间</th><th data-sort="symbol" title="点击按此列排序">代码</th><th data-sort="action" title="点击按此列排序">动作</th><th data-sort="capability_status" title="点击按此列排序">能力状态</th><th data-sort="config_version" title="点击按此列排序">配置</th><th class="num" data-sort="effective_inventory" title="点击按此列排序">实际 / 有效 / 目标</th><th>原因</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
     </div>

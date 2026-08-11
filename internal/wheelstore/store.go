@@ -20,6 +20,7 @@ var (
 	ErrNilDB         = errors.New("wheelstore: nil db")
 	ErrInvalidRecord = errors.New("wheelstore: invalid record")
 	ErrInvalidAction = errors.New("wheelstore: action must be ALERT or HOLD")
+	ErrInvalidStatus = errors.New("wheelstore: capability status must be READY or DATA_BLOCKED")
 	ErrInvalidOp     = errors.New("wheelstore: action must be CONFIRM, IGNORE, FILL, or NOTE")
 )
 
@@ -624,7 +625,7 @@ func (s *Store) GetSignal(ctx context.Context, id int64) (*SignalRecord, error) 
 	return &r, nil
 }
 
-func (s *Store) ListSignals(ctx context.Context, symbol, action string, limit int) ([]SignalRecord, error) {
+func (s *Store) ListSignals(ctx context.Context, symbol, action, capability string, limit int) ([]SignalRecord, error) {
 	if err := s.check(); err != nil {
 		return nil, err
 	}
@@ -644,6 +645,14 @@ func (s *Store) ListSignals(ctx context.Context, symbol, action string, limit in
 		}
 		args = append(args, action)
 		conds = append(conds, fmt.Sprintf("action=$%d", len(args)))
+	}
+	if strings.TrimSpace(capability) != "" {
+		capability = strings.ToUpper(capability)
+		if capability != "READY" && capability != "DATA_BLOCKED" {
+			return nil, ErrInvalidStatus
+		}
+		args = append(args, capability)
+		conds = append(conds, fmt.Sprintf("capability_status=$%d", len(args)))
 	}
 	args = append(args, limit)
 	q := fmt.Sprintf(`SELECT id,symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,created_at FROM wheel_signals WHERE %s ORDER BY created_at DESC,id DESC LIMIT $%d`, strings.Join(conds, " AND "), len(args))
@@ -667,7 +676,7 @@ func (s *Store) ListSignals(ctx context.Context, symbol, action string, limit in
 }
 
 func (s *Store) QuerySignals(ctx context.Context, symbol, action string, limit int) ([]SignalRecord, error) {
-	return s.ListSignals(ctx, symbol, action, limit)
+	return s.ListSignals(ctx, symbol, action, "", limit)
 }
 
 func validOperatorAction(a string) bool {

@@ -794,7 +794,7 @@ func (serveFakeAuditStore) ListWheelConfigs(context.Context, string, int) ([]whe
 	return []wheelstore.ConfigRecord{{ID: 1, Symbol: "DEMO.US", Version: 1, Config: map[string]any{"strategy": "wheel"}, State: map[string]any{}}}, nil
 }
 
-func (serveFakeAuditStore) ListWheelSignals(context.Context, string, string, int) ([]wheelstore.SignalRecord, error) {
+func (serveFakeAuditStore) ListWheelSignals(context.Context, string, string, string, int) ([]wheelstore.SignalRecord, error) {
 	return []wheelstore.SignalRecord{{ID: 1, Symbol: "DEMO.US", Action: "HOLD", BlockedBy: []string{}, Candidates: []map[string]any{}, RejectionReasons: []string{}}}, nil
 }
 

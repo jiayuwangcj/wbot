@@ -18,7 +18,7 @@ import (
 // accidentally gain access to config, signal, or operator-action writes.
 type WheelAuditStore interface {
 	ListWheelConfigs(context.Context, string, int) ([]wheelstore.ConfigRecord, error)
-	ListWheelSignals(context.Context, string, string, int) ([]wheelstore.SignalRecord, error)
+	ListWheelSignals(context.Context, string, string, string, int) ([]wheelstore.SignalRecord, error)
 	ListWheelSignalActions(context.Context, int64) ([]wheelstore.ActionRecord, error)
 }
 
@@ -120,7 +120,7 @@ func wheelAuditBadRequest(w http.ResponseWriter, message string) {
 
 // WheelAuditHandler serves only GET endpoints:
 //   - GET /v1/wheel/configs?symbol=...&limit=...
-//   - GET /v1/wheel/signals?symbol=...&action=ALERT|HOLD&limit=...
+//   - GET /v1/wheel/signals?symbol=...&action=ALERT|HOLD&capability=READY|DATA_BLOCKED&limit=...
 //   - GET /v1/wheel/signals/{id}/actions
 //
 // It never calls a write-capable wheelstore method. A nil store is retained as
@@ -179,11 +179,16 @@ func WheelAuditHandler(store WheelAuditStore) http.Handler {
 			wheelAuditBadRequest(w, fmt.Sprintf("invalid action %q; want ALERT or HOLD", q.Get("action")))
 			return
 		}
+		capability := strings.ToUpper(strings.TrimSpace(q.Get("capability")))
+		if capability != "" && capability != "READY" && capability != "DATA_BLOCKED" {
+			wheelAuditBadRequest(w, fmt.Sprintf("invalid capability %q; want READY or DATA_BLOCKED", q.Get("capability")))
+			return
+		}
 		if store == nil {
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-		signals, err := store.ListWheelSignals(r.Context(), strings.TrimSpace(q.Get("symbol")), action, limit)
+		signals, err := store.ListWheelSignals(r.Context(), strings.TrimSpace(q.Get("symbol")), action, capability, limit)
 		if err != nil {
 			writeWheelAuditStoreError(w, err)
 			return
@@ -249,8 +254,8 @@ func (s dbStore) ListWheelConfigs(ctx context.Context, symbol string, limit int)
 	return wheelstore.New(s.db).ListConfigs(ctx, symbol, limit)
 }
 
-func (s dbStore) ListWheelSignals(ctx context.Context, symbol, action string, limit int) ([]wheelstore.SignalRecord, error) {
-	return wheelstore.New(s.db).ListSignals(ctx, symbol, action, limit)
+func (s dbStore) ListWheelSignals(ctx context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error) {
+	return wheelstore.New(s.db).ListSignals(ctx, symbol, action, capability, limit)
 }
 
 func (s dbStore) ListWheelSignalActions(ctx context.Context, signalID int64) ([]wheelstore.ActionRecord, error) {

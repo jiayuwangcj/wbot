@@ -22,6 +22,7 @@ type fakeWheelAuditStore struct {
 	configLimit  int
 	signalSymbol string
 	signalAction string
+	signalStatus string
 	signalLimit  int
 	actionID     int64
 }
@@ -34,8 +35,8 @@ func (f *fakeWheelAuditStore) ListWheelConfigs(_ context.Context, symbol string,
 	return f.configs, nil
 }
 
-func (f *fakeWheelAuditStore) ListWheelSignals(_ context.Context, symbol, action string, limit int) ([]wheelstore.SignalRecord, error) {
-	f.signalSymbol, f.signalAction, f.signalLimit = symbol, action, limit
+func (f *fakeWheelAuditStore) ListWheelSignals(_ context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error) {
+	f.signalSymbol, f.signalAction, f.signalStatus, f.signalLimit = symbol, action, capability, limit
 	if f.err != nil {
 		return nil, f.err
 	}
@@ -75,9 +76,9 @@ func TestWheelAuditHandlerReadRoutesAndFilters(t *testing.T) {
 		t.Fatalf("config timestamp is not normalized RFC3339 UTC: %s", rec.Body)
 	}
 
-	rec = wheelAuditRequest(t, h, http.MethodGet, "/v1/wheel/signals?symbol=HK.00700&action=alert&limit=4")
-	if rec.Code != http.StatusOK || fake.signalSymbol != "HK.00700" || fake.signalAction != "ALERT" || fake.signalLimit != 4 {
-		t.Fatalf("signals status=%d filters=(%q,%q,%d) body=%s", rec.Code, fake.signalSymbol, fake.signalAction, fake.signalLimit, rec.Body)
+	rec = wheelAuditRequest(t, h, http.MethodGet, "/v1/wheel/signals?symbol=HK.00700&action=alert&capability=ready&limit=4")
+	if rec.Code != http.StatusOK || fake.signalSymbol != "HK.00700" || fake.signalAction != "ALERT" || fake.signalStatus != "READY" || fake.signalLimit != 4 {
+		t.Fatalf("signals status=%d filters=(%q,%q,%q,%d) body=%s", rec.Code, fake.signalSymbol, fake.signalAction, fake.signalStatus, fake.signalLimit, rec.Body)
 	}
 	if !strings.Contains(rec.Body.String(), `"blocked_by":[]`) || !strings.Contains(rec.Body.String(), `"candidates":[]`) || !strings.Contains(rec.Body.String(), `"rejection_reasons":[]`) {
 		t.Fatalf("nil signal arrays must be []: %s", rec.Body)
@@ -103,6 +104,7 @@ func TestWheelAuditHandlerEmptyCollectionsAndValidation(t *testing.T) {
 	for _, path := range []string{
 		"/v1/wheel/configs?limit=0",
 		"/v1/wheel/signals?action=SELL",
+		"/v1/wheel/signals?capability=STALE",
 		"/v1/wheel/signals/not-an-id/actions",
 		"/v1/wheel/signals/0/actions",
 	} {

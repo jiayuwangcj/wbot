@@ -143,9 +143,18 @@ VALUES ($1, $2, 1, $3, $4::jsonb, 'invalid fixture')`, symbol, tc.action, tc.sta
 			}
 		})
 	}
-	signals, err := store.ListSignals(ctx, symbol, "", 10)
+	signals, err := store.ListSignals(ctx, symbol, "", "", 10)
 	if err != nil || len(signals) != 2 {
 		t.Fatalf("ListSignals len=%d err=%v", len(signals), err)
+	}
+	// Capability filter narrows to the matching rows only.
+	blocked, err := store.ListSignals(ctx, symbol, "", "DATA_BLOCKED", 10)
+	if err != nil || len(blocked) != 1 || blocked[0].Action != "HOLD" {
+		t.Fatalf("ListSignals capability=DATA_BLOCKED len=%d err=%v rows=%+v", len(blocked), err, blocked)
+	}
+	ready, err := store.ListSignals(ctx, symbol, "", "READY", 10)
+	if err != nil || len(ready) != 1 || ready[0].Action != "ALERT" {
+		t.Fatalf("ListSignals capability=READY len=%d err=%v rows=%+v", len(ready), err, ready)
 	}
 
 	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "CONFIRM", Actor: "operator", Note: "reviewed"}); err != nil {

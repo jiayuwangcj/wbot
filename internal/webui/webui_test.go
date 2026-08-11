@@ -634,6 +634,10 @@ func TestWatchlistPageElements(t *testing.T) {
 		`id="wheel-signals-error"`,
 		`id="wheel-signals-empty"`,
 		`id="wheel-signal-actions"`,
+		`name="capability"`,
+		`data-sort="created_at"`,
+		`data-sort="capability_status"`,
+		`data-sort="effective_inventory"`,
 		`/ui/app.js`,
 	} {
 		if !strings.Contains(html, want) {
@@ -656,6 +660,9 @@ func TestWatchlistWheelAuditJS(t *testing.T) {
 		`item.capability_status`,
 		`item.blocked_by.join(", ")`,
 		`audit.textContent = "人工记录"`,
+		`makeTableSorter("wheel-signals-table", WHEEL_SIGNALS_SORT_KEYS)`,
+		`signalsSorter.state.key = "created_at"`,
+		`if (capability) query.push("capability=" + encodeURIComponent(capability))`,
 	} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("app.js missing Wheel audit contract %q", want)

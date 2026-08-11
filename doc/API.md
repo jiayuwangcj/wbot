@@ -108,7 +108,7 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 当前 serve 路由已提供三个只读审计端点，不提供配置、信号或人工动作的 HTTP 写入：
 
 - `GET /v1/wheel/configs?symbol=&limit=`：按 symbol 读取不可变配置版本。
-- `GET /v1/wheel/signals?symbol=&action=ALERT|HOLD&limit=`：读取信号、能力状态、阻塞依赖、库存和候选。
+- `GET /v1/wheel/signals?symbol=&action=ALERT|HOLD&capability=READY|DATA_BLOCKED&limit=`：读取信号、能力状态、阻塞依赖、库存和候选；`capability` 过滤能力状态（默认全部），`READY` 表示可提醒、`DATA_BLOCKED` 表示数据缺失被阻塞，非法值 `400`。
 - `GET /v1/wheel/signals/{id}/actions`：读取该信号已有的人工处置记录。
 
 时间统一 RFC3339 UTC，空集合返回 `[]`；非法查询为 `400`，未知路径为 `404`，非 GET 为 `405`。这些端点只依赖窄化的 read-only store。人工动作写入、身份认证和授权仍未提供，因此 UI 只能查看，不能确认、忽略、填单或备注。底层持久化契约如下：

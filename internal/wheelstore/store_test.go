@@ -170,7 +170,7 @@ func TestNilDBValidation(t *testing.T) {
 	if _, err := s.GetSignal(ctx, 1); !errors.Is(err, ErrNilDB) {
 		t.Errorf("GetSignal: %v", err)
 	}
-	if _, err := s.ListSignals(ctx, "TEST", "", 1); !errors.Is(err, ErrNilDB) {
+	if _, err := s.ListSignals(ctx, "TEST", "", "", 1); !errors.Is(err, ErrNilDB) {
 		t.Errorf("ListSignals: %v", err)
 	}
 	if _, err := s.ListActions(ctx, 1); !errors.Is(err, ErrNilDB) {
