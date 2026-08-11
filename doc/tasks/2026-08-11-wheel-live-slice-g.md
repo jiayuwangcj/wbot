@@ -30,9 +30,18 @@
 
 ## State
 
-- **status**: `queued`
-- **last step**: 主会话收 E 评审报告后决策:LLM 闸门实时接线排独立切片(动切片 C 的 runner.go,不与 E 修复轮混);评审确认 `internal/llmreview` 无任何导入方、wheelrun/wheel_scheduler 无 AppendAction/llmreview 引用(grep 验证)
+- **status**: `delivered`(已合入基线)
+- **last step**: codex CLI(gpt-5.6-luna, max 思考)实现并提交 `7260642`(4 文件 +381):runner.Dependencies 注入 LLMReviewer 接口 + ALERT 后审核接线(APPROVE→LLM_REVIEW / REJECT→REJECTED / 失败 fail-closed / env 缺失降级 nil 不 panic)+ wheel_scheduler env 组装;测试 TestRunOnceLLMGateStates / TestRunOnceAlertReady / TestRunOnceLLMReviewVisibleToLatestLLMReview / TestLLMReviewerFromEnv;自测全绿(build/vet/test/verify.sh/PG 集成)
 
-## Next
+## 评审结论(2026-08-11,reviewer 有条件批准)
 
-切片 E 修复轮合入后:在 worktree `.claude/worktrees/slice-g-llm-wiring`(branch `feat/slice-g-llm-wiring`,基于最新合入 HEAD)实现接线 + 单测(fake LLM 端点,REJECT/失败/APPROVE 三态;PG 集成验证 LatestLLMReview 被 runner 真实写入)→ `scripts/verify.sh` 等价自测 → 独立分支提交(push)→ 报告改动文件/测试结果/遗留问题。
+- **结论**:有条件合入;达到可使用阶段;功能类型 **feature**(新行为接线;含切片 E P1-1 推送闸门死路修复成分,按主体判 feature)
+- 无 P0;fail-closed/降级/密钥安全/API 兼容(唯一构造点已同步)全部通过;端到端实测(ALERT→fake LLM→APPROVE→LatestLLMReview 可见)
+- **P1(合入条件,已修)**:ci.yml db-integration 包列表缺 `./internal/wheelrun/...` → PG 集成测 CI 静默 skip;合入时主会话补行 `0db90db`
+- **P2(排期)**:① wheelrun 日志无等级(error/warn/info 规范化)② LLM gate env 三变量缺部署文档 + serve 启动 reviewer nil 无 warn(可并入切片 F 文档段)③ 审核同步阻塞单趟 pass(N×10s),评估并发/独立队列
+- **P3**:wheelReviewRules 规则摘要常量与 WHEEL_STRATEGY.md 漂移(建议单一来源);cash_available 恒 nil(资金维度审核不参与,观察);dailyOrders 是否剔除 REJECTED 计数(产品侧确认)
+
+## 合入记录(2026-08-11)
+
+- merge `6d6993f`(Merge branch 'feat/slice-g-llm-wiring',无冲突)+ P1 修复 `0db90db`;合入后 go build/vet + wheelrun/cmd/wbot 测试全绿
+- **status: delivered**;切片 F 依赖已解锁(accept-wheel-live.sh 可验证 LLM 审核记录真实存在)
