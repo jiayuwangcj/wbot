@@ -86,6 +86,33 @@ func TestStatusGlobalStateBusinessError(t *testing.T) {
 	}
 }
 
+func TestPostAcceptsErrCodeNumberAndString(t *testing.T) {
+	fastLimits(t)
+	tests := []struct {
+		name    string
+		errCode string
+	}{
+		{name: "number", errCode: `0`},
+		{name: "string", errCode: `"0"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":`+tt.errCode+`,"s2c":{"ok":true}}`)
+			}))
+			defer srv.Close()
+
+			s2c, err := NewClient(srv.URL).post(context.Background(), "/api/test", map[string]any{})
+			if err != nil {
+				t.Fatalf("post() error: %v", err)
+			}
+			if string(s2c) != `{"ok":true}` {
+				t.Fatalf("post() s2c = %s; want %s", s2c, `{"ok":true}`)
+			}
+		})
+	}
+}
+
 func TestQuoteSuccess(t *testing.T) {
 	fastLimits(t)
 	var subBody, quoteBody string
