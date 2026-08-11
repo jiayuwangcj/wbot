@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -49,8 +50,11 @@ func TestOptionQuotesSuccess(t *testing.T) {
 	if call.Bid != 12.1 || call.Ask != 12.3 || call.Last != 12.2 || call.Volume != 1500 {
 		t.Fatalf("call quote = %+v; want bid 12.1 ask 12.3 last 12.2 volume 1500", call)
 	}
-	if call.ImpliedVol != 0.25 || call.Delta != 0.58 || call.Theta != -0.03 || call.OpenInterest != 2300 || call.LotSize != 100 {
-		t.Fatalf("call Greeks = %+v; want iv 0.25 delta 0.58 theta -0.03 oi 2300 lot 100", call)
+	if call.ImpliedVol != 0.25 || call.Delta != 0.58 || call.OpenInterest != 2300 || call.LotSize != 100 {
+		t.Fatalf("call Greeks = %+v; want iv 0.25 delta 0.58 oi 2300 lot 100", call)
+	}
+	if call.Theta == nil || *call.Theta != -0.03 {
+		t.Fatalf("call Theta = %v; want non-nil -0.03", call.Theta)
 	}
 	want := time.Date(2026, 8, 7, 10, 30, 0, 0, futuLoc)
 	if !call.QuoteTime.Equal(want) {
@@ -89,9 +93,12 @@ func TestOptionQuotesMissingFieldsZero(t *testing.T) {
 		case "/api/subscribe":
 			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{}}`)
 		case "/api/quote":
-			// no ex_data, no bid/ask, malformed update_time: all stay zero
+			// one entry without ex_data at all, one with an explicit theta 0:
+			// missing fields stay zero (theta nil) but a real zero is kept
 			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{"basic_qot_list":[
-				{"security":{"market":1,"code":"TCH260807C335000"},"last_price":12.2,"update_time":"not-a-time"}
+				{"security":{"market":1,"code":"TCH260807C335000"},"last_price":12.2,"update_time":"not-a-time"},
+				{"security":{"market":1,"code":"TCH260807C340000"},"bid_price":9.9,"ask_price":10.1,
+				 "ex_data":{"theta":0}}
 			]}}`)
 		default:
 			http.NotFound(w, r)
@@ -99,16 +106,55 @@ func TestOptionQuotesMissingFieldsZero(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	quotes, err := NewClient(srv.URL).OptionQuotes(context.Background(), []string{"HK.TCH260807C335000"})
+	quotes, err := NewClient(srv.URL).OptionQuotes(context.Background(), []string{"HK.TCH260807C335000", "HK.TCH260807C340000"})
 	if err != nil {
 		t.Fatalf("OptionQuotes() error: %v", err)
 	}
 	q := quotes["HK.TCH260807C335000"]
-	if q.Bid != 0 || q.Ask != 0 || q.ImpliedVol != 0 || q.Delta != 0 || q.Theta != 0 || q.OpenInterest != 0 || q.LotSize != 0 || !q.QuoteTime.IsZero() {
-		t.Fatalf("missing fields must stay zero, got %+v", q)
+	if q.Bid != 0 || q.Ask != 0 || q.ImpliedVol != 0 || q.Delta != 0 || q.Theta != nil || q.OpenInterest != 0 || q.LotSize != 0 || !q.QuoteTime.IsZero() {
+		t.Fatalf("missing fields must stay zero with nil theta, got %+v", q)
 	}
 	if q.Last != 12.2 {
 		t.Fatalf("present field must parse, Last = %v; want 12.2", q.Last)
+	}
+	zero := quotes["HK.TCH260807C340000"]
+	if zero.Theta == nil || *zero.Theta != 0 {
+		t.Fatalf("explicit theta 0 must stay a non-nil zero, got %v", zero.Theta)
+	}
+}
+
+func TestOptionQuotesDiagnostics(t *testing.T) {
+	fastLimits(t)
+	old := os.Stderr
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = pw
+	t.Cleanup(func() { os.Stderr = old })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/subscribe":
+			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{}}`)
+		case "/api/quote":
+			// 2 requested, 1 answered, that one with zero bid/ask: must warn
+			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{"basic_qot_list":[
+				{"security":{"market":1,"code":"TCH260807C335000"},"last_price":12.2}
+			]}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	if _, err := NewClient(srv.URL).OptionQuotes(context.Background(), []string{"HK.TCH260807C335000", "HK.TCH260807C340000"}); err != nil {
+		t.Fatalf("OptionQuotes() error: %v", err)
+	}
+	pw.Close()
+	buf, _ := io.ReadAll(pr)
+	if got := string(buf); !strings.Contains(got, "option-quotes: requested=2 answered=1 bidask_zero=1") {
+		t.Fatalf("stderr = %q; want option-quotes diagnostic", got)
 	}
 }
 
