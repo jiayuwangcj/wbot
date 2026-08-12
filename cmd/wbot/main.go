@@ -17,6 +17,10 @@ import (
 	"strings"
 	"time"
 
+	_ "time/tzdata" // 内嵌 IANA 时区库:部署镜像(scratch/alpine)无 /usr/share/zoneinfo,
+	// LoadLocation 会静默回退 UTC,导致 market_hours/datacheck 时段判断错位
+	// (实测 2026-08-12:23:27 HKT=15:27 UTC 落入港股 13:00-16:00 窗口,门控失效)
+
 	"github.com/jiayu/wbot/internal/agent"
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/backtestexec"

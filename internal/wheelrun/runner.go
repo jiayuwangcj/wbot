@@ -311,17 +311,26 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 	}
 }
 
-// dailyOrders counts today's (UTC) ALERT signals as the day's order usage.
-// The count is best-effort: a store failure logs and yields 0.
+// dailyOrders counts today's (UTC) signals that passed the LLM gate as the
+// day's order usage. A rejected ALERT never places an order, so it must not
+// consume the quota (2026-08-12: signal 429's rejected call ALERT blocked
+// every later put opportunity for the day — daily order limit reached).
 func (r *Runner) dailyOrders(ctx context.Context, symbol string, now time.Time) (int, error) {
-	signals, err := r.deps.Store.ListSignals(ctx, symbol, "", "", 1000)
+	signals, err := r.deps.Store.ListSignals(ctx, symbol, "ALERT", "", 1000)
 	if err != nil {
 		return 0, err
 	}
 	start := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
 	n := 0
 	for _, s := range signals {
-		if s.Action == "ALERT" && !s.CreatedAt.Before(start) {
+		if s.CreatedAt.Before(start) {
+			continue
+		}
+		approved, err := r.deps.Store.HasAction(ctx, s.ID, "LLM_REVIEW")
+		if err != nil {
+			continue // best-effort: a store failure skips the signal, count stays conservative
+		}
+		if approved {
 			n++
 		}
 	}

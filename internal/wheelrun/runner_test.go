@@ -719,11 +719,18 @@ func TestRunRejectsNonPositiveInterval(t *testing.T) {
 func TestDailyOrdersUTCDateAndAlertFilter(t *testing.T) {
 	now := time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)
 	store := &fakeStore{signals: []wheelstore.SignalRecord{
-		{Symbol: "HK.00700", Action: "ALERT", CreatedAt: now.Add(-time.Nanosecond)},
-		{Symbol: "HK.00700", Action: "HOLD", CreatedAt: now.Add(-time.Nanosecond)},
-		{Symbol: "HK.00700", Action: "ALERT", CreatedAt: now},
-		{Symbol: "HK.00700", Action: "HOLD", CreatedAt: now},
+		{ID: 1, Symbol: "HK.00700", Action: "ALERT", CreatedAt: now.Add(-time.Nanosecond)},
+		{ID: 2, Symbol: "HK.00700", Action: "HOLD", CreatedAt: now.Add(-time.Nanosecond)},
+		{ID: 3, Symbol: "HK.00700", Action: "ALERT", CreatedAt: now},
+		{ID: 4, Symbol: "HK.00700", Action: "ALERT", CreatedAt: now},
+		{ID: 5, Symbol: "HK.00700", Action: "HOLD", CreatedAt: now},
 	}}
+	// Only signal 3 passed the LLM gate; 4 was rejected. A rejected ALERT
+	// places no order and must not consume the daily quota.
+	store.actions = []wheelstore.ActionRecord{
+		{SignalID: 3, Action: "LLM_REVIEW", Actor: "llm:test"},
+		{SignalID: 4, Action: "REJECTED", Actor: "llm:test"},
+	}
 	r := testRunner(t, Dependencies{Store: store})
 
 	got, err := r.dailyOrders(context.Background(), "HK.00700", now.Add(12*time.Hour))
@@ -731,7 +738,7 @@ func TestDailyOrdersUTCDateAndAlertFilter(t *testing.T) {
 		t.Fatalf("dailyOrders() error: %v", err)
 	}
 	if got != 1 {
-		t.Fatalf("dailyOrders() = %d; want 1 today's ALERT only", got)
+		t.Fatalf("dailyOrders() = %d; want 1 approved ALERT only", got)
 	}
 }
 
