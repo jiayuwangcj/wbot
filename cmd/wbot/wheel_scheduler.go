@@ -26,14 +26,16 @@ func startWheelRunner(ctx context.Context, database *sql.DB, env futu.Env, inter
 	if reviewer == nil {
 		fmt.Fprintln(os.Stderr, "wheel: WARN LLM reviewer disabled; set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL; ALERT signals cannot be pushed")
 	}
+	store := wheelstore.New(database)
 	runner := wheelrun.NewRunner(wheelrun.Dependencies{
-		Quoter:      futuQuoter{client: client},
-		Positions:   futuPositions{addr: futuProtoAddr(), env: env},
-		Chain:       client,
-		Store:       wheelstore.New(database),
-		Watchlist:   watchlistStore{db: database},
-		LLMReviewer: reviewer,
-		LLMModel:    model,
+		Quoter:           futuQuoter{client: client},
+		Positions:        futuPositions{addr: futuProtoAddr(), env: env},
+		Chain:            client,
+		Store:            store,
+		SnapshotRecorder: store,
+		Watchlist:        watchlistStore{db: database},
+		LLMReviewer:      reviewer,
+		LLMModel:         model,
 	})
 	if err := runner.Run(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(os.Stderr, "wheel: runner: %v\n", err)

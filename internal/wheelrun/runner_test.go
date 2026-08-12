@@ -60,6 +60,8 @@ func callContract(symbol, underlying string, strike float64, expiry time.Time) f
 type fakeQuoter struct {
 	prices               map[string]float64
 	opts                 map[string]futu.OptionQuoteEx // keyed by contract symbol
+	quoteCalls           []string
+	optionCalls          [][]string
 	optionDelay          time.Duration
 	stampOptionQuoteTime bool
 	perr                 error
@@ -67,6 +69,7 @@ type fakeQuoter struct {
 }
 
 func (f *fakeQuoter) Quote(ctx context.Context, symbol string) (float64, error) {
+	f.quoteCalls = append(f.quoteCalls, symbol)
 	if f.perr != nil {
 		return 0, f.perr
 	}
@@ -78,6 +81,7 @@ func (f *fakeQuoter) Quote(ctx context.Context, symbol string) (float64, error) 
 }
 
 func (f *fakeQuoter) OptionQuotes(ctx context.Context, symbols []string) (map[string]futu.OptionQuoteEx, error) {
+	f.optionCalls = append(f.optionCalls, append([]string(nil), symbols...))
 	if f.oerr != nil {
 		return nil, f.oerr
 	}
@@ -275,6 +279,12 @@ func wheelItem(symbol string) watchlist.Item {
 
 func testRunner(t *testing.T, deps Dependencies) *Runner {
 	t.Helper()
+	// Existing runner tests exercise decision/persistence contracts with fixed
+	// fakes; market-hours behavior has dedicated tests below and is injected
+	// explicitly there.
+	if deps.MarketOpen == nil {
+		deps.MarketOpen = func(string, time.Time) bool { return true }
+	}
 	if deps.Quoter == nil {
 		deps.Quoter = &fakeQuoter{}
 	}
