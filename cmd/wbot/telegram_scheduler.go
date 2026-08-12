@@ -344,8 +344,18 @@ func (s *telegramScheduler) pushRejectedSignal(ctx context.Context, sig wheelsto
 	if len(reasons) == 0 && rejection != nil && strings.TrimSpace(rejection.Note) != "" {
 		reasons = []string{rejection.Note}
 	}
+	// A review pipeline failure (timeout, upstream error) is not a model
+	// verdict: the fail-closed disposition carries an "error" detail, and the
+	// user should see 审核失败 rather than 被拒绝 (2026-08-13: signal 453 was
+	// REJECTED for a client timeout but displayed as a model rejection).
+	title := fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s", sig.ID, s.now().Format("2006-01-02 15:04:05"))
+	if rejection != nil {
+		if e, ok := rejection.Details["error"]; ok && e != nil {
+			title = fmt.Sprintf("⚠️ <b>信号 #%d LLM 审核失败</b> · %s", sig.ID, s.now().Format("2006-01-02 15:04:05"))
+		}
+	}
 	lines := []string{
-		fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s", sig.ID, s.now().Format("2006-01-02 15:04:05")),
+		title,
 		fmt.Sprintf("%s · <code>%s</code>", html.EscapeString(sig.Symbol), html.EscapeString(verdict)),
 	}
 	for _, reason := range reasons {

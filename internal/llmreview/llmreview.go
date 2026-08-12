@@ -66,8 +66,11 @@ func New(baseURL, apiKey, model string) (*Client, error) {
 		apiKey:  apiKey,
 		model:   model,
 		// reasoning models answer slowly: deepseek-v4-pro took ~12.5s 实测
-		// 2026-08-11, so the 10s default would time out the review gate.
-		http: &http.Client{Timeout: 60 * time.Second},
+		// 2026-08-11, yet still exceeded 60s on 2026-08-13 (review gate failed
+		// closed and rejected signal 453 for no verdict). The gate is the
+		// product's manual-approval checkpoint: waiting longer is strictly
+		// safer than failing closed on a slow model, so 180s.
+		http: &http.Client{Timeout: 180 * time.Second},
 	}, nil
 }
 

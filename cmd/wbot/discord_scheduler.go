@@ -372,10 +372,20 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 	if len(reasons) == 0 && rejection != nil && strings.TrimSpace(rejection.Note) != "" {
 		reasons = []string{rejection.Note}
 	}
+	// A review pipeline failure (timeout, upstream error) is not a model
+	// verdict: the fail-closed disposition carries an "error" detail, and the
+	// user should see 审核失败 rather than 被拒绝 (2026-08-13: signal 453 was
+	// REJECTED for a client timeout but displayed as a model rejection).
+	title := fmt.Sprintf("🔴 模拟盘 · ❌ 信号 #%d 被 LLM 审核拒绝", sig.ID)
+	if rejection != nil {
+		if e, ok := rejection.Details["error"]; ok && e != nil {
+			title = fmt.Sprintf("⚠️ 模拟盘 · 信号 #%d LLM 审核失败", sig.ID)
+		}
+	}
 	description := fmt.Sprintf("**%s · %s**\n%s", sig.Symbol, verdict, discordReasonBullets(reasons))
 	_ = s.pushEmbedDiscord(ctx, discord.Message{Embeds: []discord.Embed{{
 		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
-		Title:       fmt.Sprintf("🔴 模拟盘 · ❌ 信号 #%d 被 LLM 审核拒绝", sig.ID),
+		Title:       title,
 		Description: description,
 		Color:       discord.ColorRejected,
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d", sig.ConfigVersion, sig.ID)},
