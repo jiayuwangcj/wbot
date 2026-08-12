@@ -139,13 +139,29 @@ func (c *Client) OptionQuotes(ctx context.Context, symbols []string) (map[string
 	if err := SnapshotLimit.Wait(ctx); err != nil {
 		return nil, err
 	}
-	s2c, err := c.post(ctx, "/api/quote", map[string]any{"security_list": secs})
-	if err != nil {
-		return nil, fmt.Errorf("option-quotes quote: %w", err)
-	}
+	// The gateway stalls on very large /api/quote security lists (实测
+	// 2026-08-12: 86 contracts time out after 10s, 26 answer in ~0s), so the
+	// snapshot quote is sliced; every slice stays well inside the gateway's
+	// budget and each slice re-enters the snapshot rate gate.
+	const quoteBatch = 30
 	var pg quotePage
-	if err := json.Unmarshal(s2c, &pg); err != nil {
-		return nil, fmt.Errorf("option-quotes: bad s2c: %w", err)
+	for start := 0; start < len(secs); start += quoteBatch {
+		if err := SnapshotLimit.Wait(ctx); err != nil {
+			return nil, err
+		}
+		end := start + quoteBatch
+		if end > len(secs) {
+			end = len(secs)
+		}
+		s2c, err := c.post(ctx, "/api/quote", map[string]any{"security_list": secs[start:end]})
+		if err != nil {
+			return nil, fmt.Errorf("option-quotes quote [%d/%d]: %w", end, len(secs), err)
+		}
+		var part quotePage
+		if err := json.Unmarshal(s2c, &part); err != nil {
+			return nil, fmt.Errorf("option-quotes: bad s2c: %w", err)
+		}
+		pg.BasicQotList = append(pg.BasicQotList, part.BasicQotList...)
 	}
 	stale := make([]string, 0, len(pg.BasicQotList))
 	for _, q := range pg.BasicQotList {
