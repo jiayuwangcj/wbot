@@ -10,10 +10,14 @@ package futu
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/qtopie/gofutuapi"
 	qotcommon "github.com/qtopie/gofutuapi/gen/qot/common"
@@ -23,6 +27,8 @@ import (
 // DefaultProtoAddr is the OpenD protobuf API endpoint of the gateway.
 const DefaultProtoAddr = "127.0.0.1:11111"
 
+const tradeConnectTimeout = 10 * time.Second
+
 // Env is a Futu trading environment (proto TrdEnv: 0=simulate, 1=real).
 type Env int
 
@@ -31,27 +37,146 @@ const (
 	EnvReal Env = 1 // live trading (只读查询; 写操作需老板确认)
 )
 
-// TradeClient is a protobuf connection to the futu gateway (TCP 11111).
+// TradeClient is a lease on the process-wide protobuf connection for an
+// address. Close releases the lease; the underlying long-lived connection is
+// retained for reuse.
 type TradeClient struct {
-	api *gofutuapi.FutuApiConn
-	cli *gofutuapi.FutuClient
+	shared    *sharedTradeConn
+	closeOnce sync.Once
 }
 
-// OpenTrade connects to addr and completes the OpenD init handshake.
-func OpenTrade(ctx context.Context, addr string) (*TradeClient, error) {
+type sharedTradeConn struct {
+	mu   sync.Mutex
+	addr string
+	api  *gofutuapi.FutuApiConn
+	cli  *gofutuapi.FutuClient
+	refs int
+}
+
+var tradeConnections = struct {
+	sync.Mutex
+	byAddr map[string]*sharedTradeConn
+}{byAddr: make(map[string]*sharedTradeConn)}
+
+// AcquireTrade returns a lease on the process-wide connection for addr. The
+// first lease performs the init handshake; later leases reuse that connection.
+// Requests are serialized by sharedTradeConn because the SDK is not safe for
+// concurrent request/reply use.
+func AcquireTrade(ctx context.Context, addr string) (*TradeClient, error) {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = DefaultProtoAddr
+	}
 	// gofutuapi logs lifecycle chatter (init/reconnect) to stdlib log; wbot
 	// does not use stdlib log elsewhere, silence it for clean CLI output.
 	log.SetOutput(io.Discard)
-	api, err := gofutuapi.Open(ctx, gofutuapi.FutuApiOption{Address: addr})
+
+	tradeConnections.Lock()
+	shared := tradeConnections.byAddr[addr]
+	if shared == nil {
+		shared = &sharedTradeConn{addr: addr}
+		tradeConnections.byAddr[addr] = shared
+	}
+	shared.refs++
+	tradeConnections.Unlock()
+
+	shared.mu.Lock()
+	err := shared.connect(ctx)
+	shared.mu.Unlock()
 	if err != nil {
+		tradeConnections.Lock()
+		shared.refs--
+		tradeConnections.Unlock()
 		return nil, fmt.Errorf("connect %s: %w", addr, err)
 	}
-	return &TradeClient{api: api, cli: gofutuapi.NewClient(api)}, nil
+	return &TradeClient{shared: shared}, nil
 }
 
-// Close closes the underlying protobuf connection.
+// OpenTrade is kept as a source-compatible alias. It has the same pooled
+// semantics as AcquireTrade and never creates a per-call connection.
+func OpenTrade(ctx context.Context, addr string) (*TradeClient, error) {
+	return AcquireTrade(ctx, addr)
+}
+
+func (s *sharedTradeConn) connect(ctx context.Context) error {
+	if s.api != nil {
+		return nil
+	}
+	api, err := gofutuapi.Open(ctx, gofutuapi.FutuApiOption{
+		Address: s.addr,
+		Timeout: tradeConnectTimeout,
+	})
+	if err != nil {
+		return err
+	}
+	s.api = api
+	s.cli = gofutuapi.NewClient(api)
+	return nil
+}
+
+func (s *sharedTradeConn) invalidate() {
+	if s.api != nil {
+		_ = s.api.Close()
+	}
+	s.api = nil
+	s.cli = nil
+}
+
+// Close releases this lease. The process-wide connection deliberately remains
+// open for later users of the same addr.
 func (tc *TradeClient) Close() error {
-	return tc.api.Close()
+	if tc == nil || tc.shared == nil {
+		return nil
+	}
+	tc.closeOnce.Do(func() {
+		tradeConnections.Lock()
+		tc.shared.refs--
+		tradeConnections.Unlock()
+	})
+	return nil
+}
+
+// withClient serializes one SDK call and retries it at most once after a
+// transport failure. Thus a logical operation creates at most two connections;
+// the stale connection is always closed before the replacement is dialed.
+func (tc *TradeClient) withClient(ctx context.Context, fn func(*gofutuapi.FutuClient) error) error {
+	if tc == nil || tc.shared == nil {
+		return fmt.Errorf("trade client is nil")
+	}
+	s := tc.shared
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if err = s.connect(ctx); err != nil {
+			return fmt.Errorf("connect %s: %w", s.addr, err)
+		}
+		err = fn(s.cli)
+		if err == nil || !isTradeConnError(err) {
+			return err
+		}
+		s.invalidate()
+	}
+	return err
+}
+
+func isTradeConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection closed") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "timeout waiting for reply")
 }
 
 // Account resolves the account for env: with accID != 0 that exact account is
@@ -61,7 +186,12 @@ func (tc *TradeClient) Account(ctx context.Context, env Env, accID uint64) (*trd
 	if err := QuoteLimit.Wait(ctx); err != nil {
 		return nil, err
 	}
-	accounts, err := tc.cli.GetTradeAccounts()
+	var accounts []*trdcommon.TrdAcc
+	err := tc.withClient(ctx, func(cli *gofutuapi.FutuClient) error {
+		var err error
+		accounts, err = cli.GetTradeAccounts()
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("accounts: %w", err)
 	}
@@ -98,7 +228,12 @@ func (tc *TradeClient) Funds(ctx context.Context, acc *trdcommon.TrdAcc) (*trdco
 	if err := QuoteLimit.Wait(ctx); err != nil {
 		return nil, err
 	}
-	funds, err := tc.cli.GetFundsForAccount(acc, true)
+	var funds *trdcommon.Funds
+	err := tc.withClient(ctx, func(cli *gofutuapi.FutuClient) error {
+		var err error
+		funds, err = cli.GetFundsForAccount(acc, true)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("funds acc %d: %w", acc.GetAccID(), err)
 	}
@@ -113,7 +248,12 @@ func (tc *TradeClient) Positions(ctx context.Context, acc *trdcommon.TrdAcc) ([]
 	if err := QuoteLimit.Wait(ctx); err != nil {
 		return nil, err
 	}
-	positions, err := tc.cli.GetPositionsForAccount(acc, true)
+	var positions []*trdcommon.Position
+	err := tc.withClient(ctx, func(cli *gofutuapi.FutuClient) error {
+		var err error
+		positions, err = cli.GetPositionsForAccount(acc, true)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("positions acc %d: %w", acc.GetAccID(), err)
 	}
@@ -131,7 +271,12 @@ func (tc *TradeClient) Orders(ctx context.Context, acc *trdcommon.TrdAcc, pendin
 	if pendingOnly {
 		statuses = gofutuapi.PendingOrderStatuses()
 	}
-	orders, err := tc.cli.GetOrderListForAccount(acc, statuses, true)
+	var orders []*trdcommon.Order
+	err := tc.withClient(ctx, func(cli *gofutuapi.FutuClient) error {
+		var err error
+		orders, err = cli.GetOrderListForAccount(acc, statuses, true)
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("orders acc %d: %w", acc.GetAccID(), err)
 	}
@@ -180,8 +325,11 @@ func (tc *TradeClient) PlaceOrder(ctx context.Context, acc *trdcommon.TrdAcc, re
 	if err := QuoteLimit.Wait(ctx); err != nil {
 		return "", 0, err
 	}
-	orderIDEx, orderID, err = tc.cli.PlaceOrder(acc, side, orderType, code, req.Qty, price,
-		qotcommon.QotMarket(market), trdMkt, trdcommon.TimeInForce_TimeInForce_DAY)
+	err = tc.withClient(ctx, func(cli *gofutuapi.FutuClient) error {
+		orderIDEx, orderID, err = cli.PlaceOrder(acc, side, orderType, code, req.Qty, price,
+			qotcommon.QotMarket(market), trdMkt, trdcommon.TimeInForce_TimeInForce_DAY)
+		return err
+	})
 	if err != nil {
 		return "", 0, fmt.Errorf("order %s qty %v: %w", req.Symbol, req.Qty, err)
 	}

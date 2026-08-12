@@ -2,10 +2,8 @@ package httpapi
 
 // Shared proto-gateway client for the /v1/futu/* endpoints backed by the
 // OpenD protobuf protocol (TCP 11111): /v1/futu/account and /v1/futu/orders.
-// One TradeClient per serve process (single connection, mutex-serialized —
-// gofutuapi's client is not concurrency-safe), with reconnect-on-drop so a
-// gateway that closes idle proto connections does not wedge the endpoints
-// until restart (observed live with opend-rs 2026-08-02, PR #96).
+// Connection reuse, serialization and bounded reconnect are centralized in
+// internal/futu, so every process user shares one connection per address.
 
 import (
 	"context"
@@ -14,17 +12,14 @@ import (
 	"net"
 	"os"
 	"strings"
-	"sync"
 
 	"github.com/jiayu/wbot/internal/futu"
 )
 
-// protoClient shares one TradeClient across requests, reconnecting once when
-// the gateway dropped the connection.
+// protoClient retains only endpoint configuration; internal/futu owns the
+// process-wide shared connection.
 type protoClient struct {
-	mu   sync.Mutex
 	addr string
-	tc   *futu.TradeClient
 }
 
 func newProtoClient() *protoClient {
@@ -36,32 +31,15 @@ func newProtoClientAt(addr string) *protoClient {
 	return &protoClient{addr: addr}
 }
 
-// do runs fn with the shared client (mutex held). When a transport-level
-// failure is reported and a client was already open, the stale client is
-// abandoned and fn retried once on a fresh connection — the endpoints are
-// read-only, so the retry is safe. Do NOT Close() the stale client first:
-// gofutuapi's reader goroutine may be inside tryReconnect/connect() replacing
-// the same net.Conn (not race-safe); abandoning it parks that goroutine on
-// its own idle connection.
+// do leases the process-wide shared client. Close only returns the lease; the
+// TCP connection stays open for other HTTP, wheel, CLI and Telegram users.
 func (p *protoClient) do(ctx context.Context, fn func(*futu.TradeClient) error) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	run := func() error {
-		if p.tc == nil {
-			tc, err := futu.OpenTrade(ctx, p.addr)
-			if err != nil {
-				return err
-			}
-			p.tc = tc
-		}
-		return fn(p.tc)
+	tc, err := futu.AcquireTrade(ctx, p.addr)
+	if err != nil {
+		return err
 	}
-	err := run()
-	if err != nil && p.tc != nil && isConnError(err) {
-		p.tc = nil
-		err = run()
-	}
-	return err
+	defer tc.Close()
+	return fn(tc)
 }
 
 // isConnError reports transport-level failures (dead socket, EOF, refused,
