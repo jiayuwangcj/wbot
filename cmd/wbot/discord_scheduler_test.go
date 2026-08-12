@@ -237,6 +237,27 @@ func lastEmbedDesc(t *testing.T, fake *fakeDCSchedulerServer) string {
 	return desc
 }
 
+func discordEmbeds(t *testing.T, payload map[string]any) []any {
+	t.Helper()
+	embeds, ok := payload["embeds"].([]any)
+	if !ok {
+		t.Fatalf("embeds = %#v", payload["embeds"])
+	}
+	return embeds
+}
+
+func discordEmbedAt(t *testing.T, embeds []any, index int) map[string]any {
+	t.Helper()
+	if index >= len(embeds) {
+		t.Fatalf("embed index %d out of range (len=%d)", index, len(embeds))
+	}
+	embed, ok := embeds[index].(map[string]any)
+	if !ok {
+		t.Fatalf("embed %d = %#v", index, embeds[index])
+	}
+	return embed
+}
+
 func TestDiscordPushApprovedSignalPushesEmbed(t *testing.T) {
 	fake, _ := startFakeDC(t)
 	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
@@ -251,28 +272,96 @@ func TestDiscordPushApprovedSignalPushesEmbed(t *testing.T) {
 		t.Fatal("approved signal must not retry")
 	}
 	payload := fake.lastSend(t)
-	embeds, _ := payload["embeds"].([]any)
-	embed, _ := embeds[0].(map[string]any)
-	if embed["color"] != float64(discord.ColorApprove) {
-		t.Fatalf("embed color = %v; want approve green", embed["color"])
+	embeds := discordEmbeds(t, payload)
+	if len(embeds) != 5 {
+		t.Fatalf("embed count = %d; want 5", len(embeds))
 	}
-	desc, _ := embed["description"].(string)
-	for _, want := range []string{"信号 #7", "**📌", "reason one"} {
-		if !strings.Contains(desc, want) {
-			t.Fatalf("embed description missing %q: %s", want, desc)
+	header := discordEmbedAt(t, embeds, 0)
+	if header["color"] != float64(discord.ColorApprove) {
+		t.Fatalf("embed color = %v; want approve green", header["color"])
+	}
+	author, _ := header["author"].(map[string]any)
+	footer, _ := header["footer"].(map[string]any)
+	if author["name"] != "🤖 Wheel Bot · 模拟盘" || footer["text"] != "配置 v1 · 信号 #7 · 08-12 10:00" {
+		t.Fatalf("header author/footer = %#v / %#v", author, footer)
+	}
+	if header["timestamp"] != "2026-08-12T10:00:00Z" {
+		t.Fatalf("header timestamp = %#v", header["timestamp"])
+	}
+	for _, want := range []string{"信号 #7", "US.AAPL", "SELL PUT"} {
+		if !strings.Contains(header["title"].(string), want) {
+			t.Fatalf("header title missing %q: %s", want, header["title"])
 		}
 	}
+	if desc := header["description"].(string); !strings.Contains(desc, "候选 `US.AAPL260815C250000` 已就绪") {
+		t.Fatalf("header description = %q", desc)
+	}
+	order := discordEmbedAt(t, embeds, 1)
+	if order["title"] != "📦 订单" || order["description"] != "```\n候选  US.AAPL260815C250000\n数量  2 张\n限价  3.28\n```" {
+		t.Fatalf("order embed = %#v", order)
+	}
+	option := discordEmbedAt(t, embeds, 2)
+	if option["title"] != "📊 期权" || option["description"] != "```\n行权  250.00  Δ 0.42\n到期  08-15  IV 0.25\n报价  3.20/3.35  OI 1,234\n```" {
+		t.Fatalf("option embed = %#v", option)
+	}
+	underlying := discordEmbedAt(t, embeds, 3)
+	if underlying["title"] != "📈 标的" || underlying["description"] != "```\n现价  248.50\n缺口  -300 股\n目标  4,700 / 持仓 5,000\n```" {
+		t.Fatalf("underlying embed = %#v", underlying)
+	}
+	reasons := discordEmbedAt(t, embeds, 4)
+	if reasons["title"] != "🧠 LLM 理由" || reasons["description"] != "• reason one" {
+		t.Fatalf("reasons embed = %#v", reasons)
+	}
 	rows, _ := payload["components"].([]any)
-	buttons, _ := rows[0].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("action row count = %d; want 1", len(rows))
+	}
+	row, _ := rows[0].(map[string]any)
+	if row["type"] != float64(1) {
+		t.Fatalf("action row = %#v", row)
+	}
+	buttons, _ := row["components"].([]any)
 	wantIDs := []string{"wheel:7:yes", "wheel:7:no", "wheel:7:dismiss"}
+	wantStyles := []float64{3, 4, 2}
 	for i, want := range wantIDs {
 		button, _ := buttons[i].(map[string]any)
-		if button["custom_id"] != want {
-			t.Fatalf("button %d custom_id = %#v; want %s", i, button["custom_id"], want)
+		if button["type"] != float64(2) || button["custom_id"] != want || button["style"] != wantStyles[i] {
+			t.Fatalf("button %d = %#v; want id=%s style=%v type=2", i, button, want, wantStyles[i])
 		}
 	}
 	if fake.authErr != "" {
 		t.Fatalf("authorization = %q; want Bot token", fake.authErr)
+	}
+}
+
+func TestDiscordPushApprovedStockSignalOmitsOptionEmbed(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(8, "US.AAPL", now)
+	sig.Candidates[0].Direction = "BUY"
+	sig.Candidates[0].Quantity = 100
+	sig.Candidates[0].Quote.Symbol = "US.AAPL"
+	sig.Candidates[0].Quote.Last = 248.5
+	store.reviews[8] = &wheelstore.ActionRecord{Details: map[string]any{"verdict": "APPROVE"}}
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("approved stock signal must not retry")
+	}
+	embeds := discordEmbeds(t, fake.lastSend(t))
+	if len(embeds) != 4 {
+		t.Fatalf("stock embed count = %d; want 4", len(embeds))
+	}
+	wantTitles := []string{"📌 信号 #8 · US.AAPL · BUY", "📦 订单", "📈 标的", "🧠 LLM 理由"}
+	for i, want := range wantTitles {
+		if title := discordEmbedAt(t, embeds, i)["title"]; title != want {
+			t.Fatalf("embed %d title = %#v; want %q", i, title, want)
+		}
+	}
+	order := discordEmbedAt(t, embeds, 1)["description"]
+	if order != "```\n候选  US.AAPL\n数量  100 股\n限价  248.50\n```" {
+		t.Fatalf("stock order = %q", order)
 	}
 }
 
@@ -297,7 +386,7 @@ func TestDiscordPushRejectedReviewPushesGrayEmbed(t *testing.T) {
 		t.Fatalf("embed color = %v; want rejection gray", embed["color"])
 	}
 	desc, _ := embed["description"].(string)
-	if !strings.Contains(desc, "risk limit") || !strings.Contains(embed["title"].(string), "信号 #10") {
+	if !strings.Contains(desc, "• risk limit") || !strings.Contains(desc, "US.AAPL · REJECT") || !strings.Contains(embed["title"].(string), "信号 #10") {
 		t.Fatalf("rejection embed = %#v", embed)
 	}
 }
