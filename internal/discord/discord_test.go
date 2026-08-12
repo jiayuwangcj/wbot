@@ -67,7 +67,10 @@ func TestCreateMessagePostsEmbedAndButtons(t *testing.T) {
 	c := newTestClient(t, fake)
 
 	msg := Message{
-		Embeds: []Embed{{Title: "信号 #7", Description: "**test**", Color: ColorApprove}},
+		Embeds: []Embed{{
+			Author: &EmbedAuthor{Name: "Wheel Bot"}, Title: "信号 #7", Description: "**test**", Color: ColorApprove,
+			Footer: &EmbedFooter{Text: "配置 v1"},
+		}},
 		Components: [][]Button{{
 			{Type: 2, Style: 3, Label: "✅ 下单", CustomID: "wheel:7:yes"},
 			{Type: 2, Style: 4, Label: "❌ 拒绝", CustomID: "wheel:7:no"},
@@ -82,10 +85,19 @@ func TestCreateMessagePostsEmbedAndButtons(t *testing.T) {
 	if embed["color"] != float64(ColorApprove) || embed["title"] != "信号 #7" {
 		t.Fatalf("embed = %#v", embed)
 	}
+	author, _ := embed["author"].(map[string]any)
+	footer, _ := embed["footer"].(map[string]any)
+	if author["name"] != "Wheel Bot" || footer["text"] != "配置 v1" {
+		t.Fatalf("embed author/footer = %#v / %#v", author, footer)
+	}
 	rows, _ := payload["components"].([]any)
-	buttons, _ := rows[0].([]any)
+	row, _ := rows[0].(map[string]any)
+	if row["type"] != float64(1) {
+		t.Fatalf("action row = %#v; want type 1", row)
+	}
+	buttons, _ := row["components"].([]any)
 	first, _ := buttons[0].(map[string]any)
-	if first["custom_id"] != "wheel:7:yes" || first["style"] != float64(3) {
+	if first["type"] != float64(2) || first["custom_id"] != "wheel:7:yes" || first["style"] != float64(3) {
 		t.Fatalf("button = %#v", first)
 	}
 	if fake.authErr != "" {

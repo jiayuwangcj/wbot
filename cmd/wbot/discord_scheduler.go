@@ -156,7 +156,7 @@ func (s *discordScheduler) runDiscordPush(ctx context.Context, interval time.Dur
 	}
 }
 
-// pushSignalDiscord sends one ALERT embed with buttons to the channel when it
+// pushSignalDiscord sends one structured APPROVE message with buttons when it
 // survives the dismissal and LLM-approval gates. Retry semantics mirror the
 // telegram loop: a review not yet recorded holds the cursor back, REJECTED and
 // dismissed signals skip permanently.
@@ -198,28 +198,167 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 		s.pushRejectedDiscord(ctx, sig, review)
 		return false
 	}
-	text, err := alertMessage(&sig, reviewReasons(review)...)
+	embeds, err := signalDiscordEmbeds(&sig, reviewReasons(review), s.now())
 	if err != nil {
 		s.logf("push: %s signal=%d: %v", sig.Symbol, sig.ID, err)
 		return false
 	}
 	msg := discord.Message{
-		Embeds: []discord.Embed{{
-			Title:       fmt.Sprintf("📌 信号 #%d · %s", sig.ID, sig.Symbol),
-			Description: discord.ToMarkdown(text),
-			Color:       discord.ColorApprove,
-			Timestamp:   s.now().UTC().Format(time.RFC3339),
-		}},
+		Embeds: embeds,
 		Components: [][]discord.Button{{
-			{Style: 3, Label: "✅ 下单", CustomID: fmt.Sprintf("wheel:%d:yes", sig.ID)},
-			{Style: 4, Label: "❌ 拒绝", CustomID: fmt.Sprintf("wheel:%d:no", sig.ID)},
-			{Style: 2, Label: "⚠️ Dismiss", CustomID: fmt.Sprintf("wheel:%d:dismiss", sig.ID)},
+			{Type: 2, Style: 3, Label: "✅ 下单", CustomID: fmt.Sprintf("wheel:%d:yes", sig.ID)},
+			{Type: 2, Style: 4, Label: "❌ 拒绝", CustomID: fmt.Sprintf("wheel:%d:no", sig.ID)},
+			{Type: 2, Style: 2, Label: "⚠️ Dismiss", CustomID: fmt.Sprintf("wheel:%d:dismiss", sig.ID)},
 		}},
 	}
 	if err := s.pushEmbedDiscord(ctx, msg); err != nil {
 		s.logf("push: %s signal=%d: %v", sig.Symbol, sig.ID, err)
 	}
 	return false
+}
+
+const discordCodeLabelWidth = 6
+
+// signalDiscordEmbeds renders the approved signal as compact mobile-friendly
+// sections. It deliberately shares firstCandidate and isStockDirection with
+// the Telegram path so display and order execution keep the same semantics.
+func signalDiscordEmbeds(sig *wheelstore.SignalRecord, reasons []string, sentAt time.Time) ([]discord.Embed, error) {
+	c, err := firstCandidate(sig)
+	if err != nil {
+		return nil, err
+	}
+	created := "—"
+	if !sig.CreatedAt.IsZero() {
+		created = sig.CreatedAt.Format("01-02 15:04")
+	}
+	common := func(description string) discord.Embed {
+		return discord.Embed{Description: description, Color: discord.ColorApprove}
+	}
+	embeds := []discord.Embed{{
+		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
+		Title:       fmt.Sprintf("🔴 模拟盘 · 📌 信号 #%d · %s · %s", sig.ID, sig.Symbol, directionLabel(c.Direction)),
+		Description: fmt.Sprintf("LLM 审核 ✅ APPROVE — 候选 `%s` 已就绪,缺口方向一致", discordInlineCode(c.Code)),
+		Color:       discord.ColorApprove,
+		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d · %s", sig.ConfigVersion, sig.ID, created)},
+		Timestamp:   sentAt.UTC().Format(time.RFC3339),
+	}}
+	unit := "张"
+	if isStockDirection(c.Direction) {
+		unit = "股"
+	}
+	embeds = append(embeds, common(discordCodeBlock(
+		discordCodeRow("候选", valueOrDash(c.Code)),
+		discordCodeRow("数量", fmt.Sprintf("%s %s", commaInt(int64(c.Quantity)), unit)),
+		discordCodeRow("限价", positiveDecimal(c.Quote.Last)),
+	)))
+	if !isStockDirection(c.Direction) {
+		embeds = append(embeds, common(discordCodeBlock(
+			fmt.Sprintf("行权  %s  Δ %s", positiveDecimal(c.Quote.Strike), nonZeroDecimal(c.Quote.Delta)),
+			fmt.Sprintf("到期  %s  IV %s", shortExpiry(c.Quote.Expiry), positiveDecimal(c.Quote.ImpliedVol)),
+			fmt.Sprintf("报价  %s  OI %s", bidAsk(c.Quote.Bid, c.Quote.Ask), positiveCount(c.Quote.OpenInterest)),
+		)))
+	}
+	embeds = append(embeds,
+		common(discordCodeBlock(
+			discordCodeRow("现价", discordPrice(sig.Inventory.CurrentPrice)),
+			discordCodeRow("缺口", discordShares(sig.Inventory.InventoryGap)),
+			discordCodeRow("目标", fmt.Sprintf("%s / 持仓 %s", discordCount(sig.Inventory.TargetInventory), discordCount(sig.Inventory.ActualInventory))),
+		)),
+		common(discordReasonBullets(reasons)),
+	)
+	return embeds, nil
+}
+
+func discordCodeBlock(lines ...string) string {
+	return "```\n" + strings.Join(lines, "\n") + "\n```"
+}
+
+func discordCodeRow(label, value string) string {
+	return label + strings.Repeat(" ", max(1, discordCodeLabelWidth-displayWidth(label))) + value
+}
+
+func discordInlineCode(value string) string {
+	return strings.ReplaceAll(value, "`", "ˋ")
+}
+
+func valueOrDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "—"
+	}
+	return value
+}
+
+func decimal(value float64) string {
+	return fmt.Sprintf("%.2f", value)
+}
+
+func positiveDecimal(value float64) string {
+	if value <= 0 {
+		return "—"
+	}
+	return decimal(value)
+}
+
+func nonZeroDecimal(value float64) string {
+	if value == 0 {
+		return "—"
+	}
+	return decimal(value)
+}
+
+func shortExpiry(raw string) string {
+	expiry, parsed := expiryText(raw)
+	if parsed.IsZero() {
+		return valueOrDash(expiry)
+	}
+	return parsed.Format("01-02")
+}
+
+func bidAsk(bid, ask float64) string {
+	return positiveDecimal(bid) + "/" + positiveDecimal(ask)
+}
+
+func positiveCount(value int64) string {
+	if value <= 0 {
+		return "—"
+	}
+	return commaInt(value)
+}
+
+func discordPrice(value *float64) string {
+	text := priceText(value)
+	if text == "-" {
+		return "—"
+	}
+	return text
+}
+
+func discordCount(value *float64) string {
+	text := countText(value)
+	if text == "-" {
+		return "—"
+	}
+	return text
+}
+
+func discordShares(value *float64) string {
+	if value == nil {
+		return "—"
+	}
+	return discordCount(value) + " 股"
+}
+
+func discordReasonBullets(reasons []string) string {
+	var bullets []string
+	for _, reason := range reasons {
+		if reason = strings.TrimSpace(reason); reason != "" {
+			bullets = append(bullets, "• "+reason)
+		}
+	}
+	if len(bullets) == 0 {
+		return "• —"
+	}
+	return strings.Join(bullets, "\n")
 }
 
 // pushRejectedDiscord reports a fail-closed LLM disposition (gray embed; the
@@ -233,17 +372,13 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 	if len(reasons) == 0 && rejection != nil && strings.TrimSpace(rejection.Note) != "" {
 		reasons = []string{rejection.Note}
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "**%s** · %s", sig.Symbol, verdict)
-	for _, reason := range reasons {
-		if reason = strings.TrimSpace(reason); reason != "" {
-			fmt.Fprintf(&b, "\n• %s", reason)
-		}
-	}
+	description := fmt.Sprintf("**%s · %s**\n%s", sig.Symbol, verdict, discordReasonBullets(reasons))
 	_ = s.pushEmbedDiscord(ctx, discord.Message{Embeds: []discord.Embed{{
-		Title:       fmt.Sprintf("❌ 信号 #%d 被 LLM 审核拒绝", sig.ID),
-		Description: b.String(),
+		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
+		Title:       fmt.Sprintf("🔴 模拟盘 · ❌ 信号 #%d 被 LLM 审核拒绝", sig.ID),
+		Description: description,
 		Color:       discord.ColorRejected,
+		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d", sig.ConfigVersion, sig.ID)},
 		Timestamp:   s.now().UTC().Format(time.RFC3339),
 	}}})
 }

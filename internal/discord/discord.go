@@ -34,12 +34,24 @@ type EmbedField struct {
 	Inline bool   `json:"inline,omitempty"`
 }
 
+// EmbedAuthor is the compact author line rendered above an embed title.
+type EmbedAuthor struct {
+	Name string `json:"name"`
+}
+
+// EmbedFooter is the compact footer line rendered below an embed body.
+type EmbedFooter struct {
+	Text string `json:"text"`
+}
+
 // Embed is a rich embed; Color is a decimal RGB int (0xRRGGBB).
 type Embed struct {
+	Author      *EmbedAuthor `json:"author,omitempty"`
 	Title       string       `json:"title,omitempty"`
 	Description string       `json:"description,omitempty"`
 	Color       int          `json:"color,omitempty"`
 	Fields      []EmbedField `json:"fields,omitempty"`
+	Footer      *EmbedFooter `json:"footer,omitempty"`
 	Timestamp   string       `json:"timestamp,omitempty"`
 }
 
@@ -48,6 +60,35 @@ type Message struct {
 	Content    string     `json:"content,omitempty"`
 	Embeds     []Embed    `json:"embeds,omitempty"`
 	Components [][]Button `json:"components,omitempty"`
+}
+
+// actionRow is Discord's required top-level wrapper for message components.
+// Message retains [][]Button as its public construction shape so existing
+// callers do not need to change when the wire representation is corrected.
+type actionRow struct {
+	Type       int      `json:"type"`
+	Components []Button `json:"components"`
+}
+
+// MarshalJSON wraps each button row in a Discord Action Row. Buttons created
+// without an explicit component type default to type 2 (button).
+func (m Message) MarshalJSON() ([]byte, error) {
+	type messageJSON struct {
+		Content    string      `json:"content,omitempty"`
+		Embeds     []Embed     `json:"embeds,omitempty"`
+		Components []actionRow `json:"components,omitempty"`
+	}
+	wire := messageJSON{Content: m.Content, Embeds: m.Embeds}
+	for _, row := range m.Components {
+		buttons := append([]Button(nil), row...)
+		for i := range buttons {
+			if buttons[i].Type == 0 {
+				buttons[i].Type = 2
+			}
+		}
+		wire.Components = append(wire.Components, actionRow{Type: 1, Components: buttons})
+	}
+	return json.Marshal(wire)
 }
 
 // Wheel embed state colors (状态色:ALERT 红 / APPROVE 绿 / 拒绝灰).
