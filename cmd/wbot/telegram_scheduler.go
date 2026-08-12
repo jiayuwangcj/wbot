@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -30,20 +29,6 @@ const (
 // errLiveEnvNotAllowed is returned by the order placer for real-env
 // placement; the yes path records REJECTED with this exact reason.
 var errLiveEnvNotAllowed = errors.New("live env not allowed")
-
-// wheelTelegramStore is the store surface the Telegram confirm loop needs
-// (wheelstore.Store satisfies it; unit tests inject fakes).
-type wheelTelegramStore interface {
-	GetSignal(ctx context.Context, id int64) (*wheelstore.SignalRecord, error)
-	LatestLLMReview(ctx context.Context, signalID int64) (*wheelstore.ActionRecord, error)
-	LatestAction(ctx context.Context, signalID int64, action string) (*wheelstore.ActionRecord, error)
-	HasAction(ctx context.Context, signalID int64, action string) (bool, error)
-	AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error)
-	QuerySignalsSince(ctx context.Context, action string, afterID int64, limit int) ([]wheelstore.SignalRecord, error)
-	MaxSignalID(ctx context.Context) (int64, error)
-	Dismiss(ctx context.Context, symbol string, date time.Time) error
-	IsDismissed(ctx context.Context, symbol string, date time.Time) (bool, error)
-}
 
 // wheelOrderPlacer submits a sim-env market option order (futu proto adapter;
 // fakes in tests).
@@ -116,7 +101,7 @@ func (p futuOrderPlacer) OrderStatus(ctx context.Context, symbol, orderIDEx stri
 // runs one push loop and one long-poll loop, both on the serve context.
 type telegramScheduler struct {
 	tg      *telegram.Client
-	store   wheelTelegramStore
+	store   wheelstore.SignalRepository
 	orders  wheelOrderPlacer
 	chatIDs map[int64]bool
 	now     func() time.Time
@@ -134,7 +119,7 @@ func (s *telegramScheduler) sendToChats(ctx context.Context, text string) {
 	}
 }
 
-func newTelegramScheduler(tg *telegram.Client, store wheelTelegramStore, orders wheelOrderPlacer, chatIDs map[int64]bool) *telegramScheduler {
+func newTelegramScheduler(tg *telegram.Client, store wheelstore.SignalRepository, orders wheelOrderPlacer, chatIDs map[int64]bool) *telegramScheduler {
 	return &telegramScheduler{
 		tg:      tg,
 		store:   store,
@@ -609,8 +594,7 @@ func utcDate(t time.Time) time.Time {
 	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-// candidateOrder is the first candidate's order facts (signals store
-// candidates as opaque JSON maps, so this decodes them).
+// candidateOrder is the first candidate's typed order facts from a signal.
 type candidateOrder struct {
 	Code      string
 	Side      string
@@ -632,39 +616,18 @@ type candidateQuote struct {
 	OpenInterest int64
 }
 
-// firstCandidate decodes the signal's first candidate into order facts. The
+// firstCandidate reads the signal's first candidate into order facts. The
 // wheel sells the option in both directions (PUT sell / CALL sell), so side
 // is always sell; quantity defaults to 1 when missing.
 func firstCandidate(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
 	if sig == nil || len(sig.Candidates) == 0 {
 		return nil, errors.New("signal has no candidates")
 	}
-	raw, err := json.Marshal(sig.Candidates[0])
-	if err != nil {
-		return nil, fmt.Errorf("candidate encode: %w", err)
-	}
-	var c struct {
-		Direction string `json:"direction"`
-		Quantity  int    `json:"quantity"`
-		Quote     struct {
-			Symbol       string  `json:"symbol"`
-			OptionType   string  `json:"option_type"`
-			Strike       float64 `json:"strike"`
-			Expiry       string  `json:"expiry"`
-			Bid          float64 `json:"bid"`
-			Ask          float64 `json:"ask"`
-			Last         float64 `json:"last"`
-			Delta        float64 `json:"delta"`
-			ImpliedVol   float64 `json:"implied_vol"`
-			OpenInterest int64   `json:"open_interest"`
-		} `json:"quote"`
-	}
-	if err := json.Unmarshal(raw, &c); err != nil {
-		return nil, fmt.Errorf("candidate decode: %w", err)
-	}
-	if strings.TrimSpace(c.Quote.Symbol) == "" {
+	c := sig.Candidates[0]
+	if c.Quote == nil || strings.TrimSpace(c.Quote.Symbol) == "" {
 		return nil, errors.New("candidate has no option symbol")
 	}
+	quote := c.Quote
 	direction := strings.ToUpper(strings.TrimSpace(c.Direction))
 	// 正股信号(2026-08-12 llm-signal 端点扩展):BUY/SELL 下单方向即方向;
 	// 期权 PUT/CALL 语义为卖出开仓(收权利金)。
@@ -684,8 +647,8 @@ func firstCandidate(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
 		qty = 1
 	}
 	return &candidateOrder{
-		Code: c.Quote.Symbol, Side: side, Quantity: qty, Direction: direction,
-		Quote: candidateQuote{Symbol: c.Quote.Symbol, OptionType: c.Quote.OptionType, Strike: c.Quote.Strike, Expiry: c.Quote.Expiry, Bid: c.Quote.Bid, Ask: c.Quote.Ask, Last: c.Quote.Last, Delta: c.Quote.Delta, ImpliedVol: c.Quote.ImpliedVol, OpenInterest: c.Quote.OpenInterest},
+		Code: quote.Symbol, Side: side, Quantity: qty, Direction: direction,
+		Quote: candidateQuote{Symbol: quote.Symbol, OptionType: quote.OptionType, Strike: quote.Strike, Expiry: quote.Expiry, Bid: quote.Bid, Ask: quote.Ask, Last: quote.Last, Delta: quote.Delta, ImpliedVol: quote.ImpliedVol, OpenInterest: quote.OpenInterest},
 	}, nil
 }
 

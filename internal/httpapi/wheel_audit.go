@@ -44,17 +44,17 @@ type wheelInventoryJSON struct {
 }
 
 type wheelSignalJSON struct {
-	ID               int64              `json:"id"`
-	Symbol           string             `json:"symbol"`
-	Action           string             `json:"action"`
-	ConfigVersion    int                `json:"config_version"`
-	CapabilityStatus string             `json:"capability_status"`
-	BlockedBy        []string           `json:"blocked_by"`
-	Inventory        wheelInventoryJSON `json:"inventory"`
-	Candidates       []map[string]any   `json:"candidates"`
-	RejectionReasons []string           `json:"rejection_reasons"`
-	Reason           string             `json:"reason"`
-	CreatedAt        string             `json:"created_at"`
+	ID               int64                  `json:"id"`
+	Symbol           string                 `json:"symbol"`
+	Action           string                 `json:"action"`
+	ConfigVersion    int                    `json:"config_version"`
+	CapabilityStatus string                 `json:"capability_status"`
+	BlockedBy        []string               `json:"blocked_by"`
+	Inventory        wheelInventoryJSON     `json:"inventory"`
+	Candidates       []wheelstore.Candidate `json:"candidates"`
+	RejectionReasons []string               `json:"rejection_reasons"`
+	Reason           string                 `json:"reason"`
+	CreatedAt        string                 `json:"created_at"`
 }
 
 type wheelActionJSON struct {
@@ -88,7 +88,7 @@ func toWheelSignalJSON(r wheelstore.SignalRecord) wheelSignalJSON {
 	}
 	candidates := r.Candidates
 	if candidates == nil {
-		candidates = []map[string]any{}
+		candidates = []wheelstore.Candidate{}
 	}
 	rejections := r.RejectionReasons
 	if rejections == nil {

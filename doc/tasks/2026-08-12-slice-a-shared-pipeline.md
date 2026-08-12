@@ -30,9 +30,9 @@
 
 ## State
 
-- **status**: `running`
-- **last step**: 2026-08-12 建任务记录,派 coder
+- **status**: `delivered`
+- **last step**: 2026-08-12 codex CLI(gpt-5.6-luna)完成共享 Reviewer/LLM gate/SignalRepository/Candidate-Quote 重构;定向测试、`go test ./...` 与 `PATH=/home/jiayu/go/bin:$PATH scripts/verify.sh` 全绿
 
 ## Next
 
-- coder 实现 → verify.sh 全绿 → reviewer 评审 → 合入 feat/llm-signal-endpoint(或新分支)→ 启动 #37
+- reviewer 评审 → 合入基线 → 启动 #37

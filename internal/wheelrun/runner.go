@@ -9,7 +9,6 @@ package wheelrun
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -36,19 +35,6 @@ type OptionChainer interface {
 	OptionChain(ctx context.Context, symbol string, begin, end time.Time) ([]futu.OptionContract, error)
 }
 
-// LLMReviewer audits an ALERT before it can pass the notification gate.
-type LLMReviewer interface {
-	Review(ctx context.Context, req llmreview.ReviewRequest) (llmreview.ReviewResult, error)
-}
-
-// SignalStore is the wheelstore subset the runner reads and writes.
-type SignalStore interface {
-	LatestConfig(ctx context.Context, symbol string) (*wheelstore.ConfigRecord, error)
-	AppendSignal(ctx context.Context, r wheelstore.SignalRecord) (int64, error)
-	AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error)
-	ListSignals(ctx context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error)
-}
-
 // WatchlistLister lists wheel bindings and syncs their execution status
 // (adapted from the watchlist package so the runner stays DB-free).
 type WatchlistLister interface {
@@ -62,9 +48,9 @@ type Dependencies struct {
 	Quoter      Quoter
 	Positions   TradePositions
 	Chain       OptionChainer
-	Store       SignalStore
+	Store       wheelstore.SignalRepository
 	Watchlist   WatchlistLister
-	LLMReviewer LLMReviewer
+	LLMReviewer llmreview.Reviewer
 	LLMModel    string
 }
 
@@ -252,81 +238,22 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 		"cash_available":   nil,
 		"rules":            wheelReviewRules,
 	}
-	result, err := r.deps.LLMReviewer.Review(ctx, llmreview.ReviewRequest{
-		StrategyConfig: cfg,
-		Signal:         sig,
-		Positions:      positions,
-		CashAvailable:  nil,
-		RulesText:      wheelReviewRules,
-		Symbol:         symbol,
+	_, action, err := llmreview.RecordLLMGate(ctx, r.deps.Store, r.deps.LLMReviewer, strings.TrimSpace(r.deps.LLMModel), llmreview.GateInput{
+		SignalID:                   signalID,
+		UnexpectedVerdictIsFailure: true,
+		Request: llmreview.ReviewRequest{
+			StrategyConfig: cfg,
+			Signal:         sig,
+			Positions:      positions,
+			CashAvailable:  nil,
+			RulesText:      wheelReviewRules,
+			Symbol:         symbol,
+		},
+		Summary: summary,
 	})
 	if err != nil {
-		r.recordReviewFailure(ctx, symbol, signalID, summary, err)
-		return
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: append LLM gate action %s: %v\n", symbol, action, err)
 	}
-	verdict := strings.ToUpper(strings.TrimSpace(result.Verdict))
-	switch verdict {
-	case "APPROVE":
-		r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
-			SignalID: signalID,
-			Action:   "LLM_REVIEW",
-			Actor:    r.llmActor(),
-			Details:  reviewDetails(verdict, result.Reasons, result.Notes, summary),
-		})
-	case "REJECT":
-		r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
-			SignalID: signalID,
-			Action:   "REJECTED",
-			Actor:    r.llmActor(),
-			Details:  reviewDetails(verdict, result.Reasons, result.Notes, summary),
-		})
-	default:
-		r.recordReviewFailure(ctx, symbol, signalID, summary, fmt.Errorf("unexpected LLM verdict %q", result.Verdict))
-	}
-}
-
-func (r *Runner) recordReviewFailure(ctx context.Context, symbol string, signalID int64, summary map[string]any, err error) {
-	reason := err.Error()
-	r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
-		SignalID: signalID,
-		Action:   "REJECTED",
-		Actor:    r.llmActor(),
-		Details: map[string]any{
-			"verdict":       "REJECT",
-			"reasons":       []string{reason},
-			"error":         reason,
-			"input_summary": summary,
-		},
-	})
-}
-
-func (r *Runner) appendReviewAction(ctx context.Context, symbol string, action wheelstore.ActionRecord) {
-	if _, err := r.deps.Store.AppendAction(ctx, action); err != nil {
-		fmt.Fprintf(os.Stderr, "wheelrun: %s: append LLM gate action %s: %v\n", symbol, action.Action, err)
-	}
-}
-
-func (r *Runner) llmActor() string {
-	model := strings.TrimSpace(r.deps.LLMModel)
-	if model == "" {
-		model = "unknown"
-	}
-	return "llm:" + model
-}
-
-func reviewDetails(verdict string, reasons []string, notes string, summary map[string]any) map[string]any {
-	if reasons == nil {
-		reasons = []string{}
-	}
-	details := map[string]any{
-		"verdict":       verdict,
-		"reasons":       reasons,
-		"input_summary": summary,
-	}
-	if notes != "" {
-		details["notes"] = notes
-	}
-	return details
 }
 
 // dailyOrders counts today's (UTC) ALERT signals as the day's order usage.
@@ -409,7 +336,7 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 			TargetInventory:    fptr(sig.TargetInventory),
 			InventoryGap:       fptr(sig.InventoryGap),
 		},
-		Candidates:       candidateMaps(sig.Candidates),
+		Candidates:       candidateRecords(sig.Candidates),
 		RejectionReasons: sig.RejectReasons,
 		Reason:           sig.Reason,
 	}
@@ -423,17 +350,54 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 	return record, status, reason
 }
 
-// candidateMaps renders candidates as the JSON maps the signal table stores
-// (marshal cannot fail: all candidate fields are primitives).
-func candidateMaps(cands []wheel.CandidateEvaluation) []map[string]any {
-	out := make([]map[string]any, 0, len(cands))
+// candidateRecords converts domain candidates directly to the shared signal
+// DTO; no JSON map round-trip is needed between strategy and repository.
+func candidateRecords(cands []wheel.CandidateEvaluation) []wheelstore.Candidate {
+	out := make([]wheelstore.Candidate, 0, len(cands))
 	for _, c := range cands {
-		b, _ := json.Marshal(c)
-		m := map[string]any{}
-		_ = json.Unmarshal(b, &m)
-		out = append(out, m)
+		quote := quoteRecord(c.Quote)
+		out = append(out, wheelstore.AsFullCandidate(wheelstore.Candidate{
+			Quote:               &quote,
+			Direction:           string(c.Direction),
+			Quantity:            c.Quantity,
+			SignedContracts:     c.SignedContracts,
+			Quality:             c.Quality,
+			PostTradeEffective:  c.PostTradeEffective,
+			AssignmentInventory: c.AssignmentInventory,
+			Accepted:            c.Accepted,
+			Reasons:             c.Reasons,
+		}))
 	}
 	return out
+}
+
+func quoteRecord(q wheel.OptionQuote) wheelstore.Quote {
+	return wheelstore.Quote{
+		Symbol:       q.Symbol,
+		Code:         q.Code,
+		Underlying:   q.Underlying,
+		Source:       q.Source,
+		OptionType:   string(q.OptionType),
+		Type:         string(q.Type),
+		Expiry:       q.Expiry.Format(time.RFC3339Nano),
+		Strike:       q.Strike,
+		Delta:        q.Delta,
+		MarketDelta:  q.MarketDelta,
+		Bid:          q.Bid,
+		Ask:          q.Ask,
+		Last:         q.Last,
+		ImpliedVol:   q.ImpliedVol,
+		Theta:        q.Theta,
+		Volume:       q.Volume,
+		OpenInterest: q.OpenInterest,
+		LotSize:      q.LotSize,
+		QuoteTime:    q.QuoteTime.Format(time.RFC3339Nano),
+		CapturedAt:   q.CapturedAt.Format(time.RFC3339Nano),
+		Timestamp:    q.Timestamp.Format(time.RFC3339Nano),
+		Ts:           q.Ts.Format(time.RFC3339Nano),
+		IV:           q.IV,
+		OI:           q.OI,
+	}
 }
 
 func fptr(v float64) *float64 { return &v }

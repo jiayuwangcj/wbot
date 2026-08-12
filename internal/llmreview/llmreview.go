@@ -44,6 +44,11 @@ type Client struct {
 	http    *http.Client
 }
 
+// Reviewer is the single review dependency shared by every strategy pipeline.
+type Reviewer interface {
+	Review(context.Context, ReviewRequest) (ReviewResult, error)
+}
+
 // New validates required settings. Callers pass env LLM_BASE_URL/LLM_API_KEY/
 // LLM_MODEL; this package never reads the environment itself.
 func New(baseURL, apiKey, model string) (*Client, error) {

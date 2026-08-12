@@ -87,8 +87,7 @@ type InventorySnapshot struct {
 	InventoryGap       *float64 `json:"inventory_gap,omitempty"`
 }
 
-// SignalRecord contains only an ALERT/HOLD recommendation. Candidates are
-// independent JSON DTOs because the domain candidate type is still evolving.
+// SignalRecord contains only an ALERT/HOLD recommendation.
 type SignalRecord struct {
 	ID               int64
 	Symbol           string
@@ -97,7 +96,7 @@ type SignalRecord struct {
 	CapabilityStatus string
 	BlockedBy        []string
 	Inventory        InventorySnapshot
-	Candidates       []map[string]any
+	Candidates       []Candidate
 	RejectionReasons []string
 	Reason           string
 	CreatedAt        time.Time
@@ -597,7 +596,7 @@ func scanSignal(scanner interface{ Scan(...any) error }) (SignalRecord, error) {
 		return r, fmt.Errorf("wheelstore: decode blocked by: %w", err)
 	}
 	if r.Candidates == nil {
-		r.Candidates = []map[string]any{}
+		r.Candidates = []Candidate{}
 	}
 	if err := json.Unmarshal(c, &r.Candidates); err != nil {
 		return r, fmt.Errorf("wheelstore: decode candidates: %w", err)
