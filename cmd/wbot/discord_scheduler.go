@@ -231,12 +231,12 @@ func signalDiscordEmbeds(sig *wheelstore.SignalRecord, reasons []string, sentAt 
 	if !sig.CreatedAt.IsZero() {
 		created = sig.CreatedAt.Format("01-02 15:04")
 	}
-	common := func(title, description string) discord.Embed {
-		return discord.Embed{Title: title, Description: description, Color: discord.ColorApprove}
+	common := func(description string) discord.Embed {
+		return discord.Embed{Description: description, Color: discord.ColorApprove}
 	}
 	embeds := []discord.Embed{{
-		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot · 模拟盘"},
-		Title:       fmt.Sprintf("📌 信号 #%d · %s · %s", sig.ID, sig.Symbol, directionLabel(c.Direction)),
+		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
+		Title:       fmt.Sprintf("🔴 模拟盘 · 📌 信号 #%d · %s · %s", sig.ID, sig.Symbol, directionLabel(c.Direction)),
 		Description: fmt.Sprintf("LLM 审核 ✅ APPROVE — 候选 `%s` 已就绪,缺口方向一致", discordInlineCode(c.Code)),
 		Color:       discord.ColorApprove,
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d · %s", sig.ConfigVersion, sig.ID, created)},
@@ -246,25 +246,25 @@ func signalDiscordEmbeds(sig *wheelstore.SignalRecord, reasons []string, sentAt 
 	if isStockDirection(c.Direction) {
 		unit = "股"
 	}
-	embeds = append(embeds, common("📦 订单", discordCodeBlock(
+	embeds = append(embeds, common(discordCodeBlock(
 		discordCodeRow("候选", valueOrDash(c.Code)),
 		discordCodeRow("数量", fmt.Sprintf("%s %s", commaInt(int64(c.Quantity)), unit)),
 		discordCodeRow("限价", positiveDecimal(c.Quote.Last)),
 	)))
 	if !isStockDirection(c.Direction) {
-		embeds = append(embeds, common("📊 期权", discordCodeBlock(
+		embeds = append(embeds, common(discordCodeBlock(
 			fmt.Sprintf("行权  %s  Δ %s", positiveDecimal(c.Quote.Strike), nonZeroDecimal(c.Quote.Delta)),
 			fmt.Sprintf("到期  %s  IV %s", shortExpiry(c.Quote.Expiry), positiveDecimal(c.Quote.ImpliedVol)),
 			fmt.Sprintf("报价  %s  OI %s", bidAsk(c.Quote.Bid, c.Quote.Ask), positiveCount(c.Quote.OpenInterest)),
 		)))
 	}
 	embeds = append(embeds,
-		common("📈 标的", discordCodeBlock(
+		common(discordCodeBlock(
 			discordCodeRow("现价", discordPrice(sig.Inventory.CurrentPrice)),
 			discordCodeRow("缺口", discordShares(sig.Inventory.InventoryGap)),
 			discordCodeRow("目标", fmt.Sprintf("%s / 持仓 %s", discordCount(sig.Inventory.TargetInventory), discordCount(sig.Inventory.ActualInventory))),
 		)),
-		common("🧠 LLM 理由", discordReasonBullets(reasons)),
+		common(discordReasonBullets(reasons)),
 	)
 	return embeds, nil
 }
@@ -374,8 +374,8 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 	}
 	description := fmt.Sprintf("**%s · %s**\n%s", sig.Symbol, verdict, discordReasonBullets(reasons))
 	_ = s.pushEmbedDiscord(ctx, discord.Message{Embeds: []discord.Embed{{
-		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot · 模拟盘"},
-		Title:       fmt.Sprintf("❌ 信号 #%d 被 LLM 审核拒绝", sig.ID),
+		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
+		Title:       fmt.Sprintf("🔴 模拟盘 · ❌ 信号 #%d 被 LLM 审核拒绝", sig.ID),
 		Description: description,
 		Color:       discord.ColorRejected,
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d", sig.ConfigVersion, sig.ID)},
