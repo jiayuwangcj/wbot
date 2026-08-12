@@ -86,6 +86,7 @@ wheel runner 实盘评估**实时化**:pass 从 ~6 分钟降到秒级。三管�
 2. **US 期权 update_time 时区错误**(e195c0d):futu 网关对 US 返回**美东时间**(HK/CN 为 +08),parseQuoteTime 统一按 +08 → 盘中新鲜报价(12:14 ET 时 HKT 00:19)被标 12 小时前 → LLM 以「数据陈旧」拒。修复:market==11 用 America/New_York。HK 对比验证:00700 update_time 16:07:58(收盘后 +08 合理)。
 3. **审核输入补全**(e195c0d):cash_available 未传给 LLM 审核(Funds 只接了 Evaluate);信号无现价字段;OptionQuote 遗留 ts/timestamp/captured_at 零值时间序列化噪音(Go time.Time omitempty 无效)→ ReviewRequest 加 CurrentPrice、reviewAlert 传现金、userContent 序列化后清理零值时间(a288ded 修 dropZeroTimes 对 struct 无效问题)。
 4. **max_quote_age 默认 24h 太宽**(DB 变更):31.5P 报价 1h43m 前仍过 Validate 且被选中(库存目标优先排序)→ US.JD 配置加 `max_quote_age: 3600`,旧报价被 Validate 拒,新鲜报价(31P)入选。
+5. **ParseConfig 缺 max_quote_age_seconds 参数支持**(e542445):DB 参数名写错(且白名单本无此参数)→ US.JD 配置解析失败停摆。修复:strategy 模板补 `max_quote_age_seconds` 声明(默认 86400)+ ParseConfig 解析入 cfg;DB 用 `jsonb_set(config #- '{params,max_quote_age}', '{params,max_quote_age_seconds}', '3600')` 换键。**教训:wheel.Config 字段与 strategy 模板白名单需要保持同步,新增可配参数必须两处都加。**
 
 **性能曲线**:全量 5-6 分钟 → ATM 扩展冷缓存 4-5 分钟 → 缓存命中 28 秒 → 方向过滤 + 新容器首轮 30 秒。
 
