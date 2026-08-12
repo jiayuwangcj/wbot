@@ -52,7 +52,8 @@ func RecordLLMGate(ctx context.Context, repo wheelstore.SignalRepository, review
 			}
 			details["verdict"] = verdict
 			details["reasons"] = reasons
-			if result.Notes != "" && !input.UnexpectedVerdictIsFailure {
+			// Notes drop only for an unexpected verdict in failure mode.
+			if result.Notes != "" && (verdict == "APPROVE" || verdict == "REJECT" || !input.UnexpectedVerdictIsFailure) {
 				details["notes"] = result.Notes
 			}
 			if verdict != "APPROVE" && verdict != "REJECT" {
