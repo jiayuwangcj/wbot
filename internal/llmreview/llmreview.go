@@ -76,11 +76,15 @@ func New(baseURL, apiKey, model string) (*Client, error) {
 
 // ReviewRequest carries the decision context. Signal/Positions/StrategyConfig
 // are any so this package stays independent of the Wheel domain package.
+// CurrentPrice is the spot price at decision time: the wheel Signal carries
+// inventory gaps but not the underlying price, and the review gate refused
+// without it (2026-08-13: "underlying spot price missing from input").
 type ReviewRequest struct {
 	StrategyConfig any
 	Signal         any
 	Positions      any
 	CashAvailable  *float64
+	CurrentPrice   float64
 	RulesText      string
 	Symbol         string
 }
@@ -147,10 +151,11 @@ type chatCompletion struct {
 func userContent(req ReviewRequest) (string, error) {
 	data := map[string]any{
 		"symbol":          req.Symbol,
-		"strategy_config": req.StrategyConfig,
-		"signal":          req.Signal,
-		"positions":       req.Positions,
+		"strategy_config": dropZeroTimes(req.StrategyConfig),
+		"signal":          dropZeroTimes(req.Signal),
+		"positions":       dropZeroTimes(req.Positions),
 		"cash_available":  req.CashAvailable,
+		"current_price":   req.CurrentPrice,
 		"rules":           req.RulesText,
 	}
 	b, err := json.MarshalIndent(data, "", "  ")
@@ -158,6 +163,34 @@ func userContent(req ReviewRequest) (string, error) {
 		return "", fmt.Errorf("llmreview: marshal review data: %w", err)
 	}
 	return string(b), nil
+}
+
+// dropZeroTimes removes zero-valued time.Time encodings (Go marshals a zero
+// time.Time as "0001-01-01T00:00:00Z" even under omitempty — struct values are
+// never empty for encoding/json) from the JSON tree. wheel.OptionQuote carries
+// legacy ts/timestamp/captured_at fields that stay zero on the futu path, and
+// a review model reads those zeroes as missing/stale data (2026-08-13: signal
+// 454 REJECTED with "quote.captured_at/timestamp/ts are zero").
+func dropZeroTimes(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, val := range t {
+			if s, ok := val.(string); ok && s == "0001-01-01T00:00:00Z" {
+				continue
+			}
+			out[k] = dropZeroTimes(val)
+		}
+		return out
+	case []any:
+		out := make([]any, 0, len(t))
+		for _, val := range t {
+			out = append(out, dropZeroTimes(val))
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func parseResult(content string) (ReviewResult, error) {

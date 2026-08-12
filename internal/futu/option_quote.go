@@ -169,6 +169,7 @@ func (c *Client) OptionQuotes(ctx context.Context, symbols []string) (map[string
 		pg.BasicQotList = append(pg.BasicQotList, part.BasicQotList...)
 	}
 	snapshots := make(map[string]struct {
+		market     int
 		last       float64
 		volume     int64
 		updateTime string
@@ -179,10 +180,11 @@ func (c *Client) OptionQuotes(ctx context.Context, symbols []string) (map[string
 			continue
 		}
 		snapshots[sym] = struct {
+			market     int
 			last       float64
 			volume     int64
 			updateTime string
-		}{q.CurPrice, q.Volume, q.UpdateTime}
+		}{q.Security.Market, q.CurPrice, q.Volume, q.UpdateTime}
 	}
 	stale := make([]string, 0, len(canonical))
 	for _, sym := range canonical {
@@ -191,7 +193,7 @@ func (c *Client) OptionQuotes(ctx context.Context, symbols []string) (map[string
 			Symbol:    sym,
 			Last:      snapshot.last,
 			Volume:    snapshot.volume,
-			QuoteTime: parseQuoteTime(snapshot.updateTime),
+			QuoteTime: parseQuoteTime(snapshot.updateTime, snapshot.market),
 		}
 		greeksCacheMu.Lock()
 		e, cached := greeksCache[sym]
@@ -303,9 +305,19 @@ func applyGreeks(q *OptionQuoteEx, e greeksEntry) {
 }
 
 // parseQuoteTime parses the gateway's "YYYY-MM-DD HH:MM:SS" wall-clock string
-// in futuLoc; malformed or empty input yields the zero time (never an error).
-func parseQuoteTime(s string) time.Time {
-	t, err := time.ParseInLocation("2006-01-02 15:04:05", s, futuLoc)
+// in the security's market-local zone: the gateway reports HK/CN update times
+// in +08 but US times in America/New_York wall clock (实测 2026-08-13: US
+// option update_time 12:14 while HKT was 00:19 — parsing US in +08 mislabels
+// a fresh mid-session quote as 12h stale and the LLM review gate rejects it).
+// Malformed or empty input yields the zero time (never an error).
+func parseQuoteTime(s string, market int) time.Time {
+	loc := futuLoc
+	if market == 11 { // US
+		if ny, err := time.LoadLocation("America/New_York"); err == nil {
+			loc = ny
+		}
+	}
+	t, err := time.ParseInLocation("2006-01-02 15:04:05", s, loc)
 	if err != nil {
 		return time.Time{}
 	}

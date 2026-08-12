@@ -562,7 +562,7 @@ func TestReviewAlertDirectionReversalIsRejected(t *testing.T) {
 		TargetInventory: 600, EffectiveInventory: 400, InventoryGap: 200,
 		CapabilityStatus: wheel.CapabilityReady,
 	}
-	r.reviewAlert(context.Background(), symbol, 42, 1, wheel.Config{Strategy: "wheel"}, reversed, wheelstore.SignalRecord{Symbol: symbol, Action: "ALERT"}, nil, 450)
+	r.reviewAlert(context.Background(), symbol, 42, 1, wheel.Config{Strategy: "wheel"}, reversed, wheelstore.SignalRecord{Symbol: symbol, Action: "ALERT"}, nil, 450, 12345.67, true)
 
 	if len(reviewer.requests) != 1 {
 		t.Fatalf("review requests = %d; want 1", len(reviewer.requests))
@@ -570,6 +570,13 @@ func TestReviewAlertDirectionReversalIsRejected(t *testing.T) {
 	gotSignal, ok := reviewer.requests[0].Signal.(wheel.Signal)
 	if !ok || gotSignal.Direction != wheel.DirectionCall || gotSignal.InventoryGap <= 0 {
 		t.Fatalf("fake scenario did not carry reversed signal: %#v", reviewer.requests[0].Signal)
+	}
+	req := reviewer.requests[0]
+	if req.CashAvailable == nil || *req.CashAvailable != 12345.67 {
+		t.Fatalf("review request cash = %v; want 12345.67", req.CashAvailable)
+	}
+	if req.CurrentPrice != 450 {
+		t.Fatalf("review request current price = %v; want 450", req.CurrentPrice)
 	}
 	if len(store.actions) != 1 || store.actions[0].Action != "REJECTED" || store.actions[0].Details["verdict"] != "REJECT" {
 		t.Fatalf("actions = %+v; want fail-closed REJECTED", store.actions)

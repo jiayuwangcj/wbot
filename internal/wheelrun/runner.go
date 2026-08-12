@@ -262,7 +262,7 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		return fmt.Errorf("append signal: %w", err)
 	}
 	if record.Action == "ALERT" {
-		r.reviewAlert(ctx, symbol, id, rec.Version, cfg, sig, record, filteredPositions, price)
+		r.reviewAlert(ctx, symbol, id, rec.Version, cfg, sig, record, filteredPositions, price, in.CashAvailable, in.HasCashAvailable)
 	}
 	if err := r.deps.Watchlist.SetExecutionStatus(ctx, symbol, status, reason); err != nil {
 		return fmt.Errorf("signal %d stored, watchlist status sync: %w", id, err)
@@ -291,10 +291,14 @@ func (r *Runner) persistDataBlocked(ctx context.Context, symbol string, version 
 	return fmt.Errorf("%s; signal %d DATA_BLOCKED", reason, id)
 }
 
-func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64) {
+func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64, cash float64, hasCash bool) {
 	if r.deps.LLMReviewer == nil {
 		fmt.Fprintf(os.Stderr, "wheelrun: %s: LLM reviewer unavailable; skipping review signal=%d\n", symbol, signalID)
 		return
+	}
+	var cashPtr *float64
+	if hasCash {
+		cashPtr = &cash
 	}
 	summary := map[string]any{
 		"symbol":           symbol,
@@ -304,7 +308,7 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 		"signal":           sig,
 		"persisted_signal": record,
 		"positions":        positions,
-		"cash_available":   nil,
+		"cash_available":   cashPtr,
 		"rules":            wheelReviewRules,
 	}
 	_, action, err := llmreview.RecordLLMGate(ctx, r.deps.Store, r.deps.LLMReviewer, strings.TrimSpace(r.deps.LLMModel), llmreview.GateInput{
@@ -314,7 +318,8 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 			StrategyConfig: cfg,
 			Signal:         sig,
 			Positions:      positions,
-			CashAvailable:  nil,
+			CashAvailable:  cashPtr,
+			CurrentPrice:   price,
 			RulesText:      wheelReviewRules,
 			Symbol:         symbol,
 		},
