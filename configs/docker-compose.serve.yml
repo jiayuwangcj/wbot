@@ -46,3 +46,11 @@ services:
       - /Users/jiayu/.wbot:/root/.wbot
     command: ["serve", "-wheel-run", "-telegram-run", "-listen", "0.0.0.0:8080"]
     restart: unless-stopped   # 进程崩溃/主机重启自动拉起(补「serve 无自愈」缺口)
+    healthcheck:              # 独立监控 #2026-08-12-monitor-independence:容器级存活探测
+      # busybox wget 只做 GET(不支持 PUT 是已知限制,探活无碍);0.0.0.0 因为
+      # host 网络下容器 IP 可变,127.0.0.1 即容器自身 loopback。
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
