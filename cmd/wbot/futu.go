@@ -61,7 +61,7 @@ func warnRed(msg string) {
 // openTradeClient connects a protobuf trade client and reports errors as the
 // CLI convention requires (exit 1 runtime errors).
 func openTradeClient(prog, sub, addr string) (*futu.TradeClient, bool) {
-	tc, err := futu.OpenTrade(context.Background(), addr)
+	tc, err := futu.AcquireTrade(context.Background(), addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "futu: %s: %v\n", sub, err)
 		return nil, false

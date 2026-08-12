@@ -4,7 +4,9 @@ import (
 	"context"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jiayu/wbot/internal/futu/fakegw"
 	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
@@ -53,6 +55,7 @@ func TestOpenTradeRefused(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 	ln.Close()
+	started := time.Now()
 	tc, err := OpenTrade(context.Background(), addr)
 	if err == nil {
 		tc.Close()
@@ -60,6 +63,120 @@ func TestOpenTradeRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "connect") {
 		t.Fatalf("OpenTrade: want readable connect error, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("OpenTrade refused took %v; want fast error", elapsed)
+	}
+}
+
+func TestOpenTradeHandshakeTimeout(t *testing.T) {
+	ln, err := netListen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+
+	started := time.Now()
+	tc, err := OpenTrade(context.Background(), ln.Addr().String())
+	elapsed := time.Since(started)
+	if err == nil {
+		tc.Close()
+		t.Fatal("OpenTrade: want init handshake timeout, got nil")
+	}
+	if elapsed < 10*time.Second || elapsed > 15*time.Second {
+		t.Fatalf("OpenTrade timeout took %v; want 10-15s", elapsed)
+	}
+	select {
+	case conn := <-accepted:
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 1024)
+		for {
+			if _, readErr := conn.Read(buf); readErr != nil {
+				if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+					t.Fatal("timed-out init connection remains open")
+				}
+				break
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mock gateway did not accept init connection")
+	}
+}
+
+func TestTradeConnectionReusedByAddress(t *testing.T) {
+	addr, accepts := fakegw.ServerWithAcceptCount(t, func(protoID int32, body []byte) []byte {
+		if protoID == protoInit {
+			return fakegw.InitBody(42)
+		}
+		return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1)})
+	})
+
+	for i := 0; i < 2; i++ {
+		tc, err := AcquireTrade(context.Background(), addr)
+		if err != nil {
+			t.Fatalf("AcquireTrade call %d: %v", i+1, err)
+		}
+		if _, err := tc.Account(context.Background(), EnvSim, 0); err != nil {
+			t.Fatalf("Account call %d: %v", i+1, err)
+		}
+		if err := tc.Close(); err != nil {
+			t.Fatalf("Close call %d: %v", i+1, err)
+		}
+	}
+	if got := accepts.Load(); got != 1 {
+		t.Fatalf("accepted connections = %d; want 1", got)
+	}
+}
+
+func TestTradeReconnectsOnceAfterDisconnect(t *testing.T) {
+	var accounts atomic.Int32
+	addr, accepts := fakegw.ServerWithAcceptCount(t, func(protoID int32, body []byte) []byte {
+		switch protoID {
+		case protoInit:
+			return fakegw.InitBody(42)
+		case protoAccs:
+			if accounts.Add(1) == 1 {
+				return nil
+			}
+			return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1)})
+		default:
+			return nil
+		}
+	})
+	tc := openTrade(t, addr)
+	acc, err := tc.Account(context.Background(), EnvSim, 0)
+	if err != nil {
+		t.Fatalf("Account after disconnect: %v", err)
+	}
+	if acc.GetAccID() != 1907141 {
+		t.Fatalf("account id = %d; want 1907141", acc.GetAccID())
+	}
+	if got := accepts.Load(); got != 2 {
+		t.Fatalf("accepted connections = %d; want 2 (initial + one reconnect)", got)
+	}
+}
+
+func TestTradeRetryAttemptsAtMostTwo(t *testing.T) {
+	addr, accepts := fakegw.ServerWithAcceptCount(t, func(protoID int32, body []byte) []byte {
+		if protoID == protoInit {
+			return fakegw.InitBody(42)
+		}
+		return nil
+	})
+	tc := openTrade(t, addr)
+	if _, err := tc.Account(context.Background(), EnvSim, 0); err == nil {
+		t.Fatal("Account: want disconnect error, got nil")
+	}
+	if got := accepts.Load(); got != 2 {
+		t.Fatalf("accepted connections = %d; want exactly 2 total attempts", got)
 	}
 }
 

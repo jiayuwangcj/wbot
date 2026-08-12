@@ -62,7 +62,7 @@ func (p futuOrderPlacer) PlaceOrder(ctx context.Context, symbol, side string, qt
 	if p.env != futu.EnvSim {
 		return "", 0, errLiveEnvNotAllowed
 	}
-	tc, err := futu.OpenTrade(ctx, p.addr)
+	tc, err := futu.AcquireTrade(ctx, p.addr)
 	if err != nil {
 		return "", 0, fmt.Errorf("open trade: %w", err)
 	}

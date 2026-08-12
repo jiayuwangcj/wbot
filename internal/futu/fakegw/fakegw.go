@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 
 	"github.com/qtopie/gofutuapi/gen/common/initconnect"
@@ -30,22 +31,30 @@ type Handler func(protoID int32, reqBody []byte) []byte
 
 // Server starts a fake gateway on a loopback port and returns its address.
 func Server(t *testing.T, h Handler) string {
+	addr, _ := ServerWithAcceptCount(t, h)
+	return addr
+}
+
+// ServerWithAcceptCount is Server plus a counter of accepted TCP connections.
+func ServerWithAcceptCount(t *testing.T, h Handler) (string, *atomic.Int32) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
+	accepts := &atomic.Int32{}
 	go func() {
 		for {
 			conn, err := ln.Accept()
 			if err != nil {
 				return
 			}
+			accepts.Add(1)
 			go serve(conn, h)
 		}
 	}()
-	return ln.Addr().String()
+	return ln.Addr().String(), accepts
 }
 
 func serve(conn net.Conn, h Handler) {

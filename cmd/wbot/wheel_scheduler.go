@@ -94,7 +94,7 @@ type futuPositions struct {
 }
 
 func (p futuPositions) Positions(ctx context.Context, _ any) ([]wheelrun.Position, error) {
-	tc, err := futu.OpenTrade(ctx, p.addr)
+	tc, err := futu.AcquireTrade(ctx, p.addr)
 	if err != nil {
 		return nil, fmt.Errorf("wheel positions: %w", err)
 	}
