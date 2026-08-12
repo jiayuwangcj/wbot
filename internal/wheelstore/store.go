@@ -757,22 +757,32 @@ func (s *Store) QueryActions(ctx context.Context, signalID int64) ([]ActionRecor
 // LatestLLMReview returns the most recent LLM_REVIEW action for a signal
 // (the pre-order gate's verdict; ErrNotFound when no review exists).
 func (s *Store) LatestLLMReview(ctx context.Context, signalID int64) (*ActionRecord, error) {
+	return s.LatestAction(ctx, signalID, "LLM_REVIEW")
+}
+
+// LatestAction returns the most recent action of the requested type for a
+// signal. ErrNotFound means the signal has no such action.
+func (s *Store) LatestAction(ctx context.Context, signalID int64, action string) (*ActionRecord, error) {
 	if err := s.check(); err != nil {
 		return nil, err
 	}
 	if signalID <= 0 {
 		return nil, fmt.Errorf("%w: positive signal id required", ErrInvalidRecord)
 	}
+	action = strings.ToUpper(strings.TrimSpace(action))
+	if !validAction(action) {
+		return nil, ErrInvalidOp
+	}
 	r, err := scanAction(s.db.QueryRowContext(ctx, `
 SELECT id,signal_id,action,actor,note,details,created_at
 FROM wheel_signal_actions
-WHERE signal_id = $1 AND action = 'LLM_REVIEW'
-ORDER BY created_at DESC, id DESC LIMIT 1`, signalID))
+WHERE signal_id = $1 AND action = $2
+ORDER BY created_at DESC, id DESC LIMIT 1`, signalID, action))
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("wheelstore: latest llm review: %w", err)
+		return nil, fmt.Errorf("wheelstore: latest action: %w", err)
 	}
 	return &r, nil
 }

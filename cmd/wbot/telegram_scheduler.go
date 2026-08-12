@@ -36,6 +36,7 @@ var errLiveEnvNotAllowed = errors.New("live env not allowed")
 type wheelTelegramStore interface {
 	GetSignal(ctx context.Context, id int64) (*wheelstore.SignalRecord, error)
 	LatestLLMReview(ctx context.Context, signalID int64) (*wheelstore.ActionRecord, error)
+	LatestAction(ctx context.Context, signalID int64, action string) (*wheelstore.ActionRecord, error)
 	HasAction(ctx context.Context, signalID int64, action string) (bool, error)
 	AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error)
 	QuerySignalsSince(ctx context.Context, action string, afterID int64, limit int) ([]wheelstore.SignalRecord, error)
@@ -209,14 +210,18 @@ func openTelegramConfig() (*config.Store, error) {
 
 // runPush polls new ALERT signals and pushes those whose latest LLM review is
 // APPROVE. The in-memory cursor starts at the newest signal id so a restart
-// never replays history; the cursor advances past skipped signals (rejected,
-// unapproved) so they are not retried forever. A signal whose LLM review is
-// not yet recorded is treated as a race with the appending POST and retried
-// (cursor held back) until the review lands or the retry window closes. A
-// failed MaxSignalID retries before the ticker starts: polling with a zero
-// cursor would replay every historical ALERT once the DB recovers.
+// never replays history. During a batch it acts as a waterline: it advances
+// only through the contiguous prefix that has no retryable signal, so a
+// pending signal cannot be skipped by a later signal in the same batch. The
+// in-memory handled set prevents those later signals from being pushed again
+// while the waterline is held back. A signal whose LLM review is not yet
+// recorded is treated as a race with the appending POST and retried (cursor
+// held back) until the review lands or the retry window closes. A failed
+// MaxSignalID retries before the ticker starts: polling with a zero cursor
+// would replay every historical ALERT once the DB recovers.
 func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration) error {
 	var cursor int64
+	handled := make(map[int64]struct{})
 	for {
 		var err error
 		cursor, err = s.store.MaxSignalID(ctx)
@@ -243,9 +248,30 @@ func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration)
 			s.logf("push: query: %v", err)
 			continue
 		}
+		pending := false
 		for _, sig := range signals {
-			if retry := s.pushSignal(ctx, sig); !retry {
+			if sig.ID <= cursor {
+				continue
+			}
+			_, alreadyHandled := handled[sig.ID]
+			retry := false
+			if !alreadyHandled {
+				retry = s.pushSignal(ctx, sig)
+				if !retry {
+					handled[sig.ID] = struct{}{}
+				}
+			}
+			if retry {
+				pending = true
+				continue
+			}
+			if !pending {
 				cursor = sig.ID
+			}
+		}
+		for id := range handled {
+			if id <= cursor {
+				delete(handled, id)
 			}
 		}
 	}
@@ -281,7 +307,13 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 			s.logf("push: %s signal=%d: rejected check: %v", sig.Symbol, sig.ID, herr)
 			return true
 		} else if rejected {
-			s.logf("push: %s signal=%d: not pushed (LLM review REJECTED)", sig.Symbol, sig.ID)
+			rejection, rerr := s.store.LatestAction(ctx, sig.ID, "REJECTED")
+			if rerr != nil {
+				s.logf("push: %s signal=%d: rejected action lookup: %v", sig.Symbol, sig.ID, rerr)
+				return true
+			}
+			s.logf("push: %s signal=%d: LLM review REJECTED; pushing reasons", sig.Symbol, sig.ID)
+			s.pushRejectedSignal(ctx, sig, rejection)
 			return false
 		}
 		if s.now().Sub(sig.CreatedAt) > signalFreshWindow {
@@ -293,16 +325,8 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 	}
 	if verdictOf(review) != "APPROVE" {
 		// 老板指令 2026-08-12: LLM 拒绝必须推送,让老板了解策略为何失败。
-		s.logf("push: %s signal=%d: not pushed (LLM review %s)", sig.Symbol, sig.ID, verdictOf(review))
-		reasons := reviewReasons(review)
-		text := fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s\n%s %s\n\n%s",
-			sig.ID, s.now().Format("2006-01-02 15:04:05"), sig.Symbol, verdictOf(review),
-			strings.Join(reasons, "\n"))
-		if len(reasons) == 0 {
-			text = fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s\n%s %s",
-				sig.ID, s.now().Format("2006-01-02 15:04:05"), sig.Symbol, verdictOf(review))
-		}
-		s.sendToChats(ctx, text)
+		s.logf("push: %s signal=%d: LLM review %s; pushing reasons", sig.Symbol, sig.ID, verdictOf(review))
+		s.pushRejectedSignal(ctx, sig, review)
 		return false
 	}
 	text, err := alertMessage(&sig, reviewReasons(review)...)
@@ -321,6 +345,30 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 		}
 	}
 	return false
+}
+
+// pushRejectedSignal reports a fail-closed LLM disposition. REJECTED is the
+// persisted action for LLM rejects, so its Details.reasons are the source of
+// truth when LatestLLMReview has no row.
+func (s *telegramScheduler) pushRejectedSignal(ctx context.Context, sig wheelstore.SignalRecord, rejection *wheelstore.ActionRecord) {
+	verdict := verdictOf(rejection)
+	if verdict == "" {
+		verdict = "REJECT"
+	}
+	reasons := reviewReasons(rejection)
+	if len(reasons) == 0 && rejection != nil && strings.TrimSpace(rejection.Note) != "" {
+		reasons = []string{rejection.Note}
+	}
+	lines := []string{
+		fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s", sig.ID, s.now().Format("2006-01-02 15:04:05")),
+		fmt.Sprintf("%s · <code>%s</code>", html.EscapeString(sig.Symbol), html.EscapeString(verdict)),
+	}
+	for _, reason := range reasons {
+		if reason = strings.TrimSpace(reason); reason != "" {
+			lines = append(lines, "• "+html.EscapeString(reason))
+		}
+	}
+	s.sendToChats(ctx, strings.Join(lines, "\n"))
 }
 
 // handleCallback routes one inline-button press. from.id must be in the chat
