@@ -61,6 +61,7 @@ wheel runner 实盘评估**实时化**:pass 从 ~6 分钟降到秒级。三管�
 
 - **status**: `done`
 - **last step**: 已完成 ATM 中心扩展、交易时段门控和异步快照记录；`scripts/verify.sh` 全绿，待 reviewer 判定后合入/发布
+- **2026-08-13 实测收口**:US.JD 实盘链路全通(453→456 逐步打通,456 为 **LLM APPROVE + Discord ✅ 下单按钮**);新增 4 个 P0 修复(超时/时区/审核输入/新鲜度)与 1 个 DB 参数变更,见下方「实测补充(2026-08-13 凌晨)」
 
 ## Implementation / Evidence
 
@@ -75,6 +76,22 @@ wheel runner 实盘评估**实时化**:pass 从 ~6 分钟降到秒级。三管�
 - signal 433 US.JD:actual=0 ✓(库存修复生效)、gap=+1005.5 ✓(卖 PUT 方向)、**candidates=[]** ← 行情全量拉取超时(`snapshot [30/86]` 10s)→ 无候选 → HOLD → 推送未产生
 - 美股盘中(22:32,开盘 22:30)评估轮空 = 「机会稍纵即逝」的直接实证:全量 86 合约拉取是唯一阻塞点
 - 新一轮 pass(434,22:38)又从头跑 4 个已收盘港股 → 时段门控必要性再次实证
+
+## 实测补充(2026-08-13 凌晨,实盘全链路打通记录)
+
+**信号轨迹**:441 HOLD(旧版配额)→ 447/448 HOLD(429 被拒占配额,已修 dailyOrders 只计 LLM_REVIEW)→ 449/450 HOLD(质量 0.6 过严,DB 调 0.5)→ 451 HOLD(现金缺失,已接 Funds)→ 453 ALERT(资金接入生效)→ 454/455 ALERT(LLM 拒:审核输入问题)→ 456 ALERT **LLM APPROVE → Discord ✅ 下单按钮**(00:28 HKT)。
+
+**本轮 4 个 P0 修复(均 commit 于 feat/llm-signal-endpoint)**:
+1. **LLM 审核超时 60s→180s**(7cb6e44):deepseek-v4-pro 实测 168s;超时降级 REJECT 是 fail-closed 安全行为,但 60s 每次都拒。同时推送标题区分「⚠️ 审核失败」(details 有 error)与「❌ 被拒绝」。
+2. **US 期权 update_time 时区错误**(e195c0d):futu 网关对 US 返回**美东时间**(HK/CN 为 +08),parseQuoteTime 统一按 +08 → 盘中新鲜报价(12:14 ET 时 HKT 00:19)被标 12 小时前 → LLM 以「数据陈旧」拒。修复:market==11 用 America/New_York。HK 对比验证:00700 update_time 16:07:58(收盘后 +08 合理)。
+3. **审核输入补全**(e195c0d):cash_available 未传给 LLM 审核(Funds 只接了 Evaluate);信号无现价字段;OptionQuote 遗留 ts/timestamp/captured_at 零值时间序列化噪音(Go time.Time omitempty 无效)→ ReviewRequest 加 CurrentPrice、reviewAlert 传现金、userContent 序列化后清理零值时间(a288ded 修 dropZeroTimes 对 struct 无效问题)。
+4. **max_quote_age 默认 24h 太宽**(DB 变更):31.5P 报价 1h43m 前仍过 Validate 且被选中(库存目标优先排序)→ US.JD 配置加 `max_quote_age: 3600`,旧报价被 Validate 拒,新鲜报价(31P)入选。
+
+**性能曲线**:全量 5-6 分钟 → ATM 扩展冷缓存 4-5 分钟 → 缓存命中 28 秒 → 方向过滤 + 新容器首轮 30 秒。
+
+**残留观察项**:
+- deepseek-v4-pro 审核 168s 接近 180s 上限,若上游再慢会再次 fail-closed;考虑审核异步化或提高超时(产品决策)
+- Evaluate 选中逻辑按「距目标库存最近」优先,报价新鲜度只做 Validate 门槛——阈值与排序的权衡已在配置层解决(1h),若低流动性合约频繁旧报价,可考虑排序加分
 
 ## Next
 
