@@ -151,26 +151,40 @@ type chatCompletion struct {
 func userContent(req ReviewRequest) (string, error) {
 	data := map[string]any{
 		"symbol":          req.Symbol,
-		"strategy_config": dropZeroTimes(req.StrategyConfig),
-		"signal":          dropZeroTimes(req.Signal),
-		"positions":       dropZeroTimes(req.Positions),
+		"strategy_config": req.StrategyConfig,
+		"signal":          req.Signal,
+		"positions":       req.Positions,
 		"cash_available":  req.CashAvailable,
 		"current_price":   req.CurrentPrice,
 		"rules":           req.RulesText,
 	}
-	b, err := json.MarshalIndent(data, "", "  ")
+	// Marshal first so structs (Signal, Config, …) become plain maps, then
+	// strip zero-valued time.Time encodings: Go marshals a zero time.Time as
+	// "0001-01-01T00:00:00Z" even under omitempty (struct values are never
+	// empty for encoding/json), and wheel.OptionQuote's legacy
+	// ts/timestamp/captured_at fields stay zero on the futu path, which a
+	// review model reads as missing/stale data (2026-08-13: signal 454/455
+	// REJECTED with "captured_at/timestamp/ts are zero").
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return "", fmt.Errorf("llmreview: marshal review data: %w", err)
+	}
+	var tree map[string]any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return "", fmt.Errorf("llmreview: unmarshal review data: %w", err)
+	}
+	cleaned, ok := dropZeroTimes(tree).(map[string]any)
+	if !ok {
+		return "", fmt.Errorf("llmreview: sanitize review data: unexpected shape")
+	}
+	b, err := json.MarshalIndent(cleaned, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("llmreview: marshal review data: %w", err)
 	}
 	return string(b), nil
 }
 
-// dropZeroTimes removes zero-valued time.Time encodings (Go marshals a zero
-// time.Time as "0001-01-01T00:00:00Z" even under omitempty — struct values are
-// never empty for encoding/json) from the JSON tree. wheel.OptionQuote carries
-// legacy ts/timestamp/captured_at fields that stay zero on the futu path, and
-// a review model reads those zeroes as missing/stale data (2026-08-13: signal
-// 454 REJECTED with "quote.captured_at/timestamp/ts are zero").
+// dropZeroTimes removes zero-valued time.Time encodings from a JSON tree.
 func dropZeroTimes(v any) any {
 	switch t := v.(type) {
 	case map[string]any:
