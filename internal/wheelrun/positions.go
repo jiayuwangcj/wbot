@@ -38,6 +38,71 @@ type TradePositions interface {
 	Positions(ctx context.Context, acc any) ([]Position, error)
 }
 
+// filterPositions keeps only the positions that belong to the underlying
+// currently being evaluated. Stock positions are already market-qualified by
+// the production TradePositions adapter, so their Symbol must equal symbol.
+// Option positions are identified by their code and must also be present in
+// the current option chain. The second result contains option positions that
+// look valid (or explicitly unsupported) but cannot be attributed to this
+// chain; callers should log those positions and continue fail-closed.
+func filterPositions(symbol string, positions []Position, contractSymbols []string) (matched, unassignedOptions []Position) {
+	chainCodes := make(map[string]struct{}, len(contractSymbols)*2)
+	for _, contractSymbol := range contractSymbols {
+		if contractSymbol == "" {
+			continue
+		}
+		chainCodes[contractSymbol] = struct{}{}
+		chainCodes[bareSecurityCode(contractSymbol)] = struct{}{}
+	}
+
+	matched = make([]Position, 0, len(positions))
+	for _, p := range positions {
+		code := p.Code
+		if code == "" {
+			code = p.Symbol
+		}
+		_, _, _, optionErr := parseOptionCode(code)
+		if optionErr == nil {
+			if optionCodeInChain(p, chainCodes) {
+				matched = append(matched, p)
+			} else {
+				unassignedOptions = append(unassignedOptions, p)
+			}
+			continue
+		}
+		if errors.Is(optionErr, errUnsupportedOption) {
+			unassignedOptions = append(unassignedOptions, p)
+			continue
+		}
+		if p.Symbol == symbol {
+			matched = append(matched, p)
+		}
+	}
+	return matched, unassignedOptions
+}
+
+func optionCodeInChain(p Position, chainCodes map[string]struct{}) bool {
+	for _, candidate := range []string{p.Code, p.Symbol} {
+		if candidate == "" {
+			continue
+		}
+		if _, ok := chainCodes[candidate]; ok {
+			return true
+		}
+		if _, ok := chainCodes[bareSecurityCode(candidate)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func bareSecurityCode(symbol string) string {
+	if _, code, ok := strings.Cut(symbol, "."); ok {
+		return code
+	}
+	return symbol
+}
+
 // optionCodeRE splits UNDERLYING + YYMMDD + C/P + strike×1000, the convention
 // documented in doc/DATA_STANDARD.md (e.g. TCH260807C335000); a market prefix
 // like "HK." is stripped before matching.

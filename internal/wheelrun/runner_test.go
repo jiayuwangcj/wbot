@@ -382,6 +382,50 @@ func TestRunOnceAlertReady(t *testing.T) {
 	}
 }
 
+func TestRunOnceInventoryIsolatedPerSymbol(t *testing.T) {
+	const hkSymbol = "HK.00700"
+	const usSymbol = "US.JD"
+	now := time.Now()
+	contract := callContract("HK.TCH260901C335000", hkSymbol, 335, now.AddDate(0, 0, 7))
+	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{
+		hkSymbol: configRecord(hkSymbol),
+		usSymbol: configRecord(usSymbol),
+	}}
+	r := testRunner(t, Dependencies{
+		Quoter: &fakeQuoter{
+			prices: map[string]float64{hkSymbol: 600, usSymbol: 600},
+			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		},
+		Positions: fakePositions{
+			{Symbol: hkSymbol, Code: "00700", Qty: 200, Side: SideLong},
+			{Symbol: "HK.00883", Code: "00883", Qty: 22000, Side: SideLong},
+		},
+		Chain: fakeChain{contracts: []futu.OptionContract{contract}},
+		Store: store,
+		Watchlist: &fakeWatchlist{items: []watchlist.Item{
+			wheelItem(hkSymbol),
+			wheelItem(usSymbol),
+		}},
+	})
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error: %v", err)
+	}
+	if len(store.signals) != 2 {
+		t.Fatalf("signals = %d; want one per wheel symbol", len(store.signals))
+	}
+	bySymbol := make(map[string]wheelstore.SignalRecord, len(store.signals))
+	for _, signal := range store.signals {
+		bySymbol[signal.Symbol] = signal
+	}
+	if got := *bySymbol[hkSymbol].Inventory.ActualInventory; got != 200 {
+		t.Fatalf("%s actual inventory = %v; want 200 shares, excluding HK.00883", hkSymbol, got)
+	}
+	if got := *bySymbol[usSymbol].Inventory.ActualInventory; got != 0 {
+		t.Fatalf("%s actual inventory = %v; want no US.JD shares", usSymbol, got)
+	}
+}
+
 func TestRunOnceAsOfAfterOptionQuotes(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
