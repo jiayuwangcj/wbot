@@ -135,12 +135,12 @@ A(共享层先稳定)→ B(新功能坐共享层)→ C(文档收尾)。A 与 B �
 
 ## State
 
-- **status**: `running`
-- **last step**: serve 运行固化为 docker compose(老板指令,不再手动 nohup/docker 命令):configs/serve.Dockerfile + docker-compose.serve.yml + tools/serve-env.sh;OrbStack bind/网络坑已解(教训 6),容器 `configs-serve-1` 健康(HTTP 200、telegram 配置生效、wheel 信号 279 产出);#35 评审结论已出(有条件合入:P1-2 先修,P1-1 紧随);复盘文档更新(期权根因/账户表/验证状态/compose 教训)
+- **status**: `done`
+- **last step**: P1-2 + P1-1 已修复(codex 74d31b3)、复评无条件合入(bugfix)、已合入 feat/llm-signal-endpoint(f43e6ff)收口 #35;serve 容器已重建(P1 修复生效)
 
 ## Next
 
-- 修复 P1-2(cursor 水线+防重推)→ P1-1(拒绝推送接通)→ 合入 feat/llm-signal-endpoint 收口 #35 → 老板确认排期 → 切片 A → B → C
+- 老板确认排期 → 切片 A(策略接口统一抽象 #36)→ B(LLM 策略定时运行 #37)→ C(文档收尾)
 
 ## 评审结论(reviewer 2026-08-12,feat/llm-signal-endpoint 合入候选)
 
