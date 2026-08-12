@@ -34,6 +34,7 @@ import (
 	"github.com/jiayu/wbot/internal/poll"
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/webui"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 // Set at link time: go build -ldflags "-X main.version=v1.2.3"
@@ -316,6 +317,13 @@ func runServe(prog string, argv []string) int {
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
 	store := httpapi.NewDBStore(database)
 	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOrderer(), httpapi.NewFutuOptionChainer(), httpapi.NewIngestRunner(database))
+	// LLM 策略信号注入(2026-08-12,独立于 wheel 链路):POST /v1/wheel/llm-signal
+	// 把 LLM 决策落成 ALERT 信号,经 LLM 审核闸门 + telegram 人工确认后下单。
+	reviewer, model := llmReviewerFromEnv()
+	if reviewer == nil {
+		fmt.Fprintln(os.Stderr, "wheel: WARN LLM reviewer disabled; set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL; llm-signal dispositions will be REJECTED")
+	}
+	top.Handle(httpapi.LLMSignalPath, httpapi.LLMSignalHandler(wheelstore.New(database), reviewer, model))
 	srv := &http.Server{Handler: top}
 
 	go func() {
