@@ -211,6 +211,9 @@ func TestNilDBValidation(t *testing.T) {
 	if _, err := s.LatestLLMReview(ctx, 1); !errors.Is(err, ErrNilDB) {
 		t.Errorf("LatestLLMReview: %v", err)
 	}
+	if _, err := s.LatestAction(ctx, 1, "REJECTED"); !errors.Is(err, ErrNilDB) {
+		t.Errorf("LatestAction: %v", err)
+	}
 	if _, err := s.HasAction(ctx, 1, "CONFIRM"); !errors.Is(err, ErrNilDB) {
 		t.Errorf("HasAction: %v", err)
 	}
@@ -247,6 +250,12 @@ func TestDismissValidation(t *testing.T) {
 	}
 	if _, err := s.LatestLLMReview(ctx, 0); !errors.Is(err, ErrInvalidRecord) {
 		t.Errorf("LatestLLMReview(0): %v; want ErrInvalidRecord", err)
+	}
+	if _, err := s.LatestAction(ctx, 0, "REJECTED"); !errors.Is(err, ErrInvalidRecord) {
+		t.Errorf("LatestAction(0): %v; want ErrInvalidRecord", err)
+	}
+	if _, err := s.LatestAction(ctx, 1, "NOPE"); !errors.Is(err, ErrInvalidOp) {
+		t.Errorf("LatestAction(NOPE): %v; want ErrInvalidOp", err)
 	}
 	if _, err := s.HasAction(ctx, 0, "CONFIRM"); !errors.Is(err, ErrInvalidRecord) {
 		t.Errorf("HasAction(0): %v; want ErrInvalidRecord", err)

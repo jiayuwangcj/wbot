@@ -90,6 +90,8 @@ func newFakeTGStore() *fakeTGStore {
 }
 
 func (f *fakeTGStore) GetSignal(_ context.Context, id int64) (*wheelstore.SignalRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	sig, ok := f.signals[id]
 	if !ok {
 		return nil, wheelstore.ErrNotFound
@@ -98,11 +100,30 @@ func (f *fakeTGStore) GetSignal(_ context.Context, id int64) (*wheelstore.Signal
 }
 
 func (f *fakeTGStore) LatestLLMReview(_ context.Context, signalID int64) (*wheelstore.ActionRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	r, ok := f.reviews[signalID]
 	if !ok {
 		return nil, wheelstore.ErrNotFound
 	}
 	return r, nil
+}
+
+func (f *fakeTGStore) LatestAction(_ context.Context, signalID int64, action string) (*wheelstore.ActionRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if action == "LLM_REVIEW" {
+		if r, ok := f.reviews[signalID]; ok {
+			return r, nil
+		}
+	}
+	for i := len(f.appended) - 1; i >= 0; i-- {
+		r := f.appended[i]
+		if r.SignalID == signalID && r.Action == action {
+			return &r, nil
+		}
+	}
+	return nil, wheelstore.ErrNotFound
 }
 
 func (f *fakeTGStore) AppendAction(_ context.Context, r wheelstore.ActionRecord) (int64, error) {
@@ -127,7 +148,13 @@ func (f *fakeTGStore) QuerySignalsSince(_ context.Context, _ string, afterID int
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.queryCalls = append(f.queryCalls, afterID)
-	return append([]wheelstore.SignalRecord(nil), f.querySince...), nil
+	var out []wheelstore.SignalRecord
+	for _, sig := range f.querySince {
+		if sig.ID > afterID {
+			out = append(out, sig)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeTGStore) MaxSignalID(context.Context) (int64, error) {
@@ -141,11 +168,15 @@ func (f *fakeTGStore) MaxSignalID(context.Context) (int64, error) {
 }
 
 func (f *fakeTGStore) Dismiss(_ context.Context, symbol string, date time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.dismissed[symbol+"|"+date.Format("2006-01-02")] = true
 	return nil
 }
 
 func (f *fakeTGStore) IsDismissed(_ context.Context, symbol string, date time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return f.dismissed[symbol+"|"+date.Format("2006-01-02")], nil
 }
 
@@ -535,19 +566,33 @@ func TestPushSignalRetriesWhenReviewNotYetRecorded(t *testing.T) {
 	}
 }
 
-func TestPushSignalSkipsRejectedReview(t *testing.T) {
+func TestPushSignalPushesRejectedReviewReasons(t *testing.T) {
 	fake, server := startFakeTG(t)
 	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
 	store := newFakeTGStore()
 	sig := signalFixture(10, "US.AAPL", now)
-	store.appended = append(store.appended, wheelstore.ActionRecord{SignalID: 10, Action: "REJECTED", Actor: "llm:test"})
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 10,
+		Action:   "REJECTED",
+		Actor:    "llm:test",
+		Details: map[string]any{
+			"verdict": "REJECT",
+			"reasons": []any{"risk limit", "missing cash buffer"},
+		},
+	})
 	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
 
 	if retry := s.pushSignal(context.Background(), *sig); retry {
-		t.Fatal("pushSignal with a REJECTED review must skip permanently")
+		t.Fatal("pushSignal with a REJECTED review must not retry")
 	}
-	if len(fake.sends) != 0 {
-		t.Fatalf("rejected signal pushed; sends = %d", len(fake.sends))
+	if len(fake.sends) != 1 {
+		t.Fatalf("rejected signal sends = %d, want 1", len(fake.sends))
+	}
+	text, _ := fake.lastSend(t)["text"].(string)
+	for _, want := range []string{"信号 #10", "risk limit", "missing cash buffer"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("rejection push = %q; want %q", text, want)
+		}
 	}
 }
 
@@ -671,6 +716,84 @@ func TestRunPushSeedsCursorFromMaxSignalID(t *testing.T) {
 		if c == 0 {
 			t.Fatal("polled with cursor 0 (would replay history after DB recovery)")
 		}
+	}
+}
+
+func TestRunPushWaterlineRetainsPendingPrefixAndDeduplicatesTail(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	store.querySince = []wheelstore.SignalRecord{
+		*signalFixture(1, "US.AAPL", now),
+		*signalFixture(2, "US.MSFT", now),
+	}
+	store.reviews[2] = approvedReview()
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.runPush(ctx, 2*time.Millisecond) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	waitForSends := func(want int) {
+		t.Helper()
+		deadline := time.NewTimer(2 * time.Second)
+		defer deadline.Stop()
+		for {
+			fake.mu.Lock()
+			got := len(fake.sends)
+			fake.mu.Unlock()
+			if got >= want {
+				return
+			}
+			select {
+			case <-deadline.C:
+				t.Fatalf("sendMessage count = %d; want at least %d", got, want)
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	waitForSends(1)
+
+	fake.mu.Lock()
+	firstText, _ := fake.sends[0]["text"].(string)
+	fake.mu.Unlock()
+	if !strings.Contains(firstText, "信号 #2") {
+		t.Fatalf("first push = %q; want the later signal #2", firstText)
+	}
+
+	// Signal #1 was pending in the same batch. Once its review lands, the
+	// held waterline must revisit it while the already-pushed #2 is not sent
+	// again.
+	store.mu.Lock()
+	store.reviews[1] = approvedReview()
+	store.mu.Unlock()
+	waitForSends(2)
+
+	fake.mu.Lock()
+	texts := make([]string, 0, len(fake.sends))
+	for _, send := range fake.sends {
+		text, _ := send["text"].(string)
+		texts = append(texts, text)
+	}
+	fake.mu.Unlock()
+	if len(texts) != 2 {
+		t.Fatalf("sendMessage count = %d; want exactly 2", len(texts))
+	}
+	countSignal := func(id string) int {
+		count := 0
+		for _, text := range texts {
+			if strings.Contains(text, id) {
+				count++
+			}
+		}
+		return count
+	}
+	if countSignal("信号 #1") != 1 || countSignal("信号 #2") != 1 {
+		t.Fatalf("pushes = %#v; want one push for each signal", texts)
 	}
 }
 
