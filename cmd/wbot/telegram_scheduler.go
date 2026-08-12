@@ -162,10 +162,12 @@ func openTelegramConfig() (*config.Store, error) {
 
 // runPush polls new ALERT signals and pushes those whose latest LLM review is
 // APPROVE. The in-memory cursor starts at the newest signal id so a restart
-// never replays history; the cursor advances regardless of push outcome so a
-// rejected/unapproved signal is not retried forever. A failed MaxSignalID
-// retries before the ticker starts: polling with a zero cursor would replay
-// every historical ALERT once the DB recovers.
+// never replays history; the cursor advances past skipped signals (rejected,
+// unapproved) so they are not retried forever. A signal whose LLM review is
+// not yet recorded is treated as a race with the appending POST and retried
+// (cursor held back) until the review lands or the retry window closes. A
+// failed MaxSignalID retries before the ticker starts: polling with a zero
+// cursor would replay every historical ALERT once the DB recovers.
 func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration) error {
 	var cursor int64
 	for {
@@ -195,26 +197,56 @@ func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration)
 			continue
 		}
 		for _, sig := range signals {
-			cursor = sig.ID
-			s.pushSignal(ctx, sig)
+			if retry := s.pushSignal(ctx, sig); !retry {
+				cursor = sig.ID
+			}
 		}
 	}
 }
 
 // pushSignal sends one ALERT to every whitelisted chat when it survives the
-// dismissal and LLM-approval gates; skips are logged with the reason.
-func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.SignalRecord) {
+// dismissal and LLM-approval gates; skips are logged with the reason. It
+// returns retry=true when the signal may become pushable on a later pass (its
+// LLM review has not landed yet — the review runs after AppendSignal inside
+// the POST handler, so the first push pass can race it); the caller then holds
+// the cursor back so the signal is not lost. Signals that are permanently
+// unpushable (REJECTED review, dismissed, no review after the retry window)
+// return false so the cursor advances past them.
+func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.SignalRecord) (retry bool) {
 	if dismissed, err := s.store.IsDismissed(ctx, sig.Symbol, utcDate(s.now())); err != nil {
 		s.logf("push: %s signal=%d: dismissed check: %v", sig.Symbol, sig.ID, err)
-		return
+		return true
 	} else if dismissed {
 		s.logf("push: %s signal=%d: dismissed for today, skip", sig.Symbol, sig.ID)
-		return
+		return false
 	}
 	review, err := s.store.LatestLLMReview(ctx, sig.ID)
-	if err != nil || verdictOf(review) != "APPROVE" {
-		s.logf("push: %s signal=%d: not pushed (LLM review not APPROVE: %v)", sig.Symbol, sig.ID, err)
-		return
+	if err != nil {
+		// No LLM_REVIEW action yet. The appending POST records the disposition
+		// after AppendSignal, so an ALERT can be picked up here in the window
+		// before its review lands. Retry while the signal is fresh; once the
+		// retry window closes or a REJECTED action exists, skip permanently.
+		if !errors.Is(err, wheelstore.ErrNotFound) {
+			s.logf("push: %s signal=%d: review lookup: %v", sig.Symbol, sig.ID, err)
+			return true
+		}
+		if rejected, herr := s.store.HasAction(ctx, sig.ID, "REJECTED"); herr != nil {
+			s.logf("push: %s signal=%d: rejected check: %v", sig.Symbol, sig.ID, herr)
+			return true
+		} else if rejected {
+			s.logf("push: %s signal=%d: not pushed (LLM review REJECTED)", sig.Symbol, sig.ID)
+			return false
+		}
+		if s.now().Sub(sig.CreatedAt) > signalFreshWindow {
+			s.logf("push: %s signal=%d: not pushed (no LLM review within freshness window)", sig.Symbol, sig.ID)
+			return false
+		}
+		s.logf("push: %s signal=%d: LLM review not yet recorded, will retry", sig.Symbol, sig.ID)
+		return true
+	}
+	if verdictOf(review) != "APPROVE" {
+		s.logf("push: %s signal=%d: not pushed (LLM review %s)", sig.Symbol, sig.ID, verdictOf(review))
+		return false
 	}
 	text, err := alertMessage(&sig, reviewReasons(review)...)
 	if err != nil {
@@ -231,6 +263,7 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 			s.logf("push: %s signal=%d chat=%d: %v", sig.Symbol, sig.ID, chatID, err)
 		}
 	}
+	return false
 }
 
 // handleCallback routes one inline-button press. from.id must be in the chat

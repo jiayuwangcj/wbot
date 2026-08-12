@@ -491,6 +491,66 @@ func TestPushSignalRendersReviewReasonsAndV20Buttons(t *testing.T) {
 	}
 }
 
+func TestPushSignalRetriesWhenReviewNotYetRecorded(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	// No review yet: the POST handler appends the signal, then runs the LLM
+	// gate and records the disposition — the first push pass can race it.
+	sig := signalFixture(9, "US.AAPL", now)
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig); !retry {
+		t.Fatal("pushSignal without a recorded review must retry")
+	}
+	if len(fake.sends) != 0 {
+		t.Fatalf("signal pushed without review; sends = %d", len(fake.sends))
+	}
+
+	// The review lands on the next pass → pushed, not retried.
+	store.reviews[9] = approvedReview()
+	if retry := s.pushSignal(context.Background(), *sig); retry {
+		t.Fatal("pushSignal with APPROVE review must not retry")
+	}
+	if len(fake.sends) != 1 {
+		t.Fatalf("sends = %d, want 1", len(fake.sends))
+	}
+}
+
+func TestPushSignalSkipsRejectedReview(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(10, "US.AAPL", now)
+	store.appended = append(store.appended, wheelstore.ActionRecord{SignalID: 10, Action: "REJECTED", Actor: "llm:test"})
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig); retry {
+		t.Fatal("pushSignal with a REJECTED review must skip permanently")
+	}
+	if len(fake.sends) != 0 {
+		t.Fatalf("rejected signal pushed; sends = %d", len(fake.sends))
+	}
+}
+
+func TestPushSignalSkipsStaleMissingReview(t *testing.T) {
+	fake, server := startFakeTG(t)
+	// Signal older than the freshness window with no review: the review can
+	// never land now (the POST would have recorded it), skip permanently.
+	now := time.Now()
+	old := now.Add(-2 * signalFreshWindow)
+	store := newFakeTGStore()
+	sig := signalFixture(11, "US.AAPL", old)
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig); retry {
+		t.Fatal("stale signal without review must skip permanently")
+	}
+	if len(fake.sends) != 0 {
+		t.Fatalf("stale signal pushed; sends = %d", len(fake.sends))
+	}
+}
+
 func TestFirstCandidateOrderFacts(t *testing.T) {
 	sig := signalFixture(1, "US.AAPL", time.Now())
 	c, err := firstCandidate(sig)
