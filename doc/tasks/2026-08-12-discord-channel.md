@@ -46,12 +46,12 @@ Discord 作为第二条推送/确认通道:信号/订单/拒绝理由通知 + em
 
 ## State
 
-- **status**: `reviewing`(P1 修复中)
-- **last step**: 2026-08-12 reviewer 评审 4b7d8c7 → **有条件合入**(feature):① P1 CONFIRM 并发竞态(双击/双通道同时确认 → 同信号两张限价单,HasAction↔AppendAction 间隔着 PlaceOrder)建议修后合入——已派 coder 修复(mutex 串行化 + 并发测试);② P2 doc/API.md 补契约、P2 用户白名单 allowed_user_ids、P3 若干 → 记 backlog 合入后跟进
+- **status**: `done`(已合入 feat/llm-signal-endpoint)
+- **last step**: 2026-08-12 全流程:实现 4b7d8c7 → 评审(**有条件合入**,feature;P1 CONFIRM 并发竞态)→ coder 修 c6495fa(confirmMu 串行化 + blockPlacer 并发回归测试,反向验证无锁时确定性双下单)→ 复核通过 → 合入 feat/llm-signal-endpoint(c51ca11);与 #36 合入后同步适配 3c285fa(wheelTelegramStore → wheelstore.SignalRepository、Candidates 强类型化,行为不变)
 - 安全总评:Ed25519 验签正确(±5min 防重放含未来时间戳、签名不过一律 401、错误文案不泄信息)、伪造/重放均被阻断;公网仅 /v1/discord/interactions 且只 POST
 
 ## Next
 
-- coder 修 P1(mutex + 并发测试)→ verify 全绿 → reviewer 复核 → 合入
-- backlog:wheel_signal_actions 部分唯一索引 (signal_id) WHERE action='CONFIRM'(双通道兜底)、doc/API.md 契约、allowed_user_ids 白名单、embed 发送失败重试、公网端点限速
+- CI(feat/llm-signal-endpoint,已 push)→ 合批发布(feature)
+- backlog:wheel_signal_actions 部分唯一索引 (signal_id) WHERE action='CONFIRM'(Telegram×Discord 交叉确认兜底)、doc/API.md 补 /v1/discord/interactions 契约、allowed_user_ids 白名单(与 chat_ids 对齐)、embed 发送失败重试、公网端点限速
 - 晚上老板提供 Public Key / Bot Token / channel_id / Interaction URL 配置 → `tools/tg-test -discord` 实测 → 公网→内网连通 → Discord 面板验收
