@@ -54,6 +54,7 @@ var templates = []Template{
 			{Name: "max_daily_orders", Type: "number", Default: 1.0, Min: 1, Max: 1, Help: "正常日最多提醒张数"},
 			{Name: "extreme_max_daily_orders", Type: "number", Default: 2.0, Min: 1, Max: 2, Help: "极端日最多提醒张数"},
 			{Name: "no_trade_gap", Type: "number", Default: 50.0, Min: 0, Max: math.MaxFloat64, Help: "库存缺口不超过此值时不交易"},
+			{Name: "max_quote_age_seconds", Type: "number", Default: 86400.0, Min: 1, Max: math.MaxFloat64, Help: "候选期权报价最大可接受年龄（秒），超出视为陈旧"},
 			{Name: "strategic_state", Type: "choice", Default: wheel.StateNormal, Allowed: []string{wheel.StateNormal, wheel.StateCaution, wheel.StatePauseBuy, wheel.StateExit}, Help: "战略状态"},
 		},
 	},
@@ -139,6 +140,10 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param no_trade_gap: %w", err)
 	}
+	maxQuoteAge, err := asInt(values["max_quote_age_seconds"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param max_quote_age_seconds: %w", err)
+	}
 	state, ok := values["strategic_state"].(string)
 	if !ok {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param strategic_state: want a choice")
@@ -156,6 +161,7 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 		ExtremeMaxDailyOrders: extremeDaily,
 		NoTradeGap:            noTradeGap,
 		StrategicState:        state,
+		MaxQuoteAgeSeconds:    maxQuoteAge,
 	}
 	if err := cfg.Validate(); err != nil {
 		return wheel.Config{}, err
