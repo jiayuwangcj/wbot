@@ -810,7 +810,7 @@ func (serveFakeAuditStore) ListWheelConfigs(context.Context, string, int) ([]whe
 }
 
 func (serveFakeAuditStore) ListWheelSignals(context.Context, string, string, string, int) ([]wheelstore.SignalRecord, error) {
-	return []wheelstore.SignalRecord{{ID: 1, Symbol: "DEMO.US", Action: "HOLD", BlockedBy: []string{}, Candidates: []map[string]any{}, RejectionReasons: []string{}}}, nil
+	return []wheelstore.SignalRecord{{ID: 1, Symbol: "DEMO.US", Action: "HOLD", BlockedBy: []string{}, Candidates: []wheelstore.Candidate{}, RejectionReasons: []string{}}}, nil
 }
 
 func (serveFakeAuditStore) ListWheelSignalActions(context.Context, int64) ([]wheelstore.ActionRecord, error) {

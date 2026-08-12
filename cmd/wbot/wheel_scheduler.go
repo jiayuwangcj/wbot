@@ -40,7 +40,7 @@ func startWheelRunner(ctx context.Context, database *sql.DB, env futu.Env, inter
 	}
 }
 
-func llmReviewerFromEnv() (wheelrun.LLMReviewer, string) {
+func llmReviewerFromEnv() (llmreview.Reviewer, string) {
 	baseURL := strings.TrimSpace(os.Getenv("LLM_BASE_URL"))
 	apiKey := os.Getenv("LLM_API_KEY")
 	model := strings.TrimSpace(os.Getenv("LLM_MODEL"))

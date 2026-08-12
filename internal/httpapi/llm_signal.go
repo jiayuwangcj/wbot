@@ -15,7 +15,6 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -27,20 +26,6 @@ import (
 	"github.com/jiayu/wbot/internal/llmreview"
 	"github.com/jiayu/wbot/internal/wheelstore"
 )
-
-// LLMSignalStore is the write surface the LLM-signal endpoint needs: append a
-// signal and record the LLM-gate disposition. wheelstore.Store implements it.
-type LLMSignalStore interface {
-	AppendSignal(ctx context.Context, r wheelstore.SignalRecord) (int64, error)
-	AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error)
-}
-
-// LLMReviewer audits the injected decision before it can reach Telegram;
-// nil (env missing) fails closed: the signal is recorded REJECTED and never
-// pushed. llmreview.Client implements it.
-type LLMReviewer interface {
-	Review(ctx context.Context, req llmreview.ReviewRequest) (llmreview.ReviewResult, error)
-}
 
 // LLMSignalPath is the LLM-strategy decision injection endpoint
 // (POST /v1/wheel/llm-signal).
@@ -92,7 +77,7 @@ const llmStockRules = `你是 wbot 模拟盘的下单审核闸门。审核一个
 // completeness check (实测 2026-08-12: 无账户上下文时按规则 REJECT —
 // fail-closed 正确但会让所有注入失败)。拉取失败时保持缺省(nil),
 // 审核按数据完整性规则决定(仍 fail-closed)。
-func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string, accounter FutuAccounter) http.Handler {
+func LLMSignalHandler(store wheelstore.SignalRepository, reviewer llmreview.Reviewer, model string, accounter FutuAccounter) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(LLMSignalPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -197,23 +182,23 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string, 
 		}
 		bid := price
 		ask := price
-		candidate := map[string]any{
-			"direction": req.Direction,
-			"quantity":  req.Quantity,
-			"accepted":  true,
-			"quote": map[string]any{
-				"symbol":        code,
-				"option_type":   optType,
-				"strike":        strike,
-				"expiry":        req.Expiry,
-				"bid":           bid,
-				"ask":           ask,
-				"last":          price,
-				"delta":         req.Delta,
-				"implied_vol":   req.IV,
-				"open_interest": req.OpenInterest,
+		candidate := wheelstore.AsCompactCandidate(wheelstore.Candidate{
+			Direction: req.Direction,
+			Quantity:  req.Quantity,
+			Accepted:  true,
+			Quote: &wheelstore.Quote{
+				Symbol:       code,
+				OptionType:   optType,
+				Strike:       strike,
+				Expiry:       req.Expiry,
+				Bid:          bid,
+				Ask:          ask,
+				Last:         price,
+				Delta:        req.Delta,
+				ImpliedVol:   req.IV,
+				OpenInterest: req.OpenInterest,
 			},
-		}
+		})
 		reason := strings.TrimSpace(req.Reason)
 		if reason == "" {
 			reason = fmt.Sprintf("LLM 决策:卖出 %s %s %d 张", req.Symbol, code, req.Quantity)
@@ -232,7 +217,7 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string, 
 				TargetInventory:    req.TargetInventory,
 				InventoryGap:       req.InventoryGap,
 			},
-			Candidates: []map[string]any{candidate},
+			Candidates: []wheelstore.Candidate{candidate},
 			Reason:     reason,
 		}
 		id, err := store.AppendSignal(r.Context(), record)
@@ -290,7 +275,18 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string, 
 		if isStock {
 			rules = llmStockRules
 		}
-		verdict, disposition := reviewLLMSignal(r.Context(), store, reviewer, model, id, req.Symbol, decision, reason, positions, cashAvailable, rules)
+		verdict, disposition, _ := llmreview.RecordLLMGate(r.Context(), store, reviewer, model, llmreview.GateInput{
+			SignalID: id,
+			Request: llmreview.ReviewRequest{
+				StrategyConfig: map[string]any{"strategy": "llm", "quantity": decision["quantity"], "direction": decision["direction"]},
+				Signal:         decision,
+				Positions:      positions,
+				CashAvailable:  cashAvailable,
+				RulesText:      rules,
+				Symbol:         req.Symbol,
+			},
+			Summary: map[string]any{"signal_id": id, "decision": decision},
+		})
 		response := map[string]any{
 			"signal_id":   id,
 			"llm_verdict": verdict,
@@ -312,80 +308,6 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string, 
 		_ = json.NewEncoder(w).Encode(response)
 	})
 	return mux
-}
-
-// reviewLLMSignal runs the audit gate and records the disposition. It never
-// blocks the response on a missing reviewer: nil reviewer means the signal is
-// recorded REJECTED (fail-closed, matching the wheel gate) and reported as
-// such. Returns (verdict, disposition) where disposition is the recorded
-// wheel_signal_actions action name, "" when not recorded.
-func reviewLLMSignal(ctx context.Context, store LLMSignalStore, reviewer LLMReviewer, model string, signalID int64, symbol string, decision map[string]any, reason string, positions []PositionJSON, cashAvailable *float64, rulesText string) (string, string) {
-	verdict := "REJECT"
-	disposition := "REJECTED"
-	actor := "llm:unknown"
-	if model != "" {
-		actor = "llm:" + model
-	}
-	details := map[string]any{
-		"verdict":       verdict,
-		"reasons":       []string{},
-		"input_summary": map[string]any{"signal_id": signalID, "decision": decision},
-	}
-	if reviewer == nil {
-		details["reasons"] = []string{"llm reviewer unavailable (set LLM_BASE_URL, LLM_API_KEY, LLM_MODEL)"}
-	} else {
-		result, err := reviewer.Review(ctx, llmreview.ReviewRequest{
-			StrategyConfig: map[string]any{"strategy": "llm", "quantity": decision["quantity"], "direction": decision["direction"]},
-			Signal:         decision,
-			Positions:      positions,
-			CashAvailable:  cashAvailable,
-			RulesText:      rulesText,
-			Symbol:         symbol,
-		})
-		if err != nil {
-			details["reasons"] = []string{err.Error()}
-			details["error"] = err.Error()
-		} else {
-			verdict = strings.ToUpper(strings.TrimSpace(result.Verdict))
-			reasons := result.Reasons
-			if reasons == nil {
-				reasons = []string{}
-			}
-			details["verdict"] = verdict
-			details["reasons"] = reasons
-			if result.Notes != "" {
-				details["notes"] = result.Notes
-			}
-			if verdict != "APPROVE" && verdict != "REJECT" {
-				details["verdict"] = "REJECT"
-				details["reasons"] = append([]string{"unexpected LLM verdict " + result.Verdict}, reasons...)
-				verdict = "REJECT"
-			}
-		}
-	}
-	// Only an explicit APPROVE is a pass; anything else stays REJECTED.
-	if verdict == "APPROVE" {
-		disposition = "LLM_REVIEW"
-	} else {
-		verdict = "REJECT"
-	}
-	_, _ = storeAppendAction(ctx, store, wheelstore.ActionRecord{
-		SignalID: signalID,
-		Action:   disposition,
-		Actor:    actor,
-		Details:  details,
-	})
-	return verdict, disposition
-}
-
-// storeAppendAction appends one action through the store; the signature is
-// split out so the nil-receiver guard reads clearly (the real store never nil
-// in production).
-func storeAppendAction(ctx context.Context, store LLMSignalStore, action wheelstore.ActionRecord) (int64, error) {
-	if store == nil {
-		return 0, errors.New("llm-signal: store is nil")
-	}
-	return store.AppendAction(ctx, action)
 }
 
 // syntheticOptionCode builds a gateway-style option code for the common

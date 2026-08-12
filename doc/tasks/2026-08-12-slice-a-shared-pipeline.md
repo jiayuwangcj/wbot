@@ -30,10 +30,8 @@
 
 ## State
 
-- **status**: `reviewing`(P1 修复中)
-- **last step**: 2026-08-12 reviewer 评审 2824cd3 → **有条件合入**(feature):**P1-1 notes 语义漂移**(gate.go:66-68 条件让 wheel 路径任何 verdict 都不存 notes,违反行为零变化;旧代码 APPROVE/REJECT 均写 details.notes)——已派 coder 修复(3 行);P3 观察项:candidate sparse 检测、wireMode 零值陷阱、JSON 键序变化(compact: quote,direction,quantity,accepted;语义等价,需知会前端按 JSON 语义解析)、SignalRepository 宽接口回归、单提交粒度
-- 其余等价项已验证:full/compact 模式与旧 JSON 逐字段一致(含 omitempty/theta:null/零值 time.Time)、解码失败错误前缀未变、gate 三分支细节逐字一致、HTTP 契约未变
-
-## Next
-
-- coder 修 P1-1(gate notes 条件 + 测试)→ verify 全绿 → reviewer 复核 → 合入 → 启动 #37(切片 B,LLM 策略定时运行)
+- **status**: `done`(已合入 feat/llm-signal-endpoint,merge commit 见下)
+- **last step**: 2026-08-12 codex 实现 2824cd3 → reviewer 评审:**有条件合入**(feature),P1-1 notes 语义漂移(gate.go 条件让 wheel 路径不存 notes)→ coder 修 3b726ab(notes 条件改四象限语义 + 3 新测试)→ reviewer 复核通过 → 合入 feat/llm-signal-endpoint
+- P3 观察项(不阻塞):candidate sparse 检测顺序、wireMode 零值陷阱、JSON 键序变化(compact: quote,direction,quantity,accepted;语义等价,需知会前端按 JSON 语义解析)、SignalRepository 宽接口维护面、单提交粒度
+- 等价项已验证:full/compact 模式与旧 JSON 逐字段一致(含 omitempty/theta:null/零值 time.Time)、解码失败错误前缀未变、gate 三分支措辞逐字一致、HTTP 契约未变
+>>>>>>> feat/shared-pipeline

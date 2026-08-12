@@ -92,10 +92,10 @@ func TestSignalAndActionValidation(t *testing.T) {
 		t.Fatalf("missing reason error=%v", err)
 	}
 	// Incomplete market/inventory data must fail closed rather than become ALERT.
-	if _, err := store.AppendSignal(ctx, SignalRecord{Symbol: "TEST", Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY", Reason: "candidate", Candidates: []map[string]any{{"symbol": "TEST.C"}}}); !errors.Is(err, ErrInvalidRecord) {
+	if _, err := store.AppendSignal(ctx, SignalRecord{Symbol: "TEST", Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY", Reason: "candidate", Candidates: []Candidate{{Symbol: "TEST.C"}}}); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("incomplete ALERT error=%v", err)
 	}
-	if _, err := store.AppendSignal(ctx, SignalRecord{Symbol: "TEST", Action: "ALERT", ConfigVersion: 1, Reason: "blocked", Inventory: validInventory(), Candidates: []map[string]any{{"symbol": "TEST.C"}}, CapabilityStatus: "DATA_BLOCKED", BlockedBy: []string{"missing_iv"}}); !errors.Is(err, ErrInvalidRecord) {
+	if _, err := store.AppendSignal(ctx, SignalRecord{Symbol: "TEST", Action: "ALERT", ConfigVersion: 1, Reason: "blocked", Inventory: validInventory(), Candidates: []Candidate{{Symbol: "TEST.C"}}, CapabilityStatus: "DATA_BLOCKED", BlockedBy: []string{"missing_iv"}}); !errors.Is(err, ErrInvalidRecord) {
 		t.Fatalf("blocked ALERT error=%v", err)
 	}
 	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: 0, Actor: "human", Action: "NOTE"}); !errors.Is(err, ErrInvalidRecord) {
@@ -140,7 +140,7 @@ func TestActionValidation(t *testing.T) {
 func TestSignalCapabilityValidation(t *testing.T) {
 	validAlert := SignalRecord{
 		Symbol: "TEST", Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
-		Inventory: validInventory(), Candidates: []map[string]any{{"symbol": "TEST.C"}}, Reason: "candidate",
+		Inventory: validInventory(), Candidates: []Candidate{{Symbol: "TEST.C"}}, Reason: "candidate",
 	}
 	valid := []SignalRecord{
 		validAlert,
@@ -158,7 +158,7 @@ func TestSignalCapabilityValidation(t *testing.T) {
 		{Symbol: "TEST", Action: "HOLD", ConfigVersion: 1, CapabilityStatus: "UNKNOWN", Reason: "unknown status"},
 		{Symbol: "TEST", Action: "HOLD", ConfigVersion: 1, CapabilityStatus: "READY", BlockedBy: []string{"missing_iv"}, Reason: "contradiction"},
 		{Symbol: "TEST", Action: "HOLD", ConfigVersion: 1, CapabilityStatus: "DATA_BLOCKED", Reason: "missing blocker"},
-		{Symbol: "TEST", Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "DATA_BLOCKED", BlockedBy: []string{"missing_iv"}, Inventory: validInventory(), Candidates: []map[string]any{{"symbol": "TEST.C"}}, Reason: "blocked alert"},
+		{Symbol: "TEST", Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "DATA_BLOCKED", BlockedBy: []string{"missing_iv"}, Inventory: validInventory(), Candidates: []Candidate{{Symbol: "TEST.C"}}, Reason: "blocked alert"},
 	}
 	for _, signal := range invalid {
 		if err := validateSignal(&signal); !errors.Is(err, ErrInvalidRecord) {

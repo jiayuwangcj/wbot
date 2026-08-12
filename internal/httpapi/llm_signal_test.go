@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/llmreview"
@@ -16,9 +17,31 @@ import (
 
 // fakeLLMStore records appended signals/actions for the endpoint test.
 type fakeLLMStore struct {
-	mu      sync.Mutex
-	signals []wheelstore.SignalRecord
-	actions []wheelstore.ActionRecord
+	mu        sync.Mutex
+	signals   []wheelstore.SignalRecord
+	actions   []wheelstore.ActionRecord
+	dismissed map[string]bool
+}
+
+func (f *fakeLLMStore) LatestConfig(context.Context, string) (*wheelstore.ConfigRecord, error) {
+	return nil, wheelstore.ErrNotFound
+}
+
+func (f *fakeLLMStore) ListSignals(_ context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []wheelstore.SignalRecord
+	for i, signal := range f.signals {
+		if (symbol != "" && signal.Symbol != symbol) || (action != "" && signal.Action != action) || (capability != "" && signal.CapabilityStatus != capability) {
+			continue
+		}
+		signal.ID = int64(i + 1)
+		out = append(out, signal)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeLLMStore) AppendSignal(_ context.Context, r wheelstore.SignalRecord) (int64, error) {
@@ -33,6 +56,84 @@ func (f *fakeLLMStore) AppendAction(_ context.Context, r wheelstore.ActionRecord
 	defer f.mu.Unlock()
 	f.actions = append(f.actions, r)
 	return int64(len(f.actions)), nil
+}
+
+func (f *fakeLLMStore) GetSignal(_ context.Context, id int64) (*wheelstore.SignalRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if id <= 0 || id > int64(len(f.signals)) {
+		return nil, wheelstore.ErrNotFound
+	}
+	r := f.signals[id-1]
+	r.ID = id
+	return &r, nil
+}
+
+func (f *fakeLLMStore) LatestLLMReview(ctx context.Context, signalID int64) (*wheelstore.ActionRecord, error) {
+	return f.LatestAction(ctx, signalID, "LLM_REVIEW")
+}
+
+func (f *fakeLLMStore) LatestAction(_ context.Context, signalID int64, action string) (*wheelstore.ActionRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.actions) - 1; i >= 0; i-- {
+		if f.actions[i].SignalID == signalID && f.actions[i].Action == action {
+			r := f.actions[i]
+			return &r, nil
+		}
+	}
+	return nil, wheelstore.ErrNotFound
+}
+
+func (f *fakeLLMStore) HasAction(_ context.Context, signalID int64, action string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, a := range f.actions {
+		if a.SignalID == signalID && a.Action == action {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeLLMStore) QuerySignalsSince(_ context.Context, action string, afterID int64, limit int) ([]wheelstore.SignalRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []wheelstore.SignalRecord
+	for i, signal := range f.signals {
+		id := int64(i + 1)
+		if id <= afterID || (action != "" && signal.Action != action) {
+			continue
+		}
+		signal.ID = id
+		out = append(out, signal)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLLMStore) MaxSignalID(context.Context) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return int64(len(f.signals)), nil
+}
+
+func (f *fakeLLMStore) Dismiss(_ context.Context, symbol string, date time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.dismissed == nil {
+		f.dismissed = map[string]bool{}
+	}
+	f.dismissed[symbol+"|"+date.UTC().Format("2006-01-02")] = true
+	return nil
+}
+
+func (f *fakeLLMStore) IsDismissed(_ context.Context, symbol string, date time.Time) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dismissed[symbol+"|"+date.UTC().Format("2006-01-02")], nil
 }
 
 // stubReviewer always approves.

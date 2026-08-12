@@ -99,7 +99,7 @@ func TestWheelStoreIntegration(t *testing.T) {
 
 	alertID, err := store.AppendSignal(ctx, SignalRecord{
 		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
-		Inventory: validInventory(), Candidates: []map[string]any{{"quote_snapshot_id": quoteID, "direction": "PUT"}},
+		Inventory: validInventory(), Candidates: []Candidate{{QuoteSnapshotID: quoteID, Direction: "PUT"}},
 		Reason: "inventory gap exceeds no-trade gap",
 	})
 	if err != nil || alertID <= 0 {
@@ -197,7 +197,7 @@ func TestWheelTelegramDispositionIntegration(t *testing.T) {
 	inv := validInventory()
 	signalID, err := store.AppendSignal(ctx, SignalRecord{
 		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
-		Inventory: inv, Candidates: []map[string]any{{"quote_snapshot_id": 1, "direction": "PUT", "quantity": 1}},
+		Inventory: inv, Candidates: []Candidate{{QuoteSnapshotID: 1, Direction: "PUT", Quantity: 1}},
 		Reason: "inventory gap exceeds no-trade gap",
 	})
 	if err != nil || signalID <= 0 {
@@ -267,7 +267,7 @@ func TestWheelTelegramDispositionIntegration(t *testing.T) {
 	}
 	alert2, err := store.AppendSignal(ctx, SignalRecord{
 		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
-		Inventory: inv, Candidates: []map[string]any{{"quote_snapshot_id": 1, "direction": "PUT"}},
+		Inventory: inv, Candidates: []Candidate{{QuoteSnapshotID: 1, Direction: "PUT"}},
 		Reason: "gap again",
 	})
 	if err != nil || alert2 <= holdID {

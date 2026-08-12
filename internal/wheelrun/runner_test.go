@@ -3,12 +3,14 @@ package wheelrun
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +117,7 @@ type fakeStore struct {
 	actions         []wheelstore.ActionRecord
 	appendErr       error
 	appendActionErr error
+	dismissed       map[string]bool
 }
 
 func (f *fakeStore) LatestConfig(ctx context.Context, symbol string) (*wheelstore.ConfigRecord, error) {
@@ -159,6 +162,79 @@ func (f *fakeStore) ListSignals(ctx context.Context, symbol, action, capability 
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeStore) GetSignal(_ context.Context, id int64) (*wheelstore.SignalRecord, error) {
+	for i := range f.signals {
+		storedID := f.signals[i].ID
+		if storedID == 0 {
+			storedID = int64(i + 1)
+		}
+		if storedID == id {
+			r := f.signals[i]
+			r.ID = storedID
+			return &r, nil
+		}
+	}
+	return nil, wheelstore.ErrNotFound
+}
+
+func (f *fakeStore) LatestLLMReview(ctx context.Context, signalID int64) (*wheelstore.ActionRecord, error) {
+	return f.LatestAction(ctx, signalID, "LLM_REVIEW")
+}
+
+func (f *fakeStore) LatestAction(_ context.Context, signalID int64, action string) (*wheelstore.ActionRecord, error) {
+	for i := len(f.actions) - 1; i >= 0; i-- {
+		if f.actions[i].SignalID == signalID && f.actions[i].Action == action {
+			r := f.actions[i]
+			return &r, nil
+		}
+	}
+	return nil, wheelstore.ErrNotFound
+}
+
+func (f *fakeStore) HasAction(_ context.Context, signalID int64, action string) (bool, error) {
+	for _, a := range f.actions {
+		if a.SignalID == signalID && a.Action == action {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeStore) QuerySignalsSince(_ context.Context, action string, afterID int64, limit int) ([]wheelstore.SignalRecord, error) {
+	var out []wheelstore.SignalRecord
+	for i, signal := range f.signals {
+		id := signal.ID
+		if id == 0 {
+			id = int64(i + 1)
+		}
+		if id <= afterID || (action != "" && signal.Action != action) {
+			continue
+		}
+		signal.ID = id
+		out = append(out, signal)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) MaxSignalID(context.Context) (int64, error) {
+	return int64(len(f.signals)), nil
+}
+
+func (f *fakeStore) Dismiss(_ context.Context, symbol string, date time.Time) error {
+	if f.dismissed == nil {
+		f.dismissed = map[string]bool{}
+	}
+	f.dismissed[symbol+"|"+date.UTC().Format("2006-01-02")] = true
+	return nil
+}
+
+func (f *fakeStore) IsDismissed(_ context.Context, symbol string, date time.Time) (bool, error) {
+	return f.dismissed[symbol+"|"+date.UTC().Format("2006-01-02")], nil
 }
 
 type fakeReviewer struct {
@@ -219,6 +295,44 @@ func testRunner(t *testing.T, deps Dependencies) *Runner {
 
 // TestRunOnceAlertReady: a full quote snapshot with a short-inventory gap
 // yields an ALERT signal (READY capability) and syncs READY with no reason.
+func TestCandidateRecordsPreserveWheelJSON(t *testing.T) {
+	theta := -0.01
+	quoteTime := time.Date(2026, 8, 12, 1, 2, 3, 456000000, time.UTC)
+	candidate := wheel.CandidateEvaluation{
+		Quote: wheel.OptionQuote{
+			Symbol: "HK.TCH260821P460000", Underlying: "HK.00700", Source: "futu",
+			OptionType: wheel.Put, Expiry: time.Date(2026, 8, 21, 0, 0, 0, 0, time.UTC),
+			Strike: 460, Delta: -0.47, MarketDelta: -0.46, Bid: 11.45, Ask: 11.5,
+			Last: 11.48, ImpliedVol: 0.404, Theta: &theta, Volume: 100,
+			OpenInterest: 249, LotSize: 100, QuoteTime: quoteTime,
+			CapturedAt: quoteTime, Timestamp: quoteTime, Ts: quoteTime, IV: 0.404, OI: 249,
+		},
+		Direction: wheel.DirectionPut, Quantity: 1, SignedContracts: -1,
+		Quality: 0.8, PostTradeEffective: 450, AssignmentInventory: 600,
+		Accepted: true, Reasons: []string{"ok"},
+	}
+
+	oldJSON, err := json.Marshal(candidate)
+	if err != nil {
+		t.Fatalf("marshal domain candidate: %v", err)
+	}
+	records := candidateRecords([]wheel.CandidateEvaluation{candidate})
+	newJSON, err := json.Marshal(records[0])
+	if err != nil {
+		t.Fatalf("marshal typed candidate: %v", err)
+	}
+	var oldValue, newValue any
+	if err := json.Unmarshal(oldJSON, &oldValue); err != nil {
+		t.Fatalf("decode domain candidate: %v", err)
+	}
+	if err := json.Unmarshal(newJSON, &newValue); err != nil {
+		t.Fatalf("decode typed candidate: %v", err)
+	}
+	if !reflect.DeepEqual(oldValue, newValue) {
+		t.Fatalf("typed candidate changed JSON\nold: %s\nnew: %s", oldJSON, newJSON)
+	}
+}
+
 func TestRunOnceAlertReady(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
@@ -260,9 +374,8 @@ func TestRunOnceAlertReady(t *testing.T) {
 	if len(sig.Candidates) == 0 {
 		t.Fatal("ALERT requires at least one candidate")
 	}
-	quote, ok := sig.Candidates[0]["quote"].(map[string]any)
-	if !ok || quote["last"] != 4.05 {
-		t.Fatalf("candidate last = %v; want 4.05", quote["last"])
+	if sig.Candidates[0].Quote == nil || sig.Candidates[0].Quote.Last != 4.05 {
+		t.Fatalf("candidate last = %v; want 4.05", sig.Candidates[0].Quote)
 	}
 	if len(wl.status) != 1 || wl.status[0] != (statusCall{symbol, "READY", ""}) {
 		t.Fatalf("watchlist status = %+v; want READY with empty reason", wl.status)

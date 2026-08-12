@@ -68,7 +68,7 @@ func (f *fakeTGServer) lastToast(t *testing.T) string {
 	return text
 }
 
-// fakeTGStore is an in-memory wheelTelegramStore for handler tests.
+// fakeTGStore is an in-memory SignalRepository for handler tests.
 type fakeTGStore struct {
 	mu            sync.Mutex
 	signals       map[int64]*wheelstore.SignalRecord
@@ -97,6 +97,39 @@ func (f *fakeTGStore) GetSignal(_ context.Context, id int64) (*wheelstore.Signal
 		return nil, wheelstore.ErrNotFound
 	}
 	return sig, nil
+}
+
+func (f *fakeTGStore) LatestConfig(context.Context, string) (*wheelstore.ConfigRecord, error) {
+	return nil, wheelstore.ErrNotFound
+}
+
+func (f *fakeTGStore) ListSignals(_ context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []wheelstore.SignalRecord
+	for _, signal := range f.signals {
+		if (symbol != "" && signal.Symbol != symbol) || (action != "" && signal.Action != action) || (capability != "" && signal.CapabilityStatus != capability) {
+			continue
+		}
+		out = append(out, *signal)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeTGStore) AppendSignal(_ context.Context, r wheelstore.SignalRecord) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r.ID <= 0 {
+		r.ID = f.maxID + 1
+	}
+	if r.ID > f.maxID {
+		f.maxID = r.ID
+	}
+	f.signals[r.ID] = &r
+	return r.ID, nil
 }
 
 func (f *fakeTGStore) LatestLLMReview(_ context.Context, signalID int64) (*wheelstore.ActionRecord, error) {
@@ -243,8 +276,7 @@ func newTestScheduler(t *testing.T, server *httptest.Server, store *fakeTGStore,
 	return s
 }
 
-// signalFixture is an ALERT with a full first candidate (as the runner
-// persists it: opaque JSON maps).
+// signalFixture is an ALERT with a full first candidate.
 func signalFixture(id int64, symbol string, created time.Time) *wheelstore.SignalRecord {
 	return &wheelstore.SignalRecord{
 		ID: id, Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
@@ -252,13 +284,13 @@ func signalFixture(id int64, symbol string, created time.Time) *wheelstore.Signa
 			CurrentPrice: f64ptr(248.5), ActualInventory: f64ptr(5000),
 			TargetInventory: f64ptr(4700), InventoryGap: f64ptr(-300),
 		},
-		Candidates: []map[string]any{{
-			"direction": "PUT",
-			"quantity":  2,
-			"quote": map[string]any{
-				"symbol": "US.AAPL260815C250000", "option_type": "CALL", "strike": 250.0,
-				"expiry": "2026-08-15T00:00:00Z", "bid": 3.2, "ask": 3.35, "last": 3.28, "delta": 0.42,
-				"implied_vol": 0.25, "open_interest": 1234.0,
+		Candidates: []wheelstore.Candidate{{
+			Direction: "PUT",
+			Quantity:  2,
+			Quote: &wheelstore.Quote{
+				Symbol: "US.AAPL260815C250000", OptionType: "CALL", Strike: 250.0,
+				Expiry: "2026-08-15T00:00:00Z", Bid: 3.2, Ask: 3.35, Last: 3.28, Delta: 0.42,
+				ImpliedVol: 0.25, OpenInterest: 1234,
 			},
 		}},
 		Reason: "gap", CreatedAt: created,
@@ -494,8 +526,7 @@ PUT 持仓  <code>-</code> 张
 
 func TestAlertMessageMissingLastUsesDash(t *testing.T) {
 	sig := signalFixture(7, "US.AAPL", time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC))
-	quote := sig.Candidates[0]["quote"].(map[string]any)
-	delete(quote, "last")
+	sig.Candidates[0].Quote.Last = 0
 	text, err := alertMessage(sig)
 	if err != nil {
 		t.Fatal(err)
@@ -628,7 +659,7 @@ func TestFirstCandidateOrderFacts(t *testing.T) {
 	}
 	// Quantity defaults to 1 when the candidate omits it.
 	noQty := signalFixture(1, "US.AAPL", time.Now())
-	noQty.Candidates[0]["quantity"] = 0
+	noQty.Candidates[0].Quantity = 0
 	c, err = firstCandidate(noQty)
 	if err != nil || c.Quantity != 1 {
 		t.Fatalf("default qty: c=%+v err=%v", c, err)
