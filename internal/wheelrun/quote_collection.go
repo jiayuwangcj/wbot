@@ -36,7 +36,10 @@ func (r *Runner) collectOptionQuotes(
 	for _, level := range atmExpansionLevels(contracts, price, maxATMExpansionRadius) {
 		symbols := make([]string, 0, len(level))
 		for _, contract := range level {
-			if contract.Symbol == "" {
+			// Only the required direction is fetched: the opposite leg is
+			// rejected by Evaluate anyway, and every contract costs a
+			// rate-limited greeks request (2026-08-12: 42 mixed legs ≈ 4min).
+			if contract.Symbol == "" || !strings.EqualFold(string(contract.OptionType), string(direction)) {
 				continue
 			}
 			if _, ok := seen[contract.Symbol]; ok {

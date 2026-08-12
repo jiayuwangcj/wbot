@@ -86,14 +86,16 @@ func TestRunOnceATMQuotesOnlyExpandUntilTwoQualityCandidates(t *testing.T) {
 	if got := len(quoter.optionCalls); got != 3 {
 		t.Fatalf("OptionQuotes calls = %d; want ATM, lower, upper only", got)
 	}
-	if got := quoter.optionCalls[0]; len(got) != 2 || got[0] != "US.JD260901C600000" || got[1] != "US.JD260901P600000" {
-		t.Fatalf("ATM symbols = %v; want 600 call/put", got)
+	// Only the required direction is fetched: the opposite leg is rejected by
+	// Evaluate anyway and every contract costs a rate-limited greeks request.
+	if got := quoter.optionCalls[0]; len(got) != 1 || got[0] != "US.JD260901C600000" {
+		t.Fatalf("ATM symbols = %v; want 600 call only", got)
 	}
-	if got := quoter.optionCalls[1]; len(got) != 2 || got[0] != "US.JD260901C590000" || got[1] != "US.JD260901P590000" {
-		t.Fatalf("lower symbols = %v; want 590 call/put", got)
+	if got := quoter.optionCalls[1]; len(got) != 1 || got[0] != "US.JD260901C590000" {
+		t.Fatalf("lower symbols = %v; want 590 call only", got)
 	}
-	if got := quoter.optionCalls[2]; len(got) != 2 || got[0] != "US.JD260901C610000" || got[1] != "US.JD260901P610000" {
-		t.Fatalf("upper symbols = %v; want 610 call/put", got)
+	if got := quoter.optionCalls[2]; len(got) != 1 || got[0] != "US.JD260901C610000" {
+		t.Fatalf("upper symbols = %v; want 610 call only", got)
 	}
 	if len(store.signals) != 1 || store.signals[0].Action != "ALERT" {
 		t.Fatalf("signals = %+v; want one ALERT", store.signals)
