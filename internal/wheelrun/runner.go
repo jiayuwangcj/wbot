@@ -146,14 +146,6 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	if price <= 0 {
 		return fmt.Errorf("current price %v is not positive", price)
 	}
-	positions, err := r.deps.Positions.Positions(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("positions: %w", err)
-	}
-	stockShares, opts, err := PositionsInput(positions)
-	if err != nil {
-		return fmt.Errorf("positions input: %w", err)
-	}
 	now := time.Now()
 	contracts, err := r.deps.Chain.OptionChain(ctx, symbol, now.AddDate(0, 0, cfg.MinDTE), now.AddDate(0, 0, cfg.MaxDTE))
 	if err != nil {
@@ -162,6 +154,22 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	contractSymbols := make([]string, 0, len(contracts))
 	for _, c := range contracts {
 		contractSymbols = append(contractSymbols, c.Symbol)
+	}
+	positions, err := r.deps.Positions.Positions(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("positions: %w", err)
+	}
+	filteredPositions, unassignedOptions := filterPositions(symbol, positions, contractSymbols)
+	for _, p := range unassignedOptions {
+		positionCode := p.Code
+		if positionCode == "" {
+			positionCode = p.Symbol
+		}
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: skipping unassigned option position %s (not in option chain)\n", symbol, positionCode)
+	}
+	stockShares, opts, err := PositionsInput(filteredPositions)
+	if err != nil {
+		return fmt.Errorf("positions input: %w", err)
 	}
 	quotes, err := r.deps.Quoter.OptionQuotes(ctx, contractSymbols)
 	if err != nil {
@@ -193,7 +201,7 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 		return fmt.Errorf("append signal: %w", err)
 	}
 	if record.Action == "ALERT" {
-		r.reviewAlert(ctx, symbol, id, rec.Version, cfg, sig, record, positions, price)
+		r.reviewAlert(ctx, symbol, id, rec.Version, cfg, sig, record, filteredPositions, price)
 	}
 	if err := r.deps.Watchlist.SetExecutionStatus(ctx, symbol, status, reason); err != nil {
 		return fmt.Errorf("signal %d stored, watchlist status sync: %w", id, err)

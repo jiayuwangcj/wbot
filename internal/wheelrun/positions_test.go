@@ -84,6 +84,48 @@ func TestPositionsInput(t *testing.T) {
 	}
 }
 
+func TestFilterPositionsBySymbolAndOptionChain(t *testing.T) {
+	positions := []Position{
+		{Symbol: "HK.00700", Code: "00700", Qty: 200, Side: SideLong},
+		{Symbol: "HK.00883", Code: "00883", Qty: 22000, Side: SideLong},
+		{Symbol: "US.JD", Code: "JD", Qty: 100, Side: SideLong},
+		{Symbol: "HK.TCH260807C335000", Code: "TCH260807C335000", Qty: 1, Side: SideShort},
+		{Symbol: "US.JD260807P335000", Code: "JD260807P335000", Qty: 2, Side: SideLong},
+	}
+
+	filtered, skipped := filterPositions("HK.00700", positions, []string{"HK.TCH260807C335000"})
+	stock, opts, err := PositionsInput(filtered)
+	if err != nil {
+		t.Fatalf("PositionsInput(filtered) error: %v", err)
+	}
+	if stock != 200 || len(opts) != 1 || opts[0].Symbol != "HK.TCH260807C335000" || opts[0].SignedContracts != -1 {
+		t.Fatalf("HK.00700 filtered input = (%v, %+v); want 200 shares and its short call", stock, opts)
+	}
+	if len(skipped) != 1 || skipped[0].Code != "JD260807P335000" {
+		t.Fatalf("HK.00700 unassigned options = %+v; want the JD option", skipped)
+	}
+
+	filtered, skipped = filterPositions("US.JD", positions, []string{"US.JD260807P335000"})
+	stock, opts, err = PositionsInput(filtered)
+	if err != nil {
+		t.Fatalf("PositionsInput(filtered JD) error: %v", err)
+	}
+	if stock != 100 || len(opts) != 1 || opts[0].Symbol != "US.JD260807P335000" || opts[0].SignedContracts != 2 {
+		t.Fatalf("US.JD filtered input = (%v, %+v); want 100 shares and its long put", stock, opts)
+	}
+	if len(skipped) != 1 || skipped[0].Code != "TCH260807C335000" {
+		t.Fatalf("US.JD unassigned options = %+v; want the Tencent option", skipped)
+	}
+}
+
+func TestFilterPositionsMatchesBareOptionCode(t *testing.T) {
+	positions := []Position{{Code: "TCH260807C335000", Qty: 1, Side: SideShort}}
+	filtered, skipped := filterPositions("HK.00700", positions, []string{"HK.TCH260807C335000"})
+	if len(filtered) != 1 || len(skipped) != 0 {
+		t.Fatalf("bare-code option filter = filtered %+v, skipped %+v; want matched option", filtered, skipped)
+	}
+}
+
 func TestPositionsInputSymbolFallback(t *testing.T) {
 	// Code-only position: symbol falls back to the code for the option key.
 	stock, opts, err := PositionsInput([]Position{
