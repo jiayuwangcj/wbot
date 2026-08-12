@@ -1,0 +1,48 @@
+# wbot serve 运行容器(2026-08-12 老板指令:服务启动固化为 compose,不再手动
+# nohup/docker 命令)。serve 内含 wheel 实时循环(-wheel-run)与 telegram 推送/
+# 人工确认闭环(-telegram-run),http :8080 与数据库/网关依赖全部声明于此。
+#
+#   1. 生成运行时 env(敏感值只进 ~/.wbot,不进仓库):
+#        tools/serve-env.sh                 # 产出 ~/.wbot/serve.env (0600,umask 077)
+#   2. 构建+启动(默认 docker 即可;挂载源必须用 macOS 宿主侧路径 /Users/jiayu/
+#      .wbot——本机 dockerd 在 macOS 宿主侧,解析不到 Linux VM 的 /home/jiayu,
+#      bind 会挂成空 overlay。数据真实存在 macOS 侧,/home/jiayu/.wbot 是软连接):
+#        docker compose --env-file ~/.wbot/serve.env \
+#            -f configs/docker-compose.serve.yml up -d --build
+#   3. 运维:
+#        docker compose -f configs/docker-compose.serve.yml logs -f serve
+#        docker compose -f configs/docker-compose.serve.yml restart serve
+#
+# 前置:internal/webui/web/dist 已构建(scripts/verify.sh frontend 步骤;
+# go:embed 依赖,构建上下文=仓库根)。
+services:
+  serve:
+    build:
+      context: ..          # 仓库根(Dockerfile 在 configs/serve.Dockerfile)
+      dockerfile: configs/serve.Dockerfile
+    # OrbStack 的 host 网络 = 同网段独立 IP(容器 eth0 与 VM 宿主同 192.168.139.0/24,
+    # 非真正共享栈);bind 源路径与容器 IP 都由 macOS 侧 daemon 解析。
+    # -listen 0.0.0.0 必须:默认 127.0.0.1:8080 只监听容器自身 loopback,
+    # VM 宿主/外部访问不到(与之前 nohup 部署的宿主 127.0.0.1 语义不同)。
+    network_mode: host
+    environment:
+      # `:?` 失败即报错——env 未注入时无法悄悄带病启动(与 docker-compose.futu.yml 同款)
+      FUTU_GATEWAY_URL: "${FUTU_GATEWAY_URL:?set by tools/serve-env.sh}"
+      FUTU_PROTO_ADDR: "${FUTU_PROTO_ADDR:?set by tools/serve-env.sh}"
+      FUTU_LOGIN_ACCOUNT: "${FUTU_LOGIN_ACCOUNT:?set by tools/serve-env.sh}"
+      FUTU_LOGIN_PWD: "${FUTU_LOGIN_PWD:?set by tools/serve-env.sh}"
+      FUTU_TRADE_PWD: "${FUTU_TRADE_PWD:?set by tools/serve-env.sh}"
+      LLM_BASE_URL: "${LLM_BASE_URL:?set by tools/serve-env.sh}"
+      LLM_API_KEY: "${LLM_API_KEY:?set by tools/serve-env.sh}"
+      LLM_MODEL: "${LLM_MODEL:?set by tools/serve-env.sh}"
+      WBOT_PG_DSN: "${WBOT_PG_DSN:?set by tools/serve-env.sh}"
+      TZ: "Asia/Shanghai"   # datacheck/轮询按本地时区
+    volumes:
+      # 配置目录:HOME=/root,config store(os.UserHomeDir)读 /root/.wbot/wbot.conf
+      # (telegram token/chat_ids);admin PUT 写 wbot.conf 需目录可写,故 rw。
+      # 源必须用 macOS 宿主侧路径(见顶部注释):/Users/jiayu/.wbot 是数据真实
+      # 所在(virtiofs),/home/jiayu/.wbot 仅为软连接——dockerd 在 macOS 侧,
+      # 解析不到 /home/jiayu,写软连接目标一样会挂成空 overlay。
+      - /Users/jiayu/.wbot:/root/.wbot
+    command: ["serve", "-wheel-run", "-telegram-run", "-listen", "0.0.0.0:8080"]
+    restart: unless-stopped   # 进程崩溃/主机重启自动拉起(补「serve 无自愈」缺口)
