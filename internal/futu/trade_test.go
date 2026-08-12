@@ -345,7 +345,9 @@ func TestPlaceOrderMarketMapping(t *testing.T) {
 	}
 }
 
-func TestPlaceOrderLimitAndMarket(t *testing.T) {
+// TestPlaceOrderLimitOnly 验证限价单成功 + 市价单(price<=0)fail-closed
+// (老板指令 2026-08-12: 所有策略禁止市价单,只用限价单)。
+func TestPlaceOrderLimitOnly(t *testing.T) {
 	var gotReqs []*trdplaceorder.Request
 	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
 		if protoID == protoOrder {
@@ -371,17 +373,14 @@ func TestPlaceOrderLimitAndMarket(t *testing.T) {
 	if ex != "EX123" || id != 777 {
 		t.Fatalf("order ids: %q %d", ex, id)
 	}
-	ex, _, err = tc.PlaceOrder(context.Background(), acc, OrderRequest{
-		Symbol: "HK.00700", Side: "sell", Qty: 100, // price 0 => market
-	})
-	if err != nil {
-		t.Fatalf("PlaceOrder market: %v", err)
+	// 市价单禁止: price<=0 必须被拒(fail-closed),永不发 Market order。
+	if _, _, err := tc.PlaceOrder(context.Background(), acc, OrderRequest{
+		Symbol: "HK.00700", Side: "sell", Qty: 100, // price 0 => market, banned
+	}); err == nil {
+		t.Fatal("PlaceOrder with price 0: want error (市价单禁止), got nil")
 	}
-	if ex != "EX123" {
-		t.Fatalf("second order id: %q", ex)
-	}
-	if len(gotReqs) != 2 {
-		t.Fatalf("got %d order requests; want 2", len(gotReqs))
+	if len(gotReqs) != 1 {
+		t.Fatalf("got %d order requests; want 1 (market must not reach gateway)", len(gotReqs))
 	}
 	limit := gotReqs[0].GetC2S()
 	if limit.GetCode() != "00700" || limit.GetQty() != 100 || limit.GetPrice() != 470 {
@@ -389,10 +388,6 @@ func TestPlaceOrderLimitAndMarket(t *testing.T) {
 	}
 	if limit.GetTrdSide() != 1 || limit.GetOrderType() != 1 || limit.GetHeader().GetAccID() != 1907141 {
 		t.Fatalf("limit side/type/acc mismatch: side=%d type=%d", limit.GetTrdSide(), limit.GetOrderType())
-	}
-	market := gotReqs[1].GetC2S()
-	if market.GetTrdSide() != 2 || market.GetOrderType() != 2 {
-		t.Fatalf("market side/type mismatch: side=%d type=%d", market.GetTrdSide(), market.GetOrderType())
 	}
 }
 
@@ -435,4 +430,94 @@ func TestPlaceOrderBusinessError(t *testing.T) {
 // netListen opens a loopback listener (used to synthesize a refused port).
 func netListen() (net.Listener, error) {
 	return net.Listen("tcp", "127.0.0.1:0")
+}
+
+// simAcc builds a simulate-env TrdAcc with an explicit SimAccType
+// (fakegw.Acc leaves SimAccType unset, which reads as Stock).
+func simAcc(accID uint64, simType int32, markets ...int32) *trdcommon.TrdAcc {
+	return &trdcommon.TrdAcc{
+		TrdEnv:            proto.Int32(0),
+		AccID:             proto.Uint64(accID),
+		SimAccType:        proto.Int32(simType),
+		TrdMarketAuthList: markets,
+	}
+}
+
+func TestIsOptionCode(t *testing.T) {
+	for code, want := range map[string]bool{
+		"TCH260821P460000": true, // 富途期权格式: 前缀+YYMMDD+C/P+行权价
+		"TCH260821C335000": true,
+		"00700":            false, // 正股纯数字
+		"00883":            false,
+		"AAPL":             false,
+		"tch260821p460000": false, // 小写不匹配
+		"TCH260821P":       false, // 缺行权价
+		"TCH260821X460":    false, // 非法 C/P
+		"TCH260821P46000A": false, // 行权价含字母
+	} {
+		if got := IsOptionCode(code); got != want {
+			t.Fatalf("IsOptionCode(%q) = %v; want %v", code, got, want)
+		}
+	}
+}
+
+// TestAccountForSymbol: 多模拟账户按 symbol 自动解析 (老板指令 2026-08-12) —
+// 期权→期权账户(SimAccType=Option), 正股→对应市场股票账户; 无匹配 fail-closed。
+func TestAccountForSymbol(t *testing.T) {
+	stock := int32(trdcommon.SimAccType_SimAccType_Stock)
+	option := int32(trdcommon.SimAccType_SimAccType_Option)
+	accounts := []*trdcommon.TrdAcc{
+		simAcc(1907141, stock, 1),      // HK 股票模拟 (market 1=HK)
+		simAcc(1907143, stock, 21, 22), // SH/SZ 股票模拟 (market 21/22)
+		simAcc(13477968, option, 1),    // HK 期权模拟
+		simAcc(13477966, stock, 11),    // US 股票模拟 (market 11=US)
+	}
+	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
+		if protoID == protoAccs {
+			return fakegw.AccountsBody(accounts)
+		}
+		return nil
+	}))
+	tc := openTrade(t, addr)
+
+	cases := []struct {
+		symbol string
+		wantID uint64
+	}{
+		{"HK.00700", 1907141},             // 港股正股
+		{"00700.HK", 1907141},             // code-first 形式
+		{"HK.TCH260821P460000", 13477968}, // 港股期权 → 期权账户
+		{"HK.TCH260821C335000", 13477968},
+		{"US.AAPL", 13477966},  // 美股正股 → 美股账户
+		{"SH.600000", 1907143}, // 沪深正股 → CN 账户
+		{"SZ.000001", 1907143}, // 深市正股 → CN 账户
+	}
+	for _, c := range cases {
+		acc, err := tc.AccountForSymbol(context.Background(), EnvSim, c.symbol, 0)
+		if err != nil {
+			t.Fatalf("AccountForSymbol(%s): %v", c.symbol, err)
+		}
+		if acc.GetAccID() != c.wantID {
+			t.Fatalf("AccountForSymbol(%s) = acc %d; want %d", c.symbol, acc.GetAccID(), c.wantID)
+		}
+	}
+
+	// 显式 accID 时不做自动解析 (原始行为)。
+	acc, err := tc.AccountForSymbol(context.Background(), EnvSim, "HK.TCH260821P460000", 1907141)
+	if err != nil {
+		t.Fatalf("explicit accID: %v", err)
+	}
+	if acc.GetAccID() != 1907141 {
+		t.Fatalf("explicit accID = %d; want 1907141", acc.GetAccID())
+	}
+
+	// fail-closed: 该市场/类型无账户 → 报错并列出可用账户 (US 无期权账户)。
+	if _, err := tc.AccountForSymbol(context.Background(), EnvSim, "US.AAPL260821P123", 0); err == nil {
+		t.Fatalf("option on market with no option account: want error")
+	} else if !strings.Contains(err.Error(), "available") {
+		t.Fatalf("want available-accounts list in error, got %v", err)
+	}
+	if _, err := tc.AccountForSymbol(context.Background(), EnvSim, "bad-symbol", 0); err == nil {
+		t.Fatalf("bad symbol: want error")
+	}
 }

@@ -15,6 +15,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -183,17 +184,9 @@ func isTradeConnError(err error) bool {
 // required (readable error when missing or trd_env-mismatched); with accID ==
 // 0 the first account of env from the gateway list is returned.
 func (tc *TradeClient) Account(ctx context.Context, env Env, accID uint64) (*trdcommon.TrdAcc, error) {
-	if err := QuoteLimit.Wait(ctx); err != nil {
-		return nil, err
-	}
-	var accounts []*trdcommon.TrdAcc
-	err := tc.withClient(ctx, func(cli *gofutuapi.FutuClient) error {
-		var err error
-		accounts, err = cli.GetTradeAccounts()
-		return err
-	})
+	accounts, err := tc.ListAccounts(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("accounts: %w", err)
+		return nil, err
 	}
 	var matched []*trdcommon.TrdAcc
 	for _, acc := range accounts {
@@ -213,6 +206,94 @@ func (tc *TradeClient) Account(ctx context.Context, env Env, accID uint64) (*trd
 		}
 	}
 	return nil, fmt.Errorf("account %d not found in %s env (trd_env mismatch?)", accID, EnvName(env))
+}
+
+// ListAccounts returns every gateway account (all envs) so callers can
+// discover the option sim account (SimAccType=Option) vs the stock sim account
+// (SimAccType=Stock, 不支持期权; 老板指令 2026-08-12: 切换到期权模拟账户)。
+func (tc *TradeClient) ListAccounts(ctx context.Context) ([]*trdcommon.TrdAcc, error) {
+	if err := QuoteLimit.Wait(ctx); err != nil {
+		return nil, err
+	}
+	var accounts []*trdcommon.TrdAcc
+	err := tc.withClient(ctx, func(cli *gofutuapi.FutuClient) error {
+		var err error
+		accounts, err = cli.GetTradeAccounts()
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("accounts: %w", err)
+	}
+	return accounts, nil
+}
+
+// SimAccTypeName renders a SimAccType enum for user-facing output.
+func SimAccTypeName(t int32) string {
+	switch trdcommon.SimAccType(t) {
+	case trdcommon.SimAccType_SimAccType_Stock:
+		return "stock (不支持期权)"
+	case trdcommon.SimAccType_SimAccType_Option:
+		return "option (仅期权)"
+	case trdcommon.SimAccType_SimAccType_Futures:
+		return "futures"
+	}
+	return "unknown"
+}
+
+// IsOptionCode reports whether code looks like an option contract (富途格式:
+// 字母前缀 + YYMMDD + C/P + 行权价, e.g. TCH260821P460000; 正股是纯数字
+// 00700/00883)。用于下单账户解析:期权必须落在期权模拟账户(SimAccType=Option,
+// 实测 2026-08-12: 股票模拟账户拒绝期权「Can't trade this type of securities」)。
+var optionCodeRe = regexp.MustCompile(`^[A-Z]{1,6}\d{6}[CP]\d{1,10}$`)
+
+func IsOptionCode(code string) bool { return optionCodeRe.MatchString(code) }
+
+// AccountForSymbol resolves the account for env and symbol: with accID != 0
+// that exact account (original behavior); with accID == 0 the account is
+// auto-selected by market + security type — 期权走 SimAccType=Option 账户,
+// 正股走 SimAccType=Stock 账户, 市场取 TrdMarketAuthList 匹配 (老板指令
+// 2026-08-12: 支持港股期权/美股等多模拟账户切换; 多账户时不再默认取第一个)。
+// No match is an error listing the available sim accounts (fail-closed: 宁
+// 可不交易, 不冒名交易到错误的账户上)。
+func (tc *TradeClient) AccountForSymbol(ctx context.Context, env Env, symbol string, accID uint64) (*trdcommon.TrdAcc, error) {
+	if accID != 0 {
+		return tc.Account(ctx, env, accID)
+	}
+	market, code, err := ParseSymbol(symbol)
+	if err != nil {
+		return nil, err
+	}
+	accounts, err := tc.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	option := IsOptionCode(code)
+	var matched []*trdcommon.TrdAcc
+	for _, acc := range accounts {
+		if acc.GetTrdEnv() != int32(env) {
+			continue
+		}
+		if option != (acc.GetSimAccType() == int32(trdcommon.SimAccType_SimAccType_Option)) {
+			continue
+		}
+		for _, m := range acc.GetTrdMarketAuthList() {
+			if m == int32(market) {
+				matched = append(matched, acc)
+				break
+			}
+		}
+	}
+	if len(matched) == 0 {
+		var names []string
+		for _, acc := range accounts {
+			if acc.GetTrdEnv() == int32(env) {
+				names = append(names, fmt.Sprintf("acc=%d type=%s markets=%v", acc.GetAccID(), SimAccTypeName(acc.GetSimAccType()), acc.GetTrdMarketAuthList()))
+			}
+		}
+		return nil, fmt.Errorf("no %s account for %s (option=%v, market=%d); available: %s",
+			EnvName(env), symbol, option, market, strings.Join(names, "; "))
+	}
+	return matched[0], nil
 }
 
 // EnvName renders an Env for user-facing messages and JSON output.
@@ -288,11 +369,18 @@ type OrderRequest struct {
 	Symbol string  // market-qualified code, e.g. HK.00700
 	Side   string  // "buy" or "sell"
 	Qty    float64 // shares, > 0
-	Price  float64 // limit price; 0 => market order
+	Price  float64 // limit price, MUST be > 0 (市价单禁止, 老板指令 2026-08-12)
 }
 
 // PlaceOrder submits req on acc; the caller (CLI) enforces the live-write
 // safety guard (实盘写操作需 --live-confirm, 见 doc/FUTU.md 交易安全策略).
+// 限价单纪律(老板指令 2026-08-12「所有策略禁止市价单,我只用限价单」):
+// price <= 0 fail-closed,永远不发起 Market order — 网关对 price=0 也拒绝
+// (实测 2026-08-12:「price=0 非法,必须为正数」),此校验覆盖所有调用方
+// (wheel 信号链路、LLM 信号链路、CLI),调用方必须显式提供限价。
+// 边界(老板澄清 2026-08-12):多腿复杂订单(IB 风格 spread)的净价可为负
+// (净收入,credit),但那是独立的订单模型(逐腿价格),不适用本单腿校验 —
+// 本包仅富途单腿订单,多腿负价订单需引入新的 OrderRequest 变体再放开。
 func (tc *TradeClient) PlaceOrder(ctx context.Context, acc *trdcommon.TrdAcc, req OrderRequest) (orderIDEx string, orderID uint64, err error) {
 	market, code, err := ParseSymbol(req.Symbol)
 	if err != nil {
@@ -301,8 +389,8 @@ func (tc *TradeClient) PlaceOrder(ctx context.Context, acc *trdcommon.TrdAcc, re
 	if req.Qty <= 0 {
 		return "", 0, fmt.Errorf("bad qty %v (want > 0)", req.Qty)
 	}
-	if req.Price < 0 {
-		return "", 0, fmt.Errorf("bad price %v (want >= 0; 0 = market order)", req.Price)
+	if req.Price <= 0 {
+		return "", 0, fmt.Errorf("bad price %v (want > 0; 市价单禁止,必须显式限价)", req.Price)
 	}
 	var side trdcommon.TrdSide
 	switch strings.ToLower(req.Side) {
@@ -315,9 +403,6 @@ func (tc *TradeClient) PlaceOrder(ctx context.Context, acc *trdcommon.TrdAcc, re
 	}
 	orderType := trdcommon.OrderType_OrderType_Normal
 	price := req.Price
-	if price == 0 {
-		orderType = trdcommon.OrderType_OrderType_Market
-	}
 	trdMkt, err := trdMarket(market)
 	if err != nil {
 		return "", 0, err

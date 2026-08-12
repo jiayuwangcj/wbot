@@ -54,6 +54,10 @@ type AccountSnapshot struct {
 // internal/futu.TradeClient (proto TCP 11111, doc/FUTU.md §10).
 type FutuAccounter interface {
 	Account(ctx context.Context, env futu.Env, accID uint64) (AccountSnapshot, error)
+	// AccountForSymbol resolves the account by market + security type
+	// (期权→期权模拟账户, 股票→对应市场股票账户, 多模拟账户 2026-08-12) —
+	// 审核上下文必须与交易账户一致。
+	AccountForSymbol(ctx context.Context, env futu.Env, symbol string) (AccountSnapshot, error)
 }
 
 // futuAccounter backs the account endpoint with the shared protoClient
@@ -69,39 +73,70 @@ func (a *futuAccounter) Account(ctx context.Context, env futu.Env, accID uint64)
 		if err != nil {
 			return err
 		}
-		funds, err := tc.Funds(ctx, acc)
-		if err != nil {
-			return err
-		}
-		positions, err := tc.Positions(ctx, acc)
-		if err != nil {
-			return err
-		}
-		snap = AccountSnapshot{
-			Env:       futu.EnvName(env),
-			AccID:     acc.GetAccID(),
-			Positions: make([]PositionJSON, 0, len(positions)),
-		}
-		snap.Funds = FundsJSON{
-			Power:         funds.GetPower(),
-			TotalAssets:   funds.GetTotalAssets(),
-			Cash:          funds.GetCash(),
-			MarketVal:     funds.GetMarketVal(),
-			AvailableCash: funds.GetAvailableFunds(), // 可用资金 (proto available_funds)
-		}
-		for _, p := range positions {
-			snap.Positions = append(snap.Positions, PositionJSON{
-				Symbol:    symbolFor(p),
-				Qty:       p.GetQty(),
-				AvgCost:   p.GetCostPrice(),
-				Price:     p.GetPrice(),
-				MarketVal: p.GetVal(),
-				PL:        p.GetPlVal(),
-			})
-		}
-		return nil
+		return fillAccountSnapshot(ctx, &snap, tc, acc, env)
 	})
 	return snap, err
+}
+
+// AccountForSymbol resolves the account by market + security type and returns
+// the same whitelisted snapshot (多模拟账户 2026-08-12: 期权信号查期权账户,
+// 正股查对应市场股票账户)。
+func (a *futuAccounter) AccountForSymbol(ctx context.Context, env futu.Env, symbol string) (AccountSnapshot, error) {
+	var snap AccountSnapshot
+	err := a.pc.do(ctx, func(tc *futu.TradeClient) error {
+		acc, err := tc.AccountForSymbol(ctx, env, symbol, 0)
+		if err != nil {
+			return err
+		}
+		return fillAccountSnapshot(ctx, &snap, tc, acc, env)
+	})
+	return snap, err
+}
+
+// fillAccountSnapshot loads funds + positions of acc and fills snap (shared by
+// the account endpoint and the audit-context fetch).
+func fillAccountSnapshot(ctx context.Context, snap *AccountSnapshot, tc *futu.TradeClient, acc *trdcommon.TrdAcc, env futu.Env) error {
+	funds, err := tc.Funds(ctx, acc)
+	if err != nil {
+		return err
+	}
+	positions, err := tc.Positions(ctx, acc)
+	if err != nil {
+		return err
+	}
+	*snap = AccountSnapshot{
+		Env:       futu.EnvName(env),
+		AccID:     acc.GetAccID(),
+		Positions: make([]PositionJSON, 0, len(positions)),
+	}
+	avl := funds.GetAvailableFunds()
+	if avl <= 0 && funds.GetCash() > 0 {
+		// 模拟盘网关实测 available_funds 恒为 0(2026-08-12),而 cash 是
+		// 真实可用现金;回退到 cash - frozen,保证 LLM 审核/下单上下文
+		// 不会把资金充裕的账户误判为「现金不足」而 fail-closed REJECT。
+		avl = funds.GetCash() - funds.GetFrozenCash()
+		if avl < 0 {
+			avl = 0
+		}
+	}
+	snap.Funds = FundsJSON{
+		Power:         funds.GetPower(),
+		TotalAssets:   funds.GetTotalAssets(),
+		Cash:          funds.GetCash(),
+		MarketVal:     funds.GetMarketVal(),
+		AvailableCash: avl,
+	}
+	for _, p := range positions {
+		snap.Positions = append(snap.Positions, PositionJSON{
+			Symbol:    symbolFor(p),
+			Qty:       p.GetQty(),
+			AvgCost:   p.GetCostPrice(),
+			Price:     p.GetPrice(),
+			MarketVal: p.GetVal(),
+			PL:        p.GetPlVal(),
+		})
+	}
+	return nil
 }
 
 // qualifySymbol reconstructs a market-qualified symbol from the TrdSecMarket

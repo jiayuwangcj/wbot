@@ -6,3 +6,4 @@
 *.pem
 secrets*
 *token*
+/wbot

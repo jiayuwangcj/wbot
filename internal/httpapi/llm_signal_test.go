@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/llmreview"
 	"github.com/jiayu/wbot/internal/wheelstore"
 )
@@ -41,10 +42,36 @@ func (stubReviewer) Review(_ context.Context, _ llmreview.ReviewRequest) (llmrev
 	return llmreview.ReviewResult{Verdict: "APPROVE", Reasons: []string{"ok"}}, nil
 }
 
+// stubAccounter returns a fixed sim account snapshot so the audit gate gets
+// cash/positions context (nil err = healthy account).
+type stubAccounter struct {
+	cash      float64
+	positions []PositionJSON
+	err       error
+}
+
+func (s *stubAccounter) Account(_ context.Context, env futu.Env, accID uint64) (AccountSnapshot, error) {
+	if s.err != nil {
+		return AccountSnapshot{}, s.err
+	}
+	return AccountSnapshot{
+		Env:       futu.EnvName(env),
+		AccID:     accID,
+		Funds:     FundsJSON{AvailableCash: s.cash},
+		Positions: s.positions,
+	}, nil
+}
+
+// AccountForSymbol mirrors Account (symbol-based resolution is exercised at
+// the internal/futu layer; here the stub just returns the same snapshot).
+func (s *stubAccounter) AccountForSymbol(_ context.Context, env futu.Env, _ string) (AccountSnapshot, error) {
+	return s.Account(context.Background(), env, 13477968)
+}
+
 func postLLMSignal(t *testing.T, body string) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	store := &fakeLLMStore{}
-	h := LLMSignalHandler(store, stubReviewer{}, "deepseek-v4-pro")
+	h := LLMSignalHandler(store, stubReviewer{}, "deepseek-v4-pro", &stubAccounter{cash: 50000})
 	req := httptest.NewRequest(http.MethodPost, LLMSignalPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -93,7 +120,7 @@ func TestLLMSignalValidation(t *testing.T) {
 		body string
 	}{
 		{"missing symbol", `{"direction":"PUT","quantity":1}`},
-		{"bad direction", `{"symbol":"HK.00700","direction":"SELL","quantity":1}`},
+		{"bad direction", `{"symbol":"HK.00700","direction":"HOLD","quantity":1}`},
 		{"zero quantity", `{"symbol":"HK.00700","direction":"PUT","quantity":0}`},
 		{"no contract no strike", `{"symbol":"HK.00700","direction":"PUT","quantity":1}`},
 		{"bad contract", `{"symbol":"HK.00700","direction":"PUT","quantity":1,"contract":"HK.TCH260821X460000"}`},
@@ -110,7 +137,7 @@ func TestLLMSignalValidation(t *testing.T) {
 
 func TestLLMSignalMethodNotAllowed(t *testing.T) {
 	store := &fakeLLMStore{}
-	h := LLMSignalHandler(store, stubReviewer{}, "")
+	h := LLMSignalHandler(store, stubReviewer{}, "", &stubAccounter{cash: 50000})
 	req := httptest.NewRequest(http.MethodGet, LLMSignalPath, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -122,7 +149,7 @@ func TestLLMSignalMethodNotAllowed(t *testing.T) {
 // TestLLMSignalFailClosed: nil reviewer records REJECTED, response says REJECT.
 func TestLLMSignalFailClosed(t *testing.T) {
 	store := &fakeLLMStore{}
-	h := LLMSignalHandler(store, nil, "")
+	h := LLMSignalHandler(store, nil, "", &stubAccounter{cash: 50000})
 	body := `{"symbol":"HK.00700","direction":"PUT","quantity":1,"contract":"HK.TCH260821P460000"}`
 	req := httptest.NewRequest(http.MethodPost, LLMSignalPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")

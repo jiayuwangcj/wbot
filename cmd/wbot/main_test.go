@@ -885,12 +885,22 @@ type serveFakeFutuAccounter struct {
 }
 
 func (f serveFakeFutuAccounter) Account(_ context.Context, _ futu.Env, _ uint64) (httpapi.AccountSnapshot, error) {
+	return f.snapshot(1907141)
+}
+
+// AccountForSymbol mirrors Account; symbol→account resolution is exercised at
+// the internal/futu layer with the live gateway.
+func (f serveFakeFutuAccounter) AccountForSymbol(_ context.Context, _ futu.Env, _ string) (httpapi.AccountSnapshot, error) {
+	return f.snapshot(13477968)
+}
+
+func (f serveFakeFutuAccounter) snapshot(accID uint64) (httpapi.AccountSnapshot, error) {
 	if f.err != nil {
 		return httpapi.AccountSnapshot{}, f.err
 	}
 	return httpapi.AccountSnapshot{
 		Env:   "simulate",
-		AccID: 1907141,
+		AccID: accID,
 		Funds: httpapi.FundsJSON{Power: 1198286.822, TotalAssets: 1198286.822, Cash: 318666.822, MarketVal: 879620, AvailableCash: 318666.822},
 		Positions: []httpapi.PositionJSON{
 			{Symbol: "HK.00700", Qty: 100, AvgCost: 470.0, Price: 475.2, MarketVal: 47520, PL: 520},

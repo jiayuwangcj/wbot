@@ -13,6 +13,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/telegram"
 	"github.com/jiayu/wbot/internal/wheelstore"
+	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
 )
 
 const tgTestToken = "bottest-token"
@@ -165,13 +166,30 @@ type fakePlacer struct {
 	gotSymbol string
 	gotSide   string
 	gotQty    float64
+	gotPrice  float64
 	calls     int
+	// status lookup for watchFill: default not found; set to simulate the
+	// gateway's view of the order (0 = not found yet).
+	statusCode  int32
+	statusErr   error
+	statusCalls int
 }
 
-func (p *fakePlacer) PlaceOrder(_ context.Context, symbol, side string, qty float64) (string, uint64, error) {
+func (p *fakePlacer) PlaceOrder(_ context.Context, symbol, side string, qty, price float64) (string, uint64, error) {
 	p.calls++
-	p.gotSymbol, p.gotSide, p.gotQty = symbol, side, qty
+	p.gotSymbol, p.gotSide, p.gotQty, p.gotPrice = symbol, side, qty, price
 	return p.orderIDEx, p.orderID, p.err
+}
+
+func (p *fakePlacer) OrderStatus(_ context.Context, _, orderIDEx string) (int32, bool, error) {
+	p.statusCalls++
+	if p.statusErr != nil {
+		return 0, false, p.statusErr
+	}
+	if orderIDEx == p.orderIDEx && p.statusCode != 0 {
+		return p.statusCode, true, nil
+	}
+	return 0, false, nil
 }
 
 func startFakeTG(t *testing.T) (*fakeTGServer, *httptest.Server) {
@@ -412,7 +430,7 @@ func TestAlertMessageFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `<b>📌 US.AAPL · 卖出认沽 (SELL PUT)</b>
+	want := `<b>📌 US.AAPL · 卖出认沽 (SELL PUT) · 信号 #7</b>
 ━━━━━━━━━━━━━━━━━━━━
 🎯 <b>订单</b>
 候选      <b><code>US.AAPL260815C250000</code></b>
@@ -433,7 +451,7 @@ PUT 持仓  <code>-</code> 张
 目标持仓  <code>4,700</code> 股
 库存缺口  <b><code>-300</code></b> 股
 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
-🧠 <b>下单原因</b> · LLM 审核 <b>✅ APPROVE</b>
+💡 <b>下单原因</b> · LLM 审核 <b>✅ APPROVE</b>
 • IV 高位
 • 风险 &lt; 可控
 ━━━━━━━━━━━━━━━━━━━━
@@ -678,5 +696,49 @@ func TestCallbackYesDoubleConfirmRejected(t *testing.T) {
 	}
 	if toast := fake.lastToast(t); !strings.Contains(toast, "请勿重复确认") {
 		t.Fatalf("toast = %q; want 请勿重复确认", toast)
+	}
+}
+
+// TestWatchFillPushesFill: a confirmed order that fills must push 已成交 and
+// record a FILL action (老板指令 2026-08-12: 成交成功必须推送)。
+func TestWatchFillPushesFill(t *testing.T) {
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	placer := &fakePlacer{orderIDEx: "ord-1", statusCode: int32(trdcommon.OrderStatus_OrderStatus_Filled_All)}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.watchFill(context.Background(), 7, "HK.00700", "buy", 100, 457.4, "ord-1")
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "已成交") || !strings.Contains(text, "信号 #7") {
+		t.Fatalf("fill push = %q; want 已成交 + 信号 #7", text)
+	}
+	if !strings.Contains(text, "ord-1") {
+		t.Fatalf("fill push = %q; want order id ex", text)
+	}
+	if a := store.lastAppended(t); a.Action != "FILL" {
+		t.Fatalf("action = %s; want FILL", a.Action)
+	}
+	if placer.statusCalls != 1 {
+		t.Fatalf("OrderStatus calls = %d; want 1", placer.statusCalls)
+	}
+}
+
+// TestWatchFillWindowClosePushesPending: an unfilled order inside the watch
+// window must push 挂单中未成交 instead of silence (fail-closed reporting).
+func TestWatchFillWindowClosePushesPending(t *testing.T) {
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	placer := &fakePlacer{orderIDEx: "ord-1"} // statusCode 0 → gateway never knows it
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.watchFill(context.Background(), 7, "HK.00700", "buy", 100, 457.4, "ord-1")
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "挂单中未成交") {
+		t.Fatalf("push = %q; want 挂单中未成交", text)
+	}
+	if placer.statusCalls != 8 {
+		t.Fatalf("OrderStatus calls = %d; want 8 (full watch window)", placer.statusCalls)
 	}
 }

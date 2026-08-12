@@ -323,7 +323,7 @@ func runServe(prog string, argv []string) int {
 	if reviewer == nil {
 		fmt.Fprintln(os.Stderr, "wheel: WARN LLM reviewer disabled; set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL; llm-signal dispositions will be REJECTED")
 	}
-	top.Handle(httpapi.LLMSignalPath, httpapi.LLMSignalHandler(wheelstore.New(database), reviewer, model))
+	top.Handle(httpapi.LLMSignalPath, httpapi.LLMSignalHandler(wheelstore.New(database), reviewer, model, httpapi.NewFutuAccounter()))
 	srv := &http.Server{Handler: top}
 
 	go func() {

@@ -17,6 +17,7 @@ import (
 	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/telegram"
 	"github.com/jiayu/wbot/internal/wheelstore"
+	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
 )
 
 const (
@@ -46,7 +47,15 @@ type wheelTelegramStore interface {
 // wheelOrderPlacer submits a sim-env market option order (futu proto adapter;
 // fakes in tests).
 type wheelOrderPlacer interface {
-	PlaceOrder(ctx context.Context, symbol, side string, qty float64) (orderIDEx string, orderID uint64, err error)
+	// PlaceOrder places a limit order at price (市价单禁止, 老板指令
+	// 2026-08-12: 所有策略只用限价单; price 必须 > 0, 由调用方从候选取价)。
+	PlaceOrder(ctx context.Context, symbol, side string, qty, price float64) (orderIDEx string, orderID uint64, err error)
+	// OrderStatus looks up orderIDEx in the env account of symbol (account
+	// auto-resolved by market + security type, 多模拟账户 2026-08-12) and
+	// returns its gateway status code. found=false when the gateway does not
+	// know the order yet (caller retries); err only on gateway/account
+	// failures (成交监控用, 老板指令 2026-08-12: 成交结果要推送)。
+	OrderStatus(ctx context.Context, symbol, orderIDEx string) (status int32, found bool, err error)
 }
 
 // futuOrderPlacer adapts the proto TradeClient to wheelOrderPlacer: it opens
@@ -58,7 +67,7 @@ type futuOrderPlacer struct {
 	env  futu.Env
 }
 
-func (p futuOrderPlacer) PlaceOrder(ctx context.Context, symbol, side string, qty float64) (string, uint64, error) {
+func (p futuOrderPlacer) PlaceOrder(ctx context.Context, symbol, side string, qty, price float64) (string, uint64, error) {
 	if p.env != futu.EnvSim {
 		return "", 0, errLiveEnvNotAllowed
 	}
@@ -67,11 +76,38 @@ func (p futuOrderPlacer) PlaceOrder(ctx context.Context, symbol, side string, qt
 		return "", 0, fmt.Errorf("open trade: %w", err)
 	}
 	defer tc.Close()
-	acc, err := tc.Account(ctx, p.env, 0)
+	acc, err := tc.AccountForSymbol(ctx, p.env, symbol, 0)
 	if err != nil {
 		return "", 0, err
 	}
-	return tc.PlaceOrder(ctx, acc, futu.OrderRequest{Symbol: symbol, Side: side, Qty: qty, Price: 0})
+	return tc.PlaceOrder(ctx, acc, futu.OrderRequest{Symbol: symbol, Side: side, Qty: qty, Price: price})
+}
+
+// OrderStatus polls the env account's order list for orderIDEx (watches reuse
+// the placer's connection+env, so fakes in tests stay interface-compatible).
+func (p futuOrderPlacer) OrderStatus(ctx context.Context, symbol, orderIDEx string) (int32, bool, error) {
+	if p.env != futu.EnvSim {
+		return 0, false, errLiveEnvNotAllowed
+	}
+	tc, err := futu.AcquireTrade(ctx, p.addr)
+	if err != nil {
+		return 0, false, fmt.Errorf("open trade: %w", err)
+	}
+	defer tc.Close()
+	acc, err := tc.AccountForSymbol(ctx, p.env, symbol, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	orders, err := tc.Orders(ctx, acc, false)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, o := range orders {
+		if o.GetOrderIDEx() == orderIDEx {
+			return o.GetOrderStatus(), true, nil
+		}
+	}
+	return 0, false, nil
 }
 
 // telegramScheduler pushes wheel ALERT signals to Telegram and disposes the
@@ -84,6 +120,17 @@ type telegramScheduler struct {
 	chatIDs map[int64]bool
 	now     func() time.Time
 	logf    func(format string, a ...any)
+}
+
+// sendToChats pushes one text message to every whitelisted chat. Button
+// presses, order outcomes, fills and LLM rejections all route through here
+// (老板指令 2026-08-12: 重要事件必须推送,不能只靠回调 toast 或日志)。
+func (s *telegramScheduler) sendToChats(ctx context.Context, text string) {
+	for chatID := range s.chatIDs {
+		if err := s.tg.SendMessage(ctx, strconv.FormatInt(chatID, 10), text, nil); err != nil {
+			s.logf("push: chat=%d: %v", chatID, err)
+		}
+	}
 }
 
 func newTelegramScheduler(tg *telegram.Client, store wheelTelegramStore, orders wheelOrderPlacer, chatIDs map[int64]bool) *telegramScheduler {
@@ -245,7 +292,17 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 		return true
 	}
 	if verdictOf(review) != "APPROVE" {
+		// 老板指令 2026-08-12: LLM 拒绝必须推送,让老板了解策略为何失败。
 		s.logf("push: %s signal=%d: not pushed (LLM review %s)", sig.Symbol, sig.ID, verdictOf(review))
+		reasons := reviewReasons(review)
+		text := fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s\n%s %s\n\n%s",
+			sig.ID, s.now().Format("2006-01-02 15:04:05"), sig.Symbol, verdictOf(review),
+			strings.Join(reasons, "\n"))
+		if len(reasons) == 0 {
+			text = fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s\n%s %s",
+				sig.ID, s.now().Format("2006-01-02 15:04:05"), sig.Symbol, verdictOf(review))
+		}
+		s.sendToChats(ctx, text)
 		return false
 	}
 	text, err := alertMessage(&sig, reviewReasons(review)...)
@@ -288,6 +345,8 @@ func (s *telegramScheduler) handleCallback(ctx context.Context, cq *telegram.Cal
 			return
 		}
 		_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, "已记录,继续等待机会")
+		// 老板指令 2026-08-12: 按钮点击要推送(时间/信号号可见)。
+		s.sendToChats(ctx, fmt.Sprintf("❌ <b>已拒绝</b> · 信号 #%d · %s\n%s", signalID, s.now().Format("2006-01-02 15:04:05"), "老板拒绝该信号,继续等待机会"))
 	case "dismiss":
 		s.recordDismiss(ctx, cq, signalID)
 	default:
@@ -331,7 +390,14 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 		s.reject(ctx, cq, signalID, "no usable candidate", "信号缺少可下单候选")
 		return
 	}
-	orderIDEx, orderID, err := s.orders.PlaceOrder(ctx, cand.Code, cand.Side, float64(cand.Quantity))
+	// 限价单纪律(老板指令 2026-08-12: 所有策略禁止市价单): 限价取候选
+	// 期权最新价(last; LLM 链路 = 注入的 premium), 无价可依则拒绝而非臆造。
+	price := cand.Quote.Last
+	if price <= 0 {
+		s.reject(ctx, cq, signalID, "no usable limit price", "候选无可用限价,拒绝下单")
+		return
+	}
+	orderIDEx, orderID, err := s.orders.PlaceOrder(ctx, cand.Code, cand.Side, float64(cand.Quantity), price)
 	if err != nil {
 		reason := "place order failed"
 		toast := "下单失败"
@@ -339,6 +405,7 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 			reason = "live env not allowed"
 			toast = "实盘下单不允许(仅模拟盘)"
 		}
+		s.logf("callback %s: %s: %v", cq.ID, reason, err) // 真实错误落日志,防吞错
 		s.reject(ctx, cq, signalID, reason, toast)
 		return
 	}
@@ -349,6 +416,78 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 		s.logf("callback %s: confirm record: %v", cq.ID, err)
 	}
 	_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, fmt.Sprintf("已下单 订单号 %d", orderID))
+	// 老板指令 2026-08-12: 下单成功必须推送(时间/订单号/价格可见)。
+	sideName := "买入"
+	if cand.Side == "sell" {
+		sideName = "卖出"
+	}
+	s.sendToChats(ctx, fmt.Sprintf(
+		"✅ <b>已下单</b> · 信号 #%d\n%s %s %s %d 股 @ 限价 %.2f\n订单号 <code>%s</code>(%d)\n时间 %s",
+		signalID, sideName, cand.Code, cand.Side, cand.Quantity, price, orderIDEx, orderID,
+		s.now().Format("2006-01-02 15:04:05"),
+	))
+	// 成交监控:轮询订单状态,成交/撤单/超时都推送结果。
+	go s.watchFill(ctx, signalID, cand.Code, cand.Side, float64(cand.Quantity), price, orderIDEx)
+}
+
+// watchFill polls the placed order until it fills, cancels or the watch
+// window closes, pushing the outcome (老板指令 2026-08-12: 成交成功等
+// 重要消息需要推送)。Runs on the serve ctx in its own goroutine; the
+// callback answer is never blocked on gateway polling.
+func (s *telegramScheduler) watchFill(ctx context.Context, signalID int64, symbol, side string, qty, price float64, orderIDEx string) {
+	const (
+		pollEvery = 15 * time.Second
+		maxPolls  = 8 // ~2 分钟观察窗:未成交则推送挂单状态收尾
+	)
+	sideName := "买入"
+	if side == "sell" {
+		sideName = "卖出"
+	}
+	for i := 0; i < maxPolls; i++ {
+		if i > 0 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(pollEvery):
+			}
+		}
+		status, found, err := s.orders.OrderStatus(ctx, symbol, orderIDEx)
+		if err != nil {
+			s.logf("watch fill %s: %v", orderIDEx, err)
+			continue
+		}
+		if !found {
+			continue // 网关尚未出现该订单,继续轮询
+		}
+		switch trdcommon.OrderStatus(status) {
+		case trdcommon.OrderStatus_OrderStatus_Filled_All, trdcommon.OrderStatus_OrderStatus_Filled_Part:
+			s.sendToChats(ctx, fmt.Sprintf(
+				"✅ <b>已成交</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n成交时间 %s",
+				signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
+			))
+			if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
+				SignalID: signalID, Action: "FILL", Actor: "system:watch",
+				Details: map[string]any{"order_id_ex": orderIDEx, "status": trdcommon.OrderStatus(status).String(), "symbol": symbol, "side": side, "qty": qty, "price": price},
+			}); err != nil {
+				s.logf("watch fill %s: fill record: %v", orderIDEx, err)
+			}
+			return
+		case trdcommon.OrderStatus_OrderStatus_Cancelled_Part, trdcommon.OrderStatus_OrderStatus_Cancelled_All,
+			trdcommon.OrderStatus_OrderStatus_Cancelling_Part, trdcommon.OrderStatus_OrderStatus_Cancelling_All,
+			trdcommon.OrderStatus_OrderStatus_SubmitFailed:
+			s.sendToChats(ctx, fmt.Sprintf(
+				"⚠️ <b>订单未成交(%s)</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n时间 %s",
+				trdcommon.OrderStatus(status).String(), signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
+			))
+			return
+		}
+	}
+	// 观察窗内未成交:挂单仍在市场,告知状态不假装成功。
+	s.sendToChats(ctx, fmt.Sprintf(
+		"⏳ <b>订单挂单中未成交</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n观察 %s",
+		signalID, sideName, symbol, qty, price, orderIDEx,
+		s.now().Format("2006-01-02 15:04:05"),
+	))
 }
 
 // recordDismiss silences the signal's symbol for today and answers.
@@ -364,14 +503,23 @@ func (s *telegramScheduler) recordDismiss(ctx context.Context, cq *telegram.Call
 		return
 	}
 	_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, "今日不再提醒该标的")
+	// 老板指令 2026-08-12: 按钮点击要推送。
+	s.sendToChats(ctx, fmt.Sprintf("⚠️ <b>已忽略</b> · 信号 #%d · %s · %s\n今日不再提醒 %s", signalID, s.now().Format("2006-01-02 15:04:05"), sig.Symbol, sig.Symbol))
 }
 
-// reject records REJECTED with the reason and answers the callback.
+// reject records REJECTED with the reason and answers the callback, and
+// pushes the refusal so the boss sees why the order failed (老板指令
+// 2026-08-12: 重要消息必须推送)。
 func (s *telegramScheduler) reject(ctx context.Context, cq *telegram.CallbackQuery, signalID int64, reason, toast string) {
 	if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "REJECTED", Actor: telegramActor(cq), Note: reason}); err != nil {
 		s.logf("callback %s: rejected record: %v", cq.ID, err)
 	}
 	_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, toast)
+	symbol := fmt.Sprintf("#%d", signalID)
+	if sig, err := s.store.GetSignal(ctx, signalID); err == nil {
+		symbol = sig.Symbol
+	}
+	s.sendToChats(ctx, fmt.Sprintf("⛔ <b>下单失败</b> · 信号 #%d · %s · %s\n%s(%s)", signalID, s.now().Format("2006-01-02 15:04:05"), symbol, toast, reason))
 }
 
 // parseCallbackData parses "wheel:<signalID>:<yes|no|dismiss>".
@@ -470,7 +618,17 @@ func firstCandidate(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
 		return nil, errors.New("candidate has no option symbol")
 	}
 	direction := strings.ToUpper(strings.TrimSpace(c.Direction))
-	if direction != "PUT" && direction != "CALL" {
+	// 正股信号(2026-08-12 llm-signal 端点扩展):BUY/SELL 下单方向即方向;
+	// 期权 PUT/CALL 语义为卖出开仓(收权利金)。
+	var side string
+	switch direction {
+	case "PUT", "CALL":
+		side = "sell"
+	case "BUY":
+		side = "buy"
+	case "SELL":
+		side = "sell"
+	default:
 		return nil, fmt.Errorf("candidate direction %q unsupported", c.Direction)
 	}
 	qty := c.Quantity
@@ -478,7 +636,7 @@ func firstCandidate(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
 		qty = 1
 	}
 	return &candidateOrder{
-		Code: c.Quote.Symbol, Side: "sell", Quantity: qty, Direction: direction,
+		Code: c.Quote.Symbol, Side: side, Quantity: qty, Direction: direction,
 		Quote: candidateQuote{Symbol: c.Quote.Symbol, OptionType: c.Quote.OptionType, Strike: c.Quote.Strike, Expiry: c.Quote.Expiry, Bid: c.Quote.Bid, Ask: c.Quote.Ask, Last: c.Quote.Last, Delta: c.Quote.Delta, ImpliedVol: c.Quote.ImpliedVol, OpenInterest: c.Quote.OpenInterest},
 	}, nil
 }
@@ -517,21 +675,38 @@ func alertMessage(sig *wheelstore.SignalRecord, reasons ...string) (string, erro
 	target := countText(sig.Inventory.TargetInventory)
 	gap := countText(sig.Inventory.InventoryGap)
 
+	// 正股信号(BUY/SELL)渲染标的侧信息;期权信号渲染行权/到期/希腊。
+	// 标题带信号编号(老板指令 2026-08-12: 推送必须带编号以区分订单)。
 	lines := []string{
-		fmt.Sprintf("<b>📌 %s · %s</b>", html.EscapeString(sig.Symbol), directionLabel(c.Direction)),
+		fmt.Sprintf("<b>📌 %s · %s · 信号 #%d</b>", html.EscapeString(sig.Symbol), directionLabel(c.Direction), sig.ID),
 		alertOuterRule,
 		"🎯 <b>订单</b>",
 		alertRow("候选", fmt.Sprintf("<b><code>%s</code></b>", html.EscapeString(c.Code))),
-		alertRow("行权", fmt.Sprintf("<b><code>%.2f</code></b>", c.Quote.Strike)),
-		alertRow("到期", fmt.Sprintf("<code>%s</code> (剩 %s 天)", html.EscapeString(expiry), dte)),
-		alertRow("数量", fmt.Sprintf("<b><code>%s</code></b> 张", commaInt(int64(c.Quantity)))),
-		alertRow("限价", fmt.Sprintf("<b><code>%s</code></b> (估算)", limit)),
-		alertInnerRule,
-		"📊 <b>标的当前</b>",
-		alertRow("正股现价", fmt.Sprintf("<b><code>%s</code></b>", priceText(sig.Inventory.CurrentPrice))),
-		alertRow("bid/ask", fmt.Sprintf("<code>%.2f</code>/<code>%.2f</code>", c.Quote.Bid, c.Quote.Ask)),
-		alertRow("希腊", fmt.Sprintf("Δ <code>%.2f</code> · IV <code>%.2f</code> · OI <code>%s</code>", c.Quote.Delta, c.Quote.ImpliedVol, commaInt(c.Quote.OpenInterest))),
-		alertInnerRule,
+	}
+	if isStockDirection(c.Direction) {
+		lines = append(lines,
+			alertRow("数量", fmt.Sprintf("<b><code>%s</code></b> 股", commaInt(int64(c.Quantity)))),
+			alertRow("限价", fmt.Sprintf("<b><code>%s</code></b>", limit)),
+			alertInnerRule,
+			"📊 <b>标的当前</b>",
+			alertRow("正股现价", fmt.Sprintf("<b><code>%s</code></b>", priceText(sig.Inventory.CurrentPrice))),
+			alertInnerRule,
+		)
+	} else {
+		lines = append(lines,
+			alertRow("行权", fmt.Sprintf("<b><code>%.2f</code></b>", c.Quote.Strike)),
+			alertRow("到期", fmt.Sprintf("<code>%s</code> (剩 %s 天)", html.EscapeString(expiry), dte)),
+			alertRow("数量", fmt.Sprintf("<b><code>%s</code></b> 张", commaInt(int64(c.Quantity)))),
+			alertRow("限价", fmt.Sprintf("<b><code>%s</code></b> (估算)", limit)),
+			alertInnerRule,
+			"📊 <b>标的当前</b>",
+			alertRow("正股现价", fmt.Sprintf("<b><code>%s</code></b>", priceText(sig.Inventory.CurrentPrice))),
+			alertRow("bid/ask", fmt.Sprintf("<code>%.2f</code>/<code>%.2f</code>", c.Quote.Bid, c.Quote.Ask)),
+			alertRow("希腊", fmt.Sprintf("Δ <code>%.2f</code> · IV <code>%.2f</code> · OI <code>%s</code>", c.Quote.Delta, c.Quote.ImpliedVol, commaInt(c.Quote.OpenInterest))),
+			alertInnerRule,
+		)
+	}
+	lines = append(lines,
 		"🧭 <b>持仓与策略参数</b>",
 		alertRow("正股持仓", fmt.Sprintf("<code>%s</code> 股", stock)),
 		alertRow("CALL 持仓", "<code>-</code> 张 · <code>-</code>"),
@@ -539,8 +714,8 @@ func alertMessage(sig *wheelstore.SignalRecord, reasons ...string) (string, erro
 		alertRow("目标持仓", fmt.Sprintf("<code>%s</code> 股", target)),
 		alertRow("库存缺口", fmt.Sprintf("<b><code>%s</code></b> 股", gap)),
 		alertInnerRule,
-		"🧠 <b>下单原因</b> · LLM 审核 <b>✅ APPROVE</b>",
-	}
+		"💡 <b>下单原因</b> · LLM 审核 <b>✅ APPROVE</b>",
+	)
 	for _, reason := range reasons {
 		if reason = strings.TrimSpace(reason); reason != "" {
 			lines = append(lines, "• "+html.EscapeString(reason))
@@ -616,7 +791,7 @@ func commaInt(v int64) string {
 }
 
 // directionLabel renders the wheel direction for the alert text (both
-// directions sell the option).
+// directions sell the option; stock directions render as-is).
 func directionLabel(direction string) string {
 	switch direction {
 	case "PUT":
@@ -625,6 +800,13 @@ func directionLabel(direction string) string {
 		return "卖出认购 (SELL CALL)"
 	}
 	return direction
+}
+
+// isStockDirection reports whether the candidate is an underlying-stock signal
+// (BUY/SELL, llm-signal endpoint extension 2026-08-12) rather than an option
+// (PUT/CALL).
+func isStockDirection(direction string) bool {
+	return direction == "BUY" || direction == "SELL"
 }
 
 func priceText(p *float64) string {

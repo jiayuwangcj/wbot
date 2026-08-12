@@ -18,10 +18,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/llmreview"
 	"github.com/jiayu/wbot/internal/wheelstore"
 )
@@ -59,6 +61,20 @@ const llmSignalRules = `你是 wbot 模拟盘的下单审核闸门。审核一�
 6. 系统性:字段矛盾、或任何无法核实的情形一律 REJECT,不得以任何理由放宽。
 输出 JSON:{"verdict":"APPROVE" 或 "REJECT","reasons":["..."],"notes":"可选"}`
 
+// llmStockRules is the audit rule set for LLM decisions on underlying stocks
+// (direction BUY/SELL, 2026-08-12 盘中用户指令「模拟 0700 正股推送下单」):
+// no contract/greeks fields, limit price = current_price, fail-closed like
+// the option rules. 与期权规则 llmSignalRules 独立,互不影响。
+const llmStockRules = `你是 wbot 模拟盘的下单审核闸门。审核一个 LLM 策略信号:该信号由大模型决策引擎直接提出,动作是对正股的下单(买入 BUY 或卖出 SELL),人工确认后才会在模拟盘下单。
+逐项审核:
+1. 方向与语义:direction 必须是 BUY(买入建仓/加仓)或 SELL(卖出减仓/止盈),与 decision_reason 描述的动作一致;任何矛盾必须 REJECT。
+2. 购入理由(硬性项):decision_reason 必须说明经济理由——现价(current_price)与目标限价(premium)的关系、方向判断依据;理由缺失、空泛(如"看多""不错")或与方向矛盾必须 REJECT。
+3. 限价:premium(即限价,缺省取 current_price)必须为正,且与现价量级匹配(明显偏离现价数量级必须 REJECT)。
+4. 数量:quantity 必须 ≥1,且不超过模拟盘验证规模(>1000 股必须 REJECT)。
+5. 数据一致性:current_price 必须为正且合理;提供的其他字段若非零必须合理,矛盾必须 REJECT。
+6. 系统性:字段矛盾、或任何无法核实的情形一律 REJECT,不得以任何理由放宽。
+输出 JSON:{"verdict":"APPROVE" 或 "REJECT","reasons":["..."],"notes":"可选"}`
+
 // LLMSignalHandler serves POST /v1/wheel/llm-signal. Body:
 //
 //	{"symbol":"HK.00700","direction":"PUT","quantity":1,
@@ -70,7 +86,13 @@ const llmSignalRules = `你是 wbot 模拟盘的下单审核闸门。审核一�
 // synthetic code when absent (strike required then). Response:
 //
 //	{"signal_id":247,"llm_verdict":"APPROVE","approved":true}
-func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string) http.Handler {
+//
+// accounter supplies the live account context (sim env, accID 0) for the
+// audit gate: the LLM rules need cash_available/positions to pass the data
+// completeness check (实测 2026-08-12: 无账户上下文时按规则 REJECT —
+// fail-closed 正确但会让所有注入失败)。拉取失败时保持缺省(nil),
+// 审核按数据完整性规则决定(仍 fail-closed)。
+func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string, accounter FutuAccounter) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(LLMSignalPath, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -112,8 +134,11 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string) 
 			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: "symbol is required", Action: "set symbol, e.g. HK.00700"})
 			return
 		}
-		if req.Direction != "PUT" && req.Direction != "CALL" {
-			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: fmt.Sprintf("direction %q unsupported", req.Direction), Action: "use PUT or CALL"})
+		// 正股信号(BUY/SELL)与期权信号(PUT/CALL)共用端点:正股无合约/希腊
+		// 字母字段(可缺省),候选 quote.symbol 即标的代码,quantity 为股数。
+		isStock := req.Direction == "BUY" || req.Direction == "SELL"
+		if !isStock && req.Direction != "PUT" && req.Direction != "CALL" {
+			writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: fmt.Sprintf("direction %q unsupported", req.Direction), Action: "use PUT/CALL (option) or BUY/SELL (stock)"})
 			return
 		}
 		if req.Quantity < 1 {
@@ -130,7 +155,11 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string) 
 		}
 		code := req.Contract
 		strike := req.Strike
-		if code == "" {
+		if isStock {
+			// 正股:候选 symbol 即标的;strike/expiry 保持零值(渲染与下单
+			// 只消费 last 作限价,见 confirmOrder)。
+			code = req.Symbol
+		} else if code == "" {
 			if strike <= 0 {
 				writeErrorBody(w, http.StatusBadRequest, errorJSON{Code: "invalid_request", Message: "contract or strike is required", Action: "set the full option code (HK.TCH260821P460000) or strike"})
 				return
@@ -147,6 +176,11 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string) 
 		if req.Expiry == "" {
 			req.Expiry = expiryFromOptionCode(code)
 		}
+		// 正股信号的限价 = current_price(决策价),与期权 premium 同位。
+		price := req.Premium
+		if isStock && price <= 0 {
+			price = req.CurrentPrice
+		}
 		decision := map[string]any{
 			"symbol":        req.Symbol,
 			"direction":     req.Direction,
@@ -155,14 +189,14 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string) 
 			"strike":        strike,
 			"expiry":        req.Expiry,
 			"current_price": req.CurrentPrice,
-			"premium":       req.Premium,
+			"premium":       price,
 			"delta":         req.Delta,
 			"iv":            req.IV,
 			"open_interest": req.OpenInterest,
 			"reason":        req.Reason,
 		}
-		bid := req.Premium
-		ask := req.Premium
+		bid := price
+		ask := price
 		candidate := map[string]any{
 			"direction": req.Direction,
 			"quantity":  req.Quantity,
@@ -174,7 +208,7 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string) 
 				"expiry":        req.Expiry,
 				"bid":           bid,
 				"ask":           ask,
-				"last":          req.Premium,
+				"last":          price,
 				"delta":         req.Delta,
 				"implied_vol":   req.IV,
 				"open_interest": req.OpenInterest,
@@ -206,7 +240,57 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string) 
 			writeErrorBody(w, http.StatusInternalServerError, errorJSON{Code: "store_error", Message: "append signal: " + err.Error(), Action: "check the wheel_signals table and retry"})
 			return
 		}
-		verdict, disposition := reviewLLMSignal(r.Context(), store, reviewer, model, id, req.Symbol, decision, reason)
+		// 审核前拉实时账户上下文(现金/持仓),供规则做资金与库存检查;
+		// 拉取失败时保持 nil,审核按数据完整性 fail-closed。
+		var positions []PositionJSON
+		var cashAvailable *float64
+		if accounter != nil {
+			actx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			// 多模拟账户(老板指令 2026-08-12):期权信号查期权模拟账户,
+			// 正股信号查对应市场股票账户——审核上下文的现金/持仓必须与
+			// 交易账户一致,否则期权信号会误读股票账户(反之亦然)。
+			snap, aerr := accounter.AccountForSymbol(actx, futu.EnvSim, req.Symbol)
+			cancel()
+			if aerr != nil {
+				fmt.Fprintf(os.Stderr, "httpapi: llm-signal: account context: %v (audit runs on missing data)\n", aerr)
+			} else {
+				cash := snap.Funds.AvailableCash
+				cashAvailable = &cash
+				positions = snap.Positions
+				// 库存上下文真实性(老板反馈 2026-08-12):注入方显式传值优先;
+				// 未传时用实时账户持仓填充——推送渲染不再出现「持仓 0」与真实不符。
+				for _, p := range positions {
+					if p.Symbol != req.Symbol {
+						continue
+					}
+					qty := p.Qty
+					if record.Inventory.ActualInventory == nil {
+						record.Inventory.ActualInventory = &qty
+					}
+					zero := 0.0
+					if record.Inventory.OptionDeltaStock == nil {
+						record.Inventory.OptionDeltaStock = &zero
+					}
+					eff := qty
+					if record.Inventory.EffectiveInventory == nil {
+						record.Inventory.EffectiveInventory = &eff
+					}
+					if record.Inventory.TargetInventory == nil {
+						record.Inventory.TargetInventory = &eff
+					}
+					gap := 0.0
+					if record.Inventory.InventoryGap == nil {
+						record.Inventory.InventoryGap = &gap
+					}
+					break
+				}
+			}
+		}
+		rules := llmSignalRules
+		if isStock {
+			rules = llmStockRules
+		}
+		verdict, disposition := reviewLLMSignal(r.Context(), store, reviewer, model, id, req.Symbol, decision, reason, positions, cashAvailable, rules)
 		response := map[string]any{
 			"signal_id":   id,
 			"llm_verdict": verdict,
@@ -235,7 +319,7 @@ func LLMSignalHandler(store LLMSignalStore, reviewer LLMReviewer, model string) 
 // recorded REJECTED (fail-closed, matching the wheel gate) and reported as
 // such. Returns (verdict, disposition) where disposition is the recorded
 // wheel_signal_actions action name, "" when not recorded.
-func reviewLLMSignal(ctx context.Context, store LLMSignalStore, reviewer LLMReviewer, model string, signalID int64, symbol string, decision map[string]any, reason string) (string, string) {
+func reviewLLMSignal(ctx context.Context, store LLMSignalStore, reviewer LLMReviewer, model string, signalID int64, symbol string, decision map[string]any, reason string, positions []PositionJSON, cashAvailable *float64, rulesText string) (string, string) {
 	verdict := "REJECT"
 	disposition := "REJECTED"
 	actor := "llm:unknown"
@@ -253,9 +337,9 @@ func reviewLLMSignal(ctx context.Context, store LLMSignalStore, reviewer LLMRevi
 		result, err := reviewer.Review(ctx, llmreview.ReviewRequest{
 			StrategyConfig: map[string]any{"strategy": "llm", "quantity": decision["quantity"], "direction": decision["direction"]},
 			Signal:         decision,
-			Positions:      nil,
-			CashAvailable:  nil,
-			RulesText:      llmSignalRules,
+			Positions:      positions,
+			CashAvailable:  cashAvailable,
+			RulesText:      rulesText,
 			Symbol:         symbol,
 		})
 		if err != nil {

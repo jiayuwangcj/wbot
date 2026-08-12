@@ -31,6 +31,8 @@ func runFutu(prog string, argv []string) int {
 		return runFutuFunds(prog, argv[1:])
 	case "position":
 		return runFutuPosition(prog, argv[1:])
+	case "accounts":
+		return runFutuAccounts(prog, argv[1:])
 	case "order":
 		return runFutuOrder(prog, argv[1:])
 	case "cancel":
@@ -71,9 +73,50 @@ func openTradeClient(prog, sub, addr string) (*futu.TradeClient, bool) {
 	return tc, true
 }
 
-// resolveAccount looks up the account for env and reports CLI errors.
-func resolveAccount(prog, sub string, tc *futu.TradeClient, env futu.Env, accID uint64) (*trdcommon.TrdAcc, bool) {
-	acc, err := tc.Account(context.Background(), env, accID)
+// runFutuAccounts lists every gateway account (env/type/card/markets) so the
+// boss can pick the option sim account (SimAccType=Option) and pass its
+// acc-id to order (老板指令 2026-08-12: 切换港股期权模拟账户)。
+func runFutuAccounts(prog string, argv []string) int {
+	fs := flag.NewFlagSet("futu accounts", flag.ContinueOnError)
+	addr := fs.String("addr", futu.DefaultProtoAddr, "gateway OpenD protobuf address (TCP 11111)")
+	fs.SetOutput(os.Stderr)
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	tc, ok := openTradeClient(prog, "accounts", *addr)
+	if !ok {
+		return 1
+	}
+	defer tc.Close()
+	accounts, err := tc.ListAccounts(context.Background())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "futu: accounts: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stdout, "%-6s %-8s %-22s %-8s %-20s %-8s %s\n", "ACC_ID", "ENV", "SIM_TYPE", "ACC_TYPE", "CARD", "STATUS", "MARKETS")
+	for _, acc := range accounts {
+		fmt.Fprintf(os.Stdout, "%-6d %-8s %-22s %-8d %-20s %-8d %v\n",
+			acc.GetAccID(), futu.EnvName(futu.Env(acc.GetTrdEnv())),
+			futu.SimAccTypeName(acc.GetSimAccType()), acc.GetAccType(),
+			acc.GetCardNum(), acc.GetAccStatus(), acc.GetTrdMarketAuthList())
+	}
+	return 0
+}
+
+// resolveAccount looks up the account for env and reports CLI errors. With
+// accID == 0 and a non-empty symbol the account is auto-selected by market +
+// security type (AccountForSymbol, 多模拟账户支持 2026-08-12: 期权→期权账户,
+// 美股→美股账户); otherwise the env's first account is used.
+func resolveAccount(prog, sub string, tc *futu.TradeClient, env futu.Env, accID uint64, symbol string) (*trdcommon.TrdAcc, bool) {
+	var (
+		acc *trdcommon.TrdAcc
+		err error
+	)
+	if symbol != "" && accID == 0 {
+		acc, err = tc.AccountForSymbol(context.Background(), env, symbol, 0)
+	} else {
+		acc, err = tc.Account(context.Background(), env, accID)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "futu: %s: %v\n", sub, err)
 		return nil, false
@@ -114,7 +157,7 @@ func runFutuFunds(prog string, argv []string) int {
 		return 1
 	}
 	defer tc.Close()
-	acc, ok := resolveAccount(prog, "funds", tc, e, *accID)
+	acc, ok := resolveAccount(prog, "funds", tc, e, *accID, "")
 	if !ok {
 		return 1
 	}
@@ -177,7 +220,7 @@ func runFutuPosition(prog string, argv []string) int {
 		return 1
 	}
 	defer tc.Close()
-	acc, ok := resolveAccount(prog, "position", tc, e, *accID)
+	acc, ok := resolveAccount(prog, "position", tc, e, *accID, "")
 	if !ok {
 		return 1
 	}
@@ -229,10 +272,10 @@ func runFutuOrder(prog string, argv []string) int {
 	symbol := fs.String("symbol", "", "market-qualified symbol (e.g. HK.00700)")
 	side := fs.String("side", "", "buy or sell")
 	qty := fs.Float64("qty", 0, "quantity in shares")
-	price := fs.Float64("price", 0, "limit price (0 = market order)")
+	price := fs.Float64("price", 0, "limit price, required > 0 (市价单禁止,老板指令 2026-08-12)")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s futu order -symbol HK.00700 -side buy -qty 100 [-price 470] [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Usage: %s futu order -symbol HK.00700 -side buy -qty 100 -price 470 [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Places an order over the protobuf API (TCP 11111). Default env is\nsimulate (paper trading); real env is a live write and needs -live-confirm\nplus -acc-id (安全红线, doc/FUTU.md).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
@@ -264,8 +307,8 @@ func runFutuOrder(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "futu: order: -qty must be > 0\n")
 		return 2
 	}
-	if *price < 0 {
-		fmt.Fprintf(os.Stderr, "futu: order: -price must be >= 0 (0 = market order)\n")
+	if *price <= 0 {
+		fmt.Fprintf(os.Stderr, "futu: order: -price must be > 0 (市价单禁止,老板指令 2026-08-12)\n")
 		return 2
 	}
 	e, err := parseFutuEnv(*env)
@@ -308,7 +351,7 @@ func runFutuOrder(prog string, argv []string) int {
 		return 1
 	}
 	defer tc.Close()
-	acc, ok := resolveAccount(prog, "order", tc, e, *accID)
+	acc, ok := resolveAccount(prog, "order", tc, e, *accID, sym)
 	if !ok {
 		return 1
 	}
@@ -388,7 +431,7 @@ func runFutuCancel(prog string, argv []string) int {
 		return 1
 	}
 	defer tc.Close()
-	acc, ok := resolveAccount(prog, "cancel", tc, e, *accID)
+	acc, ok := resolveAccount(prog, "cancel", tc, e, *accID, "")
 	if !ok {
 		return 1
 	}
