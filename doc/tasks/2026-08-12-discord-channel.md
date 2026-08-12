@@ -46,11 +46,12 @@ Discord 作为第二条推送/确认通道:信号/订单/拒绝理由通知 + em
 
 ## State
 
-- **status**: `pending`(等待 Discord Application 创建 + #36 合入后可并行派单)
-- **last step**: 2026-08-12 方案定稿(用户决策:只做 Discord,Telegram 轮询保持)
+- **status**: `reviewing`(P1 修复中)
+- **last step**: 2026-08-12 reviewer 评审 4b7d8c7 → **有条件合入**(feature):① P1 CONFIRM 并发竞态(双击/双通道同时确认 → 同信号两张限价单,HasAction↔AppendAction 间隔着 PlaceOrder)建议修后合入——已派 coder 修复(mutex 串行化 + 并发测试);② P2 doc/API.md 补契约、P2 用户白名单 allowed_user_ids、P3 若干 → 记 backlog 合入后跟进
+- 安全总评:Ed25519 验签正确(±5min 防重放含未来时间戳、签名不过一律 401、错误文案不泄信息)、伪造/重放均被阻断;公网仅 /v1/discord/interactions 且只 POST
 
 ## Next
 
-- 老板创建 Discord Application 并提供 Public Key / Bot Token / bot 邀请链接
-- haproxy 配好转发后主会话实测 1443 → 内网连通
-- 派 coder 实现 → verify.sh 全绿 → reviewer 评审 → 合入
+- coder 修 P1(mutex + 并发测试)→ verify 全绿 → reviewer 复核 → 合入
+- backlog:wheel_signal_actions 部分唯一索引 (signal_id) WHERE action='CONFIRM'(双通道兜底)、doc/API.md 契约、allowed_user_ids 白名单、embed 发送失败重试、公网端点限速
+- 晚上老板提供 Public Key / Bot Token / channel_id / Interaction URL 配置 → `tools/tg-test -discord` 实测 → 公网→内网连通 → Discord 面板验收
