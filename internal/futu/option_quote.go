@@ -41,6 +41,7 @@ type greeksEntry struct {
 	Bid     float64
 	Ask     float64
 	Last    float64 // option-quote price; snapshot cur_price stays the primary Last
+	Volume  int64
 	IV      float64
 	Delta   float64
 	Theta   *float64
@@ -100,6 +101,8 @@ type optionQuotePage struct {
 	OptionQuoteList []struct {
 		Price        float64  `json:"price"`
 		Mid          float64  `json:"mid"`
+		Vol          flexInt  `json:"vol"`
+		MarkPrice    float64  `json:"mark_price"`
 		IV           float64  `json:"iv"`
 		Delta        float64  `json:"delta"`
 		Theta        *float64 `json:"theta"`
@@ -155,40 +158,61 @@ func (c *Client) OptionQuotes(ctx context.Context, symbols []string) (map[string
 		}
 		s2c, err := c.post(ctx, "/api/quote", map[string]any{"security_list": secs[start:end]})
 		if err != nil {
-			return nil, fmt.Errorf("option-quotes quote [%d/%d]: %w", end, len(secs), err)
+			fmt.Fprintf(os.Stderr, "futu: option-quotes: snapshot [%d/%d]: %v\n", end, len(secs), err)
+			continue
 		}
 		var part quotePage
 		if err := json.Unmarshal(s2c, &part); err != nil {
-			return nil, fmt.Errorf("option-quotes: bad s2c: %w", err)
+			fmt.Fprintf(os.Stderr, "futu: option-quotes: snapshot [%d/%d]: bad s2c: %v\n", end, len(secs), err)
+			continue
 		}
 		pg.BasicQotList = append(pg.BasicQotList, part.BasicQotList...)
 	}
-	stale := make([]string, 0, len(pg.BasicQotList))
+	snapshots := make(map[string]struct {
+		last       float64
+		volume     int64
+		updateTime string
+	}, len(pg.BasicQotList))
 	for _, q := range pg.BasicQotList {
 		sym := marketPrefix(q.Security.Market) + q.Security.Code
 		if sym == "" {
 			continue
 		}
+		snapshots[sym] = struct {
+			last       float64
+			volume     int64
+			updateTime string
+		}{q.CurPrice, q.Volume, q.UpdateTime}
+	}
+	stale := make([]string, 0, len(canonical))
+	for _, sym := range canonical {
+		snapshot, answered := snapshots[sym]
 		quote := OptionQuoteEx{
 			Symbol:    sym,
-			Last:      q.CurPrice,
-			Volume:    q.Volume,
-			QuoteTime: parseQuoteTime(q.UpdateTime),
+			Last:      snapshot.last,
+			Volume:    snapshot.volume,
+			QuoteTime: parseQuoteTime(snapshot.updateTime),
 		}
 		greeksCacheMu.Lock()
 		e, cached := greeksCache[sym]
 		greeksCacheMu.Unlock()
-		if cached && time.Since(e.fetched) <= greeksTTL {
+		if answered && cached && time.Since(e.fetched) <= greeksTTL {
 			applyGreeks(&quote, e)
 		} else {
 			stale = append(stale, sym)
 		}
-		out[sym] = quote
+		if answered {
+			out[sym] = quote
+		}
 	}
 	greeksFailed := 0
 	for _, sym := range stale {
-		quote := out[sym]
-		if err := c.fetchOptionQuote(ctx, sym, &quote); err != nil {
+		quote, present := out[sym]
+		if !present {
+			quote.Symbol = sym
+		}
+		_, snapshotAnswered := snapshots[sym]
+		if err := c.fetchOptionQuote(ctx, sym, &quote, !snapshotAnswered); err != nil {
 			greeksFailed++
 			fmt.Fprintf(os.Stderr, "futu: option-quotes: greeks %s: %v\n", sym, err)
 			continue
@@ -207,7 +231,7 @@ func (c *Client) OptionQuotes(ctx context.Context, symbols []string) (map[string
 // fetchOptionQuote pulls one contract's /api/option-quote payload (single leg,
 // 免订阅, gated by SnapshotLimit 1 req/3s), fills the quote's Greeks plus
 // Bid/Ask and caches the payload for greeksTTL.
-func (c *Client) fetchOptionQuote(ctx context.Context, sym string, quote *OptionQuoteEx) error {
+func (c *Client) fetchOptionQuote(ctx context.Context, sym string, quote *OptionQuoteEx, greeksOnly bool) error {
 	market, code, err := ParseSymbol(sym)
 	if err != nil {
 		return err
@@ -236,6 +260,7 @@ func (c *Client) fetchOptionQuote(ctx context.Context, sym string, quote *Option
 	e := greeksEntry{
 		fetched: time.Now(),
 		Last:    leg.Price,
+		Volume:  int64(leg.Vol),
 		IV:      leg.IV / 100, // gateway iv is percent; wheel convention is fraction
 		Delta:   leg.Delta,
 		Theta:   leg.Theta,
@@ -251,6 +276,9 @@ func (c *Client) fetchOptionQuote(ctx context.Context, sym string, quote *Option
 	greeksCache[sym] = e
 	greeksCacheMu.Unlock()
 	applyGreeks(quote, e)
+	if greeksOnly {
+		quote.QuoteTime = time.Now()
+	}
 	return nil
 }
 
@@ -263,6 +291,9 @@ func applyGreeks(q *OptionQuoteEx, e greeksEntry) {
 	q.Delta = e.Delta
 	q.Theta = e.Theta
 	q.OpenInterest = e.OI
+	if q.Volume == 0 && e.Volume > 0 {
+		q.Volume = e.Volume
+	}
 	if q.LotSize <= 0 {
 		q.LotSize = e.LotSize
 	}
