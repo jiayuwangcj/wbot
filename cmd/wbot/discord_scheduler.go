@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jiayu/wbot/internal/discord"
@@ -37,6 +38,7 @@ type discordScheduler struct {
 	orders    wheelOrderPlacer
 	now       func() time.Time
 	logf      func(format string, a ...any)
+	confirmMu sync.Mutex // one confirm at a time: dedup is HasAction→AppendAction across a network PlaceOrder
 }
 
 func newDiscordScheduler(ctx context.Context, dc *discord.Client, verifier *discord.Verifier, appID, channelID string, store wheelTelegramStore, orders wheelOrderPlacer) *discordScheduler {
@@ -316,6 +318,8 @@ func (s *discordScheduler) handleInteraction(w http.ResponseWriter, r *http.Requ
 // the candidate quote (市价单禁止), sim-env placement, then the outcome is
 // pushed to the channel; any refusal is recorded REJECTED.
 func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.Interaction, signalID int64) {
+	s.confirmMu.Lock()
+	defer s.confirmMu.Unlock()
 	sig, err := s.store.GetSignal(ctx, signalID)
 	if err != nil {
 		s.rejectDiscord(ctx, in, signalID, "signal not found")

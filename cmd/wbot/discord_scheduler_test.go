@@ -83,6 +83,81 @@ func (p *syncPlacer) calls() int {
 	return p.fake.calls
 }
 
+// blockPlacer parks confirm goroutines inside PlaceOrder until release, so a
+// concurrent second press deterministically lands in the dedup race window
+// (HasAction→AppendAction across the network call).
+type blockPlacer struct {
+	mu          sync.Mutex
+	fake        *fakePlacer
+	entered     int
+	releaseOnce sync.Once
+	releaseCh   chan struct{}
+}
+
+func (p *blockPlacer) PlaceOrder(ctx context.Context, symbol, side string, qty, price float64) (string, uint64, error) {
+	p.mu.Lock()
+	p.entered++
+	p.mu.Unlock()
+	<-p.releaseCh
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.fake.PlaceOrder(ctx, symbol, side, qty, price)
+}
+
+func (p *blockPlacer) OrderStatus(ctx context.Context, symbol, orderIDEx string) (int32, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.fake.OrderStatus(ctx, symbol, orderIDEx)
+}
+
+func (p *blockPlacer) enteredCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.entered
+}
+
+func (p *blockPlacer) calls() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.fake.calls
+}
+
+// release lets blocked confirm goroutines finish their order placement.
+func (p *blockPlacer) release() {
+	p.releaseOnce.Do(func() { close(p.releaseCh) })
+}
+
+// waitEntered polls until n confirms sit inside PlaceOrder (the network-call
+// window between HasAction and AppendAction).
+func (p *blockPlacer) waitEntered(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for p.enteredCount() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("PlaceOrder entered = %d; want %d", p.enteredCount(), n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// waitAppended polls until the store has recorded at least n actions.
+func waitAppended(t *testing.T, store *fakeTGStore, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		store.mu.Lock()
+		got := len(store.appended)
+		store.mu.Unlock()
+		if got >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("appended actions = %d; want %d", got, n)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func startFakeDC(t *testing.T) (*fakeDCSchedulerServer, *httptest.Server) {
 	t.Helper()
 	fake := &fakeDCSchedulerServer{}
@@ -315,19 +390,30 @@ func TestDiscordConfirmMissingLimitPriceRejected(t *testing.T) {
 	}
 }
 
-func TestDiscordConfirmDoublePressRejected(t *testing.T) {
+func TestDiscordConfirmConcurrentDoublePressRejected(t *testing.T) {
 	fake, _ := startFakeDC(t)
 	now := time.Now()
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
-	placer := &fakePlacer{orderID: 1}
+	placer := &blockPlacer{fake: &fakePlacer{orderID: 1}, releaseCh: make(chan struct{})}
 	s, _ := newTestDiscordScheduler(t, fake, store, placer, now)
 
-	s.confirmOrderDiscord(context.Background(), dcInteraction("42", "wheel:7:yes"), 7)
-	s.confirmOrderDiscord(context.Background(), dcInteraction("42", "wheel:7:yes"), 7)
-	if placer.calls != 1 {
-		t.Fatalf("PlaceOrder calls = %d; want 1 (second press refused)", placer.calls)
+	// First press parks inside PlaceOrder; the second press must then queue on
+	// the confirm mutex instead of slipping a second order through the
+	// HasAction→AppendAction window.
+	go s.confirmOrderDiscord(context.Background(), dcInteraction("42", "wheel:7:yes"), 7)
+	placer.waitEntered(t, 1)
+	go s.confirmOrderDiscord(context.Background(), dcInteraction("42", "wheel:7:yes"), 7)
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for placer.enteredCount() < 2 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	placer.release()
+	waitAppended(t, store, 2) // both presses settled: CONFIRM then REJECTED
+
+	if got := placer.calls(); got != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want 1 (second press serialized behind first)", got)
 	}
 	if act := store.lastAppended(t); act.Action != "REJECTED" || act.Note != "already confirmed" {
 		t.Fatalf("last action = %+v; want REJECTED already confirmed", act)
