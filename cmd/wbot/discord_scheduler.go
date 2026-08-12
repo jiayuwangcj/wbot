@@ -34,14 +34,14 @@ type discordScheduler struct {
 	verifier  *discord.Verifier
 	appID     string // reserved for interaction follow-up webhooks (doc/tasks/2026-08-12-discord-channel.md)
 	channelID string
-	store     wheelTelegramStore
+	store     wheelstore.SignalRepository
 	orders    wheelOrderPlacer
 	now       func() time.Time
 	logf      func(format string, a ...any)
 	confirmMu sync.Mutex // one confirm at a time: dedup is HasAction→AppendAction across a network PlaceOrder
 }
 
-func newDiscordScheduler(ctx context.Context, dc *discord.Client, verifier *discord.Verifier, appID, channelID string, store wheelTelegramStore, orders wheelOrderPlacer) *discordScheduler {
+func newDiscordScheduler(ctx context.Context, dc *discord.Client, verifier *discord.Verifier, appID, channelID string, store wheelstore.SignalRepository, orders wheelOrderPlacer) *discordScheduler {
 	return &discordScheduler{
 		ctx: ctx, dc: dc, verifier: verifier, appID: appID, channelID: channelID,
 		store: store, orders: orders,

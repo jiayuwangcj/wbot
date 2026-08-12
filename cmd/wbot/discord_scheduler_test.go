@@ -375,7 +375,7 @@ func TestDiscordConfirmMissingLimitPriceRejected(t *testing.T) {
 	now := time.Now()
 	store := newFakeTGStore()
 	sig := signalFixture(7, "US.AAPL", now)
-	delete(sig.Candidates[0]["quote"].(map[string]any), "last")
+	sig.Candidates[0].Quote.Last = 0 // #36 强类型化后等价于旧 map 删 last 键:触发「no usable limit price」拒绝路径
 	store.signals[7] = sig
 	store.reviews[7] = approvedReview()
 	placer := &fakePlacer{}
