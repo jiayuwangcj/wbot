@@ -43,11 +43,17 @@ type WatchlistLister interface {
 	SetExecutionStatus(ctx context.Context, symbol, status, reason string) error
 }
 
+// FundsFunc returns the account's available cash. A nil FundsFunc leaves
+// HasCashAvailable false, so every put candidate is rejected on
+// cash-availability (fail-closed; 2026-08-13 the runner never wired funds).
+type FundsFunc func(ctx context.Context) (float64, error)
+
 // Dependencies is the runner's full injectable surface. Positions is the
 // slice-B TradePositions interface (positions.go).
 type Dependencies struct {
 	Quoter            Quoter
 	Positions         TradePositions
+	Funds             FundsFunc
 	Chain             OptionChainer
 	Store             wheelstore.SignalRepository
 	Watchlist         WatchlistLister
@@ -237,6 +243,14 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		ExtremeDay:       false,
 		CashAvailable:    0,
 		HasCashAvailable: false,
+	}
+	if r.deps.Funds != nil {
+		if cash, err := r.deps.Funds(ctx); err == nil {
+			in.CashAvailable = cash
+			in.HasCashAvailable = true
+		} else {
+			fmt.Fprintf(os.Stderr, "wheelrun: %s: funds: %v\n", symbol, err)
+		}
 	}
 	sig, err := wheel.Evaluate(cfg, in)
 	if err != nil {

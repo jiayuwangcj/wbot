@@ -30,6 +30,7 @@ func startWheelRunner(ctx context.Context, database *sql.DB, env futu.Env, inter
 	runner := wheelrun.NewRunner(wheelrun.Dependencies{
 		Quoter:           futuQuoter{client: client},
 		Positions:        futuPositions{addr: futuProtoAddr(), env: env},
+		Funds:            futuPositions{addr: futuProtoAddr(), env: env}.Funds,
 		Chain:            client,
 		Store:            store,
 		SnapshotRecorder: store,
@@ -119,6 +120,26 @@ func (p futuPositions) Positions(ctx context.Context, _ any) ([]wheelrun.Positio
 		})
 	}
 	return out, nil
+}
+
+// Funds returns the account's available cash for the wheel put-assignment
+// check (read-only; simulate env resolves the same first account as
+// Positions).
+func (p futuPositions) Funds(ctx context.Context) (float64, error) {
+	tc, err := futu.AcquireTrade(ctx, p.addr)
+	if err != nil {
+		return 0, fmt.Errorf("wheel funds: %w", err)
+	}
+	defer tc.Close()
+	acc, err := tc.Account(ctx, p.env, 0)
+	if err != nil {
+		return 0, err
+	}
+	funds, err := tc.Funds(ctx, acc)
+	if err != nil {
+		return 0, err
+	}
+	return funds.GetCash(), nil
 }
 
 // qualifySymbol reconstructs a market-qualified symbol from the TrdSecMarket
