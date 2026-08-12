@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jiayu/wbot/internal/datacheck"
 	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/llmreview"
 	"github.com/jiayu/wbot/internal/strategy"
@@ -45,22 +46,55 @@ type WatchlistLister interface {
 // Dependencies is the runner's full injectable surface. Positions is the
 // slice-B TradePositions interface (positions.go).
 type Dependencies struct {
-	Quoter      Quoter
-	Positions   TradePositions
-	Chain       OptionChainer
-	Store       wheelstore.SignalRepository
-	Watchlist   WatchlistLister
-	LLMReviewer llmreview.Reviewer
-	LLMModel    string
+	Quoter            Quoter
+	Positions         TradePositions
+	Chain             OptionChainer
+	Store             wheelstore.SignalRepository
+	Watchlist         WatchlistLister
+	LLMReviewer       llmreview.Reviewer
+	LLMModel          string
+	Calendar          datacheck.Calendar
+	Now               func() time.Time
+	MarketOpen        MarketOpenFunc
+	SnapshotRecorder  QuoteSnapshotRecorder
+	SnapshotQueueSize int
 }
 
 // Runner evaluates every wheel binding on one sequential pass. It is not
 // safe for concurrent use; a single goroutine owns it (Run).
 type Runner struct {
-	deps Dependencies
+	deps      Dependencies
+	snapshots *asyncSnapshotRecorder
 }
 
-func NewRunner(deps Dependencies) *Runner { return &Runner{deps: deps} }
+func NewRunner(deps Dependencies) *Runner {
+	recorder := deps.SnapshotRecorder
+	if recorder == nil {
+		if candidate, ok := deps.Store.(QuoteSnapshotRecorder); ok {
+			recorder = candidate
+		}
+	}
+	return &Runner{
+		deps:      deps,
+		snapshots: newAsyncSnapshotRecorder(recorder, deps.SnapshotQueueSize),
+	}
+}
+
+// Close drains the bounded snapshot side channel. Run calls it automatically;
+// callers that use RunOnce directly can close explicitly when they need to
+// wait for queued observations to finish.
+func (r *Runner) Close() {
+	if r != nil {
+		r.snapshots.close()
+	}
+}
+
+func (r *Runner) now() time.Time {
+	if r.deps.Now != nil {
+		return r.deps.Now()
+	}
+	return time.Now()
+}
 
 // fallbackBlocker keeps the validateSignal contract (DATA_BLOCKED must have
 // at least one blocker) when Evaluate reports a data block without naming it.
@@ -87,12 +121,17 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 	}
 	failed := 0
 	wheelBindings := 0
+	now := r.now()
 	for _, it := range items {
 		if it.Strategy != "wheel" {
 			continue
 		}
 		wheelBindings++
-		if err := r.runSymbol(ctx, it.Symbol); err != nil {
+		if !r.marketOpen(it.Symbol, now) {
+			fmt.Fprintf(os.Stderr, "wheelrun: %s: market closed; skipping live evaluation\n", it.Symbol)
+			continue
+		}
+		if err := r.runSymbol(ctx, it.Symbol, now); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "wheelrun: %s: %v\n", it.Symbol, err)
 		}
@@ -110,6 +149,7 @@ func (r *Runner) Run(ctx context.Context, interval time.Duration) error {
 	if interval <= 0 {
 		return errors.New("wheelrun: interval must be positive")
 	}
+	defer r.Close()
 	pass := func() {
 		if err := r.RunOnce(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "wheelrun: %v\n", err)
@@ -130,7 +170,14 @@ func (r *Runner) Run(ctx context.Context, interval time.Duration) error {
 
 // runSymbol executes the full chain for one symbol. Every failure is returned
 // for RunOnce to log; nothing panics and no broker order is ever placed.
-func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
+func (r *Runner) marketOpen(symbol string, now time.Time) bool {
+	if r.deps.MarketOpen != nil {
+		return r.deps.MarketOpen(symbol, now)
+	}
+	return marketIsOpen(symbol, now, r.deps.Calendar)
+}
+
+func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) error {
 	rec, err := r.deps.Store.LatestConfig(ctx, symbol)
 	if err != nil {
 		return fmt.Errorf("latest config: %w", err)
@@ -146,7 +193,6 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	if price <= 0 {
 		return fmt.Errorf("current price %v is not positive", price)
 	}
-	now := time.Now()
 	contracts, err := r.deps.Chain.OptionChain(ctx, symbol, now.AddDate(0, 0, cfg.MinDTE), now.AddDate(0, 0, cfg.MaxDTE))
 	if err != nil {
 		return fmt.Errorf("option chain: %w", err)
@@ -171,11 +217,12 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	if err != nil {
 		return fmt.Errorf("positions input: %w", err)
 	}
-	quotes, err := r.deps.Quoter.OptionQuotes(ctx, contractSymbols)
+	quoteContracts, quotes, err := r.collectOptionQuotes(ctx, symbol, contracts, price, cfg, stockShares, opts, now)
 	if err != nil {
 		return fmt.Errorf("option quotes: %w", err)
 	}
-	asOf := time.Now()
+	asOf := r.now()
+	r.enqueueQuoteSnapshots(symbol, price, quoteContracts, quotes, asOf)
 	dailyOrders, err := r.dailyOrders(ctx, symbol, now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wheelrun: %s: daily orders: %v (using 0)\n", symbol, err)
@@ -185,7 +232,7 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 		AsOf:             asOf,
 		StockShares:      stockShares,
 		Positions:        opts,
-		Quotes:           assembleQuotes(symbol, contracts, quotes),
+		Quotes:           assembleQuotes(symbol, quoteContracts, quotes),
 		DailyOrders:      dailyOrders,
 		ExtremeDay:       false,
 		CashAvailable:    0,
@@ -291,12 +338,16 @@ func assembleQuotes(underlying string, contracts []futu.OptionContract, quotes m
 		if !ok {
 			continue
 		}
+		symbol := q.Symbol
+		if symbol == "" {
+			symbol = c.Symbol
+		}
 		lot := q.LotSize
 		if lot <= 0 {
 			lot = c.LotSize
 		}
 		out = append(out, wheel.OptionQuote{
-			Symbol:       q.Symbol,
+			Symbol:       symbol,
 			Underlying:   underlying,
 			Source:       "futu",
 			OptionType:   wheel.OptionType(c.OptionType),
