@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/qtopie/gofutuapi"
 	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
 )
 
@@ -30,8 +31,10 @@ func (tc *TradeClient) CancelOrder(ctx context.Context, acc *trdcommon.TrdAcc, o
 		ignoredPrice = 0.0
 		ignoredQty   = 0.0
 	)
-	if err := tc.cli.ModifyOrder(acc, orderID, ignoredPrice, ignoredQty,
-		trdcommon.ModifyOrderOp_ModifyOrderOp_Cancel); err != nil {
+	if err := tc.withClient(ctx, func(cli *gofutuapi.FutuClient) error {
+		return cli.ModifyOrder(acc, orderID, ignoredPrice, ignoredQty,
+			trdcommon.ModifyOrderOp_ModifyOrderOp_Cancel)
+	}); err != nil {
 		return fmt.Errorf("cancel order %s: %w", orderID, err)
 	}
 	return nil
