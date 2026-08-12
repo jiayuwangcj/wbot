@@ -106,7 +106,10 @@ DB 实测(wheel_signals 239-274,UTC,北京时间 = +8):
 
 ### 切片 B:LLM 策略定时运行(任务 #37,约 1-2 人天)
 
-1. **模型**:策略生成用 deepseek-v4-flash(老板指定);审核闸门保持 LLM_MODEL=deepseek-v4-pro(inspect.sh 注释:v4-flash 纯推理 content 恒空,llmreview 解析不了——**B1 先行实测 flash 的 json_object 输出**,若 content 恒空则 flash 只做生成、审核仍 pro,把风险结论写进任务记录)
+1. **模型(B1 已实测,2026-08-12)**:策略生成用 deepseek-v4-flash(老板指定)。实测结论:
+   - 默认(纯推理模式):`content` 恒空,只有 `reasoning_content`(叙述性文本,不可当 JSON 解析)——inspect.sh 注释与实测一致
+   - **`"thinking":{"type":"disabled"}` 参数可关闭推理 → content 直接输出干净 JSON**(json_object 模式实测返回 `{"symbol":...}` 可解析)
+   - **方案定稿**:生成调用带 `thinking: disabled` + `response_format: json_object`(llmreview 客户端需支持透传该参数);审核闸门保持 deepseek-v4-pro(现有逻辑不动,无需 thinking 参数)
 2. **调度**:新 `llm_strategy.go` — 15 分钟 ticker(flag `-llm-strategy-interval`,默认 15m),首个周期立即跑一次;与 wheel runner 同构
 3. **生成上下文**:watchlist(策略绑定)+ 现价 + 账户持仓/现金(复用 FutuAccounter)→ flash 生成建议(方向/数量/限价/理由),走 llmStockRules/llmSignalRules 校验
 4. **防信号风暴**:同 symbol 今日已有同方向 ALERT 未处置 → 跳过;重复建议(方向+价位相似)去重;max_daily_orders 语义沿用
