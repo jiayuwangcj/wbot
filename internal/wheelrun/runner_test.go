@@ -56,10 +56,12 @@ func callContract(symbol, underlying string, strike float64, expiry time.Time) f
 }
 
 type fakeQuoter struct {
-	prices map[string]float64
-	opts   map[string]futu.OptionQuoteEx // keyed by contract symbol
-	perr   error
-	oerr   error
+	prices               map[string]float64
+	opts                 map[string]futu.OptionQuoteEx // keyed by contract symbol
+	optionDelay          time.Duration
+	stampOptionQuoteTime bool
+	perr                 error
+	oerr                 error
 }
 
 func (f *fakeQuoter) Quote(ctx context.Context, symbol string) (float64, error) {
@@ -77,9 +79,21 @@ func (f *fakeQuoter) OptionQuotes(ctx context.Context, symbols []string) (map[st
 	if f.oerr != nil {
 		return nil, f.oerr
 	}
+	if f.optionDelay > 0 {
+		timer := time.NewTimer(f.optionDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 	out := map[string]futu.OptionQuoteEx{}
 	for _, s := range symbols {
 		if q, ok := f.opts[s]; ok {
+			if f.stampOptionQuoteTime {
+				q.QuoteTime = time.Now()
+			}
 			out[s] = q
 		}
 	}
@@ -252,6 +266,35 @@ func TestRunOnceAlertReady(t *testing.T) {
 	}
 	if len(wl.status) != 1 || wl.status[0] != (statusCall{symbol, "READY", ""}) {
 		t.Fatalf("watchlist status = %+v; want READY with empty reason", wl.status)
+	}
+}
+
+func TestRunOnceAsOfAfterOptionQuotes(t *testing.T) {
+	const symbol = "HK.00700"
+	now := time.Now()
+	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	quoter := &fakeQuoter{
+		prices:               map[string]float64{symbol: 600},
+		opts:                 map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		optionDelay:          5 * time.Millisecond,
+		stampOptionQuoteTime: true,
+	}
+	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
+	r := testRunner(t, Dependencies{
+		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Chain:     fakeChain{contracts: []futu.OptionContract{contract}},
+		Store:     store,
+		Watchlist: &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
+	})
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error: %v", err)
+	}
+	if len(store.signals) != 1 {
+		t.Fatalf("signals = %d; want 1", len(store.signals))
+	}
+	if got := store.signals[0].CapabilityStatus; got != "READY" {
+		t.Fatalf("CapabilityStatus = %s; want READY for quote timestamped during OptionQuotes", got)
 	}
 }
 

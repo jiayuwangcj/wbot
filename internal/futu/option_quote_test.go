@@ -21,7 +21,7 @@ const quoteFixture = `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{"basic
 ]}}`
 
 // greeksResp renders one /api/option-quote s2c item with the real fields
-// (price/mid/iv percent/delta/theta/open_interest/contract_size).
+// (price/mid/iv percent/delta/theta/vol/open_interest/contract_size).
 func greeksResp(price, mid, iv, delta, theta float64, oi int64, lot int) string {
 	payload := map[string]any{
 		"ret_type": 0,
@@ -32,6 +32,8 @@ func greeksResp(price, mid, iv, delta, theta float64, oi int64, lot int) string 
 				"iv":            iv,
 				"delta":         delta,
 				"theta":         theta,
+				"vol":           777,
+				"mark_price":    price,
 				"open_interest": oi,
 				"contract_size": lot,
 			}},
@@ -52,22 +54,28 @@ func resetGreeksCache(t *testing.T) {
 
 func TestOptionQuotePageFlexibleIntegers(t *testing.T) {
 	tests := []struct {
-		name    string
-		payload string
-		wantOI  int64
-		wantLot int
+		name     string
+		payload  string
+		wantOI   int64
+		wantLot  int
+		wantVol  int64
+		wantMark float64
 	}{
 		{
-			name:    "floating-point literals from gateway",
-			payload: `{"option_quote_list":[{"open_interest":3204.0,"contract_size":100.0}]}`,
-			wantOI:  3204,
-			wantLot: 100,
+			name:     "floating-point literals from gateway",
+			payload:  `{"option_quote_list":[{"open_interest":3204.0,"contract_size":100.0,"vol":1500.0,"mark_price":12.25}]}`,
+			wantOI:   3204,
+			wantLot:  100,
+			wantVol:  1500,
+			wantMark: 12.25,
 		},
 		{
-			name:    "integer literals",
-			payload: `{"option_quote_list":[{"open_interest":3204,"contract_size":100}]}`,
-			wantOI:  3204,
-			wantLot: 100,
+			name:     "integer literals",
+			payload:  `{"option_quote_list":[{"open_interest":3204,"contract_size":100,"vol":800,"mark_price":3.35}]}`,
+			wantOI:   3204,
+			wantLot:  100,
+			wantVol:  800,
+			wantMark: 3.35,
 		},
 	}
 	for _, tt := range tests {
@@ -85,6 +93,12 @@ func TestOptionQuotePageFlexibleIntegers(t *testing.T) {
 			}
 			if got := int(leg.LotSize); got != tt.wantLot {
 				t.Errorf("contract_size = %d; want %d", got, tt.wantLot)
+			}
+			if got := int64(leg.Vol); got != tt.wantVol {
+				t.Errorf("vol = %d; want %d", got, tt.wantVol)
+			}
+			if leg.MarkPrice != tt.wantMark {
+				t.Errorf("mark_price = %v; want %v", leg.MarkPrice, tt.wantMark)
 			}
 		})
 	}
@@ -123,7 +137,7 @@ func TestOptionQuotesSuccess(t *testing.T) {
 			switch code {
 			case "TCH260807C335000":
 				// The real gateway emits these integer-valued fields as floats.
-				io.WriteString(w, `{"ret_type":0,"s2c":{"option_quote_list":[{"price":12.2,"mid":12.3,"iv":25.0,"delta":0.58,"theta":-0.03,"open_interest":3204.0,"contract_size":100.0}]}}`)
+				io.WriteString(w, `{"ret_type":0,"s2c":{"option_quote_list":[{"price":12.2,"mid":12.3,"iv":25.0,"delta":0.58,"theta":-0.03,"vol":777.0,"mark_price":12.25,"open_interest":3204.0,"contract_size":100.0}]}}`)
 			case "TCH260807P335000":
 				// mid 0 → Bid/Ask fall back to the price
 				io.WriteString(w, greeksResp(3.3, 0, 24.0, -0.42, -0.02, 1200, 100))
@@ -279,7 +293,7 @@ func TestOptionQuotesDiagnostics(t *testing.T) {
 	}
 	pw.Close()
 	buf, _ := io.ReadAll(pr)
-	if got := string(buf); !strings.Contains(got, "option-quotes: requested=2 answered=1 greeks_failed=1") {
+	if got := string(buf); !strings.Contains(got, "option-quotes: requested=2 answered=1 greeks_failed=2") {
 		t.Fatalf("stderr = %q; want option-quotes diagnostic", got)
 	}
 }
@@ -327,23 +341,58 @@ func TestOptionQuotesSubscribeError(t *testing.T) {
 	}
 }
 
-func TestOptionQuotesQuoteError(t *testing.T) {
+func TestOptionQuotesSnapshotFailureFallsBackToGreeks(t *testing.T) {
 	fastLimits(t)
+	resetGreeksCache(t)
+	old := os.Stderr
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = pw
+	t.Cleanup(func() { os.Stderr = old })
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/subscribe":
 			io.WriteString(w, `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{}}`)
 		case "/api/quote":
 			io.WriteString(w, `{"ret_type":-1,"ret_msg":"no permission for market","err_code":null,"s2c":null}`)
+		case "/api/option-quote":
+			io.WriteString(w, `{"ret_type":0,"s2c":{"option_quote_list":[{"price":12.2,"mid":12.3,"iv":25.0,"delta":0.58,"theta":-0.03,"vol":1500.0,"mark_price":12.25,"open_interest":3204.0,"contract_size":100.0}]}}`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
 
+	before := time.Now()
+	quotes, err := NewClient(srv.URL).OptionQuotes(context.Background(), []string{"HK.TCH260807C335000"})
+	if err != nil {
+		t.Fatalf("OptionQuotes() error: %v", err)
+	}
+	after := time.Now()
+	q := quotes["HK.TCH260807C335000"]
+	if q.Last != 12.2 || q.Volume != 1500 || q.Bid != 12.3 || q.Ask != 12.3 || q.OpenInterest != 3204 {
+		t.Fatalf("greeks fallback quote = %+v; want price/volume/mid/OI populated", q)
+	}
+	if q.QuoteTime.IsZero() || q.QuoteTime.Before(before) || q.QuoteTime.After(after) {
+		t.Fatalf("greeks fallback QuoteTime = %v; want within [%v, %v]", q.QuoteTime, before, after)
+	}
+	pw.Close()
+	buf, _ := io.ReadAll(pr)
+	if got := string(buf); !strings.Contains(got, "snapshot [1/1]: no permission for market") {
+		t.Fatalf("stderr = %q; want snapshot warning with progress", got)
+	}
+}
+
+func TestOptionQuotesGatewayConnectionError(t *testing.T) {
+	fastLimits(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	srv.Close()
+
 	_, err := NewClient(srv.URL).OptionQuotes(context.Background(), []string{"HK.TCH260807C335000"})
-	if err == nil || !strings.Contains(err.Error(), "no permission for market") {
-		t.Fatalf("OptionQuotes() error = %v; want ret_msg surfaced", err)
+	if err == nil || !strings.Contains(err.Error(), "subscribe") {
+		t.Fatalf("OptionQuotes() error = %v; want gateway connection failure", err)
 	}
 }
 

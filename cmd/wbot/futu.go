@@ -33,6 +33,8 @@ func runFutu(prog string, argv []string) int {
 		return runFutuPosition(prog, argv[1:])
 	case "order":
 		return runFutuOrder(prog, argv[1:])
+	case "cancel":
+		return runFutuCancel(prog, argv[1:])
 	default:
 		usageFutu(prog)
 		return 2
@@ -332,6 +334,78 @@ func runFutuOrder(prog string, argv []string) int {
 	return 0
 }
 
+// runFutuCancel cancels an order (Trd_ModifyOrder Cancel). Test tooling only
+// (per product rule the CLI is for testing; production capability is the API
+// layer). Sim env is the default; real env still needs -live-confirm and
+// -acc-id like futu order, because cancelling is a live write.
+func runFutuCancel(prog string, argv []string) int {
+	fs := flag.NewFlagSet("futu cancel", flag.ContinueOnError)
+	var showHelp, liveConfirm bool
+	fs.BoolVar(&showHelp, "h", false, "")
+	fs.BoolVar(&showHelp, "help", false, "")
+	fs.BoolVar(&liveConfirm, "live-confirm", false, "explicit confirmation for real-env write (安全红线: 老板确认)")
+	addr := fs.String("addr", futu.DefaultProtoAddr, "gateway OpenD protobuf address (TCP 11111)")
+	env := fs.String("env", "sim", "trading environment: sim (paper, default) or real (requires -live-confirm)")
+	accID := fs.Uint64("acc-id", 0, "account id (required for -env real)")
+	orderID := fs.String("order-id", "", "numeric order id returned by futu order")
+	fs.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s futu cancel -order-id 123456 [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Cancels an order over the protobuf API (TCP 11111). The numeric\norder id is printed by futu order as order_id. Default env is simulate\n(paper trading); real env is a live write and needs -live-confirm plus\n-acc-id (安全红线, doc/FUTU.md).\n\n")
+		fs.SetOutput(os.Stderr)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(argv); err != nil {
+		return 2
+	}
+	if showHelp {
+		fs.SetOutput(os.Stderr)
+		fs.Usage()
+		return 0
+	}
+	oid := strings.TrimSpace(*orderID)
+	if oid == "" {
+		fmt.Fprintf(os.Stderr, "futu: cancel: -order-id is required\n")
+		return 2
+	}
+	e, err := parseFutuEnv(*env)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "futu: cancel: %v\n", err)
+		return 2
+	}
+	if e == futu.EnvReal {
+		if !liveConfirm {
+			warnRed("futu: cancel: 拒绝——-env real 是实盘写操作（安全红线：实盘写需老板确认），必须显式加 -live-confirm")
+			return 2
+		}
+		if *accID == 0 {
+			warnRed("futu: cancel: 拒绝——实盘撤单必须显式指定 -acc-id（确认账户，安全红线）")
+			return 2
+		}
+		warnRed("futu: cancel: LIVE CONFIRMED -live-confirm——实盘写已确认")
+	}
+	tc, ok := openTradeClient(prog, "cancel", *addr)
+	if !ok {
+		return 1
+	}
+	defer tc.Close()
+	acc, ok := resolveAccount(prog, "cancel", tc, e, *accID)
+	if !ok {
+		return 1
+	}
+	if err := tc.CancelOrder(context.Background(), acc, oid); err != nil {
+		fmt.Fprintf(os.Stderr, "futu: cancel: %v\n", err)
+		return 1
+	}
+	printJSON(struct {
+		Env     string `json:"env"`
+		AccID   uint64 `json:"acc_id"`
+		OrderID string `json:"order_id"`
+	}{
+		Env: futu.EnvName(e), AccID: acc.GetAccID(), OrderID: oid,
+	})
+	return 0
+}
+
 // printJSON writes v as indented JSON to stdout (used by all futu subcommands).
 func printJSON(v any) {
 	out, err := json.MarshalIndent(v, "", "  ")
@@ -429,5 +503,5 @@ func runFutuQuote(prog string, argv []string) int {
 
 func usageFutu(prog string) {
 	fmt.Fprintf(os.Stderr, "Usage: %s futu <subcommand>\n\n", prog)
-	fmt.Fprintf(os.Stderr, "Subcommands:\n  status    Gateway health + login state (REST GET /health, /api/global-state)\n  quote     Basic quote for a symbol (REST POST /api/subscribe + /api/quote)\n  funds     Account funds (protobuf TCP 11111; -env sim|real, both read-only)\n  position  Account positions (protobuf TCP 11111; -env sim|real, both read-only)\n  order     Place an order (protobuf TCP 11111; default sim; real needs -live-confirm)\n")
+	fmt.Fprintf(os.Stderr, "Subcommands:\n  status    Gateway health + login state (REST GET /health, /api/global-state)\n  quote     Basic quote for a symbol (REST POST /api/subscribe + /api/quote)\n  funds     Account funds (protobuf TCP 11111; -env sim|real, both read-only)\n  position  Account positions (protobuf TCP 11111; -env sim|real, both read-only)\n  order     Place an order (protobuf TCP 11111; default sim; real needs -live-confirm)\n  cancel    Cancel an order by numeric order-id (protobuf TCP 11111; test tool)\n")
 }

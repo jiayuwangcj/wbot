@@ -181,13 +181,14 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	if err != nil {
 		return fmt.Errorf("option quotes: %w", err)
 	}
+	asOf := time.Now()
 	dailyOrders, err := r.dailyOrders(ctx, symbol, now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wheelrun: %s: daily orders: %v (using 0)\n", symbol, err)
 	}
 	in := wheel.DecisionInput{
 		CurrentPrice:     price,
-		AsOf:             now,
+		AsOf:             asOf,
 		StockShares:      stockShares,
 		Positions:        opts,
 		Quotes:           assembleQuotes(symbol, contracts, quotes),
