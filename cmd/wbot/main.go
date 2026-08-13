@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
@@ -24,6 +25,7 @@ import (
 	"github.com/jiayu/wbot/internal/agent"
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/backtestexec"
+	"github.com/jiayu/wbot/internal/backtestreport"
 	"github.com/jiayu/wbot/internal/config"
 	"github.com/jiayu/wbot/internal/configyaml"
 	"github.com/jiayu/wbot/internal/db"
@@ -36,6 +38,7 @@ import (
 	"github.com/jiayu/wbot/internal/notify"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
+	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/webui"
 	"github.com/jiayu/wbot/internal/wheelstore"
@@ -455,6 +458,8 @@ func runBacktest(prog string, argv []string) int {
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
 	format := fs.String("format", "csv", "export format with -export: csv or json (same output as GET /v1/backtests/{id}/export)")
+	report := fs.Bool("report", false, "write a deterministic schema 1.0 JSON report and HTML projection")
+	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
@@ -464,6 +469,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
+		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
 		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
@@ -569,6 +575,10 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -save is not supported for multi-symbol runs\n")
 		return 2
 	}
+	if multi && *report {
+		fmt.Fprintf(os.Stderr, "backtest: -report produces report_kind=single_run and is not supported for multi-symbol runs\n")
+		return 2
+	}
 
 	btSym := strings.TrimSpace(*symbol)
 	if len(symList) == 1 {
@@ -589,9 +599,11 @@ func runBacktest(prog string, argv []string) int {
 	}
 
 	var (
-		res     *backtest.Result
-		startTs time.Time
-		endTs   time.Time
+		res               *backtest.Result
+		startTs           time.Time
+		endTs             time.Time
+		baselineReturnPct float64
+		sourceHash        string
 	)
 	var database *sql.DB
 	if fp != "" {
@@ -600,6 +612,8 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: read %s: %v\n", fp, err)
 			return 1
 		}
+		digest := sha256.Sum256(data)
+		sourceHash = fmt.Sprintf("sha256-%x", digest)
 		bars, err := backtest.ParseBars(data)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
@@ -611,6 +625,7 @@ func runBacktest(prog string, argv []string) int {
 			return 1
 		}
 		startTs, endTs = bars[0].Ts, bars[len(bars)-1].Ts
+		baselineReturnPct = bars[len(bars)-1].Close/bars[0].Close - 1
 	} else if multi {
 		// Multi-symbol: equal-weight sub-accounts over the intersection of the
 		// symbols' bars (shared runner in internal/backtestexec, doc/BACKTEST.md).
@@ -666,9 +681,53 @@ func runBacktest(prog string, argv []string) int {
 			return 1
 		}
 		res, startTs, endTs = outcome.Result, outcome.StartTs, outcome.EndTs
+		baselineReturnPct = outcome.BaselineReturnPct
+		sourceHash = outcome.SourceHash
 	}
 
-	fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
+	if res.Unfilled.AttemptCount == 0 {
+		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d 未成交 N/A(无成交尝试)\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
+	} else {
+		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d 未成交 %d/%d (%.2f%%)\n",
+			res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
+	}
+	if *report {
+		reportParams := paramsMap
+		if stratName == "wheel" {
+			reportParams, err = strategy.CanonicalParams(paramsMap)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "backtest: report params: %v\n", err)
+				return 1
+			}
+		}
+		migrationLossy := false
+		var originalJSON json.RawMessage
+		if _, legacy := paramsMap["price_position_curve"]; legacy {
+			migrationLossy = true
+			originalJSON, err = json.Marshal(paramsMap)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "backtest: report original params: %v\n", err)
+				return 1
+			}
+		}
+		rep, err := backtestreport.Build(backtestreport.Input{
+			Symbol: btSym, Strategy: stratName, Params: reportParams, ConfigVersion: 1,
+			CodeVersion: version, RunSeed: *seed, InitialCash: *cash, FeePerTrade: *fee,
+			Start: startTs, End: endTs, BaselineReturnPct: baselineReturnPct,
+			SourceHash: sourceHash, MigrationLossy: migrationLossy, OriginalJSON: originalJSON,
+			Result: res,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+		jsonPath, htmlPath, err := backtestreport.Write(strings.TrimSpace(*reportDir), rep)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+		fmt.Printf("report_id=%s json=%s html=%s\n", rep.ReportID, jsonPath, htmlPath)
+	}
 	if *save {
 		id, err := backtest.SaveResult(context.Background(), database,
 			stratName, strings.TrimSpace(*symbol),

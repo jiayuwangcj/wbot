@@ -268,7 +268,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	out := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", dsn, "-symbol", symbol, "-timeframe", "1d",
 		"-adjust", "none", "-strategy", "buy-hold", "-save"})
 	var id int64
-	if _, err := fmt.Sscanf(out, "final_equity=%g total_return=%g max_drawdown=%g bars=%d\nsaved result id=%d",
+	if _, err := fmt.Sscanf(out, "final_equity=%g total_return=%g max_drawdown=%g bars=%d 未成交 N/A(无成交尝试)\nsaved result id=%d",
 		new(float64), new(float64), new(float64), new(int), &id); err != nil || id == 0 {
 		t.Fatalf("output %q; want saved result id=N (err %v)", out, err)
 	}

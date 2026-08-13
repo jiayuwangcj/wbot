@@ -21,11 +21,14 @@ const (
 	// defaultRunSeed seeds the attempt draws when OptionsData.RunSeed is 0.
 	defaultRunSeed = 42
 	// Calibration weights (versioned under modelVersion).
-	wSpread   = 0.55
-	wVol      = 0.30
-	wOI       = 0.15
-	failFloor = 0.05
-	failCap   = 0.95
+	// UnfilledSpreadWeight, UnfilledVolumeWeight and UnfilledOIWeight are
+	// exported for the versioned report projection. They are part of the
+	// heuristic-1.0 audit contract, not caller-tunable inputs.
+	UnfilledSpreadWeight = 0.55
+	UnfilledVolumeWeight = 0.30
+	UnfilledOIWeight     = 0.15
+	failFloor            = 0.05
+	failCap              = 0.95
 )
 
 func clamp(v, lo, hi float64) float64 {
@@ -50,7 +53,7 @@ func failProb(bid, ask float64, vol, oi int64) float64 {
 	if mid := (bid + ask) / 2; mid > 0 {
 		liquidity = clamp01(1 - (ask-bid)/mid)
 	}
-	p := wSpread*(1-liquidity) + wVol*(100/(float64(vol)+100)) + wOI*(1000/(float64(oi)+1000))
+	p := UnfilledSpreadWeight*(1-liquidity) + UnfilledVolumeWeight*(100/(float64(vol)+100)) + UnfilledOIWeight*(1000/(float64(oi)+1000))
 	return clamp(p, failFloor, failCap)
 }
 

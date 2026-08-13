@@ -6,7 +6,9 @@ package backtestexec
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -64,9 +66,11 @@ func SaveParams(o Options) map[string]any {
 // Outcome is one executed run: the Result plus the bar range it consumed
 // (persisted by callers as start_ts/end_ts, mirroring `wbot backtest -save`).
 type Outcome struct {
-	Result  *backtest.Result
-	StartTs time.Time
-	EndTs   time.Time
+	Result            *backtest.Result
+	StartTs           time.Time
+	EndTs             time.Time
+	BaselineReturnPct float64
+	SourceHash        string
 }
 
 // Build validates a strategy name + params against the CLI/API contract and
@@ -139,7 +143,35 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Outcome{Result: res, StartTs: bars[0].Ts, EndTs: bars[len(bars)-1].Ts}, nil
+	inputHash, err := sourceHash(bars, opts)
+	if err != nil {
+		return nil, err
+	}
+	return &Outcome{
+		Result:            res,
+		StartTs:           bars[0].Ts,
+		EndTs:             bars[len(bars)-1].Ts,
+		BaselineReturnPct: bars[len(bars)-1].Close/bars[0].Close - 1,
+		SourceHash:        inputHash,
+	}, nil
+}
+
+// sourceHash fingerprints the semantic market inputs consumed by Run. It
+// deliberately excludes database row IDs and ingestion timestamps.
+func sourceHash(bars []ingest.Bar, opts *backtest.OptionsData) (string, error) {
+	snapshot := struct {
+		Bars         []ingest.Bar                  `json:"bars"`
+		QuoteBatches []backtest.QuoteSnapshotBatch `json:"quote_batches,omitempty"`
+	}{Bars: bars}
+	if opts != nil {
+		snapshot.QuoteBatches = opts.QuoteBatches
+	}
+	b, err := json.Marshal(snapshot)
+	if err != nil {
+		return "", fmt.Errorf("backtest: hash source snapshot: %w", err)
+	}
+	digest := sha256.Sum256(b)
+	return fmt.Sprintf("sha256-%x", digest), nil
 }
 
 func quoteRangeStart(from time.Time, s backtest.Strategy) time.Time {
