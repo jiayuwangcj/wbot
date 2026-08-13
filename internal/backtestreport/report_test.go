@@ -127,3 +127,26 @@ func TestReportIDTracksInputsNotResult(t *testing.T) {
 		t.Fatalf("source input change retained report id %q", c.ReportID)
 	}
 }
+
+func TestBuildESReusesSchemaAndRequiresDistinctTestSeed(t *testing.T) {
+	in := ESInput{
+		Run:         testInput(0, 0, 0),
+		Windows:     Windows{Train: Window{From: "2024-01-01T00:00:00Z", To: "2024-01-02T00:00:00Z"}, Valid: Window{From: "2024-01-02T00:00:00Z", To: "2024-01-03T00:00:00Z"}, Test: Window{From: "2024-01-03T00:00:00Z", To: "2024-01-04T00:00:00Z"}},
+		Train:       Train{Algorithm: "ES", AlgorithmVersion: "es-1.0", GenerationCount: 1, PopulationSize: 20, EvaluationCount: 21, Seeds: []int64{1, 2, 3}, StopReason: "early_stop"},
+		Generations: []Generation{{Generation: 0, EvaluationCount: 21, TrainBestReturnPct: .1, TrainMeanReturnPct: .05}},
+		Candidates:  []Candidate{{Rank: 1, Params: map[string]any{"move_interval_pct": .01}}},
+		Reward:      RewardAudit{FunctionVersion: "reward-1.0", HardFailureHandling: "direct failure"},
+		SearchSpace: map[string]SearchBound{"move_interval_pct": {Min: .005, Max: .03, Unit: "%"}},
+	}
+	r, err := BuildES(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.ReportKind != "es_train" || r.Train == nil || r.Identity.Windows == nil || r.Identity.CapabilityStatus != "RESEARCH_ONLY" || len(r.Generations) != 1 || len(r.Candidates) != 1 {
+		t.Fatalf("ES report = %+v", r)
+	}
+	in.Train.Seeds = []int64{1, 2, 1}
+	if _, err := BuildES(in); err == nil || !strings.Contains(err.Error(), "distinct") {
+		t.Fatalf("same train/test seed error = %v", err)
+	}
+}

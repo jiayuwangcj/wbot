@@ -42,6 +42,10 @@ wbot backtest \
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
 | `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.0 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
+| `-train` | 空 | 对 JSON 指定的战术参数范围运行 ES；只支持单标的 `-dsn -strategy wheel`，战略参数仍由 `-params` 固定 |
+| `-population` / `-max-generations` | 20 / 40 | ES 种群（16–24）与最大代数 |
+| `-budget` / `-train-timeout` | 840 / 10m | 总回测评估预算（含样本外测试）与墙钟超时；启动连接数据源前打印预计评估次数 |
+| `-early-stop-patience` | 8 | 验证集连续未达绝对及相对改善阈值后的早停代数 |
 | `-export` / `-format` | 0 / `csv` | 导出已保存结果，格式为 `csv` 或 `json` |
 
 `hold`/`buy-hold` 由 CLI 底层运行器保留为内部 benchmark；CLI 默认就是 `hold`，但它们不是 Wheel 策略，不出现在 `/v1/strategies` 或 `/v1/watchlist`，产品 API 也拒绝它们。旧策略名称只在迁移审计中保留，不得作为新配置或新 watchlist 请求。
@@ -93,6 +97,19 @@ wbot backtest \
 `-report` 以 [[BACKTEST_REPORT]] schema 1.0 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。
 
 参数研究只允许在离线数据上改变 DTE、候选映射、质量门槛、频率和覆盖率（100%、固定覆盖、随机漏 30%/50%，随机种子可复现）。曲线、最大库存、战略状态和资产配置不参与优化。
+
+### ES 战术参数训练
+
+`-train` 的键只允许 `move_interval_pct`、`min_premium_per_share`、`stock_switch_pct`、`trade_gap`、`min_option_quality`、`min_dte`、`max_dte`。范围端点可写 JSON 数字或十进制字符串；`trade_gap` 与 DTE 使用整数离散步长，DTE 内部按“最短 DTE + 非负跨度”解码，始终满足 `min_dte <= max_dte`。例如：
+
+```bash
+wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00883 -strategy wheel \
+  -params '{"full_position_price":48,"zero_position_price":55,"max_inventory":22000}' \
+  -train '{"move_interval_pct":["0.005","0.03"],"min_option_quality":["0.5","0.8"]}' \
+  -report
+```
+
+数据严格按时间切为 train/valid/test（60%/20%/20%，不随机打散）；三个阶段使用用途派生且互不相同的 seed，最终候选再以 5 个封存测试 seed 评估。只有样本外 P10 仍超过 buy-hold 基线的候选才进入报告，否则输出“无可推荐参数”。训练报告固定为 `RESEARCH_ONLY`，不会写 watchlist 或 Wheel 配置。
 
 ## CLI/API 一致性与导出
 
