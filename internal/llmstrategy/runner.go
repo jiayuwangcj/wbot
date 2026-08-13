@@ -136,7 +136,7 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 		if _, err := r.Submitter.Submit(ctx, decision, account, policy); err != nil {
 			failed++
 			if errors.Is(err, llmsignal.ErrRejected) {
-				_, _ = r.Submitter.RecordGenerationRejection(ctx, it.Symbol, err)
+				_, _ = r.Submitter.RecordGenerationRejection(ctx, it.Symbol, fmt.Errorf("%w; decision=%s", err, compactDecision(decision)))
 			}
 			fmt.Fprintf(os.Stderr, "llmstrategy: %s: submit: %v\n", it.Symbol, err)
 		}
@@ -168,6 +168,22 @@ func (r *Runner) Run(ctx context.Context, interval time.Duration) error {
 		}
 	}
 }
+
+// compactDecision renders the rejected decision for the audit record; without
+// it a rejection shows only the validation message and the model's actual
+// output is unrecoverable.
+func compactDecision(d llmsignal.Decision) string {
+	b, err := json.Marshal(d)
+	if err != nil {
+		return fmt.Sprintf("<unmarshalable: %v>", err)
+	}
+	s := string(b)
+	if len(s) > 800 {
+		s = s[:800]
+	}
+	return s
+}
+
 func positionQty(ps []llmsignal.Position, s string) float64 {
 	var n float64
 	for _, p := range ps {
@@ -201,7 +217,7 @@ func NewClient(baseURL, apiKey string) (*Client, error) {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, http: &http.Client{Timeout: 180 * time.Second}}, nil
 }
 
-const generationPrompt = `你是 wbot 的交易候选生成器，只能从输入 snapshot.options 中选择一个真实合约，或对正股给出 BUY/SELL。不得编造、改写行情字段。所有订单为正限价单，期权仅卖出 PUT/CALL。理由必须具体说明现价/行权价、权利金、到期日与风险。只输出一个严格 JSON 对象，字段为 symbol,direction,quantity,contract,strike,expiry,current_price,premium,delta,iv,open_interest,reason,notes。无法形成安全决策时仍输出 JSON，但 quantity=0，让确定性校验拒绝。`
+const generationPrompt = `你是 wbot 的交易候选生成器，只能从输入 snapshot.options 中选择一个真实合约，或对正股给出 BUY/SELL。不得编造、改写行情字段。所有订单为正限价单，期权仅卖出 PUT/CALL。正股 BUY/SELL 的 premium 限价必须等于 current_price(±10% 以内)，不得填入其他数值。理由必须具体说明现价/行权价、权利金、到期日与风险。只输出一个严格 JSON 对象，字段为 symbol,direction,quantity,contract,strike,expiry,current_price,premium,delta,iv,open_interest,reason,notes。无法形成安全决策时仍输出 JSON，但 quantity=0，让确定性校验拒绝。`
 
 func (c *Client) Generate(ctx context.Context, s Snapshot) (llmsignal.Decision, error) {
 	raw, err := json.Marshal(s)
