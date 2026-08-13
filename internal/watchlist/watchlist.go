@@ -118,18 +118,20 @@ func Upsert(ctx context.Context, db *sql.DB, symbol, strategy string, params map
 		return Item{}, fmt.Errorf("watchlist: upsert: lock: %w", err)
 	}
 	var version int
-	if err := tx.QueryRowContext(ctx, `
+	if strategy == "wheel" {
+		if err := tx.QueryRowContext(ctx, `
 SELECT COALESCE(MAX(version), 0) + 1 FROM wheel_configs WHERE symbol = $1`, symbol).Scan(&version); err != nil {
-		return Item{}, fmt.Errorf("watchlist: upsert: next version: %w", err)
-	}
-	configJSON, err := json.Marshal(map[string]any{"strategy": "wheel", "params": params})
-	if err != nil {
-		return Item{}, fmt.Errorf("watchlist: upsert: config: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `
+			return Item{}, fmt.Errorf("watchlist: upsert: next version: %w", err)
+		}
+		configJSON, err := json.Marshal(map[string]any{"strategy": "wheel", "params": params})
+		if err != nil {
+			return Item{}, fmt.Errorf("watchlist: upsert: config: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO wheel_configs (symbol, version, config)
 VALUES ($1, $2, $3::jsonb)`, symbol, version, string(configJSON)); err != nil {
-		return Item{}, fmt.Errorf("watchlist: upsert: append config: %w", err)
+			return Item{}, fmt.Errorf("watchlist: upsert: append config: %w", err)
+		}
 	}
 	const blockedReason = "waiting for complete quote snapshot"
 	var it Item
@@ -138,16 +140,16 @@ VALUES ($1, $2, $3::jsonb)`, symbol, version, string(configJSON)); err != nil {
 	var storedStatus, storedReason sql.NullString
 	err = tx.QueryRowContext(ctx, `
 INSERT INTO watchlist (symbol, strategy, params, config_version, execution_status, invalidation_reason, updated_at)
-VALUES ($1, 'wheel', $2::jsonb, $3, 'DATA_BLOCKED', $4, now())
+VALUES ($1, $5, $2::jsonb, NULLIF($3,0), 'DATA_BLOCKED', $4, now())
 ON CONFLICT (symbol) DO UPDATE SET
 	params = EXCLUDED.params,
-	strategy = EXCLUDED.strategy,
-	config_version = $3,
+	strategy = $5,
+	config_version = NULLIF($3,0),
 	execution_status = 'DATA_BLOCKED',
 	invalidation_reason = $4,
 	updated_at = now()
 	RETURNING symbol, strategy, params, config_version, execution_status, invalidation_reason, created_at, updated_at`,
-		symbol, string(paramsJSON), version, blockedReason).Scan(&it.Symbol, &it.Strategy, &raw, &storedVersion, &storedStatus, &storedReason, &it.CreatedAt, &it.UpdatedAt)
+		symbol, string(paramsJSON), version, blockedReason, strategy).Scan(&it.Symbol, &it.Strategy, &raw, &storedVersion, &storedStatus, &storedReason, &it.CreatedAt, &it.UpdatedAt)
 	if err != nil {
 		return Item{}, fmt.Errorf("watchlist: upsert: %w", err)
 	}

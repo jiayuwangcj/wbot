@@ -54,7 +54,7 @@ func (f *fakeWatchlistStore) Delete(_ context.Context, symbol string) (bool, err
 	return f.delFound, nil
 }
 
-func TestStrategiesListOnlyWheelWithRequiredRiskInputs(t *testing.T) {
+func TestStrategiesListIncludesLLMAndWheel(t *testing.T) {
 	rec := get(t, WatchlistHandler(&fakeWatchlistStore{}), "/v1/strategies")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
@@ -63,11 +63,11 @@ func TestStrategiesListOnlyWheelWithRequiredRiskInputs(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].Name != "wheel" {
-		t.Fatalf("strategies = %+v; want only wheel", got)
+	if len(got) != 2 || got[0].Name != "llm" || got[1].Name != "wheel" {
+		t.Fatalf("strategies = %+v; want llm and wheel", got)
 	}
 	var curve, max strategy.ContractParam
-	for _, p := range got[0].Params {
+	for _, p := range got[1].Params {
 		switch p.Name {
 		case "price_position_curve":
 			curve = p

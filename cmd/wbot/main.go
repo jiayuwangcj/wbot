@@ -246,6 +246,8 @@ func runServe(prog string, argv []string) int {
 	datacheckNotify := fs.Bool("datacheck-notify", false, "send scheduled datacheck alerts via configured Telegram/Discord endpoints")
 	wheelRun := fs.Bool("wheel-run", false, "run the wheel live loop for watchlist bindings (default off)")
 	wheelInterval := fs.Duration("wheel-interval", 5*time.Minute, "wheel live loop evaluation interval")
+	llmRun := fs.Bool("llm-run", false, "run the LLM strategy loop for llm watchlist bindings (default off)")
+	llmInterval := fs.Duration("llm-interval", 15*time.Minute, "LLM strategy evaluation interval")
 	wheelEnv := fs.String("wheel-env", "sim", "wheel account env: sim (simulate) or real (read-only evaluation)")
 	telegramRun := fs.Bool("telegram-run", false, "run the wheel Telegram/Discord alert/confirm loop (default off; tokens/chat_ids from ~/.wbot/wbot.conf)")
 
@@ -266,6 +268,10 @@ func runServe(prog string, argv []string) int {
 	}
 	if err := validateWheelInterval(*wheelInterval); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+		return 2
+	}
+	if *llmInterval <= 0 {
+		fmt.Fprintln(os.Stderr, "serve: -llm-interval must be positive")
 		return 2
 	}
 	datacheckHour, datacheckMinute, err := parseDailyTime(strings.TrimSpace(*datacheckAt))
@@ -327,7 +333,7 @@ func runServe(prog string, argv []string) int {
 	if reviewer == nil {
 		fmt.Fprintln(os.Stderr, "wheel: WARN LLM reviewer disabled; set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL; llm-signal dispositions will be REJECTED")
 	}
-	top.Handle(httpapi.LLMSignalPath, httpapi.LLMSignalHandler(wheelstore.New(database), reviewer, model, httpapi.NewFutuAccounter()))
+	top.Handle(httpapi.LLMSignalPath, httpapi.LLMSignalHandler(wheelstore.New(database), reviewer, model, httpapi.NewFutuAccounter(), httpapi.NewFutuQuoter()))
 	srv := &http.Server{Handler: top}
 
 	go func() {
@@ -351,6 +357,9 @@ func runServe(prog string, argv []string) int {
 	}
 	if *wheelRun {
 		go startWheelRunner(runCtx, database, wheelEnvVal, *wheelInterval)
+	}
+	if *llmRun {
+		go startLLMStrategyScheduler(runCtx, database, *llmInterval, model)
 	}
 	if *telegramRun {
 		// Discord 是 wheel 确认闭环的第二通道(2026-08-12):配置缺失时跳过,
@@ -743,7 +752,7 @@ func runWatchlistAdd(prog string, argv []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
 	symbol := fs.String("symbol", "", "instrument symbol (required, e.g. HK.00700)")
-	strategy := fs.String("strategy", "", "strategy name (required; wheel is the only product strategy)")
+	strategy := fs.String("strategy", "", "strategy name (required; llm or wheel)")
 	params := fs.String("params", "", "Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md")
 
 	fs.Usage = func() {

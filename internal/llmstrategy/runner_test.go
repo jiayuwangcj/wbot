@@ -1,0 +1,169 @@
+package llmstrategy
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/jiayu/wbot/internal/llmsignal"
+	"github.com/jiayu/wbot/internal/watchlist"
+)
+
+type wlFake struct{ items []watchlist.Item }
+
+func (f wlFake) List(context.Context) ([]watchlist.Item, error) { return f.items, nil }
+
+type dedupeFake struct {
+	pending bool
+	calls   int
+}
+
+func (f *dedupeFake) HasRecentUndisposedSignal(context.Context, string, time.Time) (bool, error) {
+	f.calls++
+	return f.pending, nil
+}
+
+type marketFake struct{ calls int }
+
+func (f *marketFake) Snapshot(context.Context, string, map[string]any, time.Time) (Snapshot, error) {
+	f.calls++
+	cash := 100000.0
+	return Snapshot{Symbol: "HK.00700", CurrentPrice: 459, CashAvailable: &cash, Options: []Option{{Contract: "HK.TCH260821P450000", Direction: "PUT", Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5, Delta: -.35, IV: .4, OpenInterest: 100}}}, nil
+}
+
+type genFake struct {
+	err   error
+	calls int
+}
+
+func (f *genFake) Generate(context.Context, Snapshot) (llmsignal.Decision, error) {
+	f.calls++
+	return llmsignal.Decision{Direction: "PUT", Quantity: 1, Contract: "HK.TCH260821P450000", Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5, Delta: -.35, IV: .4, OpenInterest: 100, Reason: "specific reason"}, f.err
+}
+
+type submitFake struct {
+	submits, rejections int
+	rejectEmptyOptions  bool
+}
+
+func (f *submitFake) Submit(_ context.Context, _ llmsignal.Decision, account llmsignal.Context, _ llmsignal.Policy) (llmsignal.Result, error) {
+	f.submits++
+	if f.rejectEmptyOptions && len(account.ObservedOptions) == 0 {
+		return llmsignal.Result{}, llmsignal.ErrRejected
+	}
+	return llmsignal.Result{}, nil
+}
+func (f *submitFake) RecordGenerationRejection(context.Context, string, error) (int64, error) {
+	f.rejections++
+	return 1, nil
+}
+
+func TestRunOnceDBDedupeSkipsGeneration(t *testing.T) {
+	d := &dedupeFake{pending: true}
+	m := &marketFake{}
+	g := &genFake{}
+	s := &submitFake{}
+	r := Runner{Watchlist: wlFake{[]watchlist.Item{{Symbol: "HK.00700", Strategy: "llm"}}}, Dedupe: d, Market: m, Generator: g, Submitter: s, Now: func() time.Time { return time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC) }}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if d.calls != 1 || m.calls != 0 || g.calls != 0 || s.submits != 0 {
+		t.Fatalf("calls=%d/%d/%d/%d", d.calls, m.calls, g.calls, s.submits)
+	}
+}
+func TestRunOnceGenerationFailureRecordedAndRetriable(t *testing.T) {
+	d := &dedupeFake{}
+	m := &marketFake{}
+	g := &genFake{err: errors.New("bad JSON")}
+	s := &submitFake{}
+	r := Runner{Watchlist: wlFake{[]watchlist.Item{{Symbol: "HK.00700", Strategy: "llm"}}}, Dedupe: d, Market: m, Generator: g, Submitter: s}
+	if err := r.RunOnce(context.Background()); err == nil {
+		t.Fatal("want pass error")
+	}
+	if s.rejections != 1 || s.submits != 0 {
+		t.Fatalf("rejections/submits=%d/%d", s.rejections, s.submits)
+	}
+}
+
+type emptyOptionsMarket struct{}
+
+func (emptyOptionsMarket) Snapshot(context.Context, string, map[string]any, time.Time) (Snapshot, error) {
+	cash := 100000.0
+	return Snapshot{Symbol: "HK.00700", CurrentPrice: 459, CashAvailable: &cash}, nil
+}
+
+func TestRunOnceRejectsFabricatedOptionWhenSnapshotOptionsEmpty(t *testing.T) {
+	s := &submitFake{rejectEmptyOptions: true}
+	r := Runner{
+		Watchlist: wlFake{[]watchlist.Item{{Symbol: "HK.00700", Strategy: "llm"}}},
+		Dedupe:    &dedupeFake{}, Market: emptyOptionsMarket{}, Generator: &genFake{}, Submitter: s,
+	}
+
+	if err := r.RunOnce(context.Background()); err == nil {
+		t.Fatal("want pass error")
+	}
+	if s.submits != 1 || s.rejections != 1 {
+		t.Fatalf("submits/rejections=%d/%d", s.submits, s.rejections)
+	}
+}
+
+type tickSubmit struct{ calls chan struct{} }
+
+func (s tickSubmit) Submit(context.Context, llmsignal.Decision, llmsignal.Context, llmsignal.Policy) (llmsignal.Result, error) {
+	s.calls <- struct{}{}
+	return llmsignal.Result{}, nil
+}
+func (s tickSubmit) RecordGenerationRejection(context.Context, string, error) (int64, error) {
+	return 0, nil
+}
+
+func TestRunTriggersImmediatelyAndOnInterval(t *testing.T) {
+	calls := make(chan struct{}, 3)
+	r := Runner{Watchlist: wlFake{[]watchlist.Item{{Symbol: "HK.00700", Strategy: "llm"}}}, Dedupe: &dedupeFake{}, Market: &marketFake{}, Generator: &genFake{}, Submitter: tickSubmit{calls: calls}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx, 5*time.Millisecond) }()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-calls:
+		case <-time.After(time.Second):
+			t.Fatal("scheduler did not trigger")
+		}
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error=%v", err)
+	}
+}
+
+func TestClientUsesDeepseekV4Flash(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if body["model"] != Model {
+			t.Errorf("model=%v", body["model"])
+		}
+		if r.Header.Get("Authorization") != "Bearer fake-key" {
+			t.Errorf("authorization=%q", r.Header.Get("Authorization"))
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"symbol\":\"HK.00700\",\"direction\":\"PUT\",\"quantity\":1}"}}]}`))
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL, "fake-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := client.Generate(context.Background(), Snapshot{Symbol: "HK.00700"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Direction != "PUT" || decision.Quantity != 1 {
+		t.Fatalf("decision=%+v", decision)
+	}
+}

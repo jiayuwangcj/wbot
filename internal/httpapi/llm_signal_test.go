@@ -169,10 +169,28 @@ func (s *stubAccounter) AccountForSymbol(_ context.Context, env futu.Env, _ stri
 	return s.Account(context.Background(), env, 13477968)
 }
 
+type stubLLMSignalQuoter struct{}
+
+func (stubLLMSignalQuoter) Quote(context.Context, string) (json.RawMessage, error) {
+	return json.RawMessage(`{"basic_qot_list":[{"cur_price":459}]}`), nil
+}
+
+func (stubLLMSignalQuoter) OptionQuotes(_ context.Context, symbols []string) (map[string]futu.OptionQuoteEx, error) {
+	quotes := make(map[string]futu.OptionQuoteEx, len(symbols))
+	for _, symbol := range symbols {
+		quote := futu.OptionQuoteEx{Symbol: symbol, Bid: 11.45, Last: 11.45, Delta: -.47, ImpliedVol: .404, OpenInterest: 249, LotSize: 100}
+		if symbol == "HK.TCH260821P450000" {
+			quote.Bid, quote.Last, quote.Delta, quote.ImpliedVol, quote.OpenInterest = 8.5, 8.5, -.35, .4, 100
+		}
+		quotes[symbol] = quote
+	}
+	return quotes, nil
+}
+
 func postLLMSignal(t *testing.T, body string) (*httptest.ResponseRecorder, map[string]any) {
 	t.Helper()
 	store := &fakeLLMStore{}
-	h := LLMSignalHandler(store, stubReviewer{}, "deepseek-v4-pro", &stubAccounter{cash: 50000})
+	h := LLMSignalHandler(store, stubReviewer{}, "deepseek-v4-pro", &stubAccounter{cash: 50000}, stubLLMSignalQuoter{})
 	req := httptest.NewRequest(http.MethodPost, LLMSignalPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -205,13 +223,13 @@ func TestLLMSignalOK(t *testing.T) {
 
 func TestLLMSignalSyntheticContract(t *testing.T) {
 	// No contract → synthetic code from strike+expiry (HK.TCH260821P460000).
-	body := `{"symbol":"HK.00700","direction":"CALL","quantity":2,"strike":470,"expiry":"2026-08-21T00:00:00Z","current_price":459}`
+	body := `{"symbol":"HK.00700","direction":"PUT","quantity":1,"strike":450,"expiry":"2026-08-21T00:00:00Z","current_price":459,"premium":8.5,"delta":-0.35,"iv":0.4,"open_interest":100,"reason":"行权价低于现价并收取权利金"}`
 	rec, resp := postLLMSignal(t, body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if resp["contract"] != "HK.TCH260821C470000" {
-		t.Errorf("contract = %v, want HK.TCH260821C470000", resp["contract"])
+	if resp["contract"] != "HK.TCH260821P450000" {
+		t.Errorf("contract = %v, want HK.TCH260821P450000", resp["contract"])
 	}
 }
 
@@ -250,8 +268,8 @@ func TestLLMSignalMethodNotAllowed(t *testing.T) {
 // TestLLMSignalFailClosed: nil reviewer records REJECTED, response says REJECT.
 func TestLLMSignalFailClosed(t *testing.T) {
 	store := &fakeLLMStore{}
-	h := LLMSignalHandler(store, nil, "", &stubAccounter{cash: 50000})
-	body := `{"symbol":"HK.00700","direction":"PUT","quantity":1,"contract":"HK.TCH260821P460000"}`
+	h := LLMSignalHandler(store, nil, "", &stubAccounter{cash: 50000}, stubLLMSignalQuoter{})
+	body := `{"symbol":"HK.00700","direction":"PUT","quantity":1,"contract":"HK.TCH260821P460000","current_price":459,"premium":11.45,"delta":-0.47,"iv":0.404,"open_interest":249,"reason":"行权价接近现价并收取权利金"}`
 	req := httptest.NewRequest(http.MethodPost, LLMSignalPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

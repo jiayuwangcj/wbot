@@ -23,12 +23,12 @@ func validParams() map[string]any {
 	}
 }
 
-func TestRegistryOnlyWheel(t *testing.T) {
+func TestRegistryIncludesLLMAndWheel(t *testing.T) {
 	templates := Templates()
-	if len(templates) != 1 || templates[0].Name != "wheel" {
-		t.Fatalf("Templates() = %+v; want only wheel", templates)
+	if len(templates) != 2 || templates[0].Name != "llm" || templates[1].Name != "wheel" {
+		t.Fatalf("Templates() = %+v; want llm and wheel", templates)
 	}
-	if templates[0].NeedsOptions != true {
+	if !templates[0].NeedsOptions || !templates[1].NeedsOptions {
 		t.Fatal("wheel must declare that it needs option data")
 	}
 	if _, ok := Lookup("covered-call"); ok {
@@ -37,20 +37,23 @@ func TestRegistryOnlyWheel(t *testing.T) {
 	if _, ok := Lookup("cash-secured-put"); ok {
 		t.Fatal("cash-secured-put must be unknown")
 	}
-	for _, p := range templates[0].Params {
-		if p.Type != "curve" && p.Type != "number" && p.Type != "choice" {
-			t.Fatalf("%s has unsupported schema type %q", p.Name, p.Type)
+	for _, template := range templates {
+		for _, p := range template.Params {
+			if p.Type != "curve" && p.Type != "number" && p.Type != "choice" {
+				t.Fatalf("%s has unsupported schema type %q", p.Name, p.Type)
+			}
 		}
 	}
 }
 
 func TestContractSchemaRequiredAndDefaults(t *testing.T) {
 	got := ContractTemplates()
-	if len(got) != 1 || got[0].Name != "wheel" {
+	if len(got) != 2 || got[0].Name != "llm" || got[1].Name != "wheel" {
 		t.Fatalf("ContractTemplates() = %+v", got)
 	}
+	wheelContract := got[1]
 	byName := make(map[string]ContractParam)
-	for _, p := range got[0].Params {
+	for _, p := range wheelContract.Params {
 		byName[p.Name] = p
 	}
 	for _, name := range []string{"price_position_curve", "max_inventory"} {

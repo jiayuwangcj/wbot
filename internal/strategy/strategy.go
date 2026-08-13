@@ -41,6 +41,18 @@ type Template struct {
 
 var templates = []Template{
 	{
+		Name:         "llm",
+		Description:  "每 15 分钟由 LLM 基于实时行情与账户上下文生成候选，经确定性风控和 LLM 审核后人工确认",
+		NeedsOptions: true,
+		Params: []Param{
+			{Name: "option_max_quantity", Type: "number", Default: 5.0, Min: 1, Max: 5, Help: "单次期权决策最大合约数"},
+			{Name: "stock_max_quantity", Type: "number", Default: 1000.0, Min: 1, Max: 1000, Help: "单次正股决策最大股数"},
+			{Name: "max_daily_signals", Type: "number", Default: 5.0, Min: 1, Max: 20, Help: "每日最多可操作信号数"},
+			{Name: "min_dte", Type: "number", Default: 5.0, Min: 1, Max: 30, Help: "期权最小到期天数"},
+			{Name: "max_dte", Type: "number", Default: 10.0, Min: 1, Max: 60, Help: "期权最大到期天数"},
+		},
+	},
+	{
 		Name:         "wheel",
 		Description:  "按价格—目标库存曲线管理库存，只生成人工提醒，不自动下单",
 		NeedsOptions: true,
@@ -179,11 +191,30 @@ func ParseConfigJSON(data []byte) (wheel.Config, error) {
 	return ParseConfig(params)
 }
 
-// Validate checks the named strategy and its structured params. The only
-// registered name is wheel; old template names are explicit unknown errors.
+// Validate checks the named product strategy and its structured params.
+// Legacy template names remain explicit unknown errors.
 func Validate(name string, params map[string]any) error {
-	if _, ok := Lookup(name); !ok {
-		return fmt.Errorf("strategy: unknown template %q (want wheel)", name)
+	t, ok := Lookup(name)
+	if !ok {
+		return fmt.Errorf("strategy: unknown template %q (want llm or wheel)", name)
+	}
+	if name == "llm" {
+		values, err := buildParams(t, params)
+		if err != nil {
+			return err
+		}
+		minDTE, err := asInt(values["min_dte"])
+		if err != nil {
+			return err
+		}
+		maxDTE, err := asInt(values["max_dte"])
+		if err != nil {
+			return err
+		}
+		if minDTE > maxDTE {
+			return fmt.Errorf("strategy llm: min_dte must be <= max_dte")
+		}
+		return nil
 	}
 	_, err := ParseConfig(params)
 	return err

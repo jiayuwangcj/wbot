@@ -808,6 +808,87 @@ SELECT EXISTS (SELECT 1 FROM wheel_signal_actions WHERE signal_id = $1 AND actio
 	return exists, nil
 }
 
+// ClaimOrder atomically reserves the one broker order allowed for a signal.
+// The row is durable and shared by Telegram and Discord. claimed=false means
+// another process/channel already owns (or completed) the order.
+func (s *Store) ClaimOrder(ctx context.Context, signalID int64, actor string) (claimed bool, err error) {
+	if err := s.check(); err != nil {
+		return false, err
+	}
+	actor = strings.TrimSpace(actor)
+	if signalID <= 0 || actor == "" {
+		return false, fmt.Errorf("%w: signal id and actor are required", ErrInvalidRecord)
+	}
+	res, err := s.db.ExecContext(ctx, `
+INSERT INTO wheel_order_claims (signal_id, actor)
+VALUES ($1, $2)
+ON CONFLICT (signal_id) DO NOTHING`, signalID, actor)
+	if err != nil {
+		return false, fmt.Errorf("wheelstore: claim order: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("wheelstore: claim order rows: %w", err)
+	}
+	return n == 1, nil
+}
+
+// CompleteOrderClaim stores the broker identity on the durable claim.  The
+// claim remains authoritative even if the separate CONFIRM audit append fails.
+func (s *Store) CompleteOrderClaim(ctx context.Context, signalID int64, orderID uint64, orderIDEx string, details map[string]any) error {
+	if err := s.check(); err != nil {
+		return err
+	}
+	if signalID <= 0 || orderID == 0 {
+		return fmt.Errorf("%w: signal id and broker order id are required", ErrInvalidRecord)
+	}
+	d, err := validateJSONMap("order claim details", details, true)
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `
+UPDATE wheel_order_claims
+SET order_id=$2, order_id_ex=$3, details=$4::jsonb, placed_at=now()
+WHERE signal_id=$1`, signalID, orderID, strings.TrimSpace(orderIDEx), string(d))
+	if err != nil {
+		return fmt.Errorf("wheelstore: complete order claim: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("wheelstore: complete order claim rows: %w", err)
+	}
+	if n != 1 {
+		return fmt.Errorf("wheelstore: complete order claim: %w", ErrNotFound)
+	}
+	return nil
+}
+
+// HasRecentUndisposedSignal implements the scheduler's restart-safe DB
+// dedupe.  A signal is pending until an operator/broker disposition exists.
+func (s *Store) HasRecentUndisposedSignal(ctx context.Context, symbol string, since time.Time) (bool, error) {
+	if err := s.check(); err != nil {
+		return false, err
+	}
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" || since.IsZero() {
+		return false, fmt.Errorf("%w: symbol and since are required", ErrInvalidRecord)
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS (
+	SELECT 1 FROM wheel_signals s
+	WHERE s.symbol=$1 AND s.created_at >= $2
+	  AND NOT EXISTS (
+		SELECT 1 FROM wheel_signal_actions a
+		WHERE a.signal_id=s.id AND a.action IN ('CONFIRM','NO','REJECTED')
+	  )
+)`, symbol, since).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("wheelstore: recent undisposed signal: %w", err)
+	}
+	return exists, nil
+}
+
 // QuerySignalsSince returns signals with id > afterID in id order (the
 // Telegram push loop's cursor query; action filters when non-empty).
 func (s *Store) QuerySignalsSince(ctx context.Context, action string, afterID int64, limit int) ([]SignalRecord, error) {

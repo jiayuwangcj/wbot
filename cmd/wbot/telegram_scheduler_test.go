@@ -70,15 +70,17 @@ func (f *fakeTGServer) lastToast(t *testing.T) string {
 
 // fakeTGStore is an in-memory SignalRepository for handler tests.
 type fakeTGStore struct {
-	mu            sync.Mutex
-	signals       map[int64]*wheelstore.SignalRecord
-	reviews       map[int64]*wheelstore.ActionRecord
-	dismissed     map[string]bool
-	appended      []wheelstore.ActionRecord
-	maxID         int64
-	maxIDFailures int
-	querySince    []wheelstore.SignalRecord
-	queryCalls    []int64
+	mu             sync.Mutex
+	signals        map[int64]*wheelstore.SignalRecord
+	reviews        map[int64]*wheelstore.ActionRecord
+	dismissed      map[string]bool
+	appended       []wheelstore.ActionRecord
+	maxID          int64
+	maxIDFailures  int
+	querySince     []wheelstore.SignalRecord
+	queryCalls     []int64
+	claims         map[int64]bool
+	appendFailures int
 }
 
 func newFakeTGStore() *fakeTGStore {
@@ -86,7 +88,22 @@ func newFakeTGStore() *fakeTGStore {
 		signals:   map[int64]*wheelstore.SignalRecord{},
 		reviews:   map[int64]*wheelstore.ActionRecord{},
 		dismissed: map[string]bool{},
+		claims:    map[int64]bool{},
 	}
+}
+
+func (f *fakeTGStore) ClaimOrder(_ context.Context, signalID int64, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.claims[signalID] {
+		return false, nil
+	}
+	f.claims[signalID] = true
+	return true, nil
+}
+
+func (f *fakeTGStore) CompleteOrderClaim(_ context.Context, _ int64, _ uint64, _ string, _ map[string]any) error {
+	return nil
 }
 
 func (f *fakeTGStore) GetSignal(_ context.Context, id int64) (*wheelstore.SignalRecord, error) {
@@ -162,6 +179,10 @@ func (f *fakeTGStore) LatestAction(_ context.Context, signalID int64, action str
 func (f *fakeTGStore) AppendAction(_ context.Context, r wheelstore.ActionRecord) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.appendFailures > 0 {
+		f.appendFailures--
+		return 0, errors.New("append action failed")
+	}
 	f.appended = append(f.appended, r)
 	return int64(len(f.appended)), nil
 }
@@ -850,6 +871,26 @@ func TestCallbackYesDoubleConfirmRejected(t *testing.T) {
 	}
 	if toast := fake.lastToast(t); !strings.Contains(toast, "请勿重复确认") {
 		t.Fatalf("toast = %q; want 请勿重复确认", toast)
+	}
+}
+
+func TestCallbackYesAuditFailureStillCannotRepeatOrder(t *testing.T) {
+	_, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = approvedReview()
+	store.appendFailures = 1 // broker succeeds, CONFIRM audit append fails
+	placer := &fakePlacer{orderID: 12345}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	if placer.calls != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want durable claim to block retry", placer.calls)
+	}
+	if act := store.lastAppended(t); act.Action != "REJECTED" || act.Note != "already confirmed" {
+		t.Fatalf("last action = %+v", act)
 	}
 }
 
