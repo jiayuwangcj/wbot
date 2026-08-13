@@ -8,13 +8,13 @@ import (
 )
 
 // MarketOpenFunc is injectable so the runner's wall-clock gate can be tested
-// without waiting for an exchange session. Production uses marketIsOpen.
+// without waiting for an exchange session. Production uses MarketIsOpen.
 type MarketOpenFunc func(symbol string, now time.Time) bool
 
-// marketIsOpen is deliberately small and offline. The calendar supplies
+// MarketIsOpen is deliberately small and offline. The calendar supplies
 // weekends and exchange holidays; the intraday windows below are evaluated in
 // the exchange's own timezone, which also handles US daylight-saving changes.
-func marketIsOpen(symbol string, now time.Time, calendar datacheck.Calendar) bool {
+func MarketIsOpen(symbol string, now time.Time, calendar datacheck.Calendar) bool {
 	market := symbolMarket(symbol)
 	loc := marketLocation(market)
 	marketNow := now.In(loc)

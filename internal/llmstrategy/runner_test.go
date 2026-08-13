@@ -113,6 +113,29 @@ func TestRunOncePassesPendingOrdersToGeneratorAndSubmitter(t *testing.T) {
 	}
 }
 
+func TestRunOnceSkipsWhenMarketClosed(t *testing.T) {
+	// 收盘时间不再运行(老板指令 2026-08-13):MarketOpen 返回 false 时整个
+	// 标的跳过——不查挂单、不生成、不提交。
+	d := &dedupeFake{}
+	m := &marketFake{}
+	g := &genFake{}
+	s := &submitFake{}
+	r := Runner{
+		Watchlist:  wlFake{[]watchlist.Item{{Symbol: "HK.00700", Strategy: "llm"}}},
+		Dedupe:     d,
+		Market:     m,
+		Generator:  g,
+		Submitter:  s,
+		MarketOpen: func(string, time.Time) bool { return false },
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if d.pendingCalls != 0 || m.calls != 0 || g.calls != 0 || s.submits != 0 {
+		t.Fatalf("closed market must skip everything; calls=%d/%d/%d/%d", d.pendingCalls, m.calls, g.calls, s.submits)
+	}
+}
+
 func TestRunOnceGenerationFailureRecordedAndRetriable(t *testing.T) {
 	d := &dedupeFake{}
 	m := &marketFake{}

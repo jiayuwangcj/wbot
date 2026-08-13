@@ -126,6 +126,7 @@ type telegramScheduler struct {
 	tg      *telegram.Client
 	store   wheelstore.SignalRepository
 	orders  wheelOrderPlacer
+	quoter  underlyingQuoter
 	chatIDs map[int64]bool
 	now     func() time.Time
 	logf    func(format string, a ...any)
@@ -142,11 +143,12 @@ func (s *telegramScheduler) sendToChats(ctx context.Context, text string) {
 	}
 }
 
-func newTelegramScheduler(tg *telegram.Client, store wheelstore.SignalRepository, orders wheelOrderPlacer, chatIDs map[int64]bool) *telegramScheduler {
+func newTelegramScheduler(tg *telegram.Client, store wheelstore.SignalRepository, orders wheelOrderPlacer, quoter underlyingQuoter, chatIDs map[int64]bool) *telegramScheduler {
 	return &telegramScheduler{
 		tg:      tg,
 		store:   store,
 		orders:  orders,
+		quoter:  quoter,
 		chatIDs: chatIDs,
 		now:     time.Now,
 		logf: func(format string, a ...any) {
@@ -190,7 +192,7 @@ func startTelegramScheduler(ctx context.Context, database *sql.DB, env futu.Env)
 		fmt.Fprintf(os.Stderr, "telegram: %v\n", err)
 		return
 	}
-	s := newTelegramScheduler(tg, wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env}, chatIDs)
+	s := newTelegramScheduler(tg, wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env}, futuQuoter{client: futu.NewClient(resolveFutuGateway(""))}, chatIDs)
 	go func() {
 		if err := s.runPush(ctx, telegramPushInterval); err != nil && !errors.Is(err, context.Canceled) {
 			s.logf("push: %v", err)
@@ -337,7 +339,10 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 		s.pushRejectedSignal(ctx, sig, review)
 		return false
 	}
-	text, err := alertMessage(&sig, reviewReasons(review)...)
+	// 底层资产名字进卡片(老板指令 2026-08-13: 正股价格区多一份名字+编号);
+	// 查询失败退化为只显示编号,推送不阻塞。
+	name := underlyingName(ctx, s.quoter, sig.Symbol)
+	text, err := alertMessage(&sig, name, reviewReasons(review)...)
 	if err != nil {
 		s.logf("push: %s signal=%d: %v", sig.Symbol, sig.ID, err)
 		return
@@ -375,7 +380,7 @@ func (s *telegramScheduler) pushRejectedSignal(ctx context.Context, sig wheelsto
 			label = "⚠️ 审核失败"
 		}
 	}
-	text, err := alertCard(&sig, label, reasons...)
+	text, err := alertCard(&sig, underlyingName(ctx, s.quoter, sig.Symbol), label, reasons...)
 	if err != nil {
 		// A rejection card cannot be built (missing candidate etc.): fall back
 		// to the minimal fail-closed notice so the disposition is never lost.
@@ -737,15 +742,17 @@ const (
 // alertMessage renders the v20 Telegram HTML layout. Review reasons are
 // variadic so callers that only need a structural preview may omit them.
 // alertMessage renders the approved signal card with the LLM review section
-// showing APPROVE.
-func alertMessage(sig *wheelstore.SignalRecord, reasons ...string) (string, error) {
-	return alertCard(sig, "✅ APPROVE", reasons...)
+// showing APPROVE. underlying is the display name (腾讯控股) or "" to fall
+// back to the bare code (老板指令 2026-08-13).
+func alertMessage(sig *wheelstore.SignalRecord, underlying string, reasons ...string) (string, error) {
+	return alertCard(sig, underlying, "✅ APPROVE", reasons...)
 }
 
 // alertCard renders the full signal card shared by approved and rejected
 // pushes (老板指令 2026-08-13: 拒绝单与通过单式样统一,只变底部 LLM 审核区,
 // 拒绝单无按钮): only the LLM review section label and reasons differ.
-func alertCard(sig *wheelstore.SignalRecord, verdictLabel string, reasons ...string) (string, error) {
+// underlying is the display name ("" falls back to the bare code).
+func alertCard(sig *wheelstore.SignalRecord, underlying string, verdictLabel string, reasons ...string) (string, error) {
 	c, err := firstCandidate(sig)
 	if err != nil {
 		return "", err
@@ -786,6 +793,7 @@ func alertCard(sig *wheelstore.SignalRecord, verdictLabel string, reasons ...str
 			alertRow("限价", fmt.Sprintf("<b><code>%s</code></b>", limit)),
 			alertInnerRule,
 			"📊 <b>标的当前</b>",
+			alertRow("标的", fmt.Sprintf("<b>%s</b>", html.EscapeString(underlyingLabel(underlying, sig.Symbol)))),
 			alertRow("正股现价", fmt.Sprintf("<b><code>%s</code></b>", priceText(sig.Inventory.CurrentPrice))),
 			alertInnerRule,
 		)
@@ -797,6 +805,7 @@ func alertCard(sig *wheelstore.SignalRecord, verdictLabel string, reasons ...str
 			alertRow("限价", fmt.Sprintf("<b><code>%s</code></b> (估算)", limit)),
 			alertInnerRule,
 			"📊 <b>标的当前</b>",
+			alertRow("标的", fmt.Sprintf("<b>%s</b>", html.EscapeString(underlyingLabel(underlying, sig.Symbol)))),
 			alertRow("正股现价", fmt.Sprintf("<b><code>%s</code></b>", priceText(sig.Inventory.CurrentPrice))),
 			alertRow("bid/ask", fmt.Sprintf("<code>%.2f</code>/<code>%.2f</code>", c.Quote.Bid, c.Quote.Ask)),
 			alertRow("希腊", fmt.Sprintf("Δ <code>%.2f</code> · IV <code>%.2f</code> · OI <code>%s</code>", c.Quote.Delta, c.Quote.ImpliedVol, commaInt(c.Quote.OpenInterest))),

@@ -130,7 +130,7 @@ func TestMarketIsOpenUsesExchangeTimezoneCalendarAndLunchBreak(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := marketIsOpen(tt.symbol, tt.when, cal); got != tt.want {
+			if got := MarketIsOpen(tt.symbol, tt.when, cal); got != tt.want {
 				t.Fatalf("marketIsOpen(%s, %s) = %t; want %t", tt.symbol, tt.when, got, tt.want)
 			}
 		})

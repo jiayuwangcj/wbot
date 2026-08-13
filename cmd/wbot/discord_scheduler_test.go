@@ -299,7 +299,7 @@ func newTestDiscordScheduler(t *testing.T, fake *fakeDCSchedulerServer, store *f
 		t.Fatal(err)
 	}
 	verifier, priv := discordKeypair(t)
-	s := newDiscordScheduler(ctx, dc, verifier, "app-1", testChannelID, store, placer)
+	s := newDiscordScheduler(ctx, dc, verifier, "app-1", testChannelID, store, placer, fakeUnderlyingQuoter{})
 	s.now = func() time.Time { return now }
 	s.logf = func(string, ...any) {}
 	return s, priv
@@ -423,7 +423,7 @@ func TestDiscordPushApprovedSignalPushesEmbed(t *testing.T) {
 		t.Fatalf("option embed = %#v", option)
 	}
 	underlying := discordEmbedAt(t, embeds, 3)
-	if _, ok := underlying["title"]; ok || underlying["description"] != "```\n现价  248.50\n缺口  -300 股\n目标  4,700 / 持仓 5,000\n```" {
+	if _, ok := underlying["title"]; ok || underlying["description"] != "```\n标的  AAPL\n现价  248.50\n缺口  -300 股\n目标  4,700 / 持仓 5,000\n```" {
 		t.Fatalf("underlying embed = %#v", underlying)
 	}
 	reasons := discordEmbedAt(t, embeds, 4)

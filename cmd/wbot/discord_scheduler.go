@@ -37,6 +37,7 @@ type discordScheduler struct {
 	channelID string
 	store     wheelstore.SignalRepository
 	orders    wheelOrderPlacer
+	quoter    underlyingQuoter
 	now       func() time.Time
 	logf      func(format string, a ...any)
 	asker     assistant
@@ -54,10 +55,10 @@ type askRequest struct {
 	question string
 }
 
-func newDiscordScheduler(ctx context.Context, dc *discord.Client, verifier *discord.Verifier, appID, channelID string, store wheelstore.SignalRepository, orders wheelOrderPlacer) *discordScheduler {
+func newDiscordScheduler(ctx context.Context, dc *discord.Client, verifier *discord.Verifier, appID, channelID string, store wheelstore.SignalRepository, orders wheelOrderPlacer, quoter underlyingQuoter) *discordScheduler {
 	s := &discordScheduler{
 		ctx: ctx, dc: dc, verifier: verifier, appID: appID, channelID: channelID,
-		store: store, orders: orders,
+		store: store, orders: orders, quoter: quoter,
 		askCh: make(chan askRequest, 16),
 		now:   time.Now,
 		logf: func(format string, a ...any) {
@@ -119,7 +120,7 @@ func startDiscordScheduler(ctx context.Context, database *sql.DB, env futu.Env) 
 	if err != nil {
 		return nil, fmt.Errorf("discord: assistant allowed_user_ids: %w", err)
 	}
-	s := newDiscordScheduler(ctx, dc, verifier, strings.TrimSpace(appID), strings.TrimSpace(channelRaw), wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env})
+	s := newDiscordScheduler(ctx, dc, verifier, strings.TrimSpace(appID), strings.TrimSpace(channelRaw), wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env}, futuQuoter{client: futu.NewClient(resolveFutuGateway(""))})
 	s.asker = newClaudeAssistant(cliPath, apiKey)
 	s.allowed = parseDiscordAllowedUsers(allowedRaw)
 	return s, nil
@@ -246,7 +247,7 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 		s.pushRejectedDiscord(ctx, sig, review)
 		return false
 	}
-	embeds, err := signalDiscordEmbeds(&sig, reviewReasons(review), s.now())
+	embeds, err := signalDiscordEmbeds(&sig, underlyingName(ctx, s.quoter, sig.Symbol), reviewReasons(review), s.now())
 	if err != nil {
 		s.logf("push: %s signal=%d: %v", sig.Symbol, sig.ID, err)
 		return false
@@ -272,7 +273,7 @@ const discordCodeLabelWidth = 6
 // 提示单,只是不带按钮,一眼可辨哪个单已处理)。无可用候选时返回 err,调用方
 // 降级为只推状态卡。与 signalDiscordEmbeds 共享 firstCandidate/isStockDirection
 // 语义,保证显示与下单执行一致。
-func signalInfoBlocks(sig *wheelstore.SignalRecord) ([][]string, error) {
+func signalInfoBlocks(sig *wheelstore.SignalRecord, underlying string) ([][]string, error) {
 	c, err := firstCandidate(sig)
 	if err != nil {
 		return nil, err
@@ -294,6 +295,7 @@ func signalInfoBlocks(sig *wheelstore.SignalRecord) ([][]string, error) {
 		})
 	}
 	blocks = append(blocks, []string{
+		discordCodeRow("标的", underlyingLabel(underlying, sig.Symbol)),
 		discordCodeRow("现价", discordPrice(sig.Inventory.CurrentPrice)),
 		discordCodeRow("缺口", discordShares(sig.Inventory.InventoryGap)),
 		discordCodeRow("目标", fmt.Sprintf("%s / 持仓 %s", discordCount(sig.Inventory.TargetInventory), discordCount(sig.Inventory.ActualInventory))),
@@ -304,7 +306,7 @@ func signalInfoBlocks(sig *wheelstore.SignalRecord) ([][]string, error) {
 // signalDiscordEmbeds renders the approved signal as compact mobile-friendly
 // sections. It deliberately shares firstCandidate and isStockDirection with
 // the Telegram path so display and order execution keep the same semantics.
-func signalDiscordEmbeds(sig *wheelstore.SignalRecord, reasons []string, sentAt time.Time) ([]discord.Embed, error) {
+func signalDiscordEmbeds(sig *wheelstore.SignalRecord, underlying string, reasons []string, sentAt time.Time) ([]discord.Embed, error) {
 	c, err := firstCandidate(sig)
 	if err != nil {
 		return nil, err
@@ -324,7 +326,7 @@ func signalDiscordEmbeds(sig *wheelstore.SignalRecord, reasons []string, sentAt 
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d · %s", sig.ConfigVersion, sig.ID, created)},
 		Timestamp:   sentAt.UTC().Format(time.RFC3339),
 	}}
-	blocks, err := signalInfoBlocks(sig)
+	blocks, err := signalInfoBlocks(sig, underlying)
 	if err != nil {
 		return nil, err
 	}
@@ -463,7 +465,7 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d", sig.ConfigVersion, sig.ID)},
 		Timestamp:   s.now().UTC().Format(time.RFC3339),
 	}}
-	if blocks, err := signalInfoBlocks(&sig); err == nil {
+	if blocks, err := signalInfoBlocks(&sig, underlyingName(ctx, s.quoter, sig.Symbol)); err == nil {
 		for _, block := range blocks {
 			embeds = append(embeds, discord.Embed{Description: discordCodeBlock(block...), Color: discord.ColorRejected})
 		}

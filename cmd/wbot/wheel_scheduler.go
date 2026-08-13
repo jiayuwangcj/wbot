@@ -72,6 +72,16 @@ func (q futuQuoter) Quote(ctx context.Context, symbol string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return priceFromQuotePage(s2c, symbol)
+}
+
+// QuoteRaw satisfies underlyingQuoter for the card's display-name lookup
+// (老板指令 2026-08-13: 正股价格区多一份底层资产名字和编号)。
+func (q futuQuoter) QuoteRaw(ctx context.Context, symbol string) (json.RawMessage, error) {
+	return q.client.Quote(ctx, symbol)
+}
+
+func priceFromQuotePage(s2c json.RawMessage, symbol string) (float64, error) {
 	var pg struct {
 		BasicQotList []struct {
 			CurPrice float64 `json:"cur_price"`

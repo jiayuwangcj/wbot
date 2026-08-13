@@ -15,6 +15,7 @@ import (
 	"github.com/jiayu/wbot/internal/llmsignal"
 	"github.com/jiayu/wbot/internal/llmstrategy"
 	"github.com/jiayu/wbot/internal/watchlist"
+	"github.com/jiayu/wbot/internal/wheelrun"
 	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
@@ -148,7 +149,9 @@ func startLLMStrategyScheduler(ctx context.Context, database *sql.DB, interval t
 	store := wheelstore.New(database)
 	svc := &llmsignal.Service{Store: store, Reviewer: reviewer, Model: reviewerModel}
 	futuClient := futu.NewClient(resolveFutuGateway(""))
-	runner := &llmstrategy.Runner{Watchlist: llmWatchlist{database}, Dedupe: store, Market: llmMarket{quoter: futuQuoter{client: futuClient}, client: futuClient, accounts: httpapi.NewFutuAccounter()}, Generator: client, Submitter: svc}
+	// 收盘时间不再运行(老板指令 2026-08-13):MarketOpen 复用 wheelrun 的
+	// 离线交易时段判断(交易所时区 + 节假日日历),收盘/午休/非交易日跳过。
+	runner := &llmstrategy.Runner{Watchlist: llmWatchlist{database}, Dedupe: store, Market: llmMarket{quoter: futuQuoter{client: futuClient}, client: futuClient, accounts: httpapi.NewFutuAccounter()}, Generator: client, Submitter: svc, MarketOpen: func(symbol string, now time.Time) bool { return wheelrun.MarketIsOpen(symbol, now, nil) }}
 	if err := runner.Run(ctx, interval); err != nil && ctx.Err() == nil {
 		fmt.Fprintf(os.Stderr, "llmstrategy: runner: %v\n", err)
 	}

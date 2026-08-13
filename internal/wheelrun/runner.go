@@ -180,7 +180,7 @@ func (r *Runner) marketOpen(symbol string, now time.Time) bool {
 	if r.deps.MarketOpen != nil {
 		return r.deps.MarketOpen(symbol, now)
 	}
-	return marketIsOpen(symbol, now, r.deps.Calendar)
+	return MarketIsOpen(symbol, now, r.deps.Calendar)
 }
 
 func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) error {

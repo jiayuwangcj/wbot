@@ -305,7 +305,7 @@ func newTestScheduler(t *testing.T, server *httptest.Server, store *fakeTGStore,
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := newTelegramScheduler(tg, store, placer, chatIDs)
+	s := newTelegramScheduler(tg, store, placer, fakeUnderlyingQuoter{}, chatIDs)
 	s.now = func() time.Time { return now }
 	s.logf = func(string, ...any) {}
 	return s
@@ -589,7 +589,7 @@ func TestStrategyBadge(t *testing.T) {
 func TestAlertMessageFormat(t *testing.T) {
 	created := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
 	sig := signalFixture(7, "US.AAPL", created)
-	text, err := alertMessage(sig, "IV 高位", "风险 < 可控")
+	text, err := alertMessage(sig, "苹果公司", "IV 高位", "风险 < 可控")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,6 +603,7 @@ func TestAlertMessageFormat(t *testing.T) {
 限价      <b><code>3.28</code></b> (估算)
 ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
 📊 <b>标的当前</b>
+标的      <b>苹果公司 · AAPL</b>
 正股现价  <b><code>248.50</code></b>
 bid/ask   <code>3.20</code>/<code>3.35</code>
 希腊      Δ <code>0.42</code> · IV <code>0.25</code> · OI <code>1,234</code>
@@ -627,7 +628,7 @@ PUT 持仓  <code>-</code> 张
 func TestAlertMessageMissingLastUsesDash(t *testing.T) {
 	sig := signalFixture(7, "US.AAPL", time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC))
 	sig.Candidates[0].Quote.Last = 0
-	text, err := alertMessage(sig)
+	text, err := alertMessage(sig, "")
 	if err != nil {
 		t.Fatal(err)
 	}
