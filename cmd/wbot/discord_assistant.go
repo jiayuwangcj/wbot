@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	claudeAskTimeout       = 120 * time.Second
+	claudeAskTimeout       = 180 * time.Second
 	discordAssistantMaxLen = 1900
 )
 

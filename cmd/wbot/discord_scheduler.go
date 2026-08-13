@@ -40,18 +40,31 @@ type discordScheduler struct {
 	logf      func(format string, a ...any)
 	asker     assistant
 	allowed   map[string]struct{}
-	confirmMu sync.Mutex // one confirm at a time: dedup is HasAction→AppendAction across a network PlaceOrder
+	askCh     chan askRequest // FIFO 问题队列;单 worker 串行处理(老板指令 2026-08-13)
+	confirmMu sync.Mutex      // one confirm at a time: dedup is HasAction→AppendAction across a network PlaceOrder
+}
+
+// askRequest is one queued assistant question. 所有 /ask 都 append 进队列,
+// 只有一个 worker goroutine 消费——同一时刻只开一个 claude CLI 进程
+// (并发 -p 会互等 CLI/网关锁,120s 内超时被杀,实测第二个问题 context
+// deadline exceeded)。
+type askRequest struct {
+	in       *discord.Interaction
+	question string
 }
 
 func newDiscordScheduler(ctx context.Context, dc *discord.Client, verifier *discord.Verifier, appID, channelID string, store wheelstore.SignalRepository, orders wheelOrderPlacer) *discordScheduler {
-	return &discordScheduler{
+	s := &discordScheduler{
 		ctx: ctx, dc: dc, verifier: verifier, appID: appID, channelID: channelID,
 		store: store, orders: orders,
-		now: time.Now,
+		askCh: make(chan askRequest, 16),
+		now:   time.Now,
 		logf: func(format string, a ...any) {
 			fmt.Fprintf(os.Stderr, "discord: "+format+"\n", a...)
 		},
 	}
+	go s.askWorker(ctx)
+	return s
 }
 
 // startDiscordScheduler loads the discord credentials from ~/.wbot/wbot.conf
@@ -563,23 +576,62 @@ func (s *discordScheduler) handleApplicationCommand(w http.ResponseWriter, in *d
 		return
 	}
 	discord.WriteResponse(w, discord.DeferredChannelMessage())
-	go s.answerDiscordQuestion(s.ctx, in, question)
+	go s.queueAsk(s.ctx, in, question)
 }
 
-func (s *discordScheduler) answerDiscordQuestion(ctx context.Context, in *discord.Interaction, question string) {
-	reply := "调用失败: 助手未配置"
-	if s.asker != nil {
-		answer, err := s.asker.Ask(ctx, question)
-		if err != nil {
-			reply = "调用失败: " + err.Error()
-		} else {
-			reply = answer
+// queueAsk ack 后把问题 append 进 FIFO 队列;askWorker 单进程串行消费。
+// 老板指令(2026-08-13):① deferred 后立即回 ack,避免「正在响应」长时间
+// 悬空 ② 无论多少问题都排队,同一时刻只开一个 claude CLI,不并行。
+func (s *discordScheduler) queueAsk(ctx context.Context, in *discord.Interaction, question string) {
+	if s.asker == nil {
+		reply := "调用失败: 助手未配置"
+		if err := s.dc.EditInteractionReply(ctx, s.appID, in.Token, reply); err != nil {
+			s.logf("interaction %s: /ask followup: %v", in.ID, err)
+		}
+		return
+	}
+	ack := "✅ 已收到问题,正在排队处理…\n「" + truncateRunes(question, 40) + "」"
+	if err := s.dc.EditInteractionReply(ctx, s.appID, in.Token, ack); err != nil {
+		s.logf("interaction %s: /ask ack: %v", in.ID, err)
+	}
+	select {
+	case s.askCh <- askRequest{in: in, question: question}:
+	default:
+		// 队列满:不阻塞交互处理,明确告知稍后再试
+		if err := s.dc.EditInteractionReply(ctx, s.appID, in.Token, "❌ 处理队列已满,请稍后再试"); err != nil {
+			s.logf("interaction %s: /ask queue-full: %v", in.ID, err)
 		}
 	}
-	reply = truncateAssistantReply(reply)
-	if err := s.dc.EditInteractionReply(ctx, s.appID, in.Token, reply); err != nil {
-		s.logf("interaction %s: /ask followup: %v", in.ID, err)
+}
+
+// askWorker is the single consumer of askCh: one claude CLI process at a time,
+// FIFO order, Ask 自带 180s 超时。
+func (s *discordScheduler) askWorker(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req := <-s.askCh:
+			answer, err := s.asker.Ask(ctx, req.question)
+			reply := answer
+			if err != nil {
+				reply = "调用失败: " + err.Error()
+			}
+			reply = truncateAssistantReply(reply)
+			if err := s.dc.EditInteractionReply(ctx, s.appID, req.in.Token, reply); err != nil {
+				s.logf("interaction %s: /ask followup: %v", req.in.ID, err)
+			}
+		}
 	}
+}
+
+// truncateRunes shortens s to at most n runes for the ack preview.
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
 }
 
 // confirmOrderDiscord is the yes path with the same semantics as the telegram

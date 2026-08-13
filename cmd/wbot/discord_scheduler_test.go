@@ -645,13 +645,57 @@ func TestDiscordHandleInteractionAskDefersBeforeAnswer(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("assistant was not started")
 	}
-	if got := fake.sendCount(); got != 0 {
-		t.Fatalf("followup arrived before assistant completed: %d requests", got)
+	// ack 立即回(已收到,处理中),但最终答案必须等 assistant 完成。
+	waitFor(t, func() bool { return fake.sendCount() == 1 }, "ack PATCH")
+	if got, _ := fake.lastSend(t)["content"].(string); !strings.Contains(got, "已收到问题") {
+		t.Fatalf("ack content = %#v", got)
 	}
 	close(asker.release)
-	waitFor(t, func() bool { return fake.sendCount() == 1 }, "assistant followup PATCH")
+	waitFor(t, func() bool { return fake.sendCount() == 2 }, "assistant followup PATCH")
 	if got := fake.lastSend(t)["content"]; got != "测试回答" {
 		t.Fatalf("followup content = %#v", got)
+	}
+}
+
+func TestDiscordAskQueueSerializes(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	s, priv := newTestDiscordScheduler(t, fake, newFakeTGStore(), &fakePlacer{}, time.Now())
+	asker := &blockingAssistant{started: make(chan string, 4), release: make(chan struct{}), reply: "回答"}
+	s.asker = asker
+	s.allowed = parseDiscordAllowedUsers("42")
+
+	send := func(id, q string) {
+		body := []byte(`{"id":"` + id + `","type":2,"token":"` + id + `-token","member":{"user":{"id":"42"}},"data":{"name":"ask","options":[{"name":"question","value":"` + q + `"}]}}`)
+		rec := httptest.NewRecorder()
+		s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d", rec.Code)
+		}
+	}
+	send("ask-a", "问题A")
+	select {
+	case got := <-asker.started:
+		if got != "问题A" {
+			t.Fatalf("first prompt = %q; want 问题A", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first question not started")
+	}
+	send("ask-b", "问题B")
+	// 第二个问题必须排队:worker 未释放前不启动(只开一个进程,不并行)
+	select {
+	case got := <-asker.started:
+		t.Fatalf("second question started before first completed: %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(asker.release)
+	select {
+	case got := <-asker.started:
+		if got != "问题B" {
+			t.Fatalf("second prompt = %q; want 问题B", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("queued question never started after release")
 	}
 }
 
