@@ -13,7 +13,8 @@ import (
 )
 
 // Result summarizes one backtest run; EquityCurve/Trades are the deterministic
-// per-bar trace (draft 2026-08-02 S1: same input, same trace).
+// per-bar trace (draft 2026-08-02 S1: same input, same trace). Unfilled
+// reports the liquidity-heuristic fill accounting (unfilled.go).
 type Result struct {
 	Equity      float64
 	TotalReturn float64
@@ -22,6 +23,19 @@ type Result struct {
 	EquityCurve []EquityPoint
 	Trades      []Trade
 	Signals     []SignalTrace
+	Unfilled    UnfilledStats
+}
+
+// UnfilledStats is one run's fill accounting. UnfilledRatio is nil (null in
+// JSON) when no attempt occurred — an empty denominator is never 0%. The
+// model description is present even when no attempt was sampled.
+type UnfilledStats struct {
+	AttemptCount  int64    `json:"attempt_count"`
+	FillCount     int64    `json:"fill_count"`
+	UnfilledCount int64    `json:"unfilled_count"`
+	UnfilledRatio *float64 `json:"unfilled_ratio"`
+	ModelKind     string   `json:"model_kind"`
+	ModelVersion  string   `json:"model_version"`
 }
 
 // SignalTrace is the deterministic per-bar decision trace. CandidateCode is
@@ -57,13 +71,19 @@ type EquityPoint struct {
 // option at its per-share market premium), expiry events exercise ITM legs at the
 // strike or void OTM legs. Symbol is the option contract code for legs and is
 // filled with the underlying symbol by SaveResult for stock trades.
+// Filled=false marks a simulated unfilled sell attempt (no booking, cash and
+// positions unchanged); UnfilledModel then names the verdict's model, and is
+// empty for fills and non-option trades (manual unexecuted paths are a later
+// slice, plan §二).
 type Trade struct {
-	Ts        time.Time `json:"ts"`
-	Action    string    `json:"action"` // buy/sell/*-call/*-put/exercise-call/exercise-put/expire-otm
-	Symbol    string    `json:"symbol"`
-	Size      float64   `json:"size"`  // shares for stock/exercise, contracts for option fills
-	Price     float64   `json:"price"` // close, premium, or strike
-	CashAfter float64   `json:"cash_after"`
+	Ts            time.Time `json:"ts"`
+	Action        string    `json:"action"` // buy/sell/*-call/*-put/exercise-call/exercise-put/expire-otm
+	Symbol        string    `json:"symbol"`
+	Size          float64   `json:"size"`  // shares for stock/exercise, contracts for option fills
+	Price         float64   `json:"price"` // close, premium, or strike
+	CashAfter     float64   `json:"cash_after"`
+	Filled        bool      `json:"filled"`
+	UnfilledModel string    `json:"unfilled_model,omitempty"`
 }
 
 // buyTol tolerates one-ulp float error in BuyHold's all-in size (cash/close).
@@ -100,9 +120,13 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		Options:  map[string]OptionPosition{},
 		OptPrice: map[string]float64{},
 	}
+	seed := int64(defaultRunSeed)
 	if opts != nil {
 		st.Chain = opts.Chain
 		st.OptBars = opts.Bars
+		if opts.RunSeed != 0 {
+			seed = opts.RunSeed
+		}
 	}
 	var (
 		peak, maxDD float64
@@ -136,7 +160,7 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		if err != nil {
 			return nil, fmt.Errorf("backtest: bar %d: strategy: %w", i, err)
 		}
-		if err := settleAction(st, act, size, b, feePerTrade, &trades); err != nil {
+		if err := settleAction(st, act, size, b, feePerTrade, seed, &trades); err != nil {
 			return nil, fmt.Errorf("backtest: bar %d: %w", i, err)
 		}
 		signals = append(signals, makeSignalTrace(b.Ts, s, st, act, size))
@@ -152,6 +176,17 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 	}
 
 	final := st.Equity(bars[len(bars)-1].Close)
+	unfilled := UnfilledStats{
+		AttemptCount:  st.AttemptCount,
+		FillCount:     st.FillCount,
+		UnfilledCount: st.UnfilledCount,
+		ModelKind:     modelKind,
+		ModelVersion:  modelVersion,
+	}
+	if st.AttemptCount > 0 {
+		ratio := float64(st.UnfilledCount) / float64(st.AttemptCount)
+		unfilled.UnfilledRatio = &ratio
+	}
 	return &Result{
 		Equity:      final,
 		TotalReturn: (final - initialCash) / initialCash,
@@ -160,6 +195,7 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		EquityCurve: curve,
 		Trades:      trades,
 		Signals:     signals,
+		Unfilled:    unfilled,
 	}, nil
 }
 
@@ -235,8 +271,9 @@ func markOptions(st *State, ts time.Time) {
 }
 
 // settleAction books one bar's trade: stock trades at the close, option trades
-// at the pending contract's latest close (size = contracts).
-func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade float64, trades *[]Trade) error {
+// at the pending contract's latest close (size = contracts). seed drives the
+// unfilled-attempt draws for sell actions (unfilled.go).
+func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade float64, seed int64, trades *[]Trade) error {
 	switch act {
 	case ActionHold:
 	case ActionBuy:
@@ -254,7 +291,7 @@ func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade
 		st.Position -= size
 		*trades = append(*trades, Trade{Ts: b.Ts, Action: "sell", Size: size, Price: b.Close, CashAfter: st.Cash})
 	case ActionSellCall, ActionBuyCall, ActionSellPut, ActionBuyPut:
-		return settleOptionTrade(st, act, size, b, trades)
+		return settleOptionTrade(st, act, size, b, seed, trades)
 	default:
 		return fmt.Errorf("unknown action %s", act)
 	}
@@ -263,7 +300,11 @@ func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade
 
 // settleOptionTrade books one option action: size contracts of the pending
 // contract at its latest close, enforcing the CSP cash reserve on short puts.
-func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades *[]Trade) error {
+// Sell actions first sample the unfilled-attempt model (unfilled.go): an
+// unfilled attempt books nothing (cash/positions unchanged) but stays in the
+// ledger as a Filled:false Trade, and Pending is consumed so later bars never
+// assume the order filled. Buys settle unconditionally (no sampling).
+func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, seed int64, trades *[]Trade) error {
 	if size <= 0 {
 		return fmt.Errorf("%s size %v; want > 0 contracts", act, size)
 	}
@@ -309,6 +350,25 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades
 				size, reserve, st.Cash+flow)
 		}
 	}
+	if sign < 0 {
+		// A sell attempt consumes the daily order budget and samples the
+		// unfilled model; the fill input comes from the current atomic quote
+		// (missing quote = no market info = maximally illiquid).
+		st.DailyOrders++
+		st.AttemptCount++
+		symbol := ""
+		if st.QuoteBatch != nil {
+			symbol = st.QuoteBatch.Underlying
+		}
+		bid, ask, vol, oi, _ := fillQuote(st, p.Code)
+		if attemptDraw(seed, symbol, p.Code, b.Ts, st.AttemptCount) < failProb(bid, ask, vol, oi) {
+			st.UnfilledCount++
+			*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash, Filled: false, UnfilledModel: unfilledModelLabel()})
+			st.Pending = nil
+			return nil
+		}
+		st.FillCount++
+	}
 	pos := OptionPosition{
 		Code: p.Code, Kind: p.Kind, Strike: p.Strike, Expiry: p.Expiry,
 		Lot: lot, LotSize: lot, Contracts: contracts, AvgPremium: p.AvgPremium,
@@ -322,18 +382,36 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades
 		}
 	}
 	st.Cash += flow
-	*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash})
+	*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash, Filled: true})
 	if pos.Contracts == 0 {
 		delete(st.Options, p.Code)
 	} else {
 		st.Options[p.Code] = pos
 	}
-	if act == ActionSellCall || act == ActionSellPut {
-		st.DailyOrders++
-	}
 	st.OptPrice[p.Code] = price
 	st.Pending = nil
 	return nil
+}
+
+// fillQuote returns the pending contract's market from the current atomic
+// quote batch: bid/ask for the spread component, volume and open interest for
+// the liquidity terms. ok=false when the batch has no quote for the contract
+// (callers then treat all inputs as missing: maximally illiquid).
+func fillQuote(st *State, code string) (bid, ask float64, vol, oi int64, ok bool) {
+	quotes := st.Quotes
+	if st.QuoteBatch != nil {
+		quotes = st.QuoteBatch.Quotes
+	}
+	for _, q := range quotes {
+		name := q.Symbol
+		if name == "" {
+			name = q.Code
+		}
+		if name == code {
+			return q.Bid, q.Ask, q.Volume, q.OpenInterest, true
+		}
+	}
+	return 0, 0, 0, 0, false
 }
 
 func shortPutCashReserve(positions map[string]OptionPosition) float64 {

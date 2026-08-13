@@ -40,6 +40,8 @@ type Options struct {
 	Limit     int
 	Cash      float64
 	Fee       float64
+	// Seed seeds the unfilled-attempt draws (0 = backtest default 42).
+	Seed int64
 }
 
 // SaveParams returns the run inputs persisted by `wbot backtest -save` and
@@ -125,6 +127,7 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 		if err != nil {
 			return nil, err
 		}
+		opts.RunSeed = o.Seed
 	}
 	res, err := backtest.RunOptions(ctx, bars, o.Cash, o.Fee, s, opts)
 	if err != nil {

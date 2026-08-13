@@ -53,9 +53,12 @@ type OptionChain map[string]OptionContract
 type OptionBars map[string][]ingest.Bar
 
 // OptionsData is the runner-injected option universe: chain + per-code bars.
+// RunSeed seeds the unfilled-attempt draws for sell actions (unfilled.go);
+// 0 means defaultRunSeed (42), so runs stay deterministic by default.
 type OptionsData struct {
-	Bars  OptionBars
-	Chain OptionChain
+	Bars    OptionBars
+	Chain   OptionChain
+	RunSeed int64
 	// QuoteBatches are immutable, atomic Wheel quote observations. A batch is
 	// selected by observed_at + snapshot_key; quotes from different batches
 	// are never combined.
@@ -105,6 +108,12 @@ type State struct {
 	SnapshotKey string
 	DailyOrders int
 	ExtremeDay  bool
+	// Fill accounting (unfilled.go): AttemptCount counts every sell attempt
+	// that reaches settlement sampling, FillCount fills, UnfilledCount the
+	// rest. Buys, HOLD and DATA_BLOCKED never increment these.
+	AttemptCount  int64
+	FillCount     int64
+	UnfilledCount int64
 }
 
 // Equity returns total portfolio value: cash + position at price plus option
