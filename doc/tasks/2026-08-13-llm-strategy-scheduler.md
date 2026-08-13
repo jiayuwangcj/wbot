@@ -57,3 +57,13 @@ LLM 策略按固定节奏定时运行:每 5 分钟对 watchlist 标的生成策�
 - **agent 框架合入(53bde40)**:codex 02ab64c 合入主分支,generationPrompt 合并 agent 版 + direction 枚举规则(P1-1),P2-2 option_chain DTE 过滤/P2-3 工具描述对齐/P2-4 工具调用日志一并落地。
 - **round 超时修复(7d5649a)**:信号 668 与 2026-08-13 15:20 tick 同签名失败——round=1 工具调用成功,round 2(带工具结果出最终决策)在 30s 每轮超时被掐断。模型推理最终决策超 30s,非偶发。修复:每轮超时 30s→90s(roundCtx 派生自 totalCtx,180s 总预算仍封顶)。已重建部署。
 - **部署**:已重建 serve 容器(2026-08-13 15:00/15:22 两次),等待下一 llm tick 验证审核输入、agent 工具调用与 round 2 决策。
+
+## 实跑闭环与推送式样(2026-08-13 晚)
+
+- **首次全链路闭环(信号 687,07:41 UTC)**:agent 工具调用→决策(卖出 PUT 430,premium 3.115,delta -0.255,OI 403)→确定性校验→审核门 APPROVE(4 条理由:方向一致/参数合规/数据质量按声明范围/资金覆盖)→带按钮卡片推送→**用户按 ✅ 下单 → CONFIRM(discord)→ FILL(system:watch)模拟盘成交**。目标「看到 llm 策略实际跑起来并且推送下单」达成。
+- **692(07:46)**:LLM_REVIEW APPROVE,带按钮推送待用户处置。
+- **695(07:54)**:REJECTED——**策略性拒绝**(SELL 100 股会破坏 2 张短 Call 的备兑覆盖 → 裸露 Call 风险),审核判断合理,非程序 bug;notes 给了处置建议。
+- **「数据不全=程序 bug」闭环(4 次修复)**:674 规则声明缺失(方向语义+target 镜像非硬约束,ac56d0f)→ 679 生成 JSON 围栏(parseDecisionJSON 剥围栏,b3fa93b)→ 684 systemPrompt 数据范围界定(57cdbfd)→ 输入补全+声明(前面 f81ed8c)。之后无数据类误拒。
+- **拒绝卡与通过卡式样统一(b0c3696)**:老板指令「拒绝单和通过单式样不统一,以审核成功的单子为准,只是底部LLM审核区内容不一并且没有按钮」。alertCard 统一(✅ APPROVE/❌ REJECT/⚠️ 审核失败标签),拒绝卡无按钮;Discord 理由移至**最后一条 embed**(IM 注意力在末尾,老板指令)。
+- **策略来源徽标(af2a88e)**:老板指令「单子未标明是大模型策略还是固化策略生成的」。wheel_signals 加 strategy 列(migration 010,默认 wheel);llmsignal 写 'llm'、wheelrun 写 'wheel';telegram/discord 卡片标题加徽标(🤖 LLM 策略 / ⚙️ 固化策略)。历史数据回填:有 LLM_REVIEW/REJECTED 动作且 details#>>'{input_summary,decision}' 存在 = llmsignal(13 条);wheelrun HOLD/ALERT 保持 wheel。回填键与 wheelrun 审核请求结构区分(Summary 无 decision 键)。
+- **孤儿 ALERT 观察项**:审核在 Submit 内联执行,容器重建会打断 → 无重试机制(654 模式)。本次重建前均等待审核落库。backlog:审核失败重试机制。
