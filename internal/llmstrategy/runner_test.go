@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,6 +167,126 @@ func TestClientUsesDeepseekV4Flash(t *testing.T) {
 		t.Fatal(err)
 	}
 	if decision.Direction != "PUT" || decision.Quantity != 1 {
+		t.Fatalf("decision=%+v", decision)
+	}
+}
+
+type toolExecutorFake struct {
+	calls []string
+	err   error
+}
+
+func (f *toolExecutorFake) result(call string) (any, error) {
+	f.calls = append(f.calls, call)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return map[string]any{"symbol": "HK.00700", "current_price": 459.0}, nil
+}
+func (f *toolExecutorFake) Quote(_ context.Context, symbol string, _ Snapshot) (any, error) {
+	return f.result("quote:" + symbol)
+}
+func (f *toolExecutorFake) OptionChain(_ context.Context, symbol string, minDTE, maxDTE, maxStrikes int, _ Snapshot) (any, error) {
+	return f.result(fmt.Sprintf("option_chain:%s:%d:%d:%d", symbol, minDTE, maxDTE, maxStrikes))
+}
+func (f *toolExecutorFake) OptionQuote(_ context.Context, contract string, _ Snapshot) (any, error) {
+	return f.result("option_quote:" + contract)
+}
+func (f *toolExecutorFake) Account(_ context.Context, symbol string, _ Snapshot) (any, error) {
+	return f.result("account:" + symbol)
+}
+
+func TestClientAgentToolCallThenDecision(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var body struct {
+			Tools    []map[string]any `json:"tools"`
+			Messages []agentMessage   `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if len(body.Tools) != 4 {
+			t.Errorf("tools=%d, want 4", len(body.Tools))
+		}
+		if requests == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"quote","arguments":"{\"symbol\":\"HK.00700\"}"}}]}}]}`))
+			return
+		}
+		last := body.Messages[len(body.Messages)-1]
+		if last.Role != "tool" || last.ToolCallID != "call-1" || last.Name != "quote" || !strings.Contains(last.Content, `"ok":true`) {
+			t.Errorf("tool message=%+v", last)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"symbol\":\"HK.00700\",\"direction\":\"PUT\",\"quantity\":1,\"contract\":\"HK.TCH260821P450000\",\"reason\":\"quote checked\",\"notes\":\"\"}"}}]}`))
+	}))
+	defer srv.Close()
+	executor := &toolExecutorFake{}
+	client, err := NewClient(srv.URL, "fake-key", WithToolExecutor(executor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := client.Generate(context.Background(), Snapshot{Symbol: "HK.00700"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 2 || len(executor.calls) != 1 || decision.Contract != "HK.TCH260821P450000" {
+		t.Fatalf("requests=%d tools=%v decision=%+v", requests, executor.calls, decision)
+	}
+}
+
+func TestClientAgentRoundLimit(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"again","type":"function","function":{"name":"quote","arguments":"{\"symbol\":\"HK.00700\"}"}}]}}]}`))
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL, "fake-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.maxRounds = 2
+	_, err = client.Generate(context.Background(), Snapshot{Symbol: "HK.00700"})
+	if err == nil || !strings.Contains(err.Error(), "exceeded 2 rounds") {
+		t.Fatalf("error=%v", err)
+	}
+	if requests != 2 {
+		t.Fatalf("requests=%d", requests)
+	}
+}
+
+func TestClientAgentFeedsToolErrorBackAndCanDecide(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-error","type":"function","function":{"name":"account","arguments":"{\"symbol\":\"HK.00700\"}"}}]}}]}`))
+			return
+		}
+		var body struct {
+			Messages []agentMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		last := body.Messages[len(body.Messages)-1]
+		if last.Role != "tool" || !strings.Contains(last.Content, `"ok":false`) || !strings.Contains(last.Content, "account unavailable") {
+			t.Errorf("tool error message=%+v", last)
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"{\"symbol\":\"HK.00700\",\"direction\":\"BUY\",\"quantity\":0,\"reason\":\"account unavailable\",\"notes\":\"fail closed\"}"}}]}`))
+	}))
+	defer srv.Close()
+	executor := &toolExecutorFake{err: errors.New("account unavailable")}
+	client, err := NewClient(srv.URL, "fake-key", WithToolExecutor(executor))
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := client.Generate(context.Background(), Snapshot{Symbol: "HK.00700"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Quantity != 0 || decision.Notes != "fail closed" {
 		t.Fatalf("decision=%+v", decision)
 	}
 }
