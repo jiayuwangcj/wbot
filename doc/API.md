@@ -55,7 +55,6 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
     "params": [
       {"name":"price_position_curve","type":"curve","required":true},
       {"name":"max_inventory","type":"number","required":true},
-      {"name":"lot_size","type":"number","default":100},
       {"name":"min_dte","type":"number","default":5},
       {"name":"max_dte","type":"number","default":10},
       {"name":"min_option_quality","type":"number","default":0.6},
@@ -68,7 +67,7 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 ]
 ```
 
-`price_position_curve` 至少两个锚点，`price` 严格递增，`target_inventory` 单调不增且在 `[0,max_inventory]`；DTE 必须位于 5–10，质量分在 `[0,1]`，正常/极端提醒张数硬上限为 1/2。缺少两个 required 字段、未知字段、类型或范围非法时返回 `400 invalid_request`。
+`price_position_curve` 至少两个锚点，`price` 严格递增，`target_inventory` 单调不增且在 `[0,max_inventory]`；DTE 必须位于 5–10，质量分在 `[0,1]`，正常/极端提醒张数硬上限为 1/2。`lot_size` 不接受配置（合约乘数运行时从行情 `contract_size` 实时拉取，拿不到按 100 兜底，2026-08-13）；存量配置里的旧 `lot_size` 键静默忽略。缺少两个 required 字段、未知字段、类型或范围非法时返回 `400 invalid_request`。
 
 ## GET /v1/watchlist
 
@@ -82,7 +81,6 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
     "params": {
       "price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],
       "max_inventory":1200,
-      "lot_size":100,
       "min_dte":5,
       "max_dte":10,
       "min_option_quality":0.6,
@@ -106,7 +104,7 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 ```bash
 curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
   -H 'Content-Type: application/json' \
-  -d '{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":50,"strategic_state":"NORMAL"}}'
+  -d '{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":50,"strategic_state":"NORMAL"}}'
 ```
 
 成功返回 `200` 和存储后的 watchlist 行。`400 invalid_request` 覆盖缺 symbol/strategy、strategy 不是 `wheel`、缺 required 字段、非法曲线、未知字段、类型/范围错误或非 JSON body；`405` 表示方法不允许。`DELETE /v1/watchlist/{symbol}` 只删除关注绑定，不删除配置/快照/信号审计；不存在返回 `404`。

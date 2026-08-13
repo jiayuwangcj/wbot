@@ -24,7 +24,7 @@ CLI 入口保留确定性运行器参数，但产品策略名只有 `wheel`：
 wbot backtest \
   -dsn "$WBOT_PG_DSN" -symbol HK.00700 -timeframe 1d \
   -strategy wheel \
-  -params '{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":480,"target_inventory":600},{"price":550,"target_inventory":0}],"max_inventory":1200,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":50,"strategic_state":"NORMAL"}'
+  -params '{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":480,"target_inventory":600},{"price":550,"target_inventory":0}],"max_inventory":1200,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":50,"strategic_state":"NORMAL"}'
 ```
 
 | flag | 默认 | 说明 |
@@ -36,7 +36,7 @@ wbot backtest \
 | `-limit` | 10000 | DB 输入最大 bars 数 |
 | `-cash` | 10000 | 初始现金（>0） |
 | `-strategy` | `hold` | CLI 实际默认是内部 `hold` 基准；显式 `-strategy wheel` 才运行 Wheel。产品 API/watchlist 只接受 `wheel` |
-| `-params` | — | `wheel` 使用完整结构化配置；`price_position_curve` 与 `max_inventory` 必填，不能猜测；内部 `hold`/`buy-hold` 不接参数 |
+| `-params` | — | `wheel` 使用结构化配置；`price_position_curve` 与 `max_inventory` 必填，其余可选（默认见 `/v1/strategies`）；`lot_size` 不接受配置（行情实时拉取，兜底 100，2026-08-13）；内部 `hold`/`buy-hold` 不接参数 |
 | `-fee` | 0 | 回测费用占位；不改变提醒契约 |
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
@@ -58,7 +58,6 @@ wbot backtest \
       {"price": 550, "target_inventory": 0}
     ],
     "max_inventory": 1200,
-    "lot_size": 100,
     "min_dte": 5,
     "max_dte": 10,
     "min_option_quality": 0.6,
