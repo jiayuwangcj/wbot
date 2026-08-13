@@ -28,7 +28,7 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 | 历史事件回测 | `DATA_BLOCKED` | 现有历史覆盖不足以还原逐 quote/成交事件及同一时点盘口/Greeks | 历史原子 snapshot 覆盖目标日期/DTE，事件 trace 可复现并通过数据质量验收 | 不用 OHLC 猜 bid/ask/Greeks，不把 bar-time 回放冒充事件回测 |
 | 实时/自动执行 | `OUT_OF_SCOPE` | 产品只做人工提醒，不提供实时执行器 | 永久不接交易 API | 无自动确认、无实时执行器、无隐式降级开关 |
 
-状态值 `READY`、`DATA_BLOCKED`、`INTEGRATION_BLOCKED`、`RESEARCH_ONLY`、`OUT_OF_SCOPE` 表示能力闸门；迁移行另有 `NEEDS_RECONFIGURATION`，表示必须由用户提交完整 Wheel 配置后才可继续。任何阻塞响应都应携带 `capability_status`、`blocked_by`、缺失字段和下一启用条件。
+状态值 `READY`、`DATA_BLOCKED`、`INTEGRATION_BLOCKED`、`RESEARCH_ONLY`、`OUT_OF_SCOPE` 表示能力闸门。`NEEDS_RECONFIGURATION` 已废弃：S1 有损迁移后旧行自动映射满仓/清仓价格，无需用户重提交完整配置；迁移行通过配置 `params` 内的 `migration_lossy=true`、`migration_warnings` 和 `migration_original_price_position_curve` 审计字段展示。任何阻塞响应都应携带 `capability_status`、`blocked_by`、缺失字段和下一启用条件。
 
 ## Web UI
 
