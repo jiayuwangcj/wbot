@@ -56,7 +56,14 @@ func validContext() Context {
 	cash := 100000.0
 	actual, zero := 200.0, 0.0
 	price := 459.0
-	return Context{CashAvailable: &cash, Positions: []Position{{Symbol: "HK.00700", Qty: actual}}, Inventory: wheelstore.InventorySnapshot{CurrentPrice: &price, ActualInventory: &actual, OptionDeltaStock: &zero, EffectiveInventory: &actual, TargetInventory: &actual, InventoryGap: &zero}}
+	return Context{
+		CashAvailable: &cash,
+		Positions:     []Position{{Symbol: "HK.00700", Qty: actual}},
+		Inventory:     wheelstore.InventorySnapshot{CurrentPrice: &price, ActualInventory: &actual, OptionDeltaStock: &zero, EffectiveInventory: &actual, TargetInventory: &actual, InventoryGap: &zero},
+		ObservedOptions: map[string]ObservedOption{
+			"HK.TCH260821P450000": {Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5, Delta: -.35, IV: .4, OpenInterest: 100},
+		},
+	}
 }
 func validDecision() Decision {
 	return Decision{Symbol: "HK.00700", Direction: "PUT", Quantity: 1, Contract: "HK.TCH260821P450000", Strike: 450, Expiry: "2026-08-21T00:00:00Z", CurrentPrice: 459, Premium: 8.5, Delta: -.35, IV: .4, OpenInterest: 100, Reason: "行权价低于现价并收取权利金"}
@@ -98,6 +105,21 @@ func TestSubmitRejectsHardConstraintsWithoutAlert(t *testing.T) {
 				t.Fatalf("rejected decision appended %+v", store.signals)
 			}
 		})
+	}
+}
+
+func TestSubmitRejectsFabricatedOptionWhenObservedOptionsEmpty(t *testing.T) {
+	store := &testStore{}
+	svc := &Service{Store: store, Now: func() time.Time { return time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC) }}
+	account := validContext()
+	account.ObservedOptions = nil
+
+	_, err := svc.Submit(context.Background(), validDecision(), account, Policy{})
+	if !errors.Is(err, ErrRejected) {
+		t.Fatalf("err=%v", err)
+	}
+	if len(store.signals) != 0 {
+		t.Fatalf("fabricated option appended %+v", store.signals)
 	}
 }
 

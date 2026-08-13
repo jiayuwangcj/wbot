@@ -45,10 +45,16 @@ func (f *genFake) Generate(context.Context, Snapshot) (llmsignal.Decision, error
 	return llmsignal.Decision{Direction: "PUT", Quantity: 1, Contract: "HK.TCH260821P450000", Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5, Delta: -.35, IV: .4, OpenInterest: 100, Reason: "specific reason"}, f.err
 }
 
-type submitFake struct{ submits, rejections int }
+type submitFake struct {
+	submits, rejections int
+	rejectEmptyOptions  bool
+}
 
-func (f *submitFake) Submit(context.Context, llmsignal.Decision, llmsignal.Context, llmsignal.Policy) (llmsignal.Result, error) {
+func (f *submitFake) Submit(_ context.Context, _ llmsignal.Decision, account llmsignal.Context, _ llmsignal.Policy) (llmsignal.Result, error) {
 	f.submits++
+	if f.rejectEmptyOptions && len(account.ObservedOptions) == 0 {
+		return llmsignal.Result{}, llmsignal.ErrRejected
+	}
 	return llmsignal.Result{}, nil
 }
 func (f *submitFake) RecordGenerationRejection(context.Context, string, error) (int64, error) {
@@ -80,6 +86,28 @@ func TestRunOnceGenerationFailureRecordedAndRetriable(t *testing.T) {
 	}
 	if s.rejections != 1 || s.submits != 0 {
 		t.Fatalf("rejections/submits=%d/%d", s.rejections, s.submits)
+	}
+}
+
+type emptyOptionsMarket struct{}
+
+func (emptyOptionsMarket) Snapshot(context.Context, string, map[string]any, time.Time) (Snapshot, error) {
+	cash := 100000.0
+	return Snapshot{Symbol: "HK.00700", CurrentPrice: 459, CashAvailable: &cash}, nil
+}
+
+func TestRunOnceRejectsFabricatedOptionWhenSnapshotOptionsEmpty(t *testing.T) {
+	s := &submitFake{rejectEmptyOptions: true}
+	r := Runner{
+		Watchlist: wlFake{[]watchlist.Item{{Symbol: "HK.00700", Strategy: "llm"}}},
+		Dedupe:    &dedupeFake{}, Market: emptyOptionsMarket{}, Generator: &genFake{}, Submitter: s,
+	}
+
+	if err := r.RunOnce(context.Background()); err == nil {
+		t.Fatal("want pass error")
+	}
+	if s.submits != 1 || s.rejections != 1 {
+		t.Fatalf("submits/rejections=%d/%d", s.submits, s.rejections)
 	}
 }
 

@@ -273,16 +273,17 @@ func (s *Service) validate(ctx context.Context, d Decision, account Context, p P
 		if d.IV <= 0 || d.OpenInterest <= 0 {
 			return reject("iv and open_interest must be positive")
 		}
-		if len(account.ObservedOptions) > 0 {
-			observed, ok := account.ObservedOptions[d.Contract]
-			if !ok {
-				return reject("contract was not present in the collected option snapshot")
-			}
-			if len(observed.Expiry) < 10 || len(d.Expiry) < 10 || math.Abs(observed.Strike-d.Strike) > .0001 || observed.Expiry[:10] != d.Expiry[:10] ||
-				math.Abs(observed.Premium-d.Premium) > .0001 || math.Abs(observed.Delta-d.Delta) > .0001 ||
-				math.Abs(observed.IV-d.IV) > .0001 || observed.OpenInterest != d.OpenInterest {
-				return reject("decision fields do not match the collected option snapshot")
-			}
+		if len(account.ObservedOptions) == 0 {
+			return reject("collected option snapshot is empty")
+		}
+		observed, ok := account.ObservedOptions[d.Contract]
+		if !ok {
+			return reject("contract was not present in the collected option snapshot")
+		}
+		if len(observed.Expiry) < 10 || len(d.Expiry) < 10 || math.Abs(observed.Strike-d.Strike) > .0001 || observed.Expiry[:10] != d.Expiry[:10] ||
+			math.Abs(observed.Premium-d.Premium) > .0001 || math.Abs(observed.Delta-d.Delta) > .0001 ||
+			math.Abs(observed.IV-d.IV) > .0001 || observed.OpenInterest != d.OpenInterest {
+			return reject("decision fields do not match the collected option snapshot")
 		}
 		if d.Direction == "PUT" {
 			required := float64(d.Quantity*p.LotSize) * d.Strike
