@@ -346,24 +346,41 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 		"pending_orders":   pending,
 		"rules":            wheelReviewRules,
 	}
-	_, action, err := llmreview.RecordLLMGate(ctx, r.deps.Store, r.deps.LLMReviewer, strings.TrimSpace(r.deps.LLMModel), llmreview.GateInput{
-		SignalID:                   signalID,
-		UnexpectedVerdictIsFailure: true,
-		Request: llmreview.ReviewRequest{
-			StrategyConfig: cfg,
-			Signal:         sig,
-			Positions:      positions,
-			CashAvailable:  cashPtr,
-			CurrentPrice:   price,
-			RulesText:      wheelReviewRules,
-			Symbol:         symbol,
-			PendingOrders:  pending,
-			// 审核模型需要当前日期验证 DTE/报价时效(signal 736:
-			// "current_date 为空,无法验证 max_quote_age_seconds=3600")。
-			AsOf: r.now().UTC().Format(time.RFC3339),
-		},
-		Summary: summary,
-	})
+	gate := func() (string, string, error) {
+		return llmreview.RecordLLMGate(ctx, r.deps.Store, r.deps.LLMReviewer, strings.TrimSpace(r.deps.LLMModel), llmreview.GateInput{
+			SignalID:                   signalID,
+			UnexpectedVerdictIsFailure: true,
+			Request: llmreview.ReviewRequest{
+				StrategyConfig: cfg,
+				Signal:         sig,
+				Positions:      positions,
+				CashAvailable:  cashPtr,
+				CurrentPrice:   price,
+				RulesText:      wheelReviewRules,
+				Symbol:         symbol,
+				PendingOrders:  pending,
+				// 审核模型需要当前日期验证 DTE/报价时效(signal 736:
+				// "current_date 为空,无法验证 max_quote_age_seconds=3600")。
+				AsOf: r.now().UTC().Format(time.RFC3339),
+			},
+			Summary: summary,
+		})
+	}
+	_, action, err := gate()
+	if action == "LLM_REVIEW_FAILED" {
+		// 审核请求失败(DNS/网络/超时)多为瞬态:同步重试一次,避免信号被
+		// 落成 failed 后无人再审(2026-08-13: signal 741 一次 DNS 超时被
+		// 硬记 REJECTED,用户看到「模型拒绝」实际是网络错误)。RecordLLMGate
+		// 落库后返回 nil err,失败语义经 disposition=LLM_REVIEW_FAILED 传递。
+		// 重试仍失败才保留 LLM_REVIEW_FAILED(推送器跳过,审计可查)。
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: LLM gate transient failure signal=%d, retrying once: %v\n", symbol, signalID, err)
+		select {
+		case <-time.After(3 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		_, action, err = gate()
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wheelrun: %s: append LLM gate action %s: %v\n", symbol, action, err)
 	}

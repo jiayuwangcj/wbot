@@ -41,9 +41,16 @@ func RecordLLMGate(ctx context.Context, repo wheelstore.SignalRepository, review
 	} else {
 		result, err := reviewer.Review(ctx, input.Request)
 		if err != nil {
+			// 审核请求失败(网络/DNS/超时/非法响应)不是模型裁决,不得冒充
+			// REJECTED——推送器会把 REJECTED 当「模型拒绝」推卡片,用户看到
+			// 拒绝卡片实际是基础设施故障(2026-08-13: signal 741 DNS 超时被
+			// 硬记 REJECTED 的教训)。落 LLM_REVIEW_FAILED 区分「审核未完成」
+			// 与「模型真拒绝」:verdict 仍 REJECT (fail-closed 不 APPROVE),
+			// 推送器对 failed 跳过推送、推进游标, 审计里 error 字段可查。
 			reason := err.Error()
 			details["reasons"] = []string{reason}
 			details["error"] = reason
+			disposition = "LLM_REVIEW_FAILED"
 		} else {
 			verdict = strings.ToUpper(strings.TrimSpace(result.Verdict))
 			reasons := result.Reasons

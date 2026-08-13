@@ -326,6 +326,16 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 			s.pushRejectedSignal(ctx, sig, rejection)
 			return false
 		}
+		// LLM_REVIEW_FAILED: 审核请求失败(网络/DNS/超时)而非模型裁决,不得
+		// 当「模型拒绝」推卡片,跳过推送并推进游标(2026-08-13: signal 741
+		// DNS 超时曾被冒充 REJECTED 的教训;失败原因在 DB 审计可查)。
+		if failed, ferr := s.store.HasAction(ctx, sig.ID, "LLM_REVIEW_FAILED"); ferr != nil {
+			s.logf("push: %s signal=%d: failed check: %v", sig.Symbol, sig.ID, ferr)
+			return true
+		} else if failed {
+			s.logf("push: %s signal=%d: LLM review failed (transient); skip push", sig.Symbol, sig.ID)
+			return false
+		}
 		if s.now().Sub(sig.CreatedAt) > signalFreshWindow {
 			s.logf("push: %s signal=%d: not pushed (no LLM review within freshness window)", sig.Symbol, sig.ID)
 			return false

@@ -504,11 +504,15 @@ func TestRunOnceLLMGateStates(t *testing.T) {
 	if len(store.signals) != len(symbols) {
 		t.Fatalf("signals = %d; want %d", len(store.signals), len(symbols))
 	}
-	if len(store.actions) != len(symbols) {
-		t.Fatalf("actions = %d; want %d", len(store.actions), len(symbols))
+	// failed 场景重试也失败:首次 + 重试各落一条 LLM_REVIEW_FAILED(审计保留
+	// 两次错误),其余各一条 → 总动作 = 标的数 + 1。
+	if len(store.actions) != len(symbols)+1 {
+		t.Fatalf("actions = %d; want %d", len(store.actions), len(symbols)+1)
 	}
-	if len(reviewer.requests) != len(symbols) {
-		t.Fatalf("review requests = %d; want %d", len(reviewer.requests), len(symbols))
+	// failed 场景的审核请求失败会同步重试一次(2026-08-13 修复),所以
+	// 请求数 = 标的数 + 1;其余标的一次通过。
+	if len(reviewer.requests) != len(symbols)+1 {
+		t.Fatalf("review requests = %d; want %d", len(reviewer.requests), len(symbols)+1)
 	}
 	for _, req := range reviewer.requests {
 		if req.RulesText == "" || req.StrategyConfig == nil || req.Signal == nil || req.Positions == nil {
@@ -545,7 +549,9 @@ func TestRunOnceLLMGateStates(t *testing.T) {
 	if rejectedAction.Details["reasons"].([]string)[0] != "risk limit" {
 		t.Fatalf("rejected reasons = %+v", rejectedAction.Details["reasons"])
 	}
-	failedAction := assertAction(failed, "REJECTED", "REJECT")
+	// 审核请求失败(瞬态)落 LLM_REVIEW_FAILED,不是模型裁决,不得冒充
+	// REJECTED(2026-08-13: signal 741 DNS 超时被硬记 REJECTED 的教训)。
+	failedAction := assertAction(failed, "LLM_REVIEW_FAILED", "REJECT")
 	if failedAction.Details["error"] != "fake llm timeout" {
 		t.Fatalf("failed review details = %+v", failedAction.Details)
 	}

@@ -120,3 +120,33 @@ func TestRecordLLMGateHTTPModeKeepsNotes(t *testing.T) {
 		t.Fatalf("details missing notes key: %v", details)
 	}
 }
+
+// TestRecordLLMGateReviewErrorFailsFailedDisposition: 审核请求失败(网络/
+// DNS/超时)不是模型裁决,必须落 LLM_REVIEW_FAILED 而非 REJECTED——推送器
+// 会把 REJECTED 当「模型拒绝」推卡片,用户看到拒绝实际是基础设施故障
+// (2026-08-13: signal 741 DNS 超时被硬记 REJECTED 的教训)。
+func TestRecordLLMGateReviewErrorFailsFailedDisposition(t *testing.T) {
+	repo := &fakeGateRepo{}
+	verdict, disposition, err := RecordLLMGate(context.Background(), repo,
+		fakeGateReviewer{err: errors.New("dial tcp: lookup api.deepseek.com: i/o timeout")},
+		"test-model", GateInput{
+			SignalID:                   7,
+			UnexpectedVerdictIsFailure: true,
+			Request:                    ReviewRequest{Symbol: "HK.TCH"},
+		})
+	if err != nil {
+		t.Fatalf("RecordLLMGate: %v", err)
+	}
+	if disposition != "LLM_REVIEW_FAILED" {
+		t.Fatalf("disposition = %q; want LLM_REVIEW_FAILED (transient error must not impersonate a model rejection)", disposition)
+	}
+	if verdict != "REJECT" {
+		t.Fatalf("verdict = %q; want REJECT (fail-closed)", verdict)
+	}
+	if repo.action.Action != "LLM_REVIEW_FAILED" {
+		t.Fatalf("persisted action = %q; want LLM_REVIEW_FAILED", repo.action.Action)
+	}
+	if repo.action.Details["error"] == nil {
+		t.Fatalf("details must carry the request error: %v", repo.action.Details)
+	}
+}
