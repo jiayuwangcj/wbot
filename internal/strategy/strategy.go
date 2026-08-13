@@ -59,7 +59,8 @@ var templates = []Template{
 		Params: []Param{
 			{Name: "price_position_curve", Type: "curve", Required: true, Help: "价格递增、目标库存单调不增的价格—目标库存锚点"},
 			{Name: "max_inventory", Type: "number", Required: true, Min: 0, Max: math.MaxFloat64, Help: "允许的最大实际库存"},
-			{Name: "lot_size", Type: "number", Default: 100.0, Min: 1, Max: math.MaxFloat64, Help: "期权合约乘数"},
+			// lot_size 不配置:合约乘数运行时从行情 contract_size 实时拉取,
+			// 拿不到时按 100 兜底(老板指令 2026-08-13: 去除可直接拉取的参数)。
 			{Name: "min_dte", Type: "number", Default: 5.0, Min: 5, Max: 10, Help: "最小到期天数（DTE）"},
 			{Name: "max_dte", Type: "number", Default: 10.0, Min: 5, Max: 10, Help: "最大到期天数（DTE）"},
 			{Name: "min_option_quality", Type: "number", Default: 0.6, Min: 0, Max: 1, Help: "候选期权质量最低门槛"},
@@ -110,6 +111,9 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	if err != nil {
 		return wheel.Config{}, err
 	}
+	// lot_size 不再接受配置(行情实时拉取,兜底 100)。存量配置里的旧键静默
+	// 忽略,避免 buildParams 的 unknown-param 校验拒绝老配置。
+	delete(params, "lot_size")
 
 	t, _ := Lookup("wheel")
 	values, err := buildParams(t, params)
@@ -123,10 +127,6 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	maxInventory, err := asNumber(values["max_inventory"])
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param max_inventory: %w", err)
-	}
-	lotSize, err := asInt(values["lot_size"])
-	if err != nil {
-		return wheel.Config{}, fmt.Errorf("strategy wheel: param lot_size: %w", err)
 	}
 	minDTE, err := asInt(values["min_dte"])
 	if err != nil {
@@ -165,7 +165,6 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 		Strategy:              "wheel",
 		PricePositionCurve:    curve,
 		MaxInventory:          maxInventory,
-		LotSize:               lotSize,
 		MinDTE:                minDTE,
 		MaxDTE:                maxDTE,
 		MinOptionQuality:      minQuality,

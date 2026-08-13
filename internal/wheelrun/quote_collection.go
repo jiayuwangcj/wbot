@@ -82,7 +82,7 @@ func desiredOptionType(cfg wheel.Config, price, stockShares float64, positions [
 	if err != nil {
 		return "", false
 	}
-	inv := wheel.CalculateInventory(stockShares, 0, positions, cfg.LotSize)
+	inv := wheel.CalculateInventory(stockShares, 0, positions, wheel.DefaultLotSize)
 	gap := target - inv.EffectiveInventory
 	if math.Abs(gap) <= cfg.NoTradeGap {
 		return "", false

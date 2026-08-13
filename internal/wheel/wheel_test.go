@@ -10,7 +10,7 @@ import (
 )
 
 func testConfig(state string) Config {
-	return Config{Strategy: "wheel", PricePositionCurve: []PricePoint{{Price: 400, TargetInventory: 1200}, {Price: 480, TargetInventory: 600}, {Price: 550, TargetInventory: 0}}, MaxInventory: 1200, LotSize: 100, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, MaxDailyOrders: 1, ExtremeMaxDailyOrders: 2, NoTradeGap: 50, StrategicState: state}
+	return Config{Strategy: "wheel", PricePositionCurve: []PricePoint{{Price: 400, TargetInventory: 1200}, {Price: 480, TargetInventory: 600}, {Price: 550, TargetInventory: 0}}, MaxInventory: 1200, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, MaxDailyOrders: 1, ExtremeMaxDailyOrders: 2, NoTradeGap: 50, StrategicState: state}
 }
 
 func testQuote(kind string, strike float64, expiry time.Time) OptionQuote {
@@ -98,7 +98,10 @@ func TestQuoteValidationTable(t *testing.T) {
 		{"wrong DTE", func(q *OptionQuote) { q.Expiry = asOf.AddDate(0, 0, 11) }, true},
 		{"stale", func(q *OptionQuote) { q.QuoteTime = asOf.Add(-25 * time.Hour) }, true},
 		{"missing timestamp", func(q *OptionQuote) { q.QuoteTime = time.Time{} }, true},
-		{"bad lot", func(q *OptionQuote) { q.LotSize = 10 }, true},
+		{"missing lot", func(q *OptionQuote) { q.LotSize = 0 }, true},
+		// Lot size comes from the live quote now; any positive value is accepted
+		// (config no longer carries one, 2026-08-13).
+		{"mismatched lot accepted", func(q *OptionQuote) { q.LotSize = 10 }, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

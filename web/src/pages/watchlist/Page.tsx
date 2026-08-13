@@ -122,9 +122,13 @@ function configParams(config: Record<string, unknown>): Record<string, unknown> 
 function configSummary(config: WheelConfigVersion): string {
   const params = configParams(config.config);
   const curve = params.price_position_curve;
-  const anchors = Array.isArray(curve) ? curve.length : "?";
+  const priceLow = Array.isArray(curve) && curve.length > 0 ? numberValue(curve[0]?.price) : null;
+  const priceHigh = Array.isArray(curve) && curve.length > 1 ? numberValue(curve[curve.length - 1]?.price) : null;
   const maxInventory = numberValue(params.max_inventory);
-  return `wheel · 曲线 ${anchors} 锚点 · 最大库存 ${maxInventory === null ? "?" : formatNumber(maxInventory)}`;
+  const range = priceLow !== null && priceHigh !== null
+    ? `${formatNumber(priceLow)}–${formatNumber(priceHigh)}`
+    : priceLow !== null ? `${formatNumber(priceLow)}–?` : "?";
+  return `wheel · 价格 ${range} · 最大库存 ${maxInventory === null ? "?" : formatNumber(maxInventory)}`;
 }
 
 function configState(config: WheelConfigVersion): string {

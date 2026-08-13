@@ -66,7 +66,7 @@ func TestContractSchemaRequiredAndDefaults(t *testing.T) {
 		t.Fatalf("critical schema = %+v %+v", byName["price_position_curve"], byName["max_inventory"])
 	}
 	defaults := map[string]any{
-		"lot_size": 100.0, "min_dte": 5.0, "max_dte": 10.0,
+		"min_dte": 5.0, "max_dte": 10.0,
 		"min_option_quality": 0.6, "max_daily_orders": 1.0,
 		"extreme_max_daily_orders": 2.0, "no_trade_gap": 50.0,
 		"strategic_state": wheel.StateNormal,
@@ -93,7 +93,7 @@ func TestParseConfigRequiresStrategicInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseConfig(defaults) error: %v", err)
 	}
-	if cfg.LotSize != 100 || cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 ||
+	if cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 ||
 		cfg.MaxDailyOrders != 1 || cfg.ExtremeMaxDailyOrders != 2 || cfg.NoTradeGap != 50 || cfg.StrategicState != wheel.StateNormal {
 		t.Fatalf("defaults = %+v", cfg)
 	}
@@ -102,7 +102,7 @@ func TestParseConfigRequiresStrategicInputs(t *testing.T) {
 func TestParseConfigValidationAndRoundTrip(t *testing.T) {
 	params := validParams()
 	params["strategic_state"] = wheel.StateCaution
-	params["lot_size"] = 200
+	params["lot_size"] = 200 // legacy key must be ignored (2026-08-13)
 	cfg, err := ParseConfig(params)
 	if err != nil {
 		t.Fatalf("ParseConfig() error: %v", err)
@@ -120,7 +120,7 @@ func TestParseConfigValidationAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseConfig(JSON map) error: %v", err)
 	}
-	if parsed.MaxInventory != cfg.MaxInventory || parsed.LotSize != cfg.LotSize || parsed.StrategicState != cfg.StrategicState {
+	if parsed.MaxInventory != cfg.MaxInventory || parsed.StrategicState != cfg.StrategicState {
 		t.Fatalf("round trip = %+v; want %+v", parsed, cfg)
 	}
 

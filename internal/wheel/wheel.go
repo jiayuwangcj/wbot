@@ -42,7 +42,25 @@ const (
 	CapabilityReady           = "READY"
 	CapabilityDataBlocked     = "DATA_BLOCKED"
 	defaultMaxQuoteAgeSeconds = 24 * 60 * 60
+	// DefaultLotSize is the market-standard contract multiplier used only as a
+	// fallback for position-derived inventory math; candidate quotes carry
+	// their live contract_size and are never allowed to fall back (a missing
+	// lot on a quote is a data defect and DATA_BLOCKs the candidate).
+	DefaultLotSize = 100
 )
+
+// candidateLotSize returns the contract multiplier of the first quoted
+// candidate that carries one. All contracts of a family share the same lot
+// size, so the first valid quote is representative; DefaultLotSize is the
+// market default when no candidate quotes a size.
+func candidateLotSize(quotes []OptionQuote) int {
+	for _, q := range quotes {
+		if q.LotSize > 0 {
+			return q.LotSize
+		}
+	}
+	return DefaultLotSize
+}
 
 // QuoteMaxAge returns the configured freshness window. Keeping the default in
 // one place lets loaders include a still-fresh snapshot just before a bounded
@@ -76,11 +94,13 @@ type PricePoint struct {
 }
 
 // Config is the complete, structured wheel configuration.
+// LotSize is deliberately absent: the contract multiplier comes from the
+// live quote's contract_size, with a 100-share market default as fallback
+// (2026-08-13: 去除可直接从行情拉取的配置参数).
 type Config struct {
 	Strategy              string       `json:"strategy" yaml:"strategy"`
 	PricePositionCurve    []PricePoint `json:"price_position_curve" yaml:"price_position_curve"`
 	MaxInventory          float64      `json:"max_inventory" yaml:"max_inventory"`
-	LotSize               int          `json:"lot_size" yaml:"lot_size"`
 	MinDTE                int          `json:"min_dte" yaml:"min_dte"`
 	MaxDTE                int          `json:"max_dte" yaml:"max_dte"`
 	MinOptionQuality      float64      `json:"min_option_quality" yaml:"min_option_quality"`
@@ -116,8 +136,8 @@ func (c Config) Validate() error {
 		}
 		prev = p
 	}
-	if c.LotSize <= 0 || c.MinDTE < 5 || c.MaxDTE > 10 || c.MinDTE > c.MaxDTE {
-		return fmt.Errorf("wheel: DTE must be a valid range within 5..10 and lot_size positive")
+	if c.MinDTE < 5 || c.MaxDTE > 10 || c.MinDTE > c.MaxDTE {
+		return fmt.Errorf("wheel: DTE must be a valid range within 5..10")
 	}
 	if !finite(c.MinOptionQuality) || c.MinOptionQuality < 0 || c.MinOptionQuality > 1 {
 		return fmt.Errorf("wheel: min_option_quality must be in [0,1]")
@@ -344,9 +364,6 @@ func (q OptionQuote) Validate(asOf time.Time, cfg Config) error {
 	if !finite(q.impliedVol()) || q.impliedVol() <= 0 || q.Theta == nil || !finite(*q.Theta) || q.Volume <= 0 || q.openInterest() <= 0 || q.LotSize <= 0 {
 		return errors.New("wheel: quote missing IV, Theta, liquidity or lot size")
 	}
-	if cfg.LotSize > 0 && q.LotSize != cfg.LotSize {
-		return errors.New("wheel: quote lot size does not match config")
-	}
 	qt := q.quoteTime()
 	if !asOf.IsZero() && qt.IsZero() {
 		return errors.New("wheel: quote timestamp is missing")
@@ -564,7 +581,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	if err != nil {
 		return Signal{Action: ActionHold, Direction: DirectionHold, Reason: err.Error(), Reasons: []string{err.Error()}}, err
 	}
-	inv := CalculateInventory(in.StockShares, in.FuturesEquivalentShares, in.Positions, cfg.LotSize)
+	inv := CalculateInventory(in.StockShares, in.FuturesEquivalentShares, in.Positions, candidateLotSize(in.Quotes))
 	gap := target - inv.EffectiveInventory
 	base := Signal{Action: ActionHold, Direction: DirectionHold, TargetInventory: target, InventoryGap: gap, ActualInventory: inv.ActualInventory, OptionDeltaStock: inv.OptionDeltaStock, EffectiveInventory: inv.EffectiveInventory, CapabilityStatus: CapabilityReady}
 	if math.Abs(gap) <= cfg.NoTradeGap {
@@ -592,7 +609,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 		}
 	}
 	remaining := limit - in.DailyOrders
-	qty := int(math.Ceil(math.Abs(gap) / float64(cfg.LotSize)))
+	qty := int(math.Ceil(math.Abs(gap) / float64(candidateLotSize(in.Quotes))))
 	if qty < 1 {
 		qty = 1
 	}
@@ -627,13 +644,13 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			if direction == DirectionCall {
 				signed = -float64(qty)
 			}
-			postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(cfg.LotSize)
+			postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(q.LotSize)
 			candidate.PostTradeEffective = EffectiveInventory(inv.ActualInventory, postDelta)
 			candidate.AssignmentInventory = inv.ActualInventory
 			if direction == DirectionPut {
-				candidate.AssignmentInventory += PutAssignmentShares(in.Positions, cfg.LotSize) + float64(qty*cfg.LotSize)
+				candidate.AssignmentInventory += PutAssignmentShares(in.Positions, DefaultLotSize) + float64(qty*q.LotSize)
 			} else {
-				candidate.AssignmentInventory -= CoveredShares(in.Positions, cfg.LotSize) + float64(qty*cfg.LotSize)
+				candidate.AssignmentInventory -= CoveredShares(in.Positions, DefaultLotSize) + float64(qty*q.LotSize)
 			}
 			if direction == DirectionPut && candidate.AssignmentInventory > cfg.MaxInventory+1e-9 {
 				candidate.Reasons = append(candidate.Reasons, "wheel: put assignment exceeds max inventory")
@@ -644,7 +661,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			if direction == DirectionPut && !in.HasCashAvailable {
 				candidate.Reasons = append(candidate.Reasons, "wheel: cash/margin availability is missing")
 				dependencyBlocked = true
-			} else if direction == DirectionPut && in.CashAvailable+1e-9 < PutAssignmentCash(in.Positions, cfg.LotSize)+q.Strike*float64(qty*cfg.LotSize) {
+			} else if direction == DirectionPut && in.CashAvailable+1e-9 < PutAssignmentCash(in.Positions, DefaultLotSize)+q.Strike*float64(qty*q.LotSize) {
 				candidate.Reasons = append(candidate.Reasons, "wheel: cash/margin is insufficient for put assignment")
 			}
 			if math.Abs(target-candidate.PostTradeEffective) > math.Abs(gap)+1e-9 {

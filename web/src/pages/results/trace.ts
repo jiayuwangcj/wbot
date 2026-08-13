@@ -1,5 +1,4 @@
-import { WHEEL_STATES } from "../../components/WheelForm";
-import type { WheelCurvePoint, WheelParams, WheelState } from "../../api/types";
+import type { WheelCurvePoint, WheelParams } from "../../api/types";
 
 // Backtest detail signal rows; the API returns flat fields (backtest.SignalTrace),
 // while the shared type nests them under inventory — decode both shapes at runtime.
@@ -85,8 +84,9 @@ export function toRerunWheelParams(value: unknown): Partial<WheelParams> | null 
   const result: Partial<WheelParams> = { price_position_curve: curve };
   const maxInventory = asNumber(source.max_inventory);
   if (maxInventory !== null) result.max_inventory = maxInventory;
-  const lotSize = asNumber(source.lot_size);
-  if (lotSize !== null) result.lot_size = lotSize;
+  // lot_size is no longer accepted (live contract_size, 2026-08-13); the
+  // remaining legacy keys stay harmless for old data, formValues collapses the
+  // curve to its price range endpoints.
   const minDte = asNumber(source.min_dte);
   if (minDte !== null) result.min_dte = minDte;
   const maxDte = asNumber(source.max_dte);
@@ -99,7 +99,5 @@ export function toRerunWheelParams(value: unknown): Partial<WheelParams> | null 
   if (extremeMaxDailyOrders !== null) result.extreme_max_daily_orders = extremeMaxDailyOrders;
   const noTradeGap = asNumber(source.no_trade_gap);
   if (noTradeGap !== null) result.no_trade_gap = noTradeGap;
-  const strategicState = asString(source.strategic_state);
-  if (WHEEL_STATES.includes(strategicState as WheelState)) result.strategic_state = strategicState as WheelState;
   return result;
 }

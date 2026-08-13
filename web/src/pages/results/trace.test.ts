@@ -82,7 +82,9 @@ describe("toRerunWheelParams", () => {
     expect(params).not.toBeNull();
     expect(params?.price_position_curve).toEqual(curve);
     expect(params?.max_inventory).toBe(100);
-    expect(params?.strategic_state).toBe("CAUTION");
+    // strategic_state/lot_size are legacy keys: the new form derives
+    // everything but the price range and max inventory (2026-08-13).
+    expect(params?.strategic_state).toBeUndefined();
   });
 
   it("reads flat manual-run params", () => {

@@ -85,7 +85,7 @@ describe("WatchlistPage", () => {
     expect(await screen.findByText("1 个标的")).toBeInTheDocument();
     expect(screen.getByText("READY · 未登记原因")).toBeInTheDocument();
     expect(screen.getAllByText("实际 / 有效 / 目标").length).toBeGreaterThan(0);
-    expect(screen.getByText("wheel · 曲线 2 锚点 · 最大库存 100")).toBeInTheDocument();
+    expect(screen.getByText("wheel · 价格 100–120 · 最大库存 100")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /新增观察标的/ })).toBeInTheDocument();
   });
 
@@ -114,7 +114,7 @@ describe("WatchlistPage", () => {
 
     expect(screen.getByText("添加观察标的")).toBeInTheDocument();
     expect(screen.getByDisplayValue("wheel")).toHaveAttribute("type", "hidden");
-    expect(screen.getByText("价格必须严格递增，目标库存必须单调不增且位于 0 与最大库存之间。")).toBeInTheDocument();
+    expect(screen.getByText("只配置价格范围与最大持仓：价格下限（满仓）、价格上限（清仓），区间内的持仓分配由策略自主决定；合约乘数等行情参数实时拉取。")).toBeInTheDocument();
     const form = document.getElementById("watchlist-wheel-form");
     if (!form) throw new Error("missing Wheel form");
     fireEvent.submit(form);
@@ -145,7 +145,7 @@ describe("WatchlistPage", () => {
     expect(symbolInput).toHaveValue("");
     expect(symbolInput).toHaveFocus();
     expect(screen.getByText("添加观察标的")).toBeInTheDocument();
-    const resetPriceInput = document.querySelector<HTMLInputElement>("#watchlist-wheel-form input[placeholder='例如 400']");
+    const resetPriceInput = document.querySelector<HTMLInputElement>("#watchlist-wheel-form input[placeholder='例如 25']");
     if (!resetPriceInput) throw new Error("missing reset price input");
     expect(resetPriceInput).toHaveValue("");
   });
