@@ -864,7 +864,9 @@ WHERE signal_id=$1`, signalID, orderID, strings.TrimSpace(orderIDEx), string(d))
 }
 
 // HasRecentUndisposedSignal implements the scheduler's restart-safe DB
-// dedupe.  A signal is pending until an operator/broker disposition exists.
+// dedupe.  Only actionable ALERT signals count as pending: HOLD/record-only
+// signals (capability or strategy noise) must not block the next evaluation,
+// otherwise a symbol with recurring HOLDs would never produce a new decision.
 func (s *Store) HasRecentUndisposedSignal(ctx context.Context, symbol string, since time.Time) (bool, error) {
 	if err := s.check(); err != nil {
 		return false, err
@@ -877,7 +879,7 @@ func (s *Store) HasRecentUndisposedSignal(ctx context.Context, symbol string, si
 	err := s.db.QueryRowContext(ctx, `
 SELECT EXISTS (
 	SELECT 1 FROM wheel_signals s
-	WHERE s.symbol=$1 AND s.created_at >= $2
+	WHERE s.symbol=$1 AND s.created_at >= $2 AND s.action='ALERT'
 	  AND NOT EXISTS (
 		SELECT 1 FROM wheel_signal_actions a
 		WHERE a.signal_id=s.id AND a.action IN ('CONFIRM','NO','REJECTED')
