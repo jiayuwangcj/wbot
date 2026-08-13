@@ -247,7 +247,7 @@ func runServe(prog string, argv []string) int {
 	wheelRun := fs.Bool("wheel-run", false, "run the wheel live loop for watchlist bindings (default off)")
 	wheelInterval := fs.Duration("wheel-interval", 5*time.Minute, "wheel live loop evaluation interval")
 	llmRun := fs.Bool("llm-run", false, "run the LLM strategy loop for llm watchlist bindings (default off)")
-	llmInterval := fs.Duration("llm-interval", 15*time.Minute, "LLM strategy evaluation interval")
+	llmInterval := fs.Duration("llm-interval", 5*time.Minute, "LLM strategy evaluation interval")
 	wheelEnv := fs.String("wheel-env", "sim", "wheel account env: sim (simulate) or real (read-only evaluation)")
 	telegramRun := fs.Bool("telegram-run", false, "run the wheel Telegram/Discord alert/confirm loop (default off; tokens/chat_ids from ~/.wbot/wbot.conf)")
 

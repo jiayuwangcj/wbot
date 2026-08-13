@@ -48,7 +48,7 @@ services:
       # 所在(virtiofs),/home/jiayu/.wbot 仅为软连接——dockerd 在 macOS 侧,
       # 解析不到 /home/jiayu,写软连接目标一样会挂成空 overlay。
       - /Users/jiayu/.wbot:/root/.wbot
-    command: ["serve", "-wheel-run", "-llm-run", "-llm-interval", "15m", "-telegram-run", "-listen", "0.0.0.0:8080"]
+    command: ["serve", "-wheel-run", "-llm-run", "-llm-interval", "5m", "-telegram-run", "-listen", "0.0.0.0:8080"]
     restart: unless-stopped   # 进程崩溃/主机重启自动拉起(补「serve 无自愈」缺口)
     healthcheck:              # 独立监控 #2026-08-12-monitor-independence:容器级存活探测
       # busybox wget 只做 GET(不支持 PUT 是已知限制,探活无碍);0.0.0.0 因为
