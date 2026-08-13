@@ -55,4 +55,5 @@ LLM 策略按固定节奏定时运行:每 5 分钟对 watchlist 标的生成策�
 - **实盘信号**:631(HOLD/DATA_BLOCKED 首轮 generation rejection)、637(首个 ALERT:SELL 2 股,审核 REJECTED——决策/理由不一致)、648/653(LLM 信号 ALERT,审核 REJECTED:「数据不全」)。
 - **审核输入补全(f81ed8c)**:老板判断「数据不全=程序 bug」。648 审核 4 条拒绝理由逐条对应缺失:inventory(effective/target/gap)、observed_options(期权链快照)、current_date(无法验证 DTE)、规则未声明数据范围(模型按 wheel 参数集核对 llm 策略)。修复:ReviewRequest 加 Inventory/ObservedOptions/AsOf;Submit 填充;ObservedOption 补 json tag;optionRules/stockRules 声明「缺失即不存在,不得因缺字段拒绝」。
 - **agent 框架合入(53bde40)**:codex 02ab64c 合入主分支,generationPrompt 合并 agent 版 + direction 枚举规则(P1-1),P2-2 option_chain DTE 过滤/P2-3 工具描述对齐/P2-4 工具调用日志一并落地。
-- **部署**:已重建 serve 容器(2026-08-13 15:00 前后),等待下一 llm tick 验证审核输入与 agent 工具调用。
+- **round 超时修复(7d5649a)**:信号 668 与 2026-08-13 15:20 tick 同签名失败——round=1 工具调用成功,round 2(带工具结果出最终决策)在 30s 每轮超时被掐断。模型推理最终决策超 30s,非偶发。修复:每轮超时 30s→90s(roundCtx 派生自 totalCtx,180s 总预算仍封顶)。已重建部署。
+- **部署**:已重建 serve 容器(2026-08-13 15:00/15:22 两次),等待下一 llm tick 验证审核输入、agent 工具调用与 round 2 决策。
