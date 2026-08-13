@@ -23,9 +23,10 @@ import (
 // ErrNoBars reports a run whose symbol has no bars in the requested range.
 var ErrNoBars = errors.New("backtest: no bars in range")
 
-// ErrNoOptionData reports a Wheel run whose symbol has bars but no trusted
-// option quote snapshot rows. Legacy option_quotes rows are intentionally not
-// a fallback because they cannot supply executable Greeks or market sides.
+// ErrNoOptionData is retained for callers mapping older executor failures.
+// Run now returns a successful DATA_BLOCKED/HOLD result when bars exist but
+// snapshot rows do not, so a report can expose zero coverage without inventing
+// Greeks or market sides.
 var ErrNoOptionData = errors.New("backtest: no option quote snapshots in range")
 
 // Options is one DB-backed run's inputs; zero values are not defaults — the
@@ -62,6 +63,9 @@ func SaveParams(o Options) map[string]any {
 			}
 		}
 		out["strategy_params"] = params
+	}
+	if o.ConfigVersion != nil {
+		out["config_version"] = *o.ConfigVersion
 	}
 	return out
 }
@@ -103,8 +107,8 @@ func Build(name string, params map[string]any) (backtest.Strategy, *strategy.Tem
 
 // Run loads bars (and option quotes when the strategy needs them) from the
 // database and runs the strategy — the same path as `wbot backtest -dsn`
-// (doc/BACKTEST.md). ErrNoBars/ErrNoOptionData report missing input data;
-// ctx cancellation aborts the run (no result is returned on abort).
+// (doc/BACKTEST.md). ErrNoBars reports missing underlying data; missing option
+// snapshots produce a DATA_BLOCKED result. ctx cancellation aborts the run.
 func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 	if strings.TrimSpace(o.Symbol) == "" || strings.TrimSpace(o.Strategy) == "" {
 		return nil, errors.New("backtest: exec: symbol and strategy are required")
@@ -133,14 +137,10 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(rows) == 0 {
-			return nil, fmt.Errorf("%w: %s", ErrNoOptionData, o.Symbol)
-		}
-		opts, err = backtest.OptionsDataFromQuoteSnapshots(rows)
+		opts, err = optionsDataForRun(rows, o.Seed)
 		if err != nil {
 			return nil, err
 		}
-		opts.RunSeed = o.Seed
 	}
 	res, err := backtest.RunOptions(ctx, bars, o.Cash, o.Fee, s, opts)
 	if err != nil {
@@ -157,6 +157,18 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 		BaselineReturnPct: bars[len(bars)-1].Close/bars[0].Close - 1,
 		SourceHash:        inputHash,
 	}, nil
+}
+
+func optionsDataForRun(rows []wheelstore.QuoteSnapshotRecord, seed int64) (*backtest.OptionsData, error) {
+	if len(rows) == 0 {
+		return &backtest.OptionsData{RunSeed: seed}, nil
+	}
+	opts, err := backtest.OptionsDataFromQuoteSnapshots(rows)
+	if err != nil {
+		return nil, err
+	}
+	opts.RunSeed = seed
+	return opts, nil
 }
 
 // sourceHash fingerprints the semantic market inputs consumed by Run. It

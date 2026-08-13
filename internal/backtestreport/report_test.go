@@ -22,6 +22,13 @@ func testInput(attempts, fills, unfilled int64) Input {
 		stats.UnfilledRatio = &ratio
 	}
 	configVersion := 1
+	finalEquity := 10123.0
+	holdings := 123.0
+	optionValue := 0.0
+	realized := 100.0
+	unrealized := 23.0
+	coverage := 0.0
+	cycleComplete := false
 	return Input{
 		Symbol: "HK.00883", Strategy: "wheel",
 		Params:        map[string]any{"full_position_price": 48.0, "zero_position_price": 55.0, "max_inventory": 22000.0},
@@ -29,7 +36,12 @@ func testInput(attempts, fills, unfilled int64) Input {
 		InitialCash: 10000, Start: start, End: end, BaselineReturnPct: 0.008,
 		SourceHash: "sha256-test-source",
 		Result: &backtest.Result{Equity: 10123, TotalReturn: 0.0123, MaxDrawdown: 0.05, Bars: 2, Unfilled: stats,
-			Fees: backtest.FeeSummary{Included: true, PerTrade: 3, TotalAmount: 9, StockAmount: 3, OptionAmount: 6, ChargedTradeCount: 3}},
+			Fees: backtest.FeeSummary{Included: true, PerTrade: 3, TotalAmount: 9, StockAmount: 3, OptionAmount: 6, ChargedTradeCount: 3},
+			Terminal: backtest.TerminalSummary{ValuationStatus: backtest.ValuationComplete, SettlementStatus: backtest.SettlementOpenOptionLegs, CashAmount: 10000,
+				OptionMarketValueAmount: &optionValue, HoldingsMarketValueAmount: &holdings, FinalEquityAmount: &finalEquity, OpenOptionLegCount: 1,
+				RealizedPnLAmount: &realized, UnrealizedPnLAmount: &unrealized, EventBasis: "mechanical_backtest", PnLStatus: backtest.ValuationComplete},
+			DataQuality: backtest.DataQualitySummary{Status: "DATA_BLOCKED", OptionDataRequired: true, TotalBarCount: 2, BlockedBarCount: 2,
+				ValidCoverageRatio: &coverage, MissingRequiredFieldCounts: map[string]int64{"bid": 0}, HistoricalOptionCycleComplete: &cycleComplete, BlockedBy: []string{"option_quote_snapshots"}}},
 	}
 }
 
@@ -38,7 +50,7 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.SchemaVersion != "1.0" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
+	if r.SchemaVersion != "1.1" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
 		t.Fatalf("identity = %+v", r)
 	}
 	if r.Identity.DataWindow.From != "2024-01-01T00:00:00Z" || r.Identity.DataWindow.To != "2024-01-02T00:00:00Z" {
@@ -56,6 +68,9 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := raw["result"].(map[string]any)
+	if result["net_return_pct"] != nil || result["net_return_amount"] != nil || result["excess_return_pct"] != nil || result["return_status"] != "not_applicable_data_blocked" || result["window_mark_to_market_return_pct"] != 0.0123 {
+		t.Fatalf("blocked return projection = %#v; want null net fields and explicit window mark", result)
+	}
 	if result["unfilled_ratio"] != nil {
 		t.Fatalf("JSON unfilled_ratio = %#v; want null", result["unfilled_ratio"])
 	}
@@ -70,6 +85,14 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	cost := result["cost_model"].(map[string]any)
 	if cost["fees_included"] != true || cost["fee_per_trade"] != 3.0 || cost["total_fees_amount"] != 9.0 || cost["stock_fees_amount"] != 3.0 || cost["option_fees_amount"] != 6.0 || cost["charged_trade_count"] != 3.0 {
 		t.Fatalf("cost_model = %#v; want the runner fee ledger", cost)
+	}
+	terminal := raw["terminal"].(map[string]any)
+	if terminal["open_option_leg_count"] != 1.0 || terminal["realized_pnl_amount"] != 100.0 || terminal["unrealized_pnl_amount"] != 23.0 || terminal["broker_assignment_count"] != nil {
+		t.Fatalf("terminal = %#v; want mechanical P&L and null broker facts", terminal)
+	}
+	quality := raw["data_quality"].(map[string]any)
+	if quality["status"] != "DATA_BLOCKED" || quality["blocked_bar_count"] != 2.0 || quality["valid_coverage_ratio"] != 0.0 || quality["historical_option_cycle_complete"] != false {
+		t.Fatalf("data_quality = %#v; want explicit blocked coverage", quality)
 	}
 }
 
@@ -131,10 +154,13 @@ func TestBuildAttemptRatioAndDeterministicRendering(t *testing.T) {
 	if !bytes.Equal(ha, hb) {
 		t.Fatal("same report rendered different HTML bytes")
 	}
-	for _, want := range []string{"og:title", "og:description", "theme-color", "净收益", "最大回撤", "未成交率", "停止原因", "总费用", "期权费用", "40.00%", "overflow-x:hidden", "@media(max-width:430px)"} {
+	for _, want := range []string{"og:title", "og:description", "theme-color", "窗口末估值变动", "数据有效覆盖率", "窗口末未平仓腿", "已实现 P&amp;L", "最大回撤", "未成交率", "停止原因", "总费用", "期权费用", "40.00%", "overflow-x:hidden", "@media(max-width:430px)"} {
 		if !bytes.Contains(ha, []byte(want)) {
 			t.Fatalf("HTML missing %q", want)
 		}
+	}
+	if bytes.Contains(ha, []byte("净收益")) {
+		t.Fatal("DATA_BLOCKED HTML labels a mechanical window mark as net profit")
 	}
 }
 
@@ -177,7 +203,7 @@ func TestBuildESReusesSchemaAndRequiresDistinctTestSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.ReportKind != "es_train" || r.Train == nil || r.Identity.Windows == nil || r.Identity.CapabilityStatus != "RESEARCH_ONLY" || len(r.Generations) != 1 || len(r.Candidates) != 1 {
+	if r.ReportKind != "es_train" || r.Train == nil || r.Identity.Windows == nil || r.Identity.CapabilityStatus != "DATA_BLOCKED" || len(r.Generations) != 1 || len(r.Candidates) != 1 {
 		t.Fatalf("ES report = %+v", r)
 	}
 	in.Train.Seeds = []int64{1, 2, 1}

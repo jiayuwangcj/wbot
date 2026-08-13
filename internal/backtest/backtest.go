@@ -26,6 +26,8 @@ type Result struct {
 	Signals     []SignalTrace
 	Unfilled    UnfilledStats
 	Fees        FeeSummary
+	Terminal    TerminalSummary
+	DataQuality DataQualitySummary
 }
 
 // FeeSummary is the fee ledger for fills produced by one run. Included means
@@ -191,7 +193,11 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		}
 	}
 
+	terminal := terminalSummary(st, initialCash, bars[len(bars)-1].Close)
 	final := st.Equity(bars[len(bars)-1].Close)
+	if terminal.FinalEquityAmount != nil {
+		final = *terminal.FinalEquityAmount
+	}
 	unfilled := UnfilledStats{
 		AttemptCount:  st.AttemptCount,
 		FillCount:     st.FillCount,
@@ -213,6 +219,8 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		Signals:     signals,
 		Unfilled:    unfilled,
 		Fees:        summarizeFees(trades, feePerTrade),
+		Terminal:    terminal,
+		DataQuality: summarizeDataQuality(opts, signals),
 	}, nil
 }
 
@@ -245,13 +253,7 @@ func latestQuoteBatch(opts *OptionsData, ts time.Time) *QuoteSnapshotBatch {
 	if opts == nil {
 		return nil
 	}
-	batches := opts.QuoteBatches
-	if len(batches) == 0 {
-		batches = opts.Snapshots
-	}
-	if len(batches) == 0 {
-		batches = opts.QuoteSnapshots
-	}
+	batches := optionQuoteBatches(opts)
 	var best *QuoteSnapshotBatch
 	for i := range batches {
 		b := &batches[i]
@@ -325,15 +327,15 @@ func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade
 			return fmt.Errorf("buy %v shares at close %v exceeds cash %v", size, b.Close, st.Cash)
 		}
 		st.Cash -= size*b.Close + feePerTrade
-		st.Position += size
-		*trades = append(*trades, Trade{Ts: b.Ts, Action: "buy", Size: size, Price: b.Close, CashAfter: st.Cash, Fee: feePerTrade})
+		applyStockPosition(st, size, b.Close)
+		*trades = append(*trades, Trade{Ts: b.Ts, Action: "buy", Size: size, Price: b.Close, CashAfter: st.Cash, Fee: feePerTrade, Filled: true})
 	case ActionSell:
 		if size < 0 || size > st.Position+buyTol {
 			return fmt.Errorf("sell %v shares exceeds position %v", size, st.Position)
 		}
 		st.Cash += size*b.Close - feePerTrade
-		st.Position -= size
-		*trades = append(*trades, Trade{Ts: b.Ts, Action: "sell", Size: size, Price: b.Close, CashAfter: st.Cash, Fee: feePerTrade})
+		applyStockPosition(st, -size, b.Close)
+		*trades = append(*trades, Trade{Ts: b.Ts, Action: "sell", Size: size, Price: b.Close, CashAfter: st.Cash, Fee: feePerTrade, Filled: true})
 	case ActionSellCall, ActionBuyCall, ActionSellPut, ActionBuyPut:
 		return settleOptionTrade(st, act, size, b, feePerTrade, seed, trades)
 	default:
@@ -424,11 +426,7 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, feePer
 		MarketDelta: p.MarketDelta, Delta: p.Delta,
 	}
 	if old, ok := st.Options[p.Code]; ok {
-		net := old.Contracts*old.AvgPremium + contracts*p.AvgPremium
-		pos.Contracts += old.Contracts
-		if pos.Contracts != 0 {
-			pos.AvgPremium = net / pos.Contracts
-		}
+		pos = mergeOptionPosition(old, pos)
 	}
 	st.Cash += netFlow
 	*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash, Fee: feePerTrade, Filled: true})
@@ -495,11 +493,22 @@ func settleExpired(st *State, ts time.Time, trades *[]Trade) {
 	sort.Strings(codes)
 	for _, code := range codes {
 		p := st.Options[code]
-		shares := p.Contracts * float64(p.Lot)
+		lot := p.Lot
+		if lot <= 0 {
+			lot = p.LotSize
+		}
+		shares := p.Contracts * float64(lot)
+		st.ExpiryCount++
+		if p.Contracts < 0 {
+			st.ShortExpiryCount++
+		}
 		switch p.Kind {
 		case OptionCall:
 			if st.Price > p.Strike {
-				st.Position += shares
+				if p.Contracts < 0 {
+					st.AssignmentCount++
+				}
+				applyStockPosition(st, shares, p.Strike)
 				st.Cash -= shares * p.Strike
 				*trades = append(*trades, Trade{Ts: ts, Action: "exercise-call", Symbol: code, Size: shares, Price: p.Strike, CashAfter: st.Cash})
 			} else {
@@ -507,7 +516,10 @@ func settleExpired(st *State, ts time.Time, trades *[]Trade) {
 			}
 		case OptionPut:
 			if st.Price < p.Strike {
-				st.Position -= shares
+				if p.Contracts < 0 {
+					st.AssignmentCount++
+				}
+				applyStockPosition(st, -shares, p.Strike)
 				st.Cash += shares * p.Strike
 				*trades = append(*trades, Trade{Ts: ts, Action: "exercise-put", Symbol: code, Size: shares, Price: p.Strike, CashAfter: st.Cash})
 			} else {

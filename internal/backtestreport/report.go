@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	SchemaVersion           = "1.0"
+	SchemaVersion           = "1.1"
 	ParamsDictionaryVersion = "params-1.0"
 	orderAssumption         = "卖出期权,按 Bid 价尝试成交,有效时长=bar 内"
 )
@@ -56,22 +56,25 @@ type ReportConfig struct {
 }
 
 type MoneyResult struct {
-	NetReturnPct           float64       `json:"net_return_pct"`
-	NetReturnAmount        float64       `json:"net_return_amount"`
-	BaselineReturnPct      float64       `json:"baseline_return_pct"`
-	BaselineName           string        `json:"baseline_name"`
-	ExcessReturnPct        float64       `json:"excess_return_pct"`
-	MaxDrawdownPct         float64       `json:"max_drawdown_pct"`
-	TailLossPct            *float64      `json:"tail_loss_pct"`
-	AttemptCount           int64         `json:"attempt_count"`
-	FillCount              int64         `json:"fill_count"`
-	UnfilledCount          int64         `json:"unfilled_count"`
-	UnfilledRatio          *float64      `json:"unfilled_ratio"`
-	UnfilledModel          UnfilledModel `json:"unfilled_model"`
-	CostModel              CostModel     `json:"cost_model"`
-	ManualNotExecutedCount int64         `json:"manual_not_executed_count"`
-	HardViolations         int64         `json:"hard_violations"`
-	StockAssignmentRate    *float64      `json:"stock_assignment_rate"`
+	ReturnStatus                string        `json:"return_status"`
+	NetReturnPct                *float64      `json:"net_return_pct"`
+	NetReturnAmount             *float64      `json:"net_return_amount"`
+	WindowMarkToMarketReturnPct *float64      `json:"window_mark_to_market_return_pct"`
+	WindowMarkToMarketAmount    *float64      `json:"window_mark_to_market_amount"`
+	BaselineReturnPct           float64       `json:"baseline_return_pct"`
+	BaselineName                string        `json:"baseline_name"`
+	ExcessReturnPct             *float64      `json:"excess_return_pct"`
+	MaxDrawdownPct              float64       `json:"max_drawdown_pct"`
+	TailLossPct                 *float64      `json:"tail_loss_pct"`
+	AttemptCount                int64         `json:"attempt_count"`
+	FillCount                   int64         `json:"fill_count"`
+	UnfilledCount               int64         `json:"unfilled_count"`
+	UnfilledRatio               *float64      `json:"unfilled_ratio"`
+	UnfilledModel               UnfilledModel `json:"unfilled_model"`
+	CostModel                   CostModel     `json:"cost_model"`
+	ManualNotExecutedCount      int64         `json:"manual_not_executed_count"`
+	HardViolations              int64         `json:"hard_violations"`
+	StockAssignmentRate         *float64      `json:"stock_assignment_rate"`
 }
 
 type UnfilledModel struct {
@@ -134,17 +137,19 @@ type StrategyParamsSnapshot struct {
 }
 
 type Report struct {
-	SchemaVersion string           `json:"schema_version"`
-	ReportID      string           `json:"report_id"`
-	ReportKind    string           `json:"report_kind"`
-	Identity      Identity         `json:"identity"`
-	Train         *Train           `json:"train,omitempty"`
-	Result        MoneyResult      `json:"result"`
-	Generations   []Generation     `json:"generations,omitempty"`
-	Candidates    []Candidate      `json:"candidates"`
-	Audit         Audit            `json:"audit"`
-	Risk          []string         `json:"risk"`
-	Trajectory    []TrajectoryStep `json:"trajectory,omitempty"`
+	SchemaVersion string                      `json:"schema_version"`
+	ReportID      string                      `json:"report_id"`
+	ReportKind    string                      `json:"report_kind"`
+	Identity      Identity                    `json:"identity"`
+	Train         *Train                      `json:"train,omitempty"`
+	Result        MoneyResult                 `json:"result"`
+	Terminal      backtest.TerminalSummary    `json:"terminal"`
+	DataQuality   backtest.DataQualitySummary `json:"data_quality"`
+	Generations   []Generation                `json:"generations,omitempty"`
+	Candidates    []Candidate                 `json:"candidates"`
+	Audit         Audit                       `json:"audit"`
+	Risk          []string                    `json:"risk"`
+	Trajectory    []TrajectoryStep            `json:"trajectory,omitempty"`
 }
 
 type Train struct {
@@ -256,6 +261,9 @@ func Build(in Input) (*Report, error) {
 	if in.InitialCash <= 0 {
 		return nil, errors.New("backtest report: initial cash must be positive")
 	}
+	if math.Abs(in.Result.Fees.TotalAmount-in.Result.Fees.StockAmount-in.Result.Fees.OptionAmount) > 1e-9 {
+		return nil, errors.New("backtest report: fee components do not match total")
+	}
 	if strings.TrimSpace(in.SourceHash) == "" {
 		return nil, errors.New("backtest report: source hash is required")
 	}
@@ -272,7 +280,15 @@ func Build(in Input) (*Report, error) {
 		in.Params = map[string]any{}
 	}
 
-	capability, blocked := capability(in.Result.Signals)
+	quality := normalizeDataQuality(in.Strategy, in.Result.DataQuality, in.Result.Signals)
+	terminal := normalizeTerminal(in.Result, in.InitialCash)
+	if err := validateTerminal(terminal, in.InitialCash); err != nil {
+		return nil, err
+	}
+	if quality.TotalBarCount != quality.ReadyBarCount+quality.BlockedBarCount {
+		return nil, errors.New("backtest report: data quality bar counts are inconsistent")
+	}
+	capability, blocked := capability(in.Strategy, in.Result.Signals, quality)
 	market, currency := marketCurrency(in.Symbol)
 	snapshot := struct {
 		Symbol        string         `json:"symbol"`
@@ -294,6 +310,18 @@ func Build(in Input) (*Report, error) {
 	digest := sha256.Sum256(snapshotJSON)
 	hash := hex.EncodeToString(digest[:])
 
+	windowReturnAmount, windowReturnPct := terminalWindowReturn(terminal, in.InitialCash)
+	var netReturnAmount, netReturnPct, excessReturnPct *float64
+	returnStatus := "not_applicable_data_blocked"
+	if windowReturnAmount == nil || windowReturnPct == nil {
+		returnStatus = "not_applicable_incomplete_valuation"
+	}
+	if in.Strategy != "wheel" && windowReturnAmount != nil && windowReturnPct != nil {
+		returnStatus = "complete"
+		netReturnAmount, netReturnPct = windowReturnAmount, windowReturnPct
+		excess := *windowReturnPct - in.BaselineReturnPct
+		excessReturnPct = &excess
+	}
 	r := &Report{
 		SchemaVersion: SchemaVersion,
 		ReportID:      fmt.Sprintf("bt-%s-%d-%s", in.Symbol, effectiveSeed(in.RunSeed), hash[:8]),
@@ -306,9 +334,10 @@ func Build(in Input) (*Report, error) {
 			RunSeed: effectiveSeed(in.RunSeed), Config: ReportConfig{Params: in.Params},
 		},
 		Result: MoneyResult{
-			NetReturnPct: in.Result.TotalReturn, NetReturnAmount: in.Result.Equity - in.InitialCash,
+			ReturnStatus: returnStatus, NetReturnPct: netReturnPct, NetReturnAmount: netReturnAmount,
+			WindowMarkToMarketReturnPct: windowReturnPct, WindowMarkToMarketAmount: windowReturnAmount,
 			BaselineReturnPct: in.BaselineReturnPct, BaselineName: "buy-hold",
-			ExcessReturnPct: in.Result.TotalReturn - in.BaselineReturnPct,
+			ExcessReturnPct: excessReturnPct,
 			MaxDrawdownPct:  in.Result.MaxDrawdown,
 			AttemptCount:    in.Result.Unfilled.AttemptCount, FillCount: in.Result.Unfilled.FillCount,
 			UnfilledCount: in.Result.Unfilled.UnfilledCount, UnfilledRatio: in.Result.Unfilled.UnfilledRatio,
@@ -324,11 +353,121 @@ func Build(in Input) (*Report, error) {
 				Description: feeDescription(in.Result.Fees.Included),
 			},
 		},
+		Terminal:    terminal,
+		DataQuality: quality,
 		Audit: Audit{InputSnapshotHash: "sha256-" + hash, ParamsDictionaryVersion: ParamsDictionaryVersion,
 			StrategyParamsSnapshot: StrategyParamsSnapshot{MigrationLossy: in.MigrationLossy, OriginalJSON: in.OriginalJSON}},
 		Risk: risks(),
 	}
 	return r, nil
+}
+
+var historicalWheelBlockers = []string{
+	"expiry_assignment_events",
+	"historical_ask",
+	"historical_bid",
+	"historical_delta",
+	"historical_implied_vol",
+	"historical_open_interest",
+	"historical_option_snapshots",
+	"historical_quote_time",
+	"historical_theta",
+}
+
+func normalizeDataQuality(strategyName string, q backtest.DataQualitySummary, signals []backtest.SignalTrace) backtest.DataQualitySummary {
+	if q.MissingRequiredFieldCounts == nil {
+		q.MissingRequiredFieldCounts = map[string]int64{}
+	}
+	if q.TotalBarCount == 0 && len(signals) > 0 {
+		q.TotalBarCount = len(signals)
+		for _, signal := range signals {
+			if signal.CapabilityStatus == "DATA_BLOCKED" {
+				q.BlockedBarCount++
+			} else {
+				q.ReadyBarCount++
+			}
+		}
+	}
+	if q.TotalBarCount > 0 && q.ValidCoverageRatio == nil {
+		ratio := float64(q.ReadyBarCount) / float64(q.TotalBarCount)
+		q.ValidCoverageRatio = &ratio
+	}
+	if strategyName != "wheel" {
+		if q.Status == "" {
+			q.Status = "NOT_APPLICABLE"
+		}
+		return q
+	}
+	q.Status = "DATA_BLOCKED"
+	q.OptionDataRequired = true
+	if q.HistoricalOptionCycleComplete == nil {
+		complete := false
+		q.HistoricalOptionCycleComplete = &complete
+	}
+	set := make(map[string]struct{}, len(q.BlockedBy)+len(historicalWheelBlockers)+1)
+	for _, blocker := range q.BlockedBy {
+		if blocker != "" {
+			set[blocker] = struct{}{}
+		}
+	}
+	for _, blocker := range historicalWheelBlockers {
+		set[blocker] = struct{}{}
+	}
+	if q.SnapshotBatchCount == 0 {
+		set["option_quote_snapshots"] = struct{}{}
+	}
+	q.BlockedBy = sortedSet(set)
+	return q
+}
+
+func normalizeTerminal(r *backtest.Result, initialCash float64) backtest.TerminalSummary {
+	t := r.Terminal
+	if t.ValuationStatus != "" {
+		return t
+	}
+	// Compatibility for callers constructing Result directly. The aggregate
+	// final equity is known, while holdings and P&L decomposition are not.
+	finalEquity := r.Equity
+	t.ValuationStatus = backtest.ValuationComplete
+	t.SettlementStatus = "NOT_APPLICABLE"
+	t.FinalEquityAmount = &finalEquity
+	t.EventBasis = "not_applicable"
+	t.PnLStatus = "NOT_APPLICABLE"
+	return t
+}
+
+func terminalWindowReturn(t backtest.TerminalSummary, initialCash float64) (*float64, *float64) {
+	if t.ValuationStatus != backtest.ValuationComplete || t.FinalEquityAmount == nil || initialCash <= 0 {
+		return nil, nil
+	}
+	amount := *t.FinalEquityAmount - initialCash
+	pct := amount / initialCash
+	return &amount, &pct
+}
+
+func validateTerminal(t backtest.TerminalSummary, initialCash float64) error {
+	if t.AssignmentCount < 0 || t.ShortExpiryCount < t.AssignmentCount || t.ExpiryCount < t.ShortExpiryCount {
+		return errors.New("backtest report: terminal expiry/assignment counts are inconsistent")
+	}
+	if t.ValuationStatus != backtest.ValuationComplete {
+		return nil
+	}
+	if t.FinalEquityAmount != nil && t.HoldingsMarketValueAmount != nil && math.Abs(*t.FinalEquityAmount-t.CashAmount-*t.HoldingsMarketValueAmount) > 1e-8 {
+		return errors.New("backtest report: terminal cash and holdings do not match final equity")
+	}
+	if t.FinalEquityAmount != nil && t.RealizedPnLAmount != nil && t.UnrealizedPnLAmount != nil && math.Abs(*t.RealizedPnLAmount+*t.UnrealizedPnLAmount-(*t.FinalEquityAmount-initialCash)) > 1e-8 {
+		return errors.New("backtest report: terminal realized and unrealized P&L do not reconcile")
+	}
+	return nil
+}
+
+func sortedSet(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func feeDescription(included bool) string {
@@ -354,7 +493,14 @@ func HTML(r *Report) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	data := htmlData{Report: r, Details: string(details), Unfilled: "N/A", StopReason: "单次回测完成"}
+	data := htmlData{
+		Report: r, Details: string(details), Unfilled: "N/A",
+		WindowMark:   percentPtr(r.Result.WindowMarkToMarketReturnPct),
+		WindowAmount: amountPtr(r.Result.WindowMarkToMarketAmount, r.Identity.Currency),
+		Coverage:     percentPtr(r.DataQuality.ValidCoverageRatio),
+		Assignment:   percentPtr(r.Terminal.AssignmentRate),
+		StopReason:   "单次回测完成",
+	}
 	if r.Train != nil {
 		data.StopReason = r.Train.StopReason
 	}
@@ -426,9 +572,14 @@ func marketCurrency(symbol string) (string, string) {
 	}
 }
 
-func capability(signals []backtest.SignalTrace) (string, []string) {
+func capability(strategyName string, signals []backtest.SignalTrace, quality backtest.DataQualitySummary) (string, []string) {
 	set := map[string]struct{}{}
-	blocked := false
+	blocked := strategyName == "wheel" || quality.Status == "DATA_BLOCKED"
+	for _, reason := range quality.BlockedBy {
+		if reason != "" {
+			set[reason] = struct{}{}
+		}
+	}
 	for _, signal := range signals {
 		if signal.CapabilityStatus == "DATA_BLOCKED" {
 			blocked = true
@@ -453,5 +604,6 @@ func capability(signals []backtest.SignalTrace) (string, []string) {
 func risks() []string {
 	out := []string{"RESEARCH_ONLY:历史事件数据未解锁,本结果只用于研究,不驱动提醒"}
 	out = append(out, "DATA_BLOCKED:成交/指派/人工处置事实缺失,未成交率为启发式估算")
+	out = append(out, "窗口末估值变动仅为机械账面 mark,不是可执行收益;真实券商到期/指派字段为 null")
 	return append(out, "bar-time replay:非事件级回放,不含逐 quote 成交时序")
 }

@@ -1,4 +1,4 @@
-# 回测报告数据面契约(schema_version 1.0,定稿 2026-08-13)
+# 回测报告数据面契约(schema_version 1.1,更新 2026-08-14)
 
 本文是回测/ES 训练报告 JSON 的**唯一事实源**。JSON 是单一事实源,HTML 与 Discord 只做确定性投影(Go html/template / embed 字段直出,**禁止 LLM 发挥**)。任何切片的轨迹/报告结构不得自行发明,一律复用本 schema。变更需更新 `schema_version` 并走评审。
 
@@ -8,12 +8,14 @@
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "report_id": "bt-{symbol}-{run_seed}-{short-hash}",
   "report_kind": "single_run | es_train",
   "identity": { ... },
   "train": { ... },
   "result": { ... },
+  "terminal": { ... },
+  "data_quality": { ... },
   "generations": [ ... ],
   "candidates": [ ... ],
   "audit": { ... },
@@ -76,11 +78,14 @@
 
 ```json
 {
-  "net_return_pct": 0.0123,
-  "net_return_amount": 123.45,
+  "return_status": "not_applicable_data_blocked",
+  "net_return_pct": null,
+  "net_return_amount": null,
+  "window_mark_to_market_return_pct": 0.0123,
+  "window_mark_to_market_amount": 123.45,
   "baseline_return_pct": 0.008,
   "baseline_name": "buy-hold",
-  "excess_return_pct": 0.0043,
+  "excess_return_pct": null,
   "max_drawdown_pct": 0.05,
   "tail_loss_pct": 0.012,
   "attempt_count": 120,
@@ -111,17 +116,80 @@
   },
   "manual_not_executed_count": 0,
   "hard_violations": 0,
-  "stock_assignment_rate": 0.0
+  "stock_assignment_rate": null
 }
 ```
 
 口径(与 doc/tasks/2026-08-13-backtest-toolchain.md 一致):
 
 - `unfilled_ratio = unfilled_count / attempt_count`;`attempt_count` **只计真正发出成交尝试的期权动作**;正股建议/HOLD/DATA_BLOCKED/候选淘汰不入分母;分母为 0 时 `unfilled_ratio = null`(返回 `not_applicable`,不得报 0%)。
+- 当前 Wheel 历史事件能力为 `DATA_BLOCKED` 时，`net_return_pct`、`net_return_amount` 与 `excess_return_pct` 必须为 `null`，`return_status=not_applicable_data_blocked`。`window_mark_to_market_*` 仅表示窗口末按已有 mark 计算的账面估值变动，HTML 不得把它命名为“净收益”。非 Wheel benchmark 且终局估值完整时，净结果字段才可写数值。
 - `fill_count` 可由 `attempt_count - unfilled_count` 推导,但两者同时输出计数,防舍入/口径不一致。
 - `cost_model.total_fees_amount` 必须等于成交明细 `fee` 之和；固定 `fee_per_trade` 对正股和期权实际成交逐笔从现金扣除，未成交、HOLD 和机械到期事件不收费。`fees_included` 只在该扣账路径真实启用时为 `true`。
 - `manual_not_executed_count`:模拟成交但人工未执行的条数(与模拟未成交区分)。
 - `hard_violations`:最大库存违规/裸 Call/资金不足/未来泄漏计数;>0 时报告必须显著警示。
+
+### 3.1 terminal（窗口末持仓与机械结算）
+
+```json
+{
+  "valuation_status": "COMPLETE | INCOMPLETE",
+  "settlement_status": "ALL_OPTION_LEGS_SETTLED | OPEN_OPTION_LEGS",
+  "cash_amount": 50000.0,
+  "underlying_price": 35.25,
+  "stock_shares": 600,
+  "stock_average_cost": 33.10,
+  "stock_market_value_amount": 21150.0,
+  "option_market_value_amount": -230.0,
+  "holdings_market_value_amount": 20920.0,
+  "final_equity_amount": 70920.0,
+  "open_option_leg_count": 1,
+  "gross_open_option_contract_count": 1,
+  "pnl_status": "COMPLETE",
+  "realized_pnl_amount": 480.0,
+  "unrealized_pnl_amount": 440.0,
+  "expiry_count": 3,
+  "short_expiry_count": 2,
+  "assignment_count": 1,
+  "assignment_rate": 0.5,
+  "event_basis": "mechanical_backtest",
+  "broker_expiry_count": null,
+  "broker_assignment_count": null
+}
+```
+
+- `holdings_market_value_amount = stock_market_value_amount + option_market_value_amount`，`final_equity_amount = cash_amount + holdings_market_value_amount`。任一开放期权腿没有 mark 时，组合末值、终值和 P&L 字段为 `null`，`valuation_status=INCOMPLETE`、`pnl_status=NOT_APPLICABLE_MISSING_MARK`。
+- `realized_pnl_amount + unrealized_pnl_amount = final_equity_amount - initial_cash`；固定成交费用已包含在已实现 P&L。正股与期权均按带符号成本基础计算，开放腿不会被当作已经结算。
+- `expiry_count`、`assignment_count` 和 `assignment_rate` 只描述确定性机械模型；`assignment_count` 只数 ITM 空头腿，分母为 `short_expiry_count`。真实券商事件无法历史回填，因此 `broker_expiry_count`、`broker_assignment_count` 固定为 `null`，不得把机械统计冒充真实指派事实。
+
+### 3.2 data_quality（数据质量卡）
+
+```json
+{
+  "status": "DATA_BLOCKED",
+  "option_data_required": true,
+  "total_bar_count": 252,
+  "ready_bar_count": 0,
+  "blocked_bar_count": 252,
+  "valid_coverage_ratio": 0.0,
+  "snapshot_batch_count": 0,
+  "snapshot_contract_row_count": 0,
+  "missing_required_field_counts": {
+    "bid": 0,
+    "ask": 0,
+    "delta": 0,
+    "implied_vol": 0,
+    "theta": 0,
+    "open_interest": 0
+  },
+  "historical_option_cycle_complete": false,
+  "blocked_by": ["historical_option_snapshots", "option_quote_snapshots"]
+}
+```
+
+- `valid_coverage_ratio = ready_bar_count / total_bar_count`；总 bar 为 0 时是 `null`。零 snapshot 时仍生成逐 bar `DATA_BLOCKED/HOLD` 报告，不能因没有合约行而把缺字段计数或覆盖率解释成已通过。
+- 缺字段计数按实际 snapshot 合约行统计，字典始终存在；另以批次/合约行数和 `option_quote_snapshots` blocker 区分“零行”与“有行但字段缺失”。
+- 富途现有接口不能回填完整历史原子 snapshot 或真实到期/指派事件；完整到期周期未被数据证据证明前，Wheel 报告的 `status` 与 identity `capability_status` 固定为 `DATA_BLOCKED`。
 
 ## 4. generations(逐代轨迹,`es_train` 必填)
 

@@ -41,12 +41,12 @@
 ## State
 
 - [x] P0-1：核对官方接口与实际网关，裁决为无法历史回填；禁止伪数据
-- [ ] P0-1：报告数据质量卡与零 snapshot `DATA_BLOCKED` 路径
+- [x] P0-1：报告数据质量卡与零 snapshot 全程 HOLD 的 `DATA_BLOCKED` 路径
 - [x] P0-2：期权成交费用实际扣账并在报告输出
 - [x] P0-3：多点曲线无损执行；`-from-watchlist` 只读加载真实 `config_version`，ad-hoc 报告显式 `null`
-- [ ] P0-4：窗口末持仓、已实现/未实现 P&L、到期/指派统计
+- [x] P0-4：窗口末持仓、已实现/未实现 P&L、机械到期/指派统计；真实券商事实显式 `null`
 - [ ] 全量 `scripts/verify.sh`
 
 ## Next
 
-先修期权费用账务；随后把多点曲线作为一等配置执行，再统一补充终端结算与数据质量报告。
+运行全量 `scripts/verify.sh`，随后用真实只读数据生成 HK.00700/US.JD 阻塞报告并核对 schema 1.1。

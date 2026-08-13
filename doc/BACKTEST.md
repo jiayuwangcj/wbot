@@ -46,7 +46,7 @@ wbot backtest \
 | `-seed` | 42 | 未成交启发式抽样种子；同输入同 seed 产生同一成交 trace，`0` 等价于默认 42 |
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
-| `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.0 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
+| `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.1 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
 | `-cache` | false | 显式把本次 `-report` 证据按 symbol 幂等写入 `strategy_cache`；要求单标的 `-dsn -strategy wheel -from-watchlist -report`，初始状态固定为 `RESEARCH_CANDIDATE` |
 | `-train` | 空 | 对 JSON 指定的战术参数范围运行 ES；只支持单标的 `-dsn -strategy wheel`，战略参数仍由 `-params` 固定 |
 | `-population` / `-max-generations` | 20 / 40 | ES 种群（16–24）与最大代数 |
@@ -100,7 +100,9 @@ wbot backtest \
 
 当前确定性运行结果的 `Result.Unfilled` 记录期权卖出成交尝试口径：`AttemptCount = FillCount + UnfilledCount`，`UnfilledRatio = UnfilledCount / AttemptCount`；没有成交尝试时比例为 `null`，CLI 显示“未成交 N/A”，不得解释为 0%。`Trade.Filled=false` 表示一次由 `Trade.UnfilledModel` 标识的模拟未成交卖出尝试，不入账、不改变现金或持仓；成交的期权交易为 `Filled=true`。正股交易、HOLD 与 DATA_BLOCKED 不进入该尝试分母。
 
-`-report` 以 [[BACKTEST_REPORT]] schema 1.0 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。
+`-report` 以 [[BACKTEST_REPORT]] schema 1.1 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。Wheel 历史能力为 `DATA_BLOCKED` 时，`net_return_*` 和超额字段为 `null`；只保留明确标为窗口末账面估值变动的 `window_mark_to_market_*`，不得显示成可执行收益。
+
+报告 `terminal` 卡保存现金、正股和期权持仓末值、开放期权腿、带成本基础的已实现/未实现 P&L，以及机械到期/指派统计。开放腿缺 mark 时组合末值/P&L 显式 `null`；真实券商到期/指派计数因历史事件缺失也显式 `null`。`data_quality` 卡保存总/阻塞 bar、有效覆盖率、snapshot 批次/合约行、逐字段缺失计数和完整到期周期闸门。数据库中没有任何 snapshot 时不再只返回错误，而是对已有 bars 生成全程 `DATA_BLOCKED/HOLD` 报告。
 
 参数研究只允许在离线数据上改变 DTE、候选映射、质量门槛、频率和覆盖率（100%、固定覆盖、随机漏 30%/50%，随机种子可复现）。曲线、最大库存、战略状态和资产配置不参与优化。
 

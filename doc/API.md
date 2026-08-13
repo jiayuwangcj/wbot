@@ -162,7 +162,7 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 
 ### POST /v1/backtests
 
-产品请求形态为 `{"symbol":"...","strategy":"wheel","params":{完整配置}}`，或 `{"from_watchlist":true}` 批量运行 watchlist 中的 Wheel 配置；该产品端点拒绝 `hold`/`buy-hold`。完全没有 bars 或 snapshot 行、依赖故障、超时分别返回 `503` 和结构化错误；存在 snapshot 行但报价不完整、陈旧或缺少所需 Put/Call 方向时，bar-time 研究回放仍保存并返回 `201`，但对应 trace 必须是 `DATA_BLOCKED/HOLD`，不能产生假 `ALERT`。因此 `201` 表示审计运行已持久化，不表示实时提醒能力已解锁。同进程互斥时返回 `409 busy`。CLI 内部仍可运行 `hold`/`buy-hold` 基准，但客户端不得把它们当作 Wheel 产品能力。
+产品请求形态为 `{"symbol":"...","strategy":"wheel","params":{完整配置}}`，或 `{"from_watchlist":true}` 批量运行 watchlist 中的 Wheel 配置；该产品端点拒绝 `hold`/`buy-hold`。完全没有 bars、依赖故障或超时返回 `503` 和结构化错误；零 snapshot 行或 snapshot 报价不完整、陈旧、缺少所需 Put/Call 方向时，bar-time 研究回放仍保存并返回 `201`，但对应 trace 必须全程或逐 bar 为 `DATA_BLOCKED/HOLD`，metrics 的 `data_quality` 明确给出零覆盖/缺字段，不能产生假 `ALERT`。因此 `201` 表示阻塞证据已持久化，不表示实时提醒能力已解锁。同进程互斥时返回 `409 busy`。CLI 内部仍可运行 `hold`/`buy-hold` 基准，但客户端不得把它们当作 Wheel 产品能力。
 
 ## 其他只读数据面
 

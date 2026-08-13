@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
+	"github.com/jiayu/wbot/internal/wheel"
 )
 
 // mkBars builds valid bars with equal OHLC and daily timestamps from closes.
@@ -33,6 +34,14 @@ type stubStrategy struct {
 	size   float64
 	err    error
 }
+
+type signalStubStrategy struct{ signal wheel.Signal }
+
+func (s signalStubStrategy) OnBar(_ context.Context, _ ingest.Bar, _ *State) (Action, float64, error) {
+	return ActionHold, 0, nil
+}
+
+func (s signalStubStrategy) Signal() wheel.Signal { return s.signal }
 
 func (s stubStrategy) OnBar(_ context.Context, _ ingest.Bar, _ *State) (Action, float64, error) {
 	return s.action, s.size, s.err
@@ -81,6 +90,12 @@ func TestRunFee(t *testing.T) {
 	if !res.Fees.Included || res.Fees.PerTrade != 1 || res.Fees.TotalAmount != 1 || res.Fees.StockAmount != 1 || res.Fees.OptionAmount != 0 || res.Fees.ChargedTradeCount != 1 {
 		t.Fatalf("Run().Fees = %+v; want one charged stock fill", res.Fees)
 	}
+	tm := res.Terminal
+	if tm.ValuationStatus != ValuationComplete || tm.FinalEquityAmount == nil || *tm.FinalEquityAmount != 12099 ||
+		tm.HoldingsMarketValueAmount == nil || *tm.HoldingsMarketValueAmount != 12100 || tm.StockAverageCost == nil || *tm.StockAverageCost != 100 ||
+		tm.RealizedPnLAmount == nil || *tm.RealizedPnLAmount != -1 || tm.UnrealizedPnLAmount == nil || *tm.UnrealizedPnLAmount != 2100 {
+		t.Fatalf("Run().Terminal = %+v; want complete stock mark with fee realized and price move unrealized", tm)
+	}
 	if res.Bars != 3 {
 		t.Fatalf("Run() = %+v; want Bars 3", res)
 	}
@@ -94,6 +109,41 @@ func TestRunFee(t *testing.T) {
 	}
 	if !resHold.Fees.Included || resHold.Fees.TotalAmount != 0 || resHold.Fees.ChargedTradeCount != 0 {
 		t.Fatalf("Run() hold fees = %+v; want an enabled zero-charge fee model", resHold.Fees)
+	}
+}
+
+func TestRunDataQualityZeroAndMissingSnapshots(t *testing.T) {
+	blocked := signalStubStrategy{signal: wheel.Signal{
+		Action: wheel.ActionHold, Direction: wheel.DirectionHold,
+		CapabilityStatus: wheel.CapabilityDataBlocked, BlockedBy: []string{"option_quote_snapshots"},
+	}}
+	res, err := RunOptions(context.Background(), mkBars(100, 101), 10000, 0, blocked, &OptionsData{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := res.DataQuality
+	if q.Status != wheel.CapabilityDataBlocked || q.SnapshotBatchCount != 0 || q.SnapshotContractRowCount != 0 ||
+		q.BlockedBarCount != 2 || q.ReadyBarCount != 0 || q.ValidCoverageRatio == nil || *q.ValidCoverageRatio != 0 ||
+		q.HistoricalOptionCycleComplete == nil || *q.HistoricalOptionCycleComplete {
+		t.Fatalf("zero snapshot quality = %+v", q)
+	}
+	if len(q.MissingRequiredFieldCounts) == 0 || q.MissingRequiredFieldCounts["bid"] != 0 {
+		t.Fatalf("zero-row missing field counts = %+v; want explicit zero-valued dictionary", q.MissingRequiredFieldCounts)
+	}
+
+	missing := &OptionsData{QuoteBatches: []QuoteSnapshotBatch{{Quotes: []wheel.OptionQuote{{}}}}}
+	res, err = RunOptions(context.Background(), mkBars(100), 10000, 0, blocked, missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = res.DataQuality
+	if q.SnapshotBatchCount != 1 || q.SnapshotContractRowCount != 1 {
+		t.Fatalf("missing snapshot counts = %+v", q)
+	}
+	for _, field := range []string{"bid", "ask", "delta", "theta", "source", "symbol", "snapshot_key", "underlying_price"} {
+		if q.MissingRequiredFieldCounts[field] != 1 {
+			t.Fatalf("missing %s count = %d; all counts %+v", field, q.MissingRequiredFieldCounts[field], q.MissingRequiredFieldCounts)
+		}
 	}
 }
 
