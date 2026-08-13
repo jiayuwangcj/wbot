@@ -89,3 +89,10 @@ LLM 策略按固定节奏定时运行:每 5 分钟对 watchlist 标的生成策�
 2. 明日实盘:存在挂单时新单被综合判断(同合约确定性拒/不同合约 LLM 评);对已确认挂单按 ❌ 可撤单并解除挂单声明。
 3. 挂单查询失败路径(503/生成 skip)在真实故障下的表现观察。
 4. 孤儿 ALERT 重试机制(654)仍 backlog。
+
+## 方向维度修复 + 收盘跳过 + 卡片标的行(2026-08-13 夜,6607fc1 + 6de3c8e)
+
+- **方向维度修复(6607fc1,实跑根因 272)**:08:44 tick 正股决策被挂单 272(BUY HK.00700)误拒「contract HK.00700 already has a pending order」——正股 contract 在 service.go 规范化为 symbol,导致**反向**决策也被同合约拒绝。修复:确定性拒绝只针对**同合约同方向**,反向/不同合约交 LLM 综合判断。新增测试:同方向正股挂单拒绝、反方向挂单通过确定性闸门。
+- **收盘不运行(6de3c8e,老板指令「收盘时间LLM策略不再运行」)**:cmd 注入 `MarketOpen` 闭包,复用 `wheelrun.MarketIsOpen`(导出;交易所时区 + datacheck.Calendar 节假日,离线判断),收盘/午休/非交易日 LLM tick 跳过。runner 已有检查点(9771aa8),缺 cmd 注入;`TestRunOnceSkipsWhenMarketClosed` 覆盖。
+- **卡片标的行(6de3c8e,老板指令「底层资产名字和编号放到正股价格那一区多一份」)**:telegram alertCard/alertMessage + discord signalInfoBlocks/signalDiscordEmbeds 的「标的当前」区在正股现价前加「标的 腾讯控股 · 00700」行。`underlyingName`(QuoteRaw 5s 超时 best-effort,失败退化纯编号)+ `underlyingLabel` 共享 helper;futuQuoter.QuoteRaw 满足接口;card_underlying_test.go 覆盖(带名/失败退化/nil quoter/纯 code)。
+- **验证**:verify.sh `verify: ok`(cmd/wbot 107s 全绿含新断言)。提交 6de3c8e 后重建 serve 容器部署中。
