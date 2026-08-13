@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -20,9 +21,11 @@ const tgTestToken = "bottest-token"
 
 // fakeTGServer records answerCallbackQuery toasts (the scheduler's reply path).
 type fakeTGServer struct {
-	mu      sync.Mutex
-	answers []map[string]any
-	sends   []map[string]any
+	mu               sync.Mutex
+	answers          []map[string]any
+	sends            []map[string]any
+	failSend         int   // remaining sendMessage failures to inject
+	failSendChatOnce int64 // fail the next sendMessage to this chat once
 }
 
 func (f *fakeTGServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -38,6 +41,21 @@ func (f *fakeTGServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "sendMessage":
 		var p map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&p)
+		chatID, _ := p["chat_id"].(string)
+		f.mu.Lock()
+		fail := f.failSend > 0
+		if fail {
+			f.failSend--
+		}
+		if f.failSendChatOnce != 0 && strconv.FormatInt(f.failSendChatOnce, 10) == chatID {
+			f.failSendChatOnce = 0
+			fail = true
+		}
+		f.mu.Unlock()
+		if fail {
+			http.Error(w, `{"ok":false,"description":"simulated failure"}`, http.StatusInternalServerError)
+			return
+		}
 		f.mu.Lock()
 		f.sends = append(f.sends, p)
 		f.mu.Unlock()
@@ -45,6 +63,19 @@ func (f *fakeTGServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+// sendCountTo reports how many cards reached chatID (lock-held read).
+func (f *fakeTGServer) sendCountTo(chatID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, send := range f.sends {
+		if cid, _ := send["chat_id"].(string); cid == chatID {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakeTGServer) lastSend(t *testing.T) map[string]any {
@@ -762,7 +793,7 @@ func TestPushSignalRendersReviewReasonsAndV20Buttons(t *testing.T) {
 	}}
 	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
 
-	s.pushSignal(context.Background(), *sig)
+	s.pushSignal(context.Background(), *sig, nil)
 	payload := fake.lastSend(t)
 	text, _ := payload["text"].(string)
 	if !strings.Contains(text, "• reason one\n• reason two") {
@@ -796,7 +827,7 @@ func TestPushSignalRetriesWhenReviewNotYetRecorded(t *testing.T) {
 	sig := signalFixture(9, "US.AAPL", now)
 	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
 
-	if retry := s.pushSignal(context.Background(), *sig); !retry {
+	if retry := s.pushSignal(context.Background(), *sig, nil); !retry {
 		t.Fatal("pushSignal without a recorded review must retry")
 	}
 	if len(fake.sends) != 0 {
@@ -805,7 +836,7 @@ func TestPushSignalRetriesWhenReviewNotYetRecorded(t *testing.T) {
 
 	// The review lands on the next pass → pushed, not retried.
 	store.reviews[9] = approvedReview()
-	if retry := s.pushSignal(context.Background(), *sig); retry {
+	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
 		t.Fatal("pushSignal with APPROVE review must not retry")
 	}
 	if len(fake.sends) != 1 {
@@ -829,7 +860,7 @@ func TestPushSignalPushesRejectedReviewReasons(t *testing.T) {
 	})
 	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
 
-	if retry := s.pushSignal(context.Background(), *sig); retry {
+	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
 		t.Fatal("pushSignal with a REJECTED review must not retry")
 	}
 	if len(fake.sends) != 1 {
@@ -843,6 +874,121 @@ func TestPushSignalPushesRejectedReviewReasons(t *testing.T) {
 	}
 }
 
+// TestPushSignalRetriesOnSendMessageFailure: 769 同病回归——telegram 推送瞬
+// 时失败(sendMessage request failed)不得永久丢卡,必须保持游标下轮重推;
+// 通道恢复后送达且不再 retry。
+func TestPushSignalRetriesOnSendMessageFailure(t *testing.T) {
+	fake, server := startFakeTG(t)
+	fake.failSend = 1 // first push attempt hits a transient API failure
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = &wheelstore.ActionRecord{Details: map[string]any{"verdict": "APPROVE"}}
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig, nil); !retry {
+		t.Fatal("pushSignal must retry (hold cursor) when sendMessage fails")
+	}
+	if len(fake.sends) != 0 {
+		t.Fatalf("failed attempt recorded a send; sends = %d", len(fake.sends))
+	}
+	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
+		t.Fatal("pushSignal must not retry after the push succeeds")
+	}
+	if len(fake.sends) != 1 {
+		t.Fatalf("successful sends = %d; want 1", len(fake.sends))
+	}
+}
+
+// TestPushSignalPartialFailureResendsOnlyFailedChat(评审 P1-1):多 chat 配置
+// 下某 chat 推送失败 → 下一轮只补发失败 chat,健康 chat 绝不重复收到带按钮
+// 的卡;全部送达后不再 retry(游标可推进)。
+func TestPushSignalPartialFailureResendsOnlyFailedChat(t *testing.T) {
+	fake, server := startFakeTG(t)
+	fake.failSendChatOnce = 43 // chat 43 首次推送瞬时失败
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = &wheelstore.ActionRecord{Details: map[string]any{"verdict": "APPROVE"}}
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true, 43: true}, now)
+
+	delivered := map[int64]bool{}
+	if retry := s.pushSignal(context.Background(), *sig, delivered); !retry {
+		t.Fatal("partial push failure must retry (cursor held)")
+	}
+	if got := fake.sendCountTo("42"); got != 1 {
+		t.Fatalf("chat 42 sends = %d; want 1", got)
+	}
+	if got := fake.sendCountTo("43"); got != 0 {
+		t.Fatalf("failed chat 43 sends = %d; want 0", got)
+	}
+	// 下一轮:只补发失败的 chat 43,chat 42 不重复收。
+	if retry := s.pushSignal(context.Background(), *sig, delivered); retry {
+		t.Fatal("pushSignal must not retry once every chat is delivered")
+	}
+	if got := fake.sendCountTo("42"); got != 1 {
+		t.Fatalf("chat 42 re-sent on retry; sends = %d; want 1", got)
+	}
+	if got := fake.sendCountTo("43"); got != 1 {
+		t.Fatalf("chat 43 sends = %d; want 1 (补发)", got)
+	}
+	if !delivered[42] || !delivered[43] {
+		t.Fatalf("delivered = %#v; want both chats recorded", delivered)
+	}
+}
+
+// TestRunPushPartialFailureResendsOnlyMissingChat: 循环层验证评审 P1-1——
+// chat 43 失败时循环持续补发只到 43,chat 42 全程只收到一张卡;43 送达后
+// 游标推进(后续轮询 cursor >= 7)。
+func TestRunPushPartialFailureResendsOnlyMissingChat(t *testing.T) {
+	fake, server := startFakeTG(t)
+	fake.failSendChatOnce = 43
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	store.querySince = []wheelstore.SignalRecord{*signalFixture(7, "US.AAPL", now)}
+	store.reviews[7] = approvedReview()
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true, 43: true}, now)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- s.runPush(ctx, 2*time.Millisecond) }()
+	defer func() { cancel(); <-done }()
+
+	// 等 chat 43 的补发卡到达(此时 chat 42 必须恰好 1 张)。
+	waitFor(t, func() bool { return fake.sendCountTo("42") == 1 && fake.sendCountTo("43") == 1 }, "retry 补发: chat 43 gets its card, chat 42 not duplicated")
+	// 再跑若干 tick,确认健康 chat 无重复卡。
+	time.Sleep(40 * time.Millisecond)
+	if got := fake.sendCountTo("42"); got != 1 {
+		t.Fatalf("chat 42 sends after settle = %d; want 1 (no duplicate actionable card)", got)
+	}
+	if got := fake.sendCountTo("43"); got != 1 {
+		t.Fatalf("chat 43 sends after settle = %d; want 1", got)
+	}
+	// 全部送达后游标推进,后续轮询不再命中该信号。
+	store.mu.Lock()
+	lastCursor := store.queryCalls[len(store.queryCalls)-1]
+	store.mu.Unlock()
+	if lastCursor < 7 {
+		t.Fatalf("last poll cursor = %d; want >= 7 (cursor advanced after all chats delivered)", lastCursor)
+	}
+}
+
+func TestPushSignalSkipsDismissedSignal(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	store.dismissed["US.AAPL|2026-08-11"] = true
+	sig := signalFixture(12, "US.AAPL", now)
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
+		t.Fatal("dismissed signal must skip permanently")
+	}
+	if len(fake.sends) != 0 {
+		t.Fatalf("dismissed signal pushed; sends = %d", len(fake.sends))
+	}
+}
+
 func TestPushSignalSkipsStaleMissingReview(t *testing.T) {
 	fake, server := startFakeTG(t)
 	// Signal older than the freshness window with no review: the review can
@@ -853,7 +999,7 @@ func TestPushSignalSkipsStaleMissingReview(t *testing.T) {
 	sig := signalFixture(11, "US.AAPL", old)
 	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
 
-	if retry := s.pushSignal(context.Background(), *sig); retry {
+	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
 		t.Fatal("stale signal without review must skip permanently")
 	}
 	if len(fake.sends) != 0 {
@@ -1085,6 +1231,27 @@ func TestRunPushWaterlineRetainsPendingPrefixAndDeduplicatesTail(t *testing.T) {
 	}
 	if countSignal("信号 #1") != 1 || countSignal("信号 #2") != 1 {
 		t.Fatalf("pushes = %#v; want one push for each signal", texts)
+	}
+}
+
+// TestRunPushHeartbeatLogsIdleState: 循环存活可观测性(2026-08-14 实测
+// discord 推送静默 3.5 分钟零日志,「无信号」与「循环卡死」不可区分)。
+// 空转时每 5 个 tick 必须打一行带 cursor/pending/signals 的心跳日志。
+func TestRunPushHeartbeatLogsIdleState(t *testing.T) {
+	_, server := startFakeTG(t)
+	store := newFakeTGStore()
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, time.Now())
+	logs := &discordLogRecorder{}
+	s.logf = logs.logf
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.runPush(ctx, time.Millisecond) }()
+
+	waitFor(t, func() bool { return logs.contains("push: heartbeat") }, "heartbeat log")
+	if !logs.contains("push: heartbeat", "pending=false") || !logs.contains("push: heartbeat", "cursor=0") {
+		t.Fatalf("heartbeat missing cursor/pending state:\n%s", logs.joined())
 	}
 }
 

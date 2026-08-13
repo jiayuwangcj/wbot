@@ -176,6 +176,7 @@ func (s *discordScheduler) runDiscordPush(ctx context.Context, interval time.Dur
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	tick := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -213,13 +214,22 @@ func (s *discordScheduler) runDiscordPush(ctx context.Context, interval time.Dur
 				delete(handled, id)
 			}
 		}
+		// 循环存活心跳:空转时段无事件日志,「静默=无信号」与「循环死/卡」
+		// 不可区分(2026-08-14 实测 10 个 tick 零日志);每 5 个 tick 打一行
+		// 状态,卡死时心跳消失,serve 日志一眼可辨。
+		if tick%5 == 0 {
+			s.logf("push: heartbeat cursor=%d pending=%v signals=%d", cursor, pending, len(signals))
+		}
+		tick++
 	}
 }
 
 // pushSignalDiscord sends one structured APPROVE message with buttons when it
 // survives the dismissal and LLM-approval gates. Retry semantics mirror the
-// telegram loop: a review not yet recorded holds the cursor back, REJECTED and
-// dismissed signals skip permanently.
+// telegram loop: a review not yet recorded or a transient push failure holds
+// the cursor back for the next pass (769: a failed create message was
+// previously skipped permanently and the card was lost); REJECTED and
+// dismissed signals skip permanently once their card is delivered.
 func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore.SignalRecord) (retry bool) {
 	if dismissed, err := s.store.IsDismissed(ctx, sig.Symbol, utcDate(s.now())); err != nil {
 		s.logf("push: %s signal=%d: dismissed check: %v", sig.Symbol, sig.ID, err)
@@ -243,8 +253,7 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 				s.logf("push: %s signal=%d: rejected action lookup: %v", sig.Symbol, sig.ID, rerr)
 				return true
 			}
-			s.pushRejectedDiscord(ctx, sig, rejection)
-			return false
+			return s.pushRejectedDiscord(ctx, sig, rejection)
 		}
 		// LLM_REVIEW_FAILED: 审核请求失败(网络/DNS/超时)而非模型裁决,不得
 		// 当「模型拒绝」推卡片(2026-08-13: signal 741 DNS 超时曾被冒充
@@ -265,8 +274,7 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 	}
 	if verdictOf(review) != "APPROVE" {
 		s.logf("push: %s signal=%d: LLM review %s; pushing reasons", sig.Symbol, sig.ID, verdictOf(review))
-		s.pushRejectedDiscord(ctx, sig, review)
-		return false
+		return s.pushRejectedDiscord(ctx, sig, review)
 	}
 	embeds, err := signalDiscordEmbeds(&sig, underlyingName(ctx, s.quoter, sig.Symbol), reviewReasons(review), s.now())
 	if err != nil {
@@ -283,6 +291,7 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 	}
 	if err := s.pushEmbedDiscord(ctx, msg); err != nil {
 		s.logf("push: %s signal=%d: %v", sig.Symbol, sig.ID, err)
+		return true
 	}
 	return false
 }
@@ -455,8 +464,11 @@ func discordReasonBullets(reasons []string) string {
 }
 
 // pushRejectedDiscord reports a fail-closed LLM disposition (gray embed; the
-// REJECTED action's Details.reasons are the source of truth).
-func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelstore.SignalRecord, rejection *wheelstore.ActionRecord) {
+// REJECTED action's Details.reasons are the source of truth). It returns
+// retry=true when the card could not be sent so the push loop holds the cursor
+// instead of silently dropping the rejection (769-adjacent: a lost card is
+// never acceptable on the 资金安全 path).
+func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelstore.SignalRecord, rejection *wheelstore.ActionRecord) (retry bool) {
 	verdict := verdictOf(rejection)
 	if verdict == "" {
 		verdict = "REJECT"
@@ -498,7 +510,11 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 		s.logf("push: %s signal=%d: reject card without info blocks: %v", sig.Symbol, sig.ID, err)
 	}
 	embeds = append(embeds, discord.Embed{Description: discordReasonBullets(reasons), Color: discord.ColorRejected})
-	_ = s.pushEmbedDiscord(ctx, discord.Message{Embeds: embeds})
+	if err := s.pushEmbedDiscord(ctx, discord.Message{Embeds: embeds}); err != nil {
+		s.logf("push: %s signal=%d: reject card: %v", sig.Symbol, sig.ID, err)
+		return true
+	}
+	return false
 }
 
 // pushEmbedDiscord sends one message to the configured channel.
