@@ -6,7 +6,7 @@
 
 ## Goal
 
-LLM 策略按固定节奏定时运行:每 15 分钟对 watchlist 标的生成策略决策信号,复用 #35 的注入链路与审核闸门,决策结果推送与 wheel 闭环一致。
+LLM 策略按固定节奏定时运行:每 5 分钟对 watchlist 标的生成策略决策信号(2026-08-13 老板指令:15 分钟太久,改 5 分钟),复用 #35 的注入链路与审核闸门,决策结果推送与 wheel 闭环一致。
 
 **前置(2026-08-13 老板指令「全面 review 后开发」,sol review 报告 P1 先决项,必须在自动调度落地前完成)**:
 
@@ -18,7 +18,7 @@ LLM 策略按固定节奏定时运行:每 15 分钟对 watchlist 标的生成策
 
 ## Constraints
 
-- **定时周期 15 分钟**;与 serve 同生命周期(runCtx),可开关/可配置(参考现有 wheel 循环的启动方式)。
+- **定时周期 5 分钟(老板指令 2026-08-13 从 15 分钟改为 5 分钟)**;与 serve 同生命周期(runCtx),可开关/可配置(参考现有 wheel 循环的启动方式)。
 - **模型**:deepseek-v4-flash,走现有 LLM 链路(LLM_BASE_URL / LLM_API_KEY / LLM_MODEL 配置,serve 已有)。
 - **复用 #36 策略接口抽象**(strategy 注册表,现有 "wheel" 模板,本任务落地 "llm" 模板或等价调度路径);不绕过抽象另起炉灶。
 - **复用 #35 注入契约与审核闸门**:`POST /v1/wheel/llm-signal` 输入契约(symbol/direction/quantity/contract/current_price/premium/delta/iv/open_interest/expiry/reason/notes),LLM 审核 6 规则(方向一致性/经济理由/限价/数量≤1000/数据一致性/系统性)。
