@@ -38,6 +38,26 @@ func TestInterpolateTargetInventoryTable(t *testing.T) {
 	}
 }
 
+func TestConfigTargetInventoryUsesCompletePriceCurve(t *testing.T) {
+	cfg := testConfig(StateNormal)
+	cfg.PricePositionCurve = []PricePoint{
+		{Price: 30.25, TargetInventory: 1100},
+		{Price: 31.25, TargetInventory: 1000},
+		{Price: 33.25, TargetInventory: 800},
+		{Price: 35.25, TargetInventory: 600},
+	}
+	cfg.MaxInventory = 1100
+	for _, tc := range []struct {
+		price float64
+		want  float64
+	}{{29, 1100}, {32.25, 900}, {35.25, 600}, {40, 600}} {
+		got, err := cfg.TargetInventory(tc.price)
+		if err != nil || got != tc.want {
+			t.Fatalf("TargetInventory(%v) = %v, %v; want %v from complete curve", tc.price, got, err, tc.want)
+		}
+	}
+}
+
 func TestConfigValidateTable(t *testing.T) {
 	base := testConfig(StateNormal)
 	cases := []struct {
@@ -53,6 +73,9 @@ func TestConfigValidateTable(t *testing.T) {
 		{"DTE outside wheel window", func(c *Config) { c.MinDTE = 4 }, true},
 		{"quality outside bounds", func(c *Config) { c.MinOptionQuality = 1.1 }, true},
 		{"negative move interval", func(c *Config) { c.MoveIntervalPct = -0.01 }, true},
+		{"curve target above max inventory", func(c *Config) {
+			c.PricePositionCurve = []PricePoint{{Price: 100, TargetInventory: 1201}, {Price: 110, TargetInventory: 0}}
+		}, true},
 		{"unknown state", func(c *Config) { c.StrategicState = "RISK_ON" }, true},
 	}
 	for _, tc := range cases {

@@ -99,6 +99,7 @@ type PricePoint struct {
 // the former, while optimizers may tune only the latter.
 type Config struct {
 	Strategy               string          `json:"strategy" yaml:"strategy"`
+	PricePositionCurve     []PricePoint    `json:"price_position_curve,omitempty" yaml:"price_position_curve,omitempty"`
 	FullPositionPrice      float64         `json:"full_position_price" yaml:"full_position_price"`
 	ZeroPositionPrice      float64         `json:"zero_position_price" yaml:"zero_position_price"`
 	MaxInventory           float64         `json:"max_inventory" yaml:"max_inventory"`
@@ -124,14 +125,20 @@ func (c Config) Validate() error {
 	if c.Strategy != "wheel" {
 		return fmt.Errorf("wheel: strategy must be wheel")
 	}
-	if !finite(c.FullPositionPrice) || c.FullPositionPrice <= 0 {
-		return fmt.Errorf("wheel: full_position_price must be positive")
-	}
-	if !finite(c.ZeroPositionPrice) || c.ZeroPositionPrice <= c.FullPositionPrice {
-		return fmt.Errorf("wheel: zero_position_price must be greater than full_position_price")
-	}
 	if !finite(c.MaxInventory) || c.MaxInventory <= 0 || math.Trunc(c.MaxInventory) != c.MaxInventory {
 		return fmt.Errorf("wheel: max_inventory must be a positive integer")
+	}
+	if len(c.PricePositionCurve) > 0 {
+		if err := validatePricePositionCurve(c.PricePositionCurve, c.MaxInventory); err != nil {
+			return err
+		}
+	} else {
+		if !finite(c.FullPositionPrice) || c.FullPositionPrice <= 0 {
+			return fmt.Errorf("wheel: full_position_price must be positive")
+		}
+		if !finite(c.ZeroPositionPrice) || c.ZeroPositionPrice <= c.FullPositionPrice {
+			return fmt.Errorf("wheel: zero_position_price must be greater than full_position_price")
+		}
 	}
 	if c.MinDTE < 5 || c.MaxDTE > 10 || c.MinDTE > c.MaxDTE {
 		return fmt.Errorf("wheel: DTE must be a valid range within 5..10")
@@ -163,6 +170,15 @@ func (c Config) Validate() error {
 func ValidateConfig(c Config) error { return c.Validate() }
 
 func (c Config) TargetInventory(price float64) (float64, error) {
+	if len(c.PricePositionCurve) > 0 {
+		if !finite(price) || price <= 0 || !finite(c.MaxInventory) || c.MaxInventory <= 0 {
+			return 0, errors.New("wheel: invalid price curve or current price")
+		}
+		if err := validatePricePositionCurve(c.PricePositionCurve, c.MaxInventory); err != nil {
+			return 0, err
+		}
+		return InterpolateTargetInventory(c.PricePositionCurve, price)
+	}
 	if !finite(price) || price <= 0 || !finite(c.FullPositionPrice) || !finite(c.ZeroPositionPrice) || c.FullPositionPrice <= 0 || c.ZeroPositionPrice <= c.FullPositionPrice || !finite(c.MaxInventory) || c.MaxInventory <= 0 {
 		return 0, errors.New("wheel: invalid price anchors or current price")
 	}
@@ -174,6 +190,21 @@ func (c Config) TargetInventory(price float64) (float64, error) {
 	}
 	ratio := (price - c.FullPositionPrice) / (c.ZeroPositionPrice - c.FullPositionPrice)
 	return c.MaxInventory * (1 - ratio), nil
+}
+
+func validatePricePositionCurve(curve []PricePoint, maxInventory float64) error {
+	if len(curve) < 2 {
+		return errors.New("wheel: price_position_curve must contain at least two points")
+	}
+	for i, p := range curve {
+		if !finite(p.Price) || p.Price <= 0 || !finite(p.TargetInventory) || p.TargetInventory < 0 || p.TargetInventory > maxInventory {
+			return fmt.Errorf("wheel: price_position_curve point %d is outside price/inventory bounds", i)
+		}
+		if i > 0 && (p.Price <= curve[i-1].Price || p.TargetInventory > curve[i-1].TargetInventory) {
+			return errors.New("wheel: price_position_curve prices must increase and target inventory must not increase")
+		}
+	}
+	return nil
 }
 
 func (c Config) Interpolate(price float64) (float64, error) { return c.TargetInventory(price) }

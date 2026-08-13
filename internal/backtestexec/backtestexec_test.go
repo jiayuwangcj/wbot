@@ -104,6 +104,27 @@ func TestSaveParams(t *testing.T) {
 	}
 }
 
+func TestSaveParamsIncludesOnlyRealConfigVersion(t *testing.T) {
+	version := 2
+	got := SaveParams(Options{Cash: 10000, ConfigVersion: &version})
+	if got["config_version"] != 2 {
+		t.Fatalf("config_version = %#v; want 2", got["config_version"])
+	}
+	if _, ok := SaveParams(Options{Cash: 10000})["config_version"]; ok {
+		t.Fatal("ad-hoc params persisted a fabricated config_version")
+	}
+}
+
+func TestOptionsDataForRunAllowsZeroSnapshots(t *testing.T) {
+	opts, err := optionsDataForRun(nil, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts == nil || opts.RunSeed != 42 || len(opts.QuoteBatches) != 0 {
+		t.Fatalf("zero snapshot options = %+v; want non-nil DATA_BLOCKED input", opts)
+	}
+}
+
 func TestRunRejectsNilDB(t *testing.T) {
 	if _, err := Run(context.Background(), nil, Options{Symbol: "DEMO.US", Strategy: "hold"}); err == nil {
 		t.Fatal("Run(nil db) err = nil; want error")

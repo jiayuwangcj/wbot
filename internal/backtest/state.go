@@ -88,13 +88,14 @@ type OptionQuoteBatch = QuoteSnapshotBatch
 // State is a backtest's portfolio state; Run updates Price to each bar's close
 // before OnBar, fills OptPrice from open legs, and clears Pending per bar.
 type State struct {
-	Cash     float64
-	Position float64
-	Price    float64
-	Options  map[string]OptionPosition
-	Chain    OptionChain
-	OptBars  OptionBars
-	OptPrice map[string]float64
+	Cash             float64
+	Position         float64
+	StockAverageCost float64
+	Price            float64
+	Options          map[string]OptionPosition
+	Chain            OptionChain
+	OptBars          OptionBars
+	OptPrice         map[string]float64
 	// Pending is the contract a strategy picked for an option action on the
 	// current bar; the runner settles size contracts against it and clears it.
 	Pending *OptionPosition
@@ -119,6 +120,12 @@ type State struct {
 	// draw, so a new candidate elsewhere in the run never shifts existing
 	// contracts' draws (lazy-initialized on first attempt).
 	AttemptsByContract map[string]int64
+	// Mechanical expiry accounting is deliberately separate from broker facts.
+	// AssignmentCount counts ITM expiries of short legs only; long-leg exercise
+	// is an exercise event, not an assignment.
+	ExpiryCount      int64
+	ShortExpiryCount int64
+	AssignmentCount  int64
 }
 
 // Equity returns total portfolio value: cash + position at price plus option

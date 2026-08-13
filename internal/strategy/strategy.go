@@ -171,6 +171,7 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 
 	cfg := wheel.Config{
 		Strategy:               "wheel",
+		PricePositionCurve:     slices.Clone(audit.priceCurve),
 		FullPositionPrice:      fullPrice,
 		ZeroPositionPrice:      zeroPrice,
 		MaxInventory:           maxInventory,
@@ -220,6 +221,13 @@ func CanonicalParams(params map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("strategy wheel: canonical params: %w", err)
 	}
 	delete(out, "strategy")
+	if len(cfg.PricePositionCurve) > 0 {
+		// A multi-point curve is the strategic source of truth. The endpoint
+		// values are parser compatibility fields only and must not replace the
+		// original curve at persistence/report boundaries.
+		delete(out, "full_position_price")
+		delete(out, "zero_position_price")
+	}
 	return out, nil
 }
 
@@ -450,6 +458,7 @@ type migrationAudit struct {
 	lossy         bool
 	warnings      []string
 	originalCurve json.RawMessage
+	priceCurve    []wheel.PricePoint
 }
 
 // normalizeLegacyParams implements the read-old/write-new boundary. Legacy
@@ -488,36 +497,27 @@ func normalizeLegacyParams(params map[string]any) (map[string]any, migrationAudi
 	delete(out, "migration_warning_count") // recomputed from the warning list
 
 	if rawCurve, hasCurve := out["price_position_curve"]; hasCurve {
-		_, hasFull := out["full_position_price"]
-		_, hasZero := out["zero_position_price"]
-		if !hasFull || !hasZero {
-			curve, err := parseCurve(rawCurve)
-			if err != nil {
-				return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: %w", err)
+		curve, err := parseCurve(rawCurve)
+		if err != nil {
+			return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: %w", err)
+		}
+		if len(curve) < 2 {
+			return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: must contain at least two points")
+		}
+		for i, point := range curve {
+			if !finiteNumber(point.Price) || point.Price <= 0 || !finiteNumber(point.TargetInventory) || point.TargetInventory < 0 {
+				return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: invalid point %d", i)
 			}
-			if len(curve) < 2 {
-				return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: must contain at least two points")
+			if i > 0 && (point.Price <= curve[i-1].Price || point.TargetInventory > curve[i-1].TargetInventory) {
+				return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: prices must increase and target inventory must not increase")
 			}
-			for i, point := range curve {
-				if !finiteNumber(point.Price) || point.Price <= 0 || !finiteNumber(point.TargetInventory) {
-					return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: invalid point %d", i)
-				}
-				if i > 0 && (point.Price <= curve[i-1].Price || point.TargetInventory > curve[i-1].TargetInventory) {
-					return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: prices must increase and target inventory must not increase")
-				}
-			}
-			if !hasFull {
-				out["full_position_price"] = curve[0].Price
-			}
-			if !hasZero {
-				out["zero_position_price"] = curve[len(curve)-1].Price
-			}
-			audit.lossy = true
-			encoded, err := json.Marshal(rawCurve)
-			if err != nil {
-				return nil, audit, fmt.Errorf("strategy wheel: price curve audit: %w", err)
-			}
-			audit.originalCurve = encoded
+		}
+		audit.priceCurve = curve
+		if _, hasFull := out["full_position_price"]; !hasFull {
+			out["full_position_price"] = curve[0].Price
+		}
+		if _, hasZero := out["zero_position_price"]; !hasZero {
+			out["zero_position_price"] = curve[len(curve)-1].Price
 		}
 		delete(out, "price_position_curve")
 	}

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acceptance: deterministic schema 1.0 single-run JSON + HTML report.
+# Acceptance: deterministic schema 1.1 single-run JSON + HTML report.
 # Usage: scripts/accept-backtest-report.sh [wbot-bin]
 set -uo pipefail
 
@@ -22,7 +22,7 @@ json_path="$(find "$tmp/reports" -maxdepth 1 -name '*.json' -print -quit)"
 html_path="${json_path%.json}.html"
 check "JSON 与 HTML 文件存在" 1 "$([[ -f "$json_path" && -f "$html_path" ]] && echo 1 || echo 0)"
 
-json_ok="$(node -e 'const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[1])); const top=["schema_version","report_id","report_kind","identity","result","audit","risk"]; process.stdout.write(String(top.every(k=>Object.hasOwn(r,k)) && r.schema_version==="1.0" && r.report_kind==="single_run"));' "$json_path")"
+json_ok="$(node -e 'const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[1])); const top=["schema_version","report_id","report_kind","identity","result","terminal","data_quality","audit","risk"]; process.stdout.write(String(top.every(k=>Object.hasOwn(r,k)) && r.schema_version==="1.1" && r.report_kind==="single_run"));' "$json_path")"
 check "JSON schema 顶层键齐全" true "$json_ok"
 model_ok="$(node -e 'const r=require(process.argv[1]);const m=r.result.unfilled_model,c=m.components;process.stdout.write(String(m.model_kind==="heuristic"&&m.model_version==="heuristic-1.0"&&typeof m.order_assumption==="string"&&c.spread_weight===.55&&c.volume_weight===.3&&c.oi_weight===.15));' "$json_path")"
 check "unfilled_model 对象形状" true "$model_ok"
@@ -32,7 +32,7 @@ summary_ok="$(node -e 'const r=require(process.argv[1]).result,o=process.argv[2]
 check "JSON 收益金额与 CLI 汇总可复算" true "$summary_ok"
 html="$(<"$html_path")"
 html_one_line="$(tr '\n' ' ' <<<"$html")"
-check "HTML 含首屏关键字段" 1 "$(has "$html_one_line" '净收益.*最大回撤.*未成交率.*停止原因')"
+check "HTML 含首屏关键字段" 1 "$(has "$html_one_line" '窗口末估值变动.*最大回撤.*未成交率.*停止原因.*数据有效覆盖率.*窗口末未平仓腿')"
 check "HTML 含 Discord 元数据" 1 "$(has "$html_one_line" 'theme-color.*og:title.*og:description')"
 
 cp "$json_path" "$tmp/first.json"; cp "$html_path" "$tmp/first.html"

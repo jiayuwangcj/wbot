@@ -115,22 +115,32 @@ func TestWatchlistPutValidWheel(t *testing.T) {
 	}
 }
 
-func TestWatchlistPutMigratesLegacyAndWritesOnlyNewKeys(t *testing.T) {
+func TestWatchlistPutPreservesPriceCurveAndDropsRetiredKeys(t *testing.T) {
 	fake := &fakeWatchlistStore{}
 	rec := put(t, WatchlistHandler(fake), "/v1/watchlist/HK.00883", `{"strategy":"wheel","params":{"price_position_curve":[{"price":40,"target_inventory":22000},{"price":48,"target_inventory":11000},{"price":55,"target_inventory":0}],"max_inventory":22000,"no_trade_gap":50,"max_daily_orders":1,"extreme_max_daily_orders":2,"lot_size":100}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
 	}
-	for _, key := range []string{"price_position_curve", "no_trade_gap", "max_daily_orders", "extreme_max_daily_orders", "lot_size"} {
+	for _, key := range []string{"no_trade_gap", "max_daily_orders", "extreme_max_daily_orders", "lot_size"} {
 		if _, ok := fake.gotParams[key]; ok {
 			t.Fatalf("persisted legacy key %q in %v", key, fake.gotParams)
 		}
 	}
-	if fake.gotParams["full_position_price"] != 40.0 || fake.gotParams["zero_position_price"] != 55.0 || fake.gotParams["trade_gap"] != 50.0 || fake.gotParams["migration_lossy"] != true || fake.gotParams["migration_warning_count"] != 3.0 {
+	curve, ok := fake.gotParams["price_position_curve"].([]any)
+	if !ok || len(curve) != 3 || curve[1].(map[string]any)["price"] != 48.0 || curve[1].(map[string]any)["target_inventory"] != 11000.0 {
+		t.Fatalf("preserved price curve = %#v", fake.gotParams["price_position_curve"])
+	}
+	if _, ok := fake.gotParams["full_position_price"]; ok {
+		t.Fatalf("curve config unexpectedly persisted compatibility endpoint: %v", fake.gotParams)
+	}
+	if _, ok := fake.gotParams["zero_position_price"]; ok {
+		t.Fatalf("curve config unexpectedly persisted compatibility endpoint: %v", fake.gotParams)
+	}
+	if fake.gotParams["trade_gap"] != 50.0 || fake.gotParams["migration_warning_count"] != 3.0 {
 		t.Fatalf("canonical migration = %v", fake.gotParams)
 	}
-	if _, ok := fake.gotParams["migration_original_price_position_curve"]; !ok {
-		t.Fatalf("migration curve audit missing: %v", fake.gotParams)
+	if _, ok := fake.gotParams["migration_lossy"]; ok {
+		t.Fatalf("losslessly preserved curve marked lossy: %v", fake.gotParams)
 	}
 }
 

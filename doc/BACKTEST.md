@@ -16,6 +16,10 @@
 
 `DATA_BLOCKED`、`INTEGRATION_BLOCKED`、`RESEARCH_ONLY` 和 `OUT_OF_SCOPE` 都是产品状态，不是可由默认值绕过的错误。每次运行应保留 `capability_status`、`blocked_by`、缺失字段和下一启用条件。
 
+### 富途历史期权数据裁决（2026-08-14）
+
+富途 `GetHistoryKL` 只能回填 K 线，缺少同一时点的 bid/ask、Delta、IV、Theta 和 OI；`GetOptionQuote` 是无历史时间参数的当前快照；`GetOptionChain` 的日期参数筛选到期日且只返回静态合约。三者不能组合成过去时点的原子期权 snapshot，也不能覆盖真实成交、到期和指派事件。因此 HK.00700/US.JD 只能从实时采集启用后向未来积累数据；完整到期周期达标前，报告固定为 `DATA_BLOCKED`，并输出数据质量卡。禁止用期权 OHLC、当前 Greeks 或跨时点数据进行回填。
+
 ## 命令边界
 
 CLI 入口保留确定性运行器参数，但产品策略名只有 `wheel`：
@@ -36,13 +40,14 @@ wbot backtest \
 | `-limit` | 10000 | DB 输入最大 bars 数 |
 | `-cash` | 10000 | 初始现金（>0） |
 | `-strategy` | `hold` | CLI 实际默认是内部 `hold` 基准；显式 `-strategy wheel` 才运行 Wheel。产品 API/watchlist 只接受 `wheel` |
-| `-params` | — | `wheel` 新配置必须提供 `full_position_price`、`zero_position_price` 与 `max_inventory`；百分比用小数；旧曲线仅兼容读取；内部 `hold`/`buy-hold` 不接参数 |
-| `-fee` | 0 | 回测费用占位；不改变提醒契约 |
+| `-params` | — | 手工/ad-hoc Wheel 参数；可提供完整 `price_position_curve` + `max_inventory`，或两端点 + `max_inventory`；百分比用小数；内部 `hold`/`buy-hold` 不接参数 |
+| `-from-watchlist` | false | 按 `-symbol` 从数据库只读加载生产 Wheel 参数和真实 `config_version`；与 `-params`、`-file`、`-symbols` 互斥。生产绑定报告必须使用此开关，手工参数报告的版本显式为 `null` |
+| `-fee` | 0 | 每笔实际成交的固定费用；正股与期权 fill 均从现金扣除，未成交/HOLD/机械到期不收费 |
 | `-seed` | 42 | 未成交启发式抽样种子；同输入同 seed 产生同一成交 trace，`0` 等价于默认 42 |
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
-| `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.0 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
-| `-cache` | false | 显式把本次 `-report` 证据按 symbol 幂等写入 `strategy_cache`；要求单标的 `-dsn -strategy wheel -report`，初始状态固定为 `RESEARCH_CANDIDATE` |
+| `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.1 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
+| `-cache` | false | 显式把本次 `-report` 证据按 symbol 幂等写入 `strategy_cache`；要求单标的 `-dsn -strategy wheel -from-watchlist -report`，初始状态固定为 `RESEARCH_CANDIDATE` |
 | `-train` | 空 | 对 JSON 指定的战术参数范围运行 ES；只支持单标的 `-dsn -strategy wheel`，战略参数仍由 `-params` 固定 |
 | `-population` / `-max-generations` | 20 / 40 | ES 种群（16–24）与最大代数 |
 | `-budget` / `-train-timeout` | 840 / 10m | 总回测评估预算（含样本外测试）与墙钟超时；启动连接数据源前打印预计评估次数 |
@@ -74,7 +79,7 @@ wbot backtest \
 }
 ```
 
-满仓价必须为正、清仓价必须更高、最大库存为正整数；两价之间从满仓到零仓线性插值、区间外钳制。百分比字段使用小数（`0.018 = 1.8%`），新战术字段省略时默认为 0 并关闭对应行为。策略无每日次数限制；报告可保留每日提醒/成交次数统计。库存事件至少记录：`stock_shares`、`futures_equivalent_shares`、`option_delta_stock`、`actual_inventory`、`effective_inventory`、`target_inventory`、`inventory_gap`。有效库存为实际库存加带符号期权 Delta；空 Put 增加、空 Call 减少有效库存。
+最大库存必须为正整数。配置可使用满仓价/清仓价两端点，也可使用至少两个价格严格递增、目标库存不递增且不超过最大库存的 `price_position_curve`；多点曲线逐段线性插值并在两端钳制，任何中间锚点都不会被压成端点。百分比字段使用小数（`0.018 = 1.8%`），新战术字段省略时默认为 0 并关闭对应行为。策略无每日次数限制；报告可保留每日提醒/成交次数统计。库存事件至少记录：`stock_shares`、`futures_equivalent_shares`、`option_delta_stock`、`actual_inventory`、`effective_inventory`、`target_inventory`、`inventory_gap`。有效库存为实际库存加带符号期权 Delta；空 Put 增加、空 Call 减少有效库存。
 
 每个事件必须保留原子快照标识、配置版本、候选列表、拒绝原因和动作。动作只有：
 
@@ -95,7 +100,9 @@ wbot backtest \
 
 当前确定性运行结果的 `Result.Unfilled` 记录期权卖出成交尝试口径：`AttemptCount = FillCount + UnfilledCount`，`UnfilledRatio = UnfilledCount / AttemptCount`；没有成交尝试时比例为 `null`，CLI 显示“未成交 N/A”，不得解释为 0%。`Trade.Filled=false` 表示一次由 `Trade.UnfilledModel` 标识的模拟未成交卖出尝试，不入账、不改变现金或持仓；成交的期权交易为 `Filled=true`。正股交易、HOLD 与 DATA_BLOCKED 不进入该尝试分母。
 
-`-report` 以 [[BACKTEST_REPORT]] schema 1.0 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。
+`-report` 以 [[BACKTEST_REPORT]] schema 1.1 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。Wheel 历史能力为 `DATA_BLOCKED` 时，`net_return_*` 和超额字段为 `null`；只保留明确标为窗口末账面估值变动的 `window_mark_to_market_*`，不得显示成可执行收益。
+
+报告 `terminal` 卡保存现金、正股和期权持仓末值、开放期权腿、带成本基础的已实现/未实现 P&L，以及机械到期/指派统计。开放腿缺 mark 时组合末值/P&L 显式 `null`；真实券商到期/指派计数因历史事件缺失也显式 `null`。`data_quality` 卡保存总/阻塞 bar、有效覆盖率、snapshot 批次/合约行、逐字段缺失计数和完整到期周期闸门。数据库中没有任何 snapshot 时不再只返回错误，而是对已有 bars 生成全程 `DATA_BLOCKED/HOLD` 报告。
 
 参数研究只允许在离线数据上改变 DTE、候选映射、质量门槛、频率和覆盖率（100%、固定覆盖、随机漏 30%/50%，随机种子可复现）。曲线、最大库存、战略状态和资产配置不参与优化。
 
@@ -116,7 +123,7 @@ wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00883 -strategy wheel \
 
 ## CLI/API 一致性与导出
 
-`wbot backtest -save`、`GET /v1/backtests`、`GET /v1/backtests/{id}` 和 export 共用同一落库 trace。详情包含 `equity_curve`、`trades` 和逐 bar `signals`；运行参数包含完整 `strategy_params`。新 trace 同时保存 `capability_status`、`blocked_by`、`snapshot_key`、`snapshot_observed_at`、实际/有效库存和期权 Delta 库存，UI 与 CSV/JSON 导出均保留这些审计字段。人工动作与 watchlist `config_version` 属于独立审计表，尚未接入回测详情，不得宣称已包含。导出时间统一 RFC3339 UTC `Z`。服务端执行超时、数据缺失或阻塞时应返回可执行的 `code/message/action`，不能把阻塞伪装为成功。
+`wbot backtest -save`、`GET /v1/backtests`、`GET /v1/backtests/{id}` 和 export 共用同一落库 trace。详情包含 `equity_curve`、`trades` 和逐 bar `signals`；运行参数包含完整 `strategy_params`。新 trace 同时保存 `capability_status`、`blocked_by`、`snapshot_key`、`snapshot_observed_at`、实际/有效库存和期权 Delta 库存，UI 与 CSV/JSON 导出均保留这些审计字段。人工动作仍属独立审计表；`-report -from-watchlist` 会把 watchlist 的真实 `config_version` 写入报告身份，手工参数不冒充生产版本。导出时间统一 RFC3339 UTC `Z`。服务端执行超时、数据缺失或阻塞时应返回可执行的 `code/message/action`，不能把阻塞伪装为成功。
 
 ## 实现对账
 

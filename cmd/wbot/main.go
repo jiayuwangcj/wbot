@@ -450,10 +450,11 @@ func runBacktest(prog string, argv []string) int {
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
-	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
+	fee := fs.Float64("fee", 0, "fixed fee deducted from every filled stock/option trade")
 	seed := fs.Int64("seed", 42, "seed for the unfilled-attempt draw (same seed, same trace; 0 = default 42)")
 	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
 	params := fs.String("params", "", `Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md`)
+	fromWatchlist := fs.Bool("from-watchlist", false, "load exact Wheel params and config_version for -symbol from the database watchlist")
 	train := fs.String("train", "", `ES tactical search ranges as JSON, for example {"move_interval_pct":["0.005","0.03"]}`)
 	population := fs.Int("population", 20, "ES population size (16..24; with -train)")
 	maxGenerations := fs.Int("max-generations", 40, "maximum ES generations (with -train)")
@@ -464,9 +465,9 @@ func runBacktest(prog string, argv []string) int {
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
 	format := fs.String("format", "csv", "export format with -export: csv or json (same output as GET /v1/backtests/{id}/export)")
-	report := fs.Bool("report", false, "write a deterministic schema 1.0 JSON report and HTML projection")
+	report := fs.Bool("report", false, "write a deterministic schema 1.1 JSON report and HTML projection")
 	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
-	cache := fs.Bool("cache", false, "upsert the report's RESEARCH_ONLY evidence into strategy_cache (requires -dsn -strategy wheel -report)")
+	cache := fs.Bool("cache", false, "upsert report evidence into strategy_cache (requires -dsn -strategy wheel -from-watchlist -report)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
@@ -556,6 +557,10 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 
+	btSym := strings.TrimSpace(*symbol)
+	if len(symList) == 1 {
+		btSym = symList[0]
+	}
 	stratName := strings.TrimSpace(*strat)
 	paramsMap := map[string]any{}
 	if ps := strings.TrimSpace(*params); ps != "" {
@@ -563,6 +568,34 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: -params: %v\n", err)
 			return 2
 		}
+	}
+	var configVersion *int
+	if *fromWatchlist {
+		if fp != "" || multi || stratName != "wheel" || strings.TrimSpace(*params) != "" {
+			fmt.Fprintf(os.Stderr, "backtest: -from-watchlist requires one -dsn symbol, -strategy wheel, and no -params\n")
+			return 2
+		}
+		configDB, err := db.Open(d)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: open db for watchlist config: %v\n", err)
+			return 1
+		}
+		item, loadErr := watchlist.Get(context.Background(), configDB, btSym)
+		closeErr := configDB.Close()
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "backtest: load watchlist config: %v\n", loadErr)
+			return 1
+		}
+		if closeErr != nil {
+			fmt.Fprintf(os.Stderr, "backtest: close watchlist config db: %v\n", closeErr)
+			return 1
+		}
+		if item.Strategy != "wheel" || item.ConfigVersion == nil || *item.ConfigVersion <= 0 {
+			fmt.Fprintf(os.Stderr, "backtest: watchlist %s has no versioned wheel config\n", btSym)
+			return 1
+		}
+		paramsMap = item.Params
+		configVersion = item.ConfigVersion
 	}
 	// Build is the shared CLI/API validation contract (internal/backtestexec):
 	// the API's POST /v1/backtests accepts exactly these strategies and params.
@@ -580,8 +613,8 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -save requires -dsn input\n")
 		return 2
 	}
-	if *cache && (!*report || fp != "" || multi || stratName != "wheel") {
-		fmt.Fprintf(os.Stderr, "backtest: -cache requires one -dsn symbol, -strategy wheel, and -report\n")
+	if *cache && (!*report || fp != "" || multi || stratName != "wheel" || configVersion == nil) {
+		fmt.Fprintf(os.Stderr, "backtest: -cache requires one -dsn symbol, -strategy wheel, -from-watchlist, and -report\n")
 		return 2
 	}
 	if multi && templ != nil && templ.NeedsOptions {
@@ -607,22 +640,19 @@ func runBacktest(prog string, argv []string) int {
 		}
 	}
 
-	btSym := strings.TrimSpace(*symbol)
-	if len(symList) == 1 {
-		btSym = symList[0]
-	}
 	btOpts := backtestexec.Options{
-		Symbol:    btSym,
-		Strategy:  stratName,
-		Params:    paramsMap,
-		Timeframe: strings.TrimSpace(*timeframe),
-		Adjust:    strings.TrimSpace(*adjust),
-		From:      fromT,
-		To:        toT,
-		Limit:     *limit,
-		Cash:      *cash,
-		Fee:       *fee,
-		Seed:      *seed,
+		Symbol:        btSym,
+		Strategy:      stratName,
+		Params:        paramsMap,
+		ConfigVersion: configVersion,
+		Timeframe:     strings.TrimSpace(*timeframe),
+		Adjust:        strings.TrimSpace(*adjust),
+		From:          fromT,
+		To:            toT,
+		Limit:         *limit,
+		Cash:          *cash,
+		Fee:           *fee,
+		Seed:          *seed,
 	}
 	if strings.TrimSpace(*train) != "" {
 		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Cache: *cache})
@@ -716,10 +746,10 @@ func runBacktest(prog string, argv []string) int {
 	}
 
 	if res.Unfilled.AttemptCount == 0 {
-		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d 未成交 N/A(无成交尝试)\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
+		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试)\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount)
 	} else {
-		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d 未成交 %d/%d (%.2f%%)\n",
-			res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
+		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n",
+			res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
 	}
 	if *report {
 		reportParams := paramsMap
@@ -732,8 +762,15 @@ func runBacktest(prog string, argv []string) int {
 		}
 		migrationLossy := false
 		var originalJSON json.RawMessage
-		if _, legacy := paramsMap["price_position_curve"]; legacy {
-			migrationLossy = true
+		if stratName == "wheel" {
+			cfg, parseErr := strategy.ParseConfig(paramsMap)
+			if parseErr != nil {
+				fmt.Fprintf(os.Stderr, "backtest: report config audit: %v\n", parseErr)
+				return 1
+			}
+			migrationLossy = cfg.MigrationLossy
+		}
+		if migrationLossy {
 			originalJSON, err = json.Marshal(paramsMap)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "backtest: report original params: %v\n", err)
@@ -741,7 +778,7 @@ func runBacktest(prog string, argv []string) int {
 			}
 		}
 		rep, err := backtestreport.Build(backtestreport.Input{
-			Symbol: btSym, Strategy: stratName, Params: reportParams, ConfigVersion: 1,
+			Symbol: btSym, Strategy: stratName, Params: reportParams, ConfigVersion: configVersion,
 			CodeVersion: version, RunSeed: *seed, InitialCash: *cash, FeePerTrade: *fee,
 			Start: startTs, End: endTs, BaselineReturnPct: baselineReturnPct,
 			SourceHash: sourceHash, MigrationLossy: migrationLossy, OriginalJSON: originalJSON,

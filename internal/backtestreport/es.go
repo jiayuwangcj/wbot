@@ -39,7 +39,11 @@ func BuildES(in ESInput) (*Report, error) {
 	r.ReportKind = "es_train"
 	r.Identity.Windows = &in.Windows
 	// Training artifacts cannot become READY or drive configuration writes.
-	r.Identity.CapabilityStatus = "RESEARCH_ONLY"
+	// A historical data blocker is stronger than RESEARCH_ONLY and must not be
+	// hidden merely because the report contains an ES projection.
+	if r.Identity.CapabilityStatus != "DATA_BLOCKED" {
+		r.Identity.CapabilityStatus = "RESEARCH_ONLY"
+	}
 	r.Train, r.Generations, r.Candidates, r.Trajectory = &in.Train, in.Generations, in.Candidates, in.Trajectory
 	r.Result.TailLossPct = &in.TailLossPct
 	r.Audit.Reward, r.Audit.SearchSpace = &in.Reward, in.SearchSpace
