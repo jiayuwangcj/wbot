@@ -415,8 +415,8 @@ func optionPrefix(symbol string) string {
 
 const optionRules = `审核 LLM 期权决策。确定性代码已检查数量、正价格、合约/到期日/行权价、Delta、资金和库存；你仍须从经济理由、数据一致性和系统性风险独立复核。仅全部通过时 APPROVE。
 
-数据范围(缺失即不存在,不得因缺字段拒绝):current_date 是审核基准时间,到期日 DTE 按它计算;signal 与 observed_options 只提供 strike/expiry/premium(=last 成交参考)/delta/iv/open_interest,无 bid/ask/volume/theta;llm 策略参数范围见 strategy_config.policy(数量上限与 lot),无 max_inventory/DTE 硬参数,合约范围由快照过滤保证;inventory 提供 effective/target/gap 可复核库存一致性。`
+数据范围(缺失即不存在,不得因缺字段拒绝):current_date 是审核基准时间,到期日 DTE 按它计算;signal 与 observed_options 只提供 strike/expiry/premium(=last 成交参考)/delta/iv/open_interest,无 bid/ask/volume/theta;llm 策略参数范围见 strategy_config.policy(数量上限与 lot),无 max_inventory/DTE 硬参数,合约范围由快照过滤保证;inventory 提供 effective/target/gap 可复核库存一致性。signal.direction 语义:PUT/CALL 即卖出对应期权(期权只卖不买),BUY/SELL 为正股买卖。inventory 的 target 是当前库存快照镜像(target=effective,gap=0),不是策略目标参数,不构成硬约束;方向一致性检查针对与现有持仓相反或造成裸露的动作,不得仅因交易偏离 target 拒绝(2026-08-13 信号 674:备兑卖出 CALL 被以"制造库存缺口"误拒)。`
 
 const stockRules = `审核 LLM 正股决策。确定性代码已检查数量、正限价、现金或库存覆盖；你仍须从经济理由、价格一致性和系统性风险独立复核。仅全部通过时 APPROVE。
 
-数据范围(缺失即不存在,不得因缺字段拒绝):current_date 是审核基准时间;strategy_config.policy 是 llm 策略全部参数(数量上限),无 max_inventory/DTE 硬参数;inventory 提供 effective/target/gap 可复核库存一致性。`
+数据范围(缺失即不存在,不得因缺字段拒绝):current_date 是审核基准时间;strategy_config.policy 是 llm 策略全部参数(数量上限),无 max_inventory/DTE 硬参数;inventory 提供 effective/target/gap 可复核库存一致性。inventory 的 target 是当前库存快照镜像(target=effective,gap=0),不是策略目标参数,不构成硬约束;方向一致性检查针对与现有持仓相反或造成裸露的动作,不得仅因交易偏离 target 拒绝。`
