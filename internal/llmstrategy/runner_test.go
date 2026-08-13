@@ -143,6 +143,23 @@ func TestRunTriggersImmediatelyAndOnInterval(t *testing.T) {
 	}
 }
 
+func TestParseDecisionJSONStripsFences(t *testing.T) {
+	plain, err := parseDecisionJSON(`{"symbol":"HK.00700","direction":"PUT","quantity":1}`)
+	if err != nil || plain.Direction != "PUT" {
+		t.Fatalf("plain: %+v err=%v", plain, err)
+	}
+	fenced, err := parseDecisionJSON("```json\n{\"symbol\":\"HK.00700\",\"direction\":\"PUT\",\"quantity\":1}\n```")
+	if err != nil || fenced.Direction != "PUT" {
+		t.Fatalf("fenced: %+v err=%v", fenced, err)
+	}
+	if _, err := parseDecisionJSON("[{\"direction\":\"PUT\"}]"); err == nil {
+		t.Fatal("array content must still reject")
+	}
+	if _, err := parseDecisionJSON(`{"direction":"PUT"} trailing`); err == nil {
+		t.Fatal("trailing content must still reject")
+	}
+}
+
 func TestClientUsesDeepseekV4Flash(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any

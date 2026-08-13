@@ -183,6 +183,26 @@ func (r *Runner) Run(ctx context.Context, interval time.Duration) error {
 	}
 }
 
+// parseDecisionJSON parses the final decision. deepseek-v4-flash occasionally
+// wraps the object in ```json fences despite response_format (signal 679,
+// 2026-08-13: "invalid character ']' after top-level value"); the fence is
+// stripped, everything else stays strict — an array or trailing content still
+// rejects.
+func parseDecisionJSON(content string) (llmsignal.Decision, error) {
+	var d llmsignal.Decision
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+	if err := json.Unmarshal([]byte(content), &d); err != nil {
+		return d, fmt.Errorf("llmstrategy: decision JSON: %w", err)
+	}
+	return d, nil
+}
+
 // compactDecision renders the rejected decision for the audit record; without
 // it a rejection shows only the validation message and the model's actual
 // output is unrecoverable.
@@ -326,11 +346,7 @@ func (c *Client) Generate(ctx context.Context, s Snapshot) (llmsignal.Decision, 
 		}
 		messages = append(messages, message)
 		if len(message.ToolCalls) == 0 {
-			var d llmsignal.Decision
-			if err := json.Unmarshal([]byte(message.Content), &d); err != nil {
-				return d, fmt.Errorf("llmstrategy: decision JSON: %w", err)
-			}
-			return d, nil
+			return parseDecisionJSON(message.Content)
 		}
 		for _, call := range message.ToolCalls {
 			// 工具调用审计:agent 行为可观察,否则只能靠黑盒猜测模型调了什么
