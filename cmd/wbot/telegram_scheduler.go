@@ -25,6 +25,12 @@ const (
 	telegramPushInterval = 30 * time.Second
 	// signalFreshWindow bounds how old an ALERT may be before yes is refused.
 	signalFreshWindow = 10 * time.Minute
+	// llmReviewRetryWindow: runner 在 gate 失败后 sleep 3s 同步重试一次
+	// (300s http.Client 超时, internal/llmreview/llmreview.go:78, 97e769b
+	// 变更);窗口内 LLM_REVIEW_FAILED 视为重试进行中,推送器保持游标等重试
+	// 落记录(2026-08-14: 772/764 重试成功也丢卡)。重试最长时间 = 3s sleep
+	// + 300s 超时 = 303s < 360s,窗口常数必须 ≥ 重试最长时间。
+	llmReviewRetryWindow = 6 * time.Minute
 )
 
 // errLiveEnvNotAllowed is returned by the order placer for real-env
@@ -359,8 +365,9 @@ func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration)
 // AppendSignal inside the POST handler, so the first push pass can race it —
 // or a SendMessage call failed transiently, 769); the caller then holds the
 // cursor back so the signal is not lost. Signals that are permanently
-// unpushable (REJECTED review, dismissed, no review after the retry window)
-// return false so the cursor advances past them.
+// unpushable (REJECTED review, dismissed, no review after the retry window,
+// LLM_REVIEW_FAILED beyond the gate retry window) return false so the cursor
+// advances past them.
 func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.SignalRecord, delivered map[int64]bool) (retry bool) {
 	if dismissed, err := s.store.IsDismissed(ctx, sig.Symbol, utcDate(s.now())); err != nil {
 		s.logf("push: %s signal=%d: dismissed check: %v", sig.Symbol, sig.ID, err)
@@ -393,13 +400,26 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 			return false
 		}
 		// LLM_REVIEW_FAILED: 审核请求失败(网络/DNS/超时)而非模型裁决,不得
-		// 当「模型拒绝」推卡片,跳过推送并推进游标(2026-08-13: signal 741
-		// DNS 超时曾被冒充 REJECTED 的教训;失败原因在 DB 审计可查)。
+		// 当「模型拒绝」推卡片(2026-08-13: signal 741 DNS 超时曾被冒充
+		// REJECTED;失败原因在 DB 审计可查)。runner 失败后 sleep 3s 同步重试
+		// 一次(300s http.Client 超时, internal/llmreview/llmreview.go:78):
+		// 重试成功会落正常 LLM_REVIEW 记录,FAILED 直接 skip 推进游标则重试
+		// 成功也丢卡(2026-08-14: 772/764 实锤)。
+		// 故窗口内保持游标等下轮复查,窗口外仍无审核记录才永久跳过。
 		if failed, ferr := s.store.HasAction(ctx, sig.ID, "LLM_REVIEW_FAILED"); ferr != nil {
 			s.logf("push: %s signal=%d: failed check: %v", sig.Symbol, sig.ID, ferr)
 			return true
 		} else if failed {
-			s.logf("push: %s signal=%d: LLM review failed (transient); skip push", sig.Symbol, sig.ID)
+			failedAt, aerr := s.store.LatestAction(ctx, sig.ID, "LLM_REVIEW_FAILED")
+			if aerr != nil {
+				s.logf("push: %s signal=%d: failed action lookup: %v", sig.Symbol, sig.ID, aerr)
+				return true
+			}
+			if s.now().Sub(failedAt.CreatedAt) < llmReviewRetryWindow {
+				s.logf("push: %s signal=%d: LLM review failed; gate retry window open, will re-check", sig.Symbol, sig.ID)
+				return true
+			}
+			s.logf("push: %s signal=%d: LLM review failed beyond retry window; skip push", sig.Symbol, sig.ID)
 			return false
 		}
 		if s.now().Sub(sig.CreatedAt) > signalFreshWindow {

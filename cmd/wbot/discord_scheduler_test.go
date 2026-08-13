@@ -649,6 +649,74 @@ func TestDiscordPushSkipsStaleMissingReview(t *testing.T) {
 	}
 }
 
+// TestDiscordPushGateRetryWindowHoldsCursor: 772 实测回归——LLM gate 失败后
+// runner 窗口内同步重试(sleep 3s + 300s http.Client 超时),重试成功会落正常
+// 审核记录;FAILED 新鲜(窗口内)时推送器必须保持游标(return true),不能 skip
+// 推进游标导致重试成功也丢卡(2026-08-14: 772 17:11:57 skip → 17:14:25 重试
+// 成功落 REJECTED,卡片不推)。
+func TestDiscordPushGateRetryWindowHoldsCursor(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(20, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 20, Action: "LLM_REVIEW_FAILED", Actor: "llm:test",
+		CreatedAt: now.Add(-time.Minute),
+	})
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); !retry {
+		t.Fatal("fresh FAILED must hold the cursor (gate retry in progress)")
+	}
+	if fake.sendCount() != 0 {
+		t.Fatalf("FAILED signal pushed; sends = %d", fake.sendCount())
+	}
+}
+
+// TestDiscordPushGateRetryWindowExpiredSkips: FAILED 超过重试窗口(6 分钟)仍无
+// 审核记录 → 重试不可能再成功,与旧语义一致永久跳过(游标推进)。
+func TestDiscordPushGateRetryWindowExpiredSkips(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(21, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 21, Action: "LLM_REVIEW_FAILED", Actor: "llm:test",
+		CreatedAt: now.Add(-7 * time.Minute),
+	})
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("stale FAILED beyond the gate retry window must skip permanently")
+	}
+	if fake.sendCount() != 0 {
+		t.Fatalf("stale FAILED signal pushed; sends = %d", fake.sendCount())
+	}
+}
+
+// TestDiscordPushGateRetrySuccessPushes: 重试成功落 LLM_REVIEW 记录后,
+// LatestLLMReview 判断在 FAILED 之前 → 走正常 APPROVE 推送路径,卡片必须送达
+// (772 丢卡实况的修复验收)。
+func TestDiscordPushGateRetrySuccessPushes(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(22, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 22, Action: "LLM_REVIEW_FAILED", Actor: "llm:test",
+		CreatedAt: now.Add(-time.Minute),
+	})
+	store.reviews[22] = approvedReview()
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("signal with a recorded review after gate retry must push, not retry")
+	}
+	if fake.sendCount() != 1 {
+		t.Fatalf("sends = %d; want 1 (review won over FAILED)", fake.sendCount())
+	}
+}
+
 // TestDiscordRunPushHeartbeatLogsIdleState: 循环存活可观测性(2026-08-14 实
 // 测 discord 推送静默 3.5 分钟零日志,「无信号」与「循环卡死」不可区分)。
 // 空转时每 5 个 tick 必须打一行带 cursor/pending/signals 的心跳日志。
