@@ -287,6 +287,80 @@ func TestUnfilledTraceFlags(t *testing.T) {
 	}
 }
 
+// TestUnfilledDualWorldStability: the P1 contract — a new unrelated candidate
+// added before existing orders must not change the existing orders' outcomes
+// (same seed, same trace). World A sells C105 on bars 1/2/4; world B inserts
+// an X100 sell attempt on bar 0 (earlier bar, different contract). The X100
+// attempt is a liquid-quote fill under the seed, so it only consumes an
+// attempt index. Seed 11 was picked from the attemptDraw table: with a global
+// attempt counter X100 would shift C105 to indices 2/3/4 and flip the bar-4
+// attempt from fill to unfilled; with per-contract indices C105 stays 1/2/3
+// and all three fill in both worlds.
+func TestUnfilledDualWorldStability(t *testing.T) {
+	chain := map[string]OptionContract{
+		"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5)},
+		"X100": {Code: "X100", Kind: OptionCall, Strike: 100, Expiry: expiryAt(5)},
+	}
+	closes := map[string][]float64{"C105": {2, 2, 2, 2, 2}, "X100": {2, 2, 2, 2, 2}}
+	run := func(actions []Action, sizes []float64, pending []*OptionPosition) *Result {
+		sc := &scriptStrategy{actions: actions, sizes: sizes, pending: pending}
+		res, err := RunOptions(context.Background(), mkBars(100, 101, 102, 103, 104), 10000, 0, sc, quotedOptions(chain, closes, 11))
+		if err != nil {
+			t.Fatalf("RunOptions() error: %v", err)
+		}
+		return res
+	}
+	worldA := run(
+		[]Action{ActionHold, ActionSellCall, ActionSellCall, ActionHold, ActionSellCall},
+		[]float64{0, 1, 1, 0, 1},
+		[]*OptionPosition{nil,
+			{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2},
+			{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2},
+			nil,
+			{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2}},
+	)
+	worldB := run(
+		[]Action{ActionSellCall, ActionSellCall, ActionSellCall, ActionHold, ActionSellCall},
+		[]float64{1, 1, 1, 0, 1},
+		[]*OptionPosition{
+			{Code: "X100", Kind: OptionCall, Strike: 100, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2},
+			{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2},
+			{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2},
+			nil,
+			{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2}},
+	)
+	// Existing C105 orders: same timestamps, same fill verdicts in both worlds.
+	var aC105, bC105 []Trade
+	for _, tr := range worldA.Trades {
+		if tr.Symbol == "C105" {
+			aC105 = append(aC105, tr)
+		}
+	}
+	for _, tr := range worldB.Trades {
+		if tr.Symbol == "C105" {
+			bC105 = append(bC105, tr)
+		}
+	}
+	// CashAfter is a cumulative ledger that naturally includes the candidate's
+	// own fill; the contract covers the outcome fields, compared explicitly.
+	for i := range aC105 {
+		a, b := aC105[i], bC105[i]
+		if !a.Ts.Equal(b.Ts) || a.Filled != b.Filled || a.UnfilledModel != b.UnfilledModel {
+			t.Fatalf("C105 trade %d differs across worlds: %+v vs %+v", i, a, b)
+		}
+	}
+	for _, tr := range aC105 {
+		if !tr.Filled {
+			t.Fatalf("C105 trade = %+v; want all fills under seed 11", tr)
+		}
+	}
+	// The inserted X100 attempt fills under seed 11: counts differ only in the
+	// attempt/fill numerator, never in the unfilled count.
+	if b := worldB.Unfilled; b.AttemptCount != worldA.Unfilled.AttemptCount+1 || b.UnfilledCount != worldA.Unfilled.UnfilledCount || b.FillCount != worldA.Unfilled.FillCount+1 {
+		t.Fatalf("world B unfilled = %+v vs world A %+v; want +1 attempt, +1 fill, 0 unfilled delta", worldB.Unfilled, worldA.Unfilled)
+	}
+}
+
 func TestUnfilledHoldAndBuysNotAttempted(t *testing.T) {
 	chain := map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5)}}
 	sc := &scriptStrategy{

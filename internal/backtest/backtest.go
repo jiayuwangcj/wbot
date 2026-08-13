@@ -356,12 +356,16 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, seed i
 		// (missing quote = no market info = maximally illiquid).
 		st.DailyOrders++
 		st.AttemptCount++
+		if st.AttemptsByContract == nil {
+			st.AttemptsByContract = map[string]int64{}
+		}
+		st.AttemptsByContract[p.Code]++
 		symbol := ""
 		if st.QuoteBatch != nil {
 			symbol = st.QuoteBatch.Underlying
 		}
 		bid, ask, vol, oi, _ := fillQuote(st, p.Code)
-		if attemptDraw(seed, symbol, p.Code, b.Ts, st.AttemptCount) < failProb(bid, ask, vol, oi) {
+		if attemptDraw(seed, symbol, p.Code, b.Ts, st.AttemptsByContract[p.Code]) < failProb(bid, ask, vol, oi) {
 			st.UnfilledCount++
 			*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash, Filled: false, UnfilledModel: unfilledModelLabel()})
 			st.Pending = nil

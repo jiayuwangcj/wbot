@@ -55,9 +55,10 @@ func failProb(bid, ask float64, vol, oi int64) float64 {
 }
 
 // attemptDraw derives the uniform draw of one sell attempt from (runSeed,
-// symbol, contract, barTs, attemptIndex). Inputs are fixed per attempt, so a
-// new candidate or attempt elsewhere in the run never shifts existing orders'
-// outcomes (same seed, same trace; plan §二).
+// symbol, contract, barTs, attemptIndex). attemptIndex is the contract's own
+// attempt sequence (State.AttemptsByContract), so a new candidate or attempt
+// elsewhere in the run never shifts existing orders' outcomes (same seed,
+// same trace; plan §二).
 func attemptDraw(runSeed int64, symbol, contract string, barTs time.Time, attemptIndex int64) float64 {
 	h := fnv.New64a()
 	h.Write([]byte(symbol))

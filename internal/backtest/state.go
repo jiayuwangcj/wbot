@@ -114,6 +114,11 @@ type State struct {
 	AttemptCount  int64
 	FillCount     int64
 	UnfilledCount int64
+	// AttemptsByContract numbers sell attempts per contract code (p.Code);
+	// the per-contract sequence is the attempt_index passed to the unfilled
+	// draw, so a new candidate elsewhere in the run never shifts existing
+	// contracts' draws (lazy-initialized on first attempt).
+	AttemptsByContract map[string]int64
 }
 
 // Equity returns total portfolio value: cash + position at price plus option
