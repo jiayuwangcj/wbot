@@ -72,7 +72,10 @@ func New(baseURL, apiKey, model string) (*Client, error) {
 		// closed and rejected signal 453 for no verdict). The gate is the
 		// product's manual-approval checkpoint: waiting longer is strictly
 		// safer than failing closed on a slow model, so 180s.
-		http: &http.Client{Timeout: 180 * time.Second},
+		// 2026-08-14: 180s 仍触发 Client.Timeout(signal 771/772 "context
+		// deadline exceeded while reading body"),重试后部分成功。审核输入
+		// 随持仓/挂单增长,推理时间波动更大,提到 300s(5min)并保持重试。
+		http: &http.Client{Timeout: 300 * time.Second},
 	}, nil
 }
 
