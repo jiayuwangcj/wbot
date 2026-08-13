@@ -55,6 +55,7 @@ Discord 作为第二条推送/确认通道:信号/订单/拒绝理由通知 + em
 ## Next
 
 - ✅ 按钮交互闭环已验证(2026-08-13,信号 500 CONFIRM+FILL),456 卡片按钮已超窗(signal expired 属预期);待 00700 实测数据积累后评估 wheel 策略有效性
+- ✅ 按钮清理视觉验证(2026-08-13 02:18):456 卡片点 ❌ 拒绝 → DB 记录 NO「继续等待机会」(id=119,actor=`discord:1486343344065089648`)+ clearDiscordButtons PATCH 无失败日志(按钮消失);ephemeral 删除规则确认:仅 ✅ 路径的「已记录,正在下单」(in-progress)在异步结果后删除,❌ 路径「已记录,继续等待机会」为最终回复保留
 - 注意:Discord 后台若改动 Interactions Endpoint URL,**必须配置在应用(General Information)页而非 Bot 页**,否则交互事件不达 endpoint
 - CI(feat/llm-signal-endpoint,已 push)→ 合批发布(feature)
 - backlog:wheel_signal_actions 部分唯一索引 (signal_id) WHERE action='CONFIRM'(Telegram×Discord 交叉确认兜底)、doc/API.md 补 /v1/discord/interactions 契约、allowed_user_ids 白名单(与 chat_ids 对齐)、embed 发送失败重试、公网端点限速
