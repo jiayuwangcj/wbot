@@ -324,6 +324,16 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 	if hasCash {
 		cashPtr = &cash
 	}
+	// 挂单声明是审核的强制输入(老板指令 2026-08-13):LLM 规则要求
+	// pending_orders 缺失必须 REJECT。查询后显式归一为空切片——「查过且
+	// 无挂单」与「没查(nil)」必须区分(2026-08-13:signal 735 因 null REJECT)。
+	pending, perr := r.deps.Store.ListPendingOrders(ctx, symbol)
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: list pending orders: %v\n", symbol, perr)
+	}
+	if pending == nil {
+		pending = []wheelstore.PendingOrder{}
+	}
 	summary := map[string]any{
 		"symbol":           symbol,
 		"config_version":   configVersion,
@@ -333,6 +343,7 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 		"persisted_signal": record,
 		"positions":        positions,
 		"cash_available":   cashPtr,
+		"pending_orders":   pending,
 		"rules":            wheelReviewRules,
 	}
 	_, action, err := llmreview.RecordLLMGate(ctx, r.deps.Store, r.deps.LLMReviewer, strings.TrimSpace(r.deps.LLMModel), llmreview.GateInput{
@@ -346,6 +357,7 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 			CurrentPrice:   price,
 			RulesText:      wheelReviewRules,
 			Symbol:         symbol,
+			PendingOrders:  pending,
 		},
 		Summary: summary,
 	})
