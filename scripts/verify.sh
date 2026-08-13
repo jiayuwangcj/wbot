@@ -63,4 +63,5 @@ scripts/accept-paper.sh >/dev/null
 scripts/accept-agent-federation.sh >/dev/null
 scripts/accept-backtest-report.sh "$bin" >/dev/null
 scripts/accept-backtest-train.sh "$bin" >/dev/null
+scripts/accept-cache-llm.sh >/dev/null
 echo "verify: ok"

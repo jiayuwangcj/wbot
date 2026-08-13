@@ -466,6 +466,7 @@ func runBacktest(prog string, argv []string) int {
 	format := fs.String("format", "csv", "export format with -export: csv or json (same output as GET /v1/backtests/{id}/export)")
 	report := fs.Bool("report", false, "write a deterministic schema 1.0 JSON report and HTML projection")
 	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
+	cache := fs.Bool("cache", false, "upsert the report's RESEARCH_ONLY evidence into strategy_cache (requires -dsn -strategy wheel -report)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
@@ -477,6 +478,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
 		fmt.Fprintf(os.Stderr, "With -train JSON, runs deterministic ES over tactical Wheel parameters only; strategic parameters remain fixed from -params.\n")
 		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
+		fmt.Fprintf(os.Stderr, "With -cache, explicitly upserts the generated report into strategy_cache as RESEARCH_CANDIDATE; it never publishes watchlist/Wheel config.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
 		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
@@ -528,6 +530,10 @@ func runBacktest(prog string, argv []string) int {
 	}
 
 	if *exportID != 0 {
+		if *cache {
+			fmt.Fprintf(os.Stderr, "backtest: -cache cannot be combined with -export\n")
+			return 2
+		}
 		if fp != "" {
 			fmt.Fprintf(os.Stderr, "backtest: -export reads from the database; -file is mutually exclusive\n")
 			return 2
@@ -574,6 +580,10 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -save requires -dsn input\n")
 		return 2
 	}
+	if *cache && (!*report || fp != "" || multi || stratName != "wheel") {
+		fmt.Fprintf(os.Stderr, "backtest: -cache requires one -dsn symbol, -strategy wheel, and -report\n")
+		return 2
+	}
 	if multi && templ != nil && templ.NeedsOptions {
 		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads atomic option_quote_snapshots; not supported for multi-symbol runs (use hold or buy-hold)\n", stratName)
 		return 2
@@ -615,7 +625,7 @@ func runBacktest(prog string, argv []string) int {
 		Seed:      *seed,
 	}
 	if strings.TrimSpace(*train) != "" {
-		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir})
+		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Cache: *cache})
 	}
 
 	var (
@@ -745,6 +755,13 @@ func runBacktest(prog string, argv []string) int {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
+		}
+		if *cache {
+			if err := cacheBacktestReport(context.Background(), database, rep, jsonPath, false); err != nil {
+				fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+				return 1
+			}
+			fmt.Printf("cache_symbol=%s approved_state=%s\n", rep.Identity.Symbol, wheelstore.StrategyCacheResearchCandidate)
 		}
 		fmt.Printf("report_id=%s json=%s html=%s\n", rep.ReportID, jsonPath, htmlPath)
 	}

@@ -42,6 +42,7 @@ wbot backtest \
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
 | `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.0 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
+| `-cache` | false | 显式把本次 `-report` 证据按 symbol 幂等写入 `strategy_cache`；要求单标的 `-dsn -strategy wheel -report`，初始状态固定为 `RESEARCH_CANDIDATE` |
 | `-train` | 空 | 对 JSON 指定的战术参数范围运行 ES；只支持单标的 `-dsn -strategy wheel`，战略参数仍由 `-params` 固定 |
 | `-population` / `-max-generations` | 20 / 40 | ES 种群（16–24）与最大代数 |
 | `-budget` / `-train-timeout` | 840 / 10m | 总回测评估预算（含样本外测试）与墙钟超时；启动连接数据源前打印预计评估次数 |
@@ -110,6 +111,8 @@ wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00883 -strategy wheel \
 ```
 
 数据严格按时间切为 train/valid/test（60%/20%/20%，不随机打散）；三个阶段使用用途派生且互不相同的 seed，最终候选再以 5 个封存测试 seed 评估。只有样本外 P10 仍超过 buy-hold 基线的候选才进入报告，否则输出“无可推荐参数”。训练报告固定为 `RESEARCH_ONLY`，不会写 watchlist 或 Wheel 配置。
+
+`-cache` 是与训练解耦的显式动作，单次回测和 `-train` 都可使用。缓存 payload 版本为 `strategy-cache-1.0`，只保存最优参数、收益指标、置信区间、能力状态、报告引用和三道批准闸门；不保存或注入逐代轨迹。首次写入即使数据闸门和样本外门槛通过，也因尚无人工批准而保持 `RESEARCH_CANDIDATE`。只有数据闸门、报告结果的样本外门槛和人工批准全部通过，缓存自身才可标为 `APPROVED_CANDIDATE` 并注入 LLM Snapshot；空缓存、超过 30 天、版本不匹配或状态不合格均跳过。该状态只表示研究候选资格，不会写入 `watchlist` 或 `wheel_configs`，产物始终是 `RESEARCH_ONLY`，不等于配置发布。
 
 ## CLI/API 一致性与导出
 
