@@ -16,6 +16,10 @@
 
 `DATA_BLOCKED`、`INTEGRATION_BLOCKED`、`RESEARCH_ONLY` 和 `OUT_OF_SCOPE` 都是产品状态，不是可由默认值绕过的错误。每次运行应保留 `capability_status`、`blocked_by`、缺失字段和下一启用条件。
 
+### 富途历史期权数据裁决（2026-08-14）
+
+富途 `GetHistoryKL` 只能回填 K 线，缺少同一时点的 bid/ask、Delta、IV、Theta 和 OI；`GetOptionQuote` 是无历史时间参数的当前快照；`GetOptionChain` 的日期参数筛选到期日且只返回静态合约。三者不能组合成过去时点的原子期权 snapshot，也不能覆盖真实成交、到期和指派事件。因此 HK.00700/US.JD 只能从实时采集启用后向未来积累数据；完整到期周期达标前，报告固定为 `DATA_BLOCKED`，并输出数据质量卡。禁止用期权 OHLC、当前 Greeks 或跨时点数据进行回填。
+
 ## 命令边界
 
 CLI 入口保留确定性运行器参数，但产品策略名只有 `wheel`：
