@@ -509,6 +509,13 @@ func (s *discordScheduler) handleInteraction(w http.ResponseWriter, r *http.Requ
 func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.Interaction, signalID int64) {
 	s.confirmMu.Lock()
 	defer s.confirmMu.Unlock()
+	// 「已记录,正在下单」是处理中消息:无论下单成功还是失败,异步结果一
+	// 落地就删除它,避免污染聊天记录(老板指令 2026-08-13)。
+	defer func() {
+		if err := s.dc.DeleteInteractionReply(ctx, s.appID, in.Token); err != nil {
+			s.logf("interaction %s: delete in-progress reply: %v", in.ID, err)
+		}
+	}()
 	sig, err := s.store.GetSignal(ctx, signalID)
 	if err != nil {
 		s.rejectDiscord(ctx, in, signalID, "signal not found")

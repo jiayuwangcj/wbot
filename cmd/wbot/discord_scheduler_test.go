@@ -23,11 +23,12 @@ import (
 
 const testChannelID = "chan-1"
 
-// fakeDCSchedulerServer records channel message payloads (test fixture: fake
-// bot token, no real Discord).
+// fakeDCSchedulerServer records channel message payloads and webhook deletes
+// (test fixture: fake bot token, no real Discord).
 type fakeDCSchedulerServer struct {
 	mu      sync.Mutex
 	sends   []map[string]any
+	deletes []string
 	authErr string
 }
 
@@ -39,6 +40,11 @@ func (f *fakeDCSchedulerServer) ServeHTTP(w http.ResponseWriter, r *http.Request
 		http.Error(w, "bad auth", http.StatusUnauthorized)
 		return
 	}
+	if r.Method == http.MethodDelete {
+		f.deletes = append(f.deletes, r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	var p map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		http.Error(w, "bad body", http.StatusBadRequest)
@@ -46,6 +52,19 @@ func (f *fakeDCSchedulerServer) ServeHTTP(w http.ResponseWriter, r *http.Request
 	}
 	f.sends = append(f.sends, p)
 	w.Write([]byte(`{"id":"m1"}`))
+}
+
+// hasDeleteReply reports whether the in-progress interaction reply was deleted
+// (DELETE /webhooks/{app}/{token}/messages/@original).
+func (f *fakeDCSchedulerServer) hasDeleteReply() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.deletes {
+		if strings.Contains(p, "/messages/@original") {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeDCSchedulerServer) lastSend(t *testing.T) map[string]any {
@@ -154,6 +173,19 @@ func (p *blockPlacer) waitEntered(t *testing.T, n int) {
 			t.Fatalf("PlaceOrder entered = %d; want %d", p.enteredCount(), n)
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// waitFor polls cond until it holds or the deadline fires.
+func waitFor(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	for !cond() {
+		select {
+		case <-deadline:
+			t.Fatal(msg)
+		case <-time.After(2 * time.Millisecond):
+		}
 	}
 }
 
@@ -468,6 +500,8 @@ func TestDiscordConfirmPlacesLimitOrder(t *testing.T) {
 	if act.Action != "CONFIRM" || act.Actor != "discord:42" {
 		t.Fatalf("action = %+v", act)
 	}
+	// 处理中消息(「已记录,正在下单」)在下单成功后必须删除(老板指令 2026-08-13)。
+	waitFor(t, fake.hasDeleteReply, "in-progress reply deleted after successful confirm")
 	embed := lastEmbed(t, fake)
 	desc, _ := embed["description"].(string)
 	if !strings.Contains(embed["title"].(string), "已下单") {
@@ -499,6 +533,8 @@ func TestDiscordConfirmExpiredRejected(t *testing.T) {
 	if title := lastEmbed(t, fake)["title"].(string); !strings.Contains(title, "下单失败") {
 		t.Fatalf("rejection title = %q", title)
 	}
+	// 失败路径同样要删处理中消息(老板指令 2026-08-13)。
+	waitFor(t, fake.hasDeleteReply, "in-progress reply deleted after failed confirm")
 }
 
 func TestDiscordConfirmMissingLimitPriceRejected(t *testing.T) {

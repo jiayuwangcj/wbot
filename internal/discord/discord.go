@@ -145,6 +145,29 @@ func (c *Client) ClearMessageComponents(ctx context.Context, channelID, messageI
 	return nil
 }
 
+// DeleteInteractionReply removes the interaction's original reply — the
+// ephemeral "已记录,正在下单" in-progress message is deleted once the async
+// order outcome lands (老板指令 2026-08-13: 处理中消息在有异步结果后一律
+// 删除,避免污染聊天记录; app_id/token 是 Discord 的 webhook 寻址约定)。
+func (c *Client) DeleteInteractionReply(ctx context.Context, appID, interactionToken string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		c.baseURL+"/webhooks/"+appID+"/"+interactionToken+"/messages/@original", nil)
+	if err != nil {
+		return fmt.Errorf("discord: delete interaction reply: create request")
+	}
+	req.Header.Set("Authorization", "Bot "+c.token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord: delete interaction reply: request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("discord: delete interaction reply: HTTP status %d", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
 // CreateMessage posts msg to a channel with Bot authorization.
 func (c *Client) CreateMessage(ctx context.Context, channelID string, msg Message) error {
 	body, err := json.Marshal(msg)
