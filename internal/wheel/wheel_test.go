@@ -10,7 +10,7 @@ import (
 )
 
 func testConfig(state string) Config {
-	return Config{Strategy: "wheel", PricePositionCurve: []PricePoint{{Price: 400, TargetInventory: 1200}, {Price: 480, TargetInventory: 600}, {Price: 550, TargetInventory: 0}}, MaxInventory: 1200, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, MaxDailyOrders: 1, ExtremeMaxDailyOrders: 2, NoTradeGap: 50, StrategicState: state}
+	return Config{Strategy: "wheel", FullPositionPrice: 400, ZeroPositionPrice: 550, MaxInventory: 1200, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, TradeGap: 50, StrategicState: state}
 }
 
 func testQuote(kind string, strike float64, expiry time.Time) OptionQuote {
@@ -26,11 +26,11 @@ func TestInterpolateTargetInventoryTable(t *testing.T) {
 	cases := []struct {
 		name        string
 		price, want float64
-	}{{"below", 300, 1200}, {"anchor", 480, 600}, {"middle", 440, 900}, {"above", 600, 0}}
-	curve := testConfig(StateNormal).PricePositionCurve
+	}{{"below", 300, 1200}, {"full anchor", 400, 1200}, {"middle", 475, 600}, {"above", 600, 0}}
+	cfg := testConfig(StateNormal)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := InterpolateTargetInventory(curve, tc.price)
+			got, err := cfg.TargetInventory(tc.price)
 			if err != nil || math.Abs(got-tc.want) > 1e-9 {
 				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
 			}
@@ -47,12 +47,12 @@ func TestConfigValidateTable(t *testing.T) {
 	}{
 		{"valid", func(c *Config) {}, false},
 		{"wrong strategy", func(c *Config) { c.Strategy = "covered-call" }, true},
-		{"price not increasing", func(c *Config) { c.PricePositionCurve[1].Price = 400 }, true},
-		{"target increasing", func(c *Config) { c.PricePositionCurve[1].TargetInventory = 1300 }, true},
-		{"target over max", func(c *Config) { c.PricePositionCurve[0].TargetInventory = 1301 }, true},
+		{"full price non-positive", func(c *Config) { c.FullPositionPrice = 0 }, true},
+		{"zero not above full", func(c *Config) { c.ZeroPositionPrice = c.FullPositionPrice }, true},
+		{"fractional max inventory", func(c *Config) { c.MaxInventory = 1200.5 }, true},
 		{"DTE outside wheel window", func(c *Config) { c.MinDTE = 4 }, true},
 		{"quality outside bounds", func(c *Config) { c.MinOptionQuality = 1.1 }, true},
-		{"daily hard cap", func(c *Config) { c.ExtremeMaxDailyOrders = 3 }, true},
+		{"negative move interval", func(c *Config) { c.MoveIntervalPct = -0.01 }, true},
 		{"unknown state", func(c *Config) { c.StrategicState = "RISK_ON" }, true},
 	}
 	for _, tc := range cases {
@@ -98,7 +98,7 @@ func TestQuoteValidationTable(t *testing.T) {
 		{"wrong DTE", func(q *OptionQuote) { q.Expiry = asOf.AddDate(0, 0, 11) }, true},
 		{"stale", func(q *OptionQuote) { q.QuoteTime = asOf.Add(-25 * time.Hour) }, true},
 		{"missing timestamp", func(q *OptionQuote) { q.QuoteTime = time.Time{} }, true},
-		{"missing lot", func(q *OptionQuote) { q.LotSize = 0 }, true},
+		{"bad lot", func(q *OptionQuote) { q.LotSize = 0 }, true},
 		// Lot size comes from the live quote now; any positive value is accepted
 		// (config no longer carries one, 2026-08-13).
 		{"mismatched lot accepted", func(q *OptionQuote) { q.LotSize = 10 }, false},
@@ -188,7 +188,36 @@ func TestEvaluateAlertIncludesExpectedGain(t *testing.T) {
 	}
 }
 
-func TestEvaluateRiskAndDailyLimitTable(t *testing.T) {
+func TestEvaluateTacticalGates(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	baseInput := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 1_000_000}
+
+	cfg := testConfig(StateNormal)
+	cfg.MoveIntervalPct = 0.02
+	in := baseInput
+	in.LastEffectiveFillPrice = 405
+	if signal, err := Evaluate(cfg, in); err != nil || signal.Action != ActionHold || !strings.Contains(signal.Reason, "move_interval_pct") {
+		t.Fatalf("move gate signal = %+v err=%v", signal, err)
+	}
+
+	cfg = testConfig(StateNormal)
+	cfg.MinPremiumPerShare = put.Bid + 0.01
+	if signal, err := Evaluate(cfg, baseInput); err != nil || signal.Action != ActionHold || !slices.Contains(signal.RejectReasons, "wheel: premium per share 4.0000 below minimum 4.0100") {
+		t.Fatalf("premium gate signal = %+v err=%v", signal, err)
+	}
+
+	cfg = testConfig(StateNormal)
+	cfg.StockSwitchPct = 0.05
+	in = baseInput
+	in.CurrentPrice = 400
+	in.LastEffectiveFillPrice = 450
+	if signal, err := Evaluate(cfg, in); err != nil || signal.Action != ActionHold || signal.StockSuggestion == nil || signal.StockSuggestion.Side != "BUY" || signal.StockSuggestion.Shares <= 0 {
+		t.Fatalf("stock switch signal = %+v err=%v", signal, err)
+	}
+}
+
+func TestEvaluateRiskAndNoDailyLimitTable(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig(StateNormal)
 	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
@@ -199,7 +228,7 @@ func TestEvaluateRiskAndDailyLimitTable(t *testing.T) {
 	}{
 		{"no cash context", DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}}, "HOLD"},
 		{"insufficient cash", DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 1}, "HOLD"},
-		{"daily cap", DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, DailyOrders: 1, HasCashAvailable: true, CashAvailable: 100000}, "HOLD"},
+		{"repeated decisions remain unlimited", DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 100000}, "ALERT"},
 		{"assignment max", DecisionInput{CurrentPrice: 400, AsOf: asOf, StockShares: 1200, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 100000}, "HOLD"},
 	}
 	for _, tc := range cases {

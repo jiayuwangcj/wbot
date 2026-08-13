@@ -15,6 +15,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/backtestexec"
+	"github.com/jiayu/wbot/internal/strategy"
 )
 
 // BacktestExecutor executes and persists one backtest run (POST /v1/backtests).
@@ -144,10 +145,12 @@ func (h *backtestExecuteHandler) execOne(w http.ResponseWriter, r *http.Request,
 	if req.Params == nil {
 		req.Params = map[string]any{}
 	}
-	if _, _, err := backtestexec.Build(strategyName, req.Params); err != nil {
+	canonical, err := strategy.CanonicalParams(req.Params)
+	if err != nil {
 		writeErrorBody(w, http.StatusUnprocessableEntity, errorJSON{Code: "invalid_request", Message: err.Error(), Action: "check the strategy name and params against GET /v1/strategies"})
 		return
 	}
+	req.Params = canonical
 	if !h.mu.TryLock() {
 		writeErrorBody(w, http.StatusConflict, errorJSON{Code: "busy", Message: "a backtest is already running", Action: "wait for it to finish, then retry"})
 		return

@@ -13,9 +13,9 @@ import (
 
 func wheelBacktestConfig() wheel.Config {
 	return wheel.Config{
-		Strategy: "wheel", PricePositionCurve: []wheel.PricePoint{{Price: 90, TargetInventory: 1000}, {Price: 110, TargetInventory: 0}},
+		Strategy: "wheel", FullPositionPrice: 90, ZeroPositionPrice: 110,
 		MaxInventory: 1000, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0,
-		MaxDailyOrders: 1, ExtremeMaxDailyOrders: 2, NoTradeGap: 50, StrategicState: wheel.StateNormal,
+		TradeGap: 50, StrategicState: wheel.StateNormal,
 	}
 }
 

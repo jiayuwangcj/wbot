@@ -144,7 +144,7 @@ check "场景 A /v1/health 仍为 200" 200 "$health_code"
 strict_code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$serve_base/v1/watchlist/$sym_a" \
   -H 'Content-Type: application/json' -d '{"strategy":"wheel","params":{"max_inventory":100}}')"
 check "HTTP PUT 缺 curve 仍严格 400" 400 "$strict_code"
-params_a='{"strategy":"wheel","params":{"price_position_curve":[{"price":80,"target_inventory":100},{"price":120,"target_inventory":0}],"max_inventory":1000,"min_option_quality":0,"no_trade_gap":0}}'
+params_a='{"strategy":"wheel","params":{"full_position_price":80,"zero_position_price":120,"max_inventory":1000,"min_option_quality":0,"trade_gap":0}}'
 put_code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$serve_base/v1/watchlist/$sym_a" \
   -H 'Content-Type: application/json' -d "$params_a")"
 check "场景 A 绑定有效 wheel 配置" 200 "$put_code"

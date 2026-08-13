@@ -18,11 +18,9 @@ import (
 func TestBuild(t *testing.T) {
 	wheelParams := func() map[string]any {
 		return map[string]any{
-			"price_position_curve": []any{
-				map[string]any{"price": 100.0, "target_inventory": 1000.0},
-				map[string]any{"price": 200.0, "target_inventory": 0.0},
-			},
-			"max_inventory": 1000.0,
+			"full_position_price": 100.0,
+			"zero_position_price": 200.0,
+			"max_inventory":       1000.0,
 		}
 	}
 	unknown := wheelParams()
@@ -136,8 +134,9 @@ func TestRunMultiRejects(t *testing.T) {
 		{"no strategy", Options{}, []string{"A.US"}, "strategy is required"},
 		{"unknown strategy", Options{Strategy: "nope"}, []string{"A.US"}, "unknown template"},
 		{"option strategy", Options{Strategy: "wheel", Params: map[string]any{
-			"price_position_curve": []any{map[string]any{"price": 100.0, "target_inventory": 1000.0}, map[string]any{"price": 200.0, "target_inventory": 0.0}},
-			"max_inventory":        1000.0,
+			"full_position_price": 100.0,
+			"zero_position_price": 200.0,
+			"max_inventory":       1000.0,
 		}}, []string{"A.US"}, "needs option_quotes"},
 		{"hold rejects params", Options{Strategy: "hold", Params: map[string]any{"a": 1}}, []string{"A.US"}, "no params"},
 		{"nil db", Options{Strategy: "hold"}, []string{"A.US"}, "nil db"},

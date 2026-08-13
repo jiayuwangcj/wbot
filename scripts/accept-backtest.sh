@@ -17,7 +17,7 @@ base="${1:-http://127.0.0.1:8080}"
 bin="${2:-$HOME/.wbot/dev/wbot}"
 dsn="${3:-${WBOT_PG_DSN:-}}"
 symbol="${4:-BTEXEC.US}"
-params='{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":10,"strategic_state":"NORMAL"}'
+params='{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"move_interval_pct":0,"min_premium_per_share":0,"stock_switch_pct":0,"trade_gap":10,"min_dte":5,"max_dte":10,"min_option_quality":0,"strategic_state":"NORMAL"}'
 if [[ -z "$dsn" ]]; then
   echo "accept-backtest: need dsn (arg 3 or \$WBOT_PG_DSN)" >&2
   exit 2

@@ -18,14 +18,16 @@ export interface WheelCurvePoint {
 // 其余参数后端有默认值,可省略。lot_size 已整体去除(运行时从行情
 // contract_size 实时拉取,兜底 100)。
 export interface WheelParams {
-  price_position_curve: WheelCurvePoint[];
+  full_position_price: number;
+  zero_position_price: number;
   max_inventory: number;
+  move_interval_pct?: number;
+  min_premium_per_share?: number;
+  stock_switch_pct?: number;
+  trade_gap?: number;
   min_dte?: number;
   max_dte?: number;
   min_option_quality?: number;
-  max_daily_orders?: number;
-  extreme_max_daily_orders?: number;
-  no_trade_gap?: number;
   max_quote_age_seconds?: number;
   strategic_state?: WheelState;
 }

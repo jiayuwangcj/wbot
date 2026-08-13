@@ -14,12 +14,9 @@ import (
 
 func validParams() map[string]any {
 	return map[string]any{
-		"price_position_curve": []any{
-			map[string]any{"price": 400.0, "target_inventory": 1200.0},
-			map[string]any{"price": 480.0, "target_inventory": 600.0},
-			map[string]any{"price": 550.0, "target_inventory": 0.0},
-		},
-		"max_inventory": 1200.0,
+		"full_position_price": 400.0,
+		"zero_position_price": 550.0,
+		"max_inventory":       1200.0,
 	}
 }
 
@@ -37,11 +34,9 @@ func TestRegistryIncludesLLMAndWheel(t *testing.T) {
 	if _, ok := Lookup("cash-secured-put"); ok {
 		t.Fatal("cash-secured-put must be unknown")
 	}
-	for _, template := range templates {
-		for _, p := range template.Params {
-			if p.Type != "curve" && p.Type != "number" && p.Type != "choice" {
-				t.Fatalf("%s has unsupported schema type %q", p.Name, p.Type)
-			}
+	for _, p := range templates[0].Params {
+		if p.Type != "number" && p.Type != "choice" {
+			t.Fatalf("%s has unsupported schema type %q", p.Name, p.Type)
 		}
 	}
 }
@@ -56,20 +51,20 @@ func TestContractSchemaRequiredAndDefaults(t *testing.T) {
 	for _, p := range wheelContract.Params {
 		byName[p.Name] = p
 	}
-	for _, name := range []string{"price_position_curve", "max_inventory"} {
+	for _, name := range []string{"full_position_price", "zero_position_price", "max_inventory"} {
 		p, ok := byName[name]
 		if !ok || !p.Required {
 			t.Fatalf("%s = %+v; want required", name, p)
 		}
 	}
-	if byName["price_position_curve"].Type != "curve" || byName["max_inventory"].Type != "number" {
-		t.Fatalf("critical schema = %+v %+v", byName["price_position_curve"], byName["max_inventory"])
+	if byName["full_position_price"].Type != "number" || byName["zero_position_price"].Type != "number" || byName["max_inventory"].Type != "number" {
+		t.Fatalf("critical schema = %+v %+v %+v", byName["full_position_price"], byName["zero_position_price"], byName["max_inventory"])
 	}
 	defaults := map[string]any{
-		"min_dte": 5.0, "max_dte": 10.0,
-		"min_option_quality": 0.6, "max_daily_orders": 1.0,
-		"extreme_max_daily_orders": 2.0, "no_trade_gap": 50.0,
-		"strategic_state": wheel.StateNormal,
+		"move_interval_pct": 0.0, "min_premium_per_share": 0.0,
+		"stock_switch_pct": 0.0, "trade_gap": 50.0,
+		"min_dte": 5.0, "max_dte": 10.0, "min_option_quality": 0.6,
+		"max_quote_age_seconds": 86400.0, "strategic_state": wheel.StateNormal,
 	}
 	for name, want := range defaults {
 		if got := byName[name].Default; got != want {
@@ -82,7 +77,7 @@ func TestContractSchemaRequiredAndDefaults(t *testing.T) {
 }
 
 func TestParseConfigRequiresStrategicInputs(t *testing.T) {
-	for _, name := range []string{"price_position_curve", "max_inventory"} {
+	for _, name := range []string{"full_position_price", "zero_position_price", "max_inventory"} {
 		params := validParams()
 		delete(params, name)
 		if _, err := ParseConfig(params); err == nil || !strings.Contains(err.Error(), name) {
@@ -93,16 +88,45 @@ func TestParseConfigRequiresStrategicInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseConfig(defaults) error: %v", err)
 	}
-	if cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 ||
-		cfg.MaxDailyOrders != 1 || cfg.ExtremeMaxDailyOrders != 2 || cfg.NoTradeGap != 50 || cfg.StrategicState != wheel.StateNormal {
+	if cfg.MoveIntervalPct != 0 || cfg.MinPremiumPerShare != 0 || cfg.StockSwitchPct != 0 || cfg.TradeGap != 50 ||
+		cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 || cfg.MaxQuoteAgeSeconds != 86400 ||
+		cfg.StrategicState != wheel.StateNormal {
 		t.Fatalf("defaults = %+v", cfg)
+	}
+}
+
+func TestParseConfigMaxQuoteAgeSeconds(t *testing.T) {
+	params := validParams()
+	params["max_quote_age_seconds"] = 3600
+	cfg, err := ParseConfig(params)
+	if err != nil {
+		t.Fatalf("ParseConfig(explicit) error: %v", err)
+	}
+	if cfg.MaxQuoteAgeSeconds != 3600 {
+		t.Fatalf("MaxQuoteAgeSeconds = %d; want 3600", cfg.MaxQuoteAgeSeconds)
+	}
+
+	cfg, err = ParseConfig(validParams())
+	if err != nil {
+		t.Fatalf("ParseConfig(missing) error: %v", err)
+	}
+	if cfg.MaxQuoteAgeSeconds != 86400 {
+		t.Fatalf("default MaxQuoteAgeSeconds = %d; want 86400", cfg.MaxQuoteAgeSeconds)
+	}
+
+	for _, bad := range []any{0, -1, "abc"} {
+		p := validParams()
+		p["max_quote_age_seconds"] = bad
+		if _, err := ParseConfig(p); err == nil || !strings.Contains(err.Error(), "max_quote_age_seconds") {
+			t.Fatalf("invalid %v: error = %v; want max_quote_age_seconds error", bad, err)
+		}
 	}
 }
 
 func TestParseConfigValidationAndRoundTrip(t *testing.T) {
 	params := validParams()
 	params["strategic_state"] = wheel.StateCaution
-	params["lot_size"] = 200 // legacy key must be ignored (2026-08-13)
+	params["move_interval_pct"] = 0.018
 	cfg, err := ParseConfig(params)
 	if err != nil {
 		t.Fatalf("ParseConfig() error: %v", err)
@@ -120,22 +144,88 @@ func TestParseConfigValidationAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseConfig(JSON map) error: %v", err)
 	}
-	if parsed.MaxInventory != cfg.MaxInventory || parsed.StrategicState != cfg.StrategicState {
+	if parsed.MaxInventory != cfg.MaxInventory || parsed.MoveIntervalPct != cfg.MoveIntervalPct || parsed.StrategicState != cfg.StrategicState {
 		t.Fatalf("round trip = %+v; want %+v", parsed, cfg)
 	}
 
 	bad := validParams()
-	bad["price_position_curve"] = []any{
-		map[string]any{"price": 480.0, "target_inventory": 600.0},
-		map[string]any{"price": 400.0, "target_inventory": 1200.0},
-	}
-	if _, err := ParseConfig(bad); err == nil || !strings.Contains(err.Error(), "curve") {
-		t.Fatalf("invalid curve error = %v", err)
+	bad["zero_position_price"] = 400.0
+	if _, err := ParseConfig(bad); err == nil || !strings.Contains(err.Error(), "zero_position_price") {
+		t.Fatalf("invalid price boundary error = %v", err)
 	}
 	bad = validParams()
 	bad["max_inventory"] = "1200"
 	if _, err := ParseConfig(bad); err == nil || !strings.Contains(err.Error(), "number") {
 		t.Fatalf("invalid max_inventory error = %v", err)
+	}
+}
+
+func TestParseConfigMigratesLegacyParamsWithAudit(t *testing.T) {
+	legacyCurve := []any{
+		map[string]any{"price": 40.0, "target_inventory": 22000.0},
+		map[string]any{"price": 48.0, "target_inventory": 11000.0},
+		map[string]any{"price": 55.0, "target_inventory": 0.0},
+	}
+	cfg, err := ParseConfig(map[string]any{
+		"price_position_curve":     legacyCurve,
+		"max_inventory":            22000,
+		"no_trade_gap":             50,
+		"max_daily_orders":         1,
+		"extreme_max_daily_orders": 2,
+		"lot_size":                 100,
+	})
+	if err != nil {
+		t.Fatalf("ParseConfig(legacy) error: %v", err)
+	}
+	if cfg.FullPositionPrice != 40 || cfg.ZeroPositionPrice != 55 || cfg.TradeGap != 50 {
+		t.Fatalf("migrated config = %+v", cfg)
+	}
+	if !cfg.MigrationLossy || cfg.MigrationWarningCount != 3 || len(cfg.MigrationWarnings) != 3 {
+		t.Fatalf("migration audit = %+v", cfg)
+	}
+	var preserved []map[string]any
+	if err := json.Unmarshal(cfg.MigrationOriginalCurve, &preserved); err != nil || len(preserved) != 3 || preserved[1]["price"] != 48.0 {
+		t.Fatalf("preserved curve = %s err=%v", cfg.MigrationOriginalCurve, err)
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, oldKey := range []string{`"price_position_curve"`, `"no_trade_gap"`, `"max_daily_orders"`, `"extreme_max_daily_orders"`, `"lot_size"`} {
+		if strings.Contains(string(b), oldKey) && oldKey != `"price_position_curve"` {
+			t.Fatalf("new config wrote legacy key %s: %s", oldKey, b)
+		}
+	}
+	if strings.Contains(string(b), `"price_position_curve":`) {
+		t.Fatalf("new config wrote legacy curve key: %s", b)
+	}
+}
+
+func TestParseConfigAcceptsStored00883And09988Shapes(t *testing.T) {
+	for _, tc := range []struct {
+		symbol                string
+		full, zero, inventory float64
+	}{
+		{symbol: "HK.00883", full: 40, zero: 55, inventory: 22000},
+		{symbol: "HK.09988", full: 90, zero: 130, inventory: 1000},
+	} {
+		t.Run(tc.symbol, func(t *testing.T) {
+			cfg, err := ParseConfig(map[string]any{
+				"price_position_curve": []any{
+					map[string]any{"price": tc.full, "target_inventory": tc.inventory},
+					map[string]any{"price": tc.zero, "target_inventory": 0},
+				},
+				"max_inventory": tc.inventory,
+				"no_trade_gap":  50,
+				"lot_size":      100,
+			})
+			if err != nil {
+				t.Fatalf("stored config did not parse: %v", err)
+			}
+			if cfg.FullPositionPrice != tc.full || cfg.ZeroPositionPrice != tc.zero || cfg.MoveIntervalPct != 0 || cfg.MinPremiumPerShare != 0 || cfg.StockSwitchPct != 0 {
+				t.Fatalf("migrated config = %+v", cfg)
+			}
+		})
 	}
 }
 

@@ -18,8 +18,8 @@ if [[ -z "$dsn" ]]; then
   exit 2
 fi
 sym="ACCEPT.US"
-params_a='{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"no_trade_gap":10}'
-params_b='{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"no_trade_gap":20}'
+params_a='{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"trade_gap":10}'
+params_b='{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"trade_gap":20}'
 pass=0; failed=0
 check() { local d="$1" w="$2" g="$3"; if [[ "$g" == "$w" ]]; then pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$d"; else failed=$((failed+1)); printf '  \033[31mFAIL\033[0m %s (want %s, got %s)\n' "$d" "$w" "$g"; fi; }
 
@@ -54,8 +54,8 @@ check "HTTP GET /v1/watchlist 含 $sym (联动)" \
 out="$( "$bin" watchlist add -dsn "$dsn" -symbol "$sym" -strategy wheel -params "$params_b" 2>&1 )"
 rc=$?
 check "add 重复(幂等 Upsert)exit 0 (got $rc)" 0 "$rc"
-check "重复 add 追加新版本并更新 no_trade_gap 为 20" \
-  1 "$(echo "$out" | grep -c 'no_trade_gap":20')"
+check "重复 add 追加新版本并更新 trade_gap 为 20" \
+	1 "$(echo "$out" | grep -c 'trade_gap":20')"
 
 # 6. list: 含该条目行(SYM STRAT params)。
 check "list 含 $sym 行" \

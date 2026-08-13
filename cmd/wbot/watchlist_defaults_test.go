@@ -33,33 +33,26 @@ func TestApplyWheelDefaultsUsesCurrentPrice(t *testing.T) {
 	defer server.Close()
 	t.Setenv("FUTU_GATEWAY_URL", server.URL)
 
-	params := map[string]any{"no_trade_gap": 10}
+	params := map[string]any{"trade_gap": 10}
 	if err := applyWheelDefaults(context.Background(), "US.TEST", params); err != nil {
 		t.Fatalf("applyWheelDefaults() error: %v", err)
 	}
-	curve, ok := params["price_position_curve"].([]map[string]any)
-	if !ok || len(curve) != 2 {
-		t.Fatalf("curve = %#v; want two default points", params["price_position_curve"])
-	}
-	if curve[0]["price"] != 200.0 || curve[0]["target_inventory"] != 100 ||
-		curve[1]["price"] != 300.0 || curve[1]["target_inventory"] != 0 {
-		t.Fatalf("curve = %#v; want [{200,100},{300,0}]", curve)
+	if params["full_position_price"] != 200.0 || params["zero_position_price"] != 300.0 {
+		t.Fatalf("price anchors = %#v/%#v; want 200/300", params["full_position_price"], params["zero_position_price"])
 	}
 	if params["max_inventory"] != 100 {
 		t.Fatalf("max_inventory = %#v; want 100", params["max_inventory"])
 	}
-	if params["no_trade_gap"] != 10 {
-		t.Fatalf("explicit optional param changed: %#v", params["no_trade_gap"])
+	if params["trade_gap"] != 10 {
+		t.Fatalf("explicit optional param changed: %#v", params["trade_gap"])
 	}
 }
 
-func TestApplyWheelDefaultsDoesNotFetchWhenCurveIsExplicit(t *testing.T) {
+func TestApplyWheelDefaultsDoesNotFetchWhenAnchorsAreExplicit(t *testing.T) {
 	t.Setenv("FUTU_GATEWAY_URL", "http://127.0.0.1:1")
 	params := map[string]any{
-		"price_position_curve": []map[string]any{
-			{"price": 80.0, "target_inventory": 100.0},
-			{"price": 120.0, "target_inventory": 0.0},
-		},
+		"full_position_price": 80.0,
+		"zero_position_price": 120.0,
 	}
 	if err := applyWheelDefaults(context.Background(), "US.TEST", params); err != nil {
 		t.Fatalf("applyWheelDefaults() error: %v", err)
@@ -75,6 +68,6 @@ func TestWatchlistHTTPRequiresExplicitWheelDefaults(t *testing.T) {
 	rec := httptest.NewRecorder()
 	top.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("PUT without price_position_curve = %d; want 400 (body %s)", rec.Code, rec.Body)
+		t.Fatalf("PUT without price anchors = %d; want 400 (body %s)", rec.Code, rec.Body)
 	}
 }

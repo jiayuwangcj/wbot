@@ -50,7 +50,13 @@ type Options struct {
 func SaveParams(o Options) map[string]any {
 	out := map[string]any{"cash": o.Cash, "fee": o.Fee, "timeframe": o.Timeframe, "adjust": o.Adjust}
 	if len(o.Params) > 0 {
-		out["strategy_params"] = o.Params
+		params := o.Params
+		if o.Strategy == "wheel" {
+			if canonical, err := strategy.CanonicalParams(o.Params); err == nil {
+				params = canonical
+			}
+		}
+		out["strategy_params"] = params
 	}
 	return out
 }

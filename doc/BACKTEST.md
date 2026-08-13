@@ -1,6 +1,6 @@
 # Wheel 回测契约
 
-回测必须复用动态 Wheel 的库存语义：价格—目标库存曲线、最大库存、战略状态、有效库存和候选质量门槛均来自完整的版本化 Wheel 配置。回测只记录 bar-time 的信号/机械结算 trace，不发送订单。当前运行器以 bars 为时间轴，从 `option_quote_snapshots` 选择 `observed_at <= bar.ts` 的最新原子批次（同一时点按 `snapshot_key` 稳定选择），再调用 Wheel；它不是按 quote 或成交事件驱动的历史执行回放。缺少可信 snapshot 时，运行固定为 `DATA_BLOCKED/HOLD`，不可用日线收盘、固定 Greeks 或默认盘口“跑通”。
+回测必须复用动态 Wheel 的库存语义：满仓价、清仓价、最大库存、战略状态、有效库存和战术门槛均来自完整的版本化 Wheel 配置。回测只记录 bar-time 的信号/机械结算 trace，不发送订单。当前运行器以 bars 为时间轴，从 `option_quote_snapshots` 选择 `observed_at <= bar.ts` 的最新原子批次（同一时点按 `snapshot_key` 稳定选择），再调用 Wheel；它不是按 quote 或成交事件驱动的历史执行回放。缺少可信 snapshot 时，运行固定为 `DATA_BLOCKED/HOLD`，不可用日线收盘、固定 Greeks 或默认盘口“跑通”。
 
 ## 能力状态
 
@@ -24,7 +24,7 @@ CLI 入口保留确定性运行器参数，但产品策略名只有 `wheel`：
 wbot backtest \
   -dsn "$WBOT_PG_DSN" -symbol HK.00700 -timeframe 1d \
   -strategy wheel \
-  -params '{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":480,"target_inventory":600},{"price":550,"target_inventory":0}],"max_inventory":1200,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":50,"strategic_state":"NORMAL"}'
+  -params '{"full_position_price":400,"zero_position_price":550,"max_inventory":1200,"move_interval_pct":0.018,"min_premium_per_share":1.2,"stock_switch_pct":0.03,"trade_gap":50,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"strategic_state":"NORMAL"}'
 ```
 
 | flag | 默认 | 说明 |
@@ -36,7 +36,7 @@ wbot backtest \
 | `-limit` | 10000 | DB 输入最大 bars 数 |
 | `-cash` | 10000 | 初始现金（>0） |
 | `-strategy` | `hold` | CLI 实际默认是内部 `hold` 基准；显式 `-strategy wheel` 才运行 Wheel。产品 API/watchlist 只接受 `wheel` |
-| `-params` | — | `wheel` 使用结构化配置；`price_position_curve` 与 `max_inventory` 必填，其余可选（默认见 `/v1/strategies`）；`lot_size` 不接受配置（行情实时拉取，兜底 100，2026-08-13）；内部 `hold`/`buy-hold` 不接参数 |
+| `-params` | — | `wheel` 新配置必须提供 `full_position_price`、`zero_position_price` 与 `max_inventory`；百分比用小数；旧曲线仅兼容读取；内部 `hold`/`buy-hold` 不接参数 |
 | `-fee` | 0 | 回测费用占位；不改变提醒契约 |
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
@@ -52,24 +52,22 @@ wbot backtest \
 {
   "strategy": "wheel",
   "params": {
-    "price_position_curve": [
-      {"price": 400, "target_inventory": 1200},
-      {"price": 480, "target_inventory": 600},
-      {"price": 550, "target_inventory": 0}
-    ],
+    "full_position_price": 400,
+    "zero_position_price": 550,
     "max_inventory": 1200,
+    "move_interval_pct": 0.018,
+    "min_premium_per_share": 1.2,
+    "stock_switch_pct": 0.03,
+    "trade_gap": 50,
     "min_dte": 5,
     "max_dte": 10,
     "min_option_quality": 0.6,
-    "max_daily_orders": 1,
-    "extreme_max_daily_orders": 2,
-    "no_trade_gap": 50,
     "strategic_state": "NORMAL"
   }
 }
 ```
 
-曲线价格严格递增，目标库存单调不增且位于 `[0,max_inventory]`；价格区间内线性插值、区间外钳制。库存事件至少记录：`stock_shares`、`futures_equivalent_shares`、`option_delta_stock`、`actual_inventory`、`effective_inventory`、`target_inventory`、`inventory_gap`。有效库存为实际库存加带符号期权 Delta；空 Put 增加、空 Call 减少有效库存。
+满仓价必须为正、清仓价必须更高、最大库存为正整数；两价之间从满仓到零仓线性插值、区间外钳制。百分比字段使用小数（`0.018 = 1.8%`），新战术字段省略时默认为 0 并关闭对应行为。策略无每日次数限制；报告可保留每日提醒/成交次数统计。库存事件至少记录：`stock_shares`、`futures_equivalent_shares`、`option_delta_stock`、`actual_inventory`、`effective_inventory`、`target_inventory`、`inventory_gap`。有效库存为实际库存加带符号期权 Delta；空 Put 增加、空 Call 减少有效库存。
 
 每个事件必须保留原子快照标识、配置版本、候选列表、拒绝原因和动作。动作只有：
 
@@ -96,7 +94,7 @@ wbot backtest \
 
 ## 实现对账
 
-- `internal/wheel`：曲线、库存、状态、候选校验和 `ALERT/HOLD` 决策；P0-A `READY`。
+- `internal/wheel`：两价区间、库存、状态、候选校验和 `ALERT/HOLD` 决策；P0-A `READY`。
 - `internal/strategy`：唯一注册项 `wheel`；bar-time 适配器只消费当前最新原子 snapshot，缺失/过期时固定产生 `DATA_BLOCKED/HOLD`。
 - `internal/wheelstore`、`internal/watchlist` 与 migrations 005/007：版本配置、不可变 snapshot、signal/action 审计表、`READY/DATA_BLOCKED` 数据库约束和 watchlist 版本指针；P0-B/P0-C repository 与 PostgreSQL integration `READY`，真实供应商 adapter 与人工写动作仍受阻塞。
 - `internal/backtest` / `internal/backtestexec` 与 `internal/db/migrations/006_backtest_signals.sql`：确定性 bar-time replay、完整策略输入、逐 bar signal 保存/导出路径；不能替代事件级 Wheel 快照回测或实时执行。

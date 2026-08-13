@@ -30,12 +30,10 @@ func wheelParams() map[string]any {
 	return map[string]any{
 		"strategy": "wheel",
 		"params": map[string]any{
-			"price_position_curve": []any{
-				map[string]any{"price": 400.0, "target_inventory": 1200.0},
-				map[string]any{"price": 550.0, "target_inventory": 0.0},
-			},
-			"max_inventory":      1200.0,
-			"min_option_quality": 0.0,
+			"full_position_price": 400.0,
+			"zero_position_price": 550.0,
+			"max_inventory":       1200.0,
+			"min_option_quality":  0.0,
 		},
 	}
 }
@@ -724,32 +722,6 @@ func TestRunRejectsNonPositiveInterval(t *testing.T) {
 	}
 	if err := r.Run(context.Background(), -time.Second); err == nil {
 		t.Fatal("Run(-1s) = nil; want interval error")
-	}
-}
-
-func TestDailyOrdersUTCDateAndAlertFilter(t *testing.T) {
-	now := time.Date(2026, time.August, 11, 0, 0, 0, 0, time.UTC)
-	store := &fakeStore{signals: []wheelstore.SignalRecord{
-		{ID: 1, Symbol: "HK.00700", Action: "ALERT", CreatedAt: now.Add(-time.Nanosecond)},
-		{ID: 2, Symbol: "HK.00700", Action: "HOLD", CreatedAt: now.Add(-time.Nanosecond)},
-		{ID: 3, Symbol: "HK.00700", Action: "ALERT", CreatedAt: now},
-		{ID: 4, Symbol: "HK.00700", Action: "ALERT", CreatedAt: now},
-		{ID: 5, Symbol: "HK.00700", Action: "HOLD", CreatedAt: now},
-	}}
-	// Only signal 3 passed the LLM gate; 4 was rejected. A rejected ALERT
-	// places no order and must not consume the daily quota.
-	store.actions = []wheelstore.ActionRecord{
-		{SignalID: 3, Action: "LLM_REVIEW", Actor: "llm:test"},
-		{SignalID: 4, Action: "REJECTED", Actor: "llm:test"},
-	}
-	r := testRunner(t, Dependencies{Store: store})
-
-	got, err := r.dailyOrders(context.Background(), "HK.00700", now.Add(12*time.Hour))
-	if err != nil {
-		t.Fatalf("dailyOrders() error: %v", err)
-	}
-	if got != 1 {
-		t.Fatalf("dailyOrders() = %d; want 1 approved ALERT only", got)
 	}
 }
 

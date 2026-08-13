@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jiayu/wbot/internal/strategy"
+	strategycfg "github.com/jiayu/wbot/internal/strategy"
 )
 
 // Execution status values for a binding (migration 005 whitelist, same set
@@ -36,7 +36,7 @@ type Item struct {
 // Validate delegates to the single strategy registry. Internal benchmark
 // strategies are deliberately not accepted by the product watchlist.
 func Validate(name string, params map[string]any) error {
-	return strategy.Validate(name, params)
+	return strategycfg.Validate(name, params)
 }
 
 // List returns all watchlist rows ordered by symbol.
@@ -102,6 +102,11 @@ func Upsert(ctx context.Context, db *sql.DB, symbol, strategy string, params map
 	if err := Validate(strategy, params); err != nil {
 		return Item{}, fmt.Errorf("watchlist: upsert: validate: %w", err)
 	}
+	canonical, err := strategycfg.CanonicalParams(params)
+	if err != nil {
+		return Item{}, fmt.Errorf("watchlist: upsert: validate: %w", err)
+	}
+	params = canonical
 	paramsJSON, err := json.Marshal(params)
 	if err != nil {
 		return Item{}, fmt.Errorf("watchlist: upsert: params: %w", err)

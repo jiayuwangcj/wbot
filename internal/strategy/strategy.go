@@ -54,19 +54,19 @@ var templates = []Template{
 	},
 	{
 		Name:         "wheel",
-		Description:  "按价格—目标库存曲线管理库存，只生成人工提醒，不自动下单",
+		Description:  "按满仓价—清仓价区间管理库存，只生成人工提醒，不自动下单",
 		NeedsOptions: true,
 		Params: []Param{
-			{Name: "price_position_curve", Type: "curve", Required: true, Help: "价格递增、目标库存单调不增的价格—目标库存锚点"},
+			{Name: "full_position_price", Type: "number", Required: true, Min: 0, Max: math.MaxFloat64, Help: "达到或低于此价格时的目标库存为满仓"},
+			{Name: "zero_position_price", Type: "number", Required: true, Min: 0, Max: math.MaxFloat64, Help: "达到或高于此价格时的目标库存为零"},
 			{Name: "max_inventory", Type: "number", Required: true, Min: 0, Max: math.MaxFloat64, Help: "允许的最大实际库存"},
-			// lot_size 不配置:合约乘数运行时从行情 contract_size 实时拉取,
-			// 拿不到时按 100 兜底(老板指令 2026-08-13: 去除可直接拉取的参数)。
+			{Name: "move_interval_pct", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "距上次有效成交价的最小绝对变动比例（小数）"},
+			{Name: "min_premium_per_share", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "最低每股权利金"},
+			{Name: "stock_switch_pct", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "切换为正股建议的价格变动比例（小数）"},
+			{Name: "trade_gap", Type: "number", Default: 50.0, Min: 0, Max: math.MaxFloat64, Help: "库存缺口不超过此值时不交易"},
 			{Name: "min_dte", Type: "number", Default: 5.0, Min: 5, Max: 10, Help: "最小到期天数（DTE）"},
 			{Name: "max_dte", Type: "number", Default: 10.0, Min: 5, Max: 10, Help: "最大到期天数（DTE）"},
 			{Name: "min_option_quality", Type: "number", Default: 0.6, Min: 0, Max: 1, Help: "候选期权质量最低门槛"},
-			{Name: "max_daily_orders", Type: "number", Default: 1.0, Min: 1, Max: 1, Help: "正常日最多提醒张数"},
-			{Name: "extreme_max_daily_orders", Type: "number", Default: 2.0, Min: 1, Max: 2, Help: "极端日最多提醒张数"},
-			{Name: "no_trade_gap", Type: "number", Default: 50.0, Min: 0, Max: math.MaxFloat64, Help: "库存缺口不超过此值时不交易"},
 			{Name: "max_quote_age_seconds", Type: "number", Default: 86400.0, Min: 1, Max: math.MaxFloat64, Help: "候选期权报价最大可接受年龄（秒），超出视为陈旧"},
 			{Name: "strategic_state", Type: "choice", Default: wheel.StateNormal, Allowed: []string{wheel.StateNormal, wheel.StateCaution, wheel.StatePauseBuy, wheel.StateExit}, Help: "战略状态"},
 		},
@@ -105,28 +105,48 @@ type Config = wheel.Config
 // {"strategy":"wheel","params":{...}} envelope.
 func ParseConfig(params map[string]any) (wheel.Config, error) {
 	if params == nil {
-		return wheel.Config{}, fmt.Errorf("strategy wheel: price_position_curve and max_inventory are required")
+		return wheel.Config{}, fmt.Errorf("strategy wheel: full_position_price, zero_position_price and max_inventory are required")
 	}
 	params, err := unwrapParams(params)
 	if err != nil {
 		return wheel.Config{}, err
 	}
-	// lot_size 不再接受配置(行情实时拉取,兜底 100)。存量配置里的旧键静默
-	// 忽略,避免 buildParams 的 unknown-param 校验拒绝老配置。
-	delete(params, "lot_size")
-
+	params, audit, err := normalizeLegacyParams(params)
+	if err != nil {
+		return wheel.Config{}, err
+	}
 	t, _ := Lookup("wheel")
 	values, err := buildParams(t, params)
 	if err != nil {
 		return wheel.Config{}, err
 	}
-	curve, err := parseCurve(values["price_position_curve"])
+	fullPrice, err := asNumber(values["full_position_price"])
 	if err != nil {
-		return wheel.Config{}, fmt.Errorf("strategy wheel: param price_position_curve: %w", err)
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param full_position_price: %w", err)
+	}
+	zeroPrice, err := asNumber(values["zero_position_price"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param zero_position_price: %w", err)
 	}
 	maxInventory, err := asNumber(values["max_inventory"])
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param max_inventory: %w", err)
+	}
+	moveInterval, err := asNumber(values["move_interval_pct"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param move_interval_pct: %w", err)
+	}
+	minPremium, err := asNumber(values["min_premium_per_share"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param min_premium_per_share: %w", err)
+	}
+	stockSwitch, err := asNumber(values["stock_switch_pct"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param stock_switch_pct: %w", err)
+	}
+	tradeGap, err := asNumber(values["trade_gap"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param trade_gap: %w", err)
 	}
 	minDTE, err := asInt(values["min_dte"])
 	if err != nil {
@@ -140,18 +160,6 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param min_option_quality: %w", err)
 	}
-	maxDaily, err := asInt(values["max_daily_orders"])
-	if err != nil {
-		return wheel.Config{}, fmt.Errorf("strategy wheel: param max_daily_orders: %w", err)
-	}
-	extremeDaily, err := asInt(values["extreme_max_daily_orders"])
-	if err != nil {
-		return wheel.Config{}, fmt.Errorf("strategy wheel: param extreme_max_daily_orders: %w", err)
-	}
-	noTradeGap, err := asNumber(values["no_trade_gap"])
-	if err != nil {
-		return wheel.Config{}, fmt.Errorf("strategy wheel: param no_trade_gap: %w", err)
-	}
 	maxQuoteAge, err := asInt(values["max_quote_age_seconds"])
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param max_quote_age_seconds: %w", err)
@@ -162,17 +170,23 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	}
 
 	cfg := wheel.Config{
-		Strategy:              "wheel",
-		PricePositionCurve:    curve,
-		MaxInventory:          maxInventory,
-		MinDTE:                minDTE,
-		MaxDTE:                maxDTE,
-		MinOptionQuality:      minQuality,
-		MaxDailyOrders:        maxDaily,
-		ExtremeMaxDailyOrders: extremeDaily,
-		NoTradeGap:            noTradeGap,
-		StrategicState:        state,
-		MaxQuoteAgeSeconds:    maxQuoteAge,
+		Strategy:               "wheel",
+		FullPositionPrice:      fullPrice,
+		ZeroPositionPrice:      zeroPrice,
+		MaxInventory:           maxInventory,
+		MoveIntervalPct:        moveInterval,
+		MinPremiumPerShare:     minPremium,
+		StockSwitchPct:         stockSwitch,
+		TradeGap:               tradeGap,
+		MinDTE:                 minDTE,
+		MaxDTE:                 maxDTE,
+		MinOptionQuality:       minQuality,
+		StrategicState:         state,
+		MaxQuoteAgeSeconds:     maxQuoteAge,
+		MigrationLossy:         audit.lossy,
+		MigrationWarningCount:  len(audit.warnings),
+		MigrationWarnings:      audit.warnings,
+		MigrationOriginalCurve: audit.originalCurve,
 	}
 	if err := cfg.Validate(); err != nil {
 		return wheel.Config{}, err
@@ -190,8 +204,27 @@ func ParseConfigJSON(data []byte) (wheel.Config, error) {
 	return ParseConfig(params)
 }
 
-// Validate checks the named product strategy and its structured params.
-// Legacy template names remain explicit unknown errors.
+// CanonicalParams validates params and returns the write-side representation.
+// It is the persistence boundary for the read-old/write-new migration policy.
+func CanonicalParams(params map[string]any) (map[string]any, error) {
+	cfg, err := ParseConfig(params)
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("strategy wheel: canonical params: %w", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("strategy wheel: canonical params: %w", err)
+	}
+	delete(out, "strategy")
+	return out, nil
+}
+
+// Validate checks the named strategy and its structured params. The only
+// registered name is wheel; old template names are explicit unknown errors.
 func Validate(name string, params map[string]any) error {
 	t, ok := Lookup(name)
 	if !ok {
@@ -350,8 +383,6 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		AsOf:             bar.Ts,
 		StockShares:      st.Position,
 		Positions:        positions,
-		DailyOrders:      st.DailyOrders,
-		ExtremeDay:       st.ExtremeDay,
 		CashAvailable:    st.Cash,
 		HasCashAvailable: true,
 		Quotes:           quotes,
@@ -414,6 +445,98 @@ func unwrapParams(params map[string]any) (map[string]any, error) {
 	}
 	return params, nil
 }
+
+type migrationAudit struct {
+	lossy         bool
+	warnings      []string
+	originalCurve json.RawMessage
+}
+
+// normalizeLegacyParams implements the read-old/write-new boundary. Legacy
+// keys are removed before schema validation, so a Config marshals only the new
+// contract plus explicit migration audit metadata.
+func normalizeLegacyParams(params map[string]any) (map[string]any, migrationAudit, error) {
+	out := make(map[string]any, len(params))
+	for key, value := range params {
+		out[key] = value
+	}
+	audit := migrationAudit{}
+
+	if raw, ok := out["migration_lossy"]; ok {
+		if lossy, ok := raw.(bool); ok {
+			audit.lossy = lossy
+		} else {
+			return nil, audit, fmt.Errorf("strategy wheel: param migration_lossy: want a boolean")
+		}
+		delete(out, "migration_lossy")
+	}
+	if raw, ok := out["migration_original_price_position_curve"]; ok {
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			return nil, audit, fmt.Errorf("strategy wheel: migration curve audit: %w", err)
+		}
+		audit.originalCurve = encoded
+		delete(out, "migration_original_price_position_curve")
+	}
+	if raw, ok := out["migration_warnings"]; ok {
+		encoded, err := json.Marshal(raw)
+		if err != nil || json.Unmarshal(encoded, &audit.warnings) != nil {
+			return nil, audit, fmt.Errorf("strategy wheel: param migration_warnings: want a string array")
+		}
+		delete(out, "migration_warnings")
+	}
+	delete(out, "migration_warning_count") // recomputed from the warning list
+
+	if rawCurve, hasCurve := out["price_position_curve"]; hasCurve {
+		_, hasFull := out["full_position_price"]
+		_, hasZero := out["zero_position_price"]
+		if !hasFull || !hasZero {
+			curve, err := parseCurve(rawCurve)
+			if err != nil {
+				return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: %w", err)
+			}
+			if len(curve) < 2 {
+				return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: must contain at least two points")
+			}
+			for i, point := range curve {
+				if !finiteNumber(point.Price) || point.Price <= 0 || !finiteNumber(point.TargetInventory) {
+					return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: invalid point %d", i)
+				}
+				if i > 0 && (point.Price <= curve[i-1].Price || point.TargetInventory > curve[i-1].TargetInventory) {
+					return nil, audit, fmt.Errorf("strategy wheel: param price_position_curve: prices must increase and target inventory must not increase")
+				}
+			}
+			if !hasFull {
+				out["full_position_price"] = curve[0].Price
+			}
+			if !hasZero {
+				out["zero_position_price"] = curve[len(curve)-1].Price
+			}
+			audit.lossy = true
+			encoded, err := json.Marshal(rawCurve)
+			if err != nil {
+				return nil, audit, fmt.Errorf("strategy wheel: price curve audit: %w", err)
+			}
+			audit.originalCurve = encoded
+		}
+		delete(out, "price_position_curve")
+	}
+	if rawGap, ok := out["no_trade_gap"]; ok {
+		if _, hasNew := out["trade_gap"]; !hasNew {
+			out["trade_gap"] = rawGap
+		}
+		delete(out, "no_trade_gap")
+	}
+	for _, key := range []string{"max_daily_orders", "extreme_max_daily_orders", "lot_size"} {
+		if _, ok := out[key]; ok {
+			audit.warnings = append(audit.warnings, "ignored legacy parameter: "+key)
+			delete(out, key)
+		}
+	}
+	return out, audit, nil
+}
+
+func finiteNumber(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
 func buildParams(t *Template, params map[string]any) (map[string]any, error) {
 	known := make(map[string]Param, len(t.Params))
