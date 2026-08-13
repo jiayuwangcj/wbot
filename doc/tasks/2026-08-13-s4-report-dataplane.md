@@ -1,6 +1,13 @@
 # S4 报告数据面 + 基础 CLI
 
-**State**: codex 已交付(提交 4785f0d,2026-08-13,署名 gpt-5.6-luna;verify.sh 全绿 + 验收 11/11)→ reviewer 评审中
+**State**: ✅ 已合入开发主干线(merge 3631710,2026-08-13;评审通过:bugfix,无 P0/P1)
+
+## 评审结论(2026-08-13,reviewer 初评 ace7adcf + 复核 a2c6dab)
+
+- **结论**: 合入;功能类型 **bugfix**(修复 CI 回归 + 补齐 CI 覆盖,不引入新行为);达到可使用阶段
+- 初评 2 P1: ① accept-backtest.sh 汇总行 regex `bars=[0-9]+$` 对新增「未成交」后缀不匹配(CI 回归)② 新验收脚本 accept-backtest-report.sh 未进 CI
+- 复核 700dfc0 两处均修复到位且实测验证(旧/新/混合/ANSI 四种形态 regex 计数 1;无参执行 11/11 全 PASS);无新发现问题
+- P3 观察(非阻断): test 作业首次引入 node 依赖(runner 预装恒有);multi 模式汇总行无后缀本就不匹配该 check,行为与改动前一致
 
 ## 交付记录(2026-08-13,codex 4785f0d)
 

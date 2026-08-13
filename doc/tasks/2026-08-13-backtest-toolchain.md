@@ -37,16 +37,23 @@
 | # | 切片 | 状态 | 验收产物 |
 | --- | --- | --- | --- |
 | S0 | 契约裁决 + 参数字典 + 报告 schema | DONE(2026-08-13) | 本任务记录 + doc/BACKTEST_REPORT.md |
-| S1 | 参数后端与兼容迁移 | pending | 新读旧只写新、每标的版本化、删日上限领域逻辑、契约+实库迁移测试 |
-| S2 | 参数消费端中文化 | pending | watchlist 配置入口/CLI 帮助/LLM 审核文本/文档一致 |
-| S3 | 未成交模拟与基础指标 | pending | 订单假设/模型版本/稳定派生 seed/计数口径/多流动性等级测试 |
-| S4 | 报告数据面 + 基础 CLI | pending | 单次回测输出版本化 JSON/HTML(430/390px),尚不接 Discord |
+| S1 | 参数后端与兼容迁移 | DONE(2026-08-13,merge 26445c4) | 新读旧只写新、每标的版本化、删日上限领域逻辑、契约+实库迁移测试 |
+| S2 | 参数消费端中文化 | DONE(2026-08-13,merge b6a7ab5) | watchlist 配置入口/CLI 帮助/LLM 审核文本/文档一致 |
+| S3 | 未成交模拟与基础指标 | DONE(2026-08-13,merge 3f5f781) | 订单假设/模型版本/稳定派生 seed/计数口径/多流动性等级测试 |
+| S4 | 报告数据面 + 基础 CLI | DONE(2026-08-13,merge 3631710) | 单次回测输出版本化 JSON/HTML(430/390px),尚不接 Discord |
 | S5 | ES 参数寻优 | pending | 搜索/约束/walk-forward/多 seed/早停/轨迹严格复用 S4 schema |
 | S6 | 缓存与 LLM 上下文 | pending | 带版本/状态缓存;过期不合格不注入 |
 | S7 | Discord 推送 + Web 退役 | pending | 幂等推送/失败可重试/真实 channel smoke;CLI+报告链路验收后删 results |
 | S8 | 行为克隆预研(并轨,RESEARCH_ONLY) | backlog | 规则+多组 ES 稳健候选做 teacher → HOLD+候选排序小模型;不提供收益证据 |
 
 依赖顺序:S0 → S1 → (S2,S3) → S4 → S5 → (S6, S7);S8 并轨依赖 S5 轨迹数据面。Web 删除不得早于 CLI+HTML+Discord 链路验收。
+
+## Discord 推送格式实测(2026-08-13 demo 验证,供 S7 使用)
+
+- **正文链接可直开**:消息 content 里的链接 + 页面 og 元数据 → Discord 渲染预览卡(标题/描述/theme-color),点击直接打开,无确认
+- **embed 字段内链接需确认**:embed description/字段里的外链点击触发「离开 Discord」确认页(平台侧行为,站长无法关闭)
+- **结论格式**:正文 = 报告链接(带 og 预览);embed = 纯摘要(状态/收益/未成交率/参数,不放链接)。页面必须带 og:title/og:description/theme-color;Discord 抓取 UA 为 Discordbot/2.0 形态(域名层已放行)
+- og:image 后续评估(需要图);HTML 附件无法在 Discord 内嵌渲染(只下载),PNG 摘要卡作为 S7 可选增强
 
 ## 端到端验收命令(全部切片合入后)
 
