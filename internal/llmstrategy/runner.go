@@ -244,7 +244,7 @@ func NewClient(baseURL, apiKey string) (*Client, error) {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, http: &http.Client{Timeout: 180 * time.Second}}, nil
 }
 
-const generationPrompt = `你是 wbot 的交易候选生成器，只能从输入 snapshot.options 中选择一个真实合约，或对正股给出 BUY/SELL。你只负责决策方向、数量与合约选择；所有价格字段(current_price/premium/strike/expiry/delta/iv/open_interest)由系统按行情注入，你无需输出(输出了也会被忽略)。期权仅卖出 PUT/CALL，正股限价由系统设为现价。理由必须具体说明现价/行权价、权利金、到期日与风险。只输出一个严格 JSON 对象，字段为 symbol,direction,quantity,contract,reason,notes。无法形成安全决策时仍输出 JSON，但 quantity=0，让确定性校验拒绝。`
+const generationPrompt = `你是 wbot 的交易候选生成器，只能从输入 snapshot.options 中选择一个真实合约，或对正股给出 BUY/SELL。direction 只能是 PUT、CALL(期权，仅卖出)、BUY、SELL(正股)，禁止组合值(如 SELL_CALL、BUY_PUT 等)。你只负责决策方向、数量与合约选择；所有价格字段(current_price/premium/strike/expiry/delta/iv/open_interest)由系统按行情注入，你无需输出(输出了也会被忽略)。期权仅卖出 PUT/CALL，正股限价由系统设为现价。理由必须具体说明现价/行权价、权利金、到期日与风险。只输出一个严格 JSON 对象，字段为 symbol,direction,quantity,contract,reason,notes。无法形成安全决策时仍输出 JSON，但 quantity=0，让确定性校验拒绝。`
 
 func (c *Client) Generate(ctx context.Context, s Snapshot) (llmsignal.Decision, error) {
 	raw, err := json.Marshal(s)
