@@ -23,7 +23,7 @@
 | `accept-account-snapshot.sh` | `wbot ingest account` 快照落库（sim/real 双 env + `-every` 循环优雅退出） | 15 | 网关 OpenD + PG。`scripts/accept-account-snapshot.sh [bin] [dsn] [proto-addr]` |
 | `accept-account-snapshots-api.sh` | GET /v1/account/snapshots（契约/400/real 通道/快照增长） | 7 | serve + PG + 网关。`scripts/accept-account-snapshots-api.sh [base-url] [bin] [dsn] [proto-addr]` |
 | `accept-backtest.sh` | backtest 双面（CLI -dsn/-save/-export + GET detail/export；四条字节一致等价 + from_watchlist） | 21 | serve + PG + 种子 bars。`scripts/accept-backtest.sh [base-url] [bin] [dsn] [symbol]` | ✅ db-integration |
-| `accept-backtest-report.sh` | 单次回测 schema 1.0 JSON、确定性 HTML、汇总/未成交口径与同 ID 覆盖 | 11 | 无 PG 无网关。`scripts/accept-backtest-report.sh [bin]` | ✅ test job |
+| `accept-backtest-report.sh` | 单次回测 schema 1.1 JSON、终局/数据质量卡、确定性 HTML、汇总/未成交口径与同 ID 覆盖 | 11 | 无 PG 无网关。`scripts/accept-backtest-report.sh [bin]` | ✅ test job |
 | `accept-watchlist.sh` | `wbot watchlist` CLI（add/remove/list + buy-hold + 写面→读面联动） | 16 | serve + PG。`scripts/accept-watchlist.sh [bin] [dsn] [base-url]` | ✅ db-integration |
 | `accept-futu-data.sh` | futu 数据面 HTTP（quote/orders/account） | 15 | serve + 网关可达。`scripts/accept-futu-data.sh [base-url]` |
 | `accept-wheel-audit.sh` | wheel 只读审计面（写面→configs 版本不可变联动、signals/actions 过滤与 400/405 契约、绑定删除后审计保留） | 22 | serve + PG。`scripts/accept-wheel-audit.sh [base-url]` | ✅ db-integration |

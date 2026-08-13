@@ -1,6 +1,6 @@
 # 回测 P0 阻碍清除
 
-**State**: in_progress（2026-08-14）
+**State**: complete（2026-08-14）
 
 ## Goal
 
@@ -45,8 +45,29 @@
 - [x] P0-2：期权成交费用实际扣账并在报告输出
 - [x] P0-3：多点曲线无损执行；`-from-watchlist` 只读加载真实 `config_version`，ad-hoc 报告显式 `null`
 - [x] P0-4：窗口末持仓、已实现/未实现 P&L、机械到期/指派统计；真实券商事实显式 `null`
-- [ ] 全量 `scripts/verify.sh`
+- [x] 全量 `scripts/verify.sh`
+
+## 真实只读验收（2026-08-14）
+
+验收程序使用单 PostgreSQL 连接并先执行 `SET default_transaction_read_only = on`；未执行 migration、未调用 `SaveResult`，仅查询生产 watchlist/bars/snapshot 并在 `/tmp` 生成报告文件。
+
+| 标的 | 配置 | bar 窗口 | snapshot | 覆盖 | 报告结论 |
+| --- | --- | --- | --- | --- | --- |
+| HK.00700 | v1 | 5458 bars，2004-06-15..2026-08-12 | 45 批 / 457 合约行 | READY 1、BLOCKED 5457，0.0183% | schema 1.1；`DATA_BLOCKED`；`net_return_pct=null` |
+| US.JD | **v2** | 9 bars，2026-07-31..2026-08-12 | 88 批 / 359 合约行 | READY 0、BLOCKED 9，0% | schema 1.1；`DATA_BLOCKED`；`net_return_pct=null` |
+
+US.JD 报告身份为 `config_version=2`，完整保留 30.25/31.25/32.25/33.25/34.25/35.25 六个曲线锚点，`migration_lossy=false`。实际数据质量计数显示：US.JD 缺 Delta/IV/Theta 各 14 行、OI 15 行、volume 47 行；HK.00700 缺 Delta/IV/Theta/OI 各 24 行、volume 122 行。两者 `historical_option_cycle_complete=false`，没有伪造历史字段或收益。
+
+## 条件性 P1
+
+- 已随 P0 完成数据质量卡；单次报告同输入同 ID/同 JSON/HTML 字节由确定性测试覆盖。
+- 未扩展为 ≥3 fold walk-forward：当前历史期权周期与有效 bar 覆盖仍为 `DATA_BLOCKED`，增加 fold 只会重复零/近零有效样本，不能产生可信验证证据。
+- 未实现 Discord `-push`：任务约束不修改 Discord scheduler，且当前报告没有可发布的有效收益结论；应在独立 S7 切片实现 report ID 幂等推送。
+
+## Verify
+
+`scripts/verify.sh` 全绿：frontend build、gofmt、`go test ./...`、`go vet ./...`、race、staticcheck 与 CLI smoke 均通过。
 
 ## Next
 
-运行全量 `scripts/verify.sh`，随后用真实只读数据生成 HK.00700/US.JD 阻塞报告并核对 schema 1.1。
+从实时采集开始累计至少一个完整 DTE/到期周期；覆盖与字段完整性闸门通过后，再做 ≥3 fold walk-forward 和 Discord 报告推送。发布前由独立 reviewer 按 feature 类型复核 schema 1.1、终局 P&L 口径与真实只读验收结果。
