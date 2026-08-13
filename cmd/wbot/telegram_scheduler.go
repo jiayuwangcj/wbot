@@ -15,6 +15,7 @@ import (
 	"github.com/jiayu/wbot/internal/config"
 	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/telegram"
+	"github.com/jiayu/wbot/internal/wheelrun"
 	"github.com/jiayu/wbot/internal/wheelstore"
 	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
 )
@@ -130,6 +131,11 @@ type telegramScheduler struct {
 	chatIDs map[int64]bool
 	now     func() time.Time
 	logf    func(format string, a ...any)
+	// watchEvery/watchReport 控制成交监控节奏(零值在构造函数填默认):
+	// 观察窗内未成交先推送挂单状态,随后继续观察至成交/撤单/市场收盘,
+	// 收盘仍未成交立即无理由撤单(老板指令 2026-08-13)。测试可缩短。
+	watchEvery  time.Duration
+	watchReport time.Duration
 }
 
 // sendToChats pushes one text message to every whitelisted chat. Button
@@ -145,12 +151,14 @@ func (s *telegramScheduler) sendToChats(ctx context.Context, text string) {
 
 func newTelegramScheduler(tg *telegram.Client, store wheelstore.SignalRepository, orders wheelOrderPlacer, quoter underlyingQuoter, chatIDs map[int64]bool) *telegramScheduler {
 	return &telegramScheduler{
-		tg:      tg,
-		store:   store,
-		orders:  orders,
-		quoter:  quoter,
-		chatIDs: chatIDs,
-		now:     time.Now,
+		tg:          tg,
+		store:       store,
+		orders:      orders,
+		quoter:      quoter,
+		chatIDs:     chatIDs,
+		now:         time.Now,
+		watchEvery:  30 * time.Second,
+		watchReport: 2 * time.Minute,
 		logf: func(format string, a ...any) {
 			fmt.Fprintf(os.Stderr, "telegram: "+format+"\n", a...)
 		},
@@ -420,51 +428,60 @@ func (s *telegramScheduler) handleCallback(ctx context.Context, cq *telegram.Cal
 		return
 	}
 	switch action {
-	case "yes":
-		s.confirmOrder(ctx, cq, signalID)
-	case "no":
-		// 老板指令 2026-08-13: 已下单未成交时策略又发新单(701 确认后未成交,
-		// 702 仍被生成并确认 → 双挂)。❌ 对已确认单升级为撤单:撤销模拟盘
-		// 挂单并记录 NO,解除策略的 pending-order 阻塞;撤单失败也必须告知
-		// 用户手动撤,保证挂单被取消而不是静默遗留。
-		note, toast := "继续等待机会", "已记录,继续等待机会"
-		if confirm, cerr := s.store.LatestAction(ctx, signalID, "CONFIRM"); cerr == nil {
-			var oid uint64
-			switch v := confirm.Details["order_id"].(type) {
-			case float64: // JSONB 落库后数值读出为 float64
-				oid = uint64(v)
-			case uint64:
-				oid = v
-			}
-			symbol := ""
-			if sig, gerr := s.store.GetSignal(ctx, signalID); gerr == nil {
-				symbol = sig.Symbol
-			}
-			switch {
-			case oid == 0 || symbol == "":
-				note, toast = "撤单失败:缺少订单号或标的(请手动在模拟盘撤单)", "缺少订单信息,请手动撤单"
-			default:
-				if cerr := s.orders.CancelOrder(ctx, symbol, strconv.FormatUint(oid, 10)); cerr != nil {
-					s.logf("callback %s: cancel order: %v", cq.ID, cerr)
-					note, toast = fmt.Sprintf("撤单失败:%v(请手动在模拟盘撤单)", cerr), "撤单失败,请手动撤单"
-				} else {
-					note, toast = fmt.Sprintf("撤单成功 订单号 %d", oid), fmt.Sprintf("已撤单 订单号 %d", oid)
-				}
-			}
+	case "yes", "no":
+		// 立即回执,避免 Telegram 客户端「wbot 无响应」:首次点击时网关会话
+		// 冷启动,撤单/下单 RPC 可达数秒,而回调须在数秒内应答。处理结果
+		// 走推送消息(✅ 已下单 / ⛔ 下单失败 / ❌ 已拒绝)。异步执行同时
+		// 避免慢网关阻塞 Poll 循环拖住其他按钮与消息。
+		_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, "已收到,处理中…")
+		if action == "yes" {
+			go s.confirmOrder(ctx, cq, signalID)
+		} else {
+			go s.declineOrder(ctx, cq, signalID)
 		}
-		if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "NO", Actor: telegramActor(cq), Note: note}); err != nil {
-			s.logf("callback %s: no: %v", cq.ID, err)
-			_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, "记录失败")
-			return
-		}
-		_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, toast)
-		// 老板指令 2026-08-12: 按钮点击要推送(时间/信号号可见)。
-		s.sendToChats(ctx, fmt.Sprintf("❌ <b>已拒绝</b> · 信号 #%d · %s\n%s", signalID, s.now().Format("2006-01-02 15:04:05"), note))
 	case "dismiss":
 		s.recordDismiss(ctx, cq, signalID)
 	default:
 		_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, "未知操作")
 	}
+}
+
+// declineOrder is the no path: a confirmed-but-unfilled signal is escalated to
+// cancel (老板指令 2026-08-13: 701 确认后未成交,702 仍被生成并确认 → 双挂)。
+// 撤销模拟盘挂单并记录 NO,解除策略的 pending-order 阻塞;撤单失败也必须
+// 告知用户手动撤,保证挂单被取消而不是静默遗留。结果经推送消息送达。
+func (s *telegramScheduler) declineOrder(ctx context.Context, cq *telegram.CallbackQuery, signalID int64) {
+	note := "继续等待机会"
+	if confirm, cerr := s.store.LatestAction(ctx, signalID, "CONFIRM"); cerr == nil {
+		var oid uint64
+		switch v := confirm.Details["order_id"].(type) {
+		case float64: // JSONB 落库后数值读出为 float64
+			oid = uint64(v)
+		case uint64:
+			oid = v
+		}
+		symbol := ""
+		if sig, gerr := s.store.GetSignal(ctx, signalID); gerr == nil {
+			symbol = sig.Symbol
+		}
+		switch {
+		case oid == 0 || symbol == "":
+			note = "撤单失败:缺少订单号或标的(请手动在模拟盘撤单)"
+		default:
+			if cerr := s.orders.CancelOrder(ctx, symbol, strconv.FormatUint(oid, 10)); cerr != nil {
+				s.logf("callback %s: cancel order: %v", cq.ID, cerr)
+				note = fmt.Sprintf("撤单失败:%v(请手动在模拟盘撤单)", cerr)
+			} else {
+				note = fmt.Sprintf("撤单成功 订单号 %d", oid)
+			}
+		}
+	}
+	if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "NO", Actor: telegramActor(cq), Note: note}); err != nil {
+		s.logf("callback %s: no: %v", cq.ID, err)
+		return
+	}
+	// 老板指令 2026-08-12: 按钮点击要推送(时间/信号号可见)。
+	s.sendToChats(ctx, fmt.Sprintf("❌ <b>已拒绝</b> · 信号 #%d · %s\n%s", signalID, s.now().Format("2006-01-02 15:04:05"), note))
 }
 
 // confirmOrder is the yes path: re-verify the signal is fresh and its latest
@@ -483,6 +500,13 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 	review, err := s.store.LatestLLMReview(ctx, signalID)
 	if err != nil || verdictOf(review) != "APPROVE" {
 		s.reject(ctx, cq, signalID, "llm review not approved", "LLM 审核未通过")
+		return
+	}
+	// 收盘闸门(老板指令 2026-08-13: 收盘订单立即无理由取消):市场已收盘
+	// 不再新下订单,避免产生收盘即失效、次日残留的挂单。沿用 wheelrun 的
+	// 市场时段判定(交易所时区 + 节假日日历)。
+	if !wheelrun.MarketIsOpen(sig.Symbol, s.now(), nil) {
+		s.reject(ctx, cq, signalID, "market closed", "市场已收盘,拒绝下单")
 		return
 	}
 	if s.orders == nil {
@@ -568,66 +592,115 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 		signalID, sideName, cand.Code, cand.Side, cand.Quantity, price, orderIDEx, orderID, replaceLine,
 		s.now().Format("2006-01-02 15:04:05"),
 	))
-	// 成交监控:轮询订单状态,成交/撤单/超时都推送结果。
-	go s.watchFill(ctx, signalID, cand.Code, cand.Side, float64(cand.Quantity), price, orderIDEx)
+	// 成交监控:轮询订单状态,成交/撤单/收盘/异常都推送结果。
+	go s.watchFill(ctx, signalID, cand.Code, cand.Side, float64(cand.Quantity), price, orderIDEx, orderID)
 }
 
-// watchFill polls the placed order until it fills, cancels or the watch
-// window closes, pushing the outcome (老板指令 2026-08-12: 成交成功等
-// 重要消息需要推送)。Runs on the serve ctx in its own goroutine; the
-// callback answer is never blocked on gateway polling.
-func (s *telegramScheduler) watchFill(ctx context.Context, signalID int64, symbol, side string, qty, price float64, orderIDEx string) {
-	const (
-		pollEvery = 15 * time.Second
-		maxPolls  = 8 // ~2 分钟观察窗:未成交则推送挂单状态收尾
-	)
+// watchFill polls the placed order until it fills, cancels or the market
+// closes, pushing the outcome (老板指令 2026-08-12: 成交成功等重要消息
+// 需要推送;2026-08-13: 收盘订单和异常订单立即无理由取消)。观察窗内未
+// 成交先推送挂单状态,随后继续观察至终态或市场收盘——收盘时挂单立即撤
+// 单,状态查询异常(无法确认)也立即撤单(fail-closed,资金安全)。Runs on
+// the serve ctx in its own goroutine; the callback answer is never blocked
+// on gateway polling.
+func (s *telegramScheduler) watchFill(ctx context.Context, signalID int64, symbol, side string, qty, price float64, orderIDEx string, orderID uint64) {
+	pollEvery := s.watchEvery
+	reportAfter := s.watchReport
+	if pollEvery <= 0 {
+		pollEvery = 30 * time.Second
+	}
+	if reportAfter <= 0 {
+		reportAfter = 2 * time.Minute
+	}
 	sideName := "买入"
 	if side == "sell" {
 		sideName = "卖出"
 	}
-	for i := 0; i < maxPolls; i++ {
-		if i > 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(pollEvery):
-			}
+	started := s.now()
+	reportedPending := false
+	for {
+		// 收盘闸门:市场已收盘,未成交挂单立即无理由撤单。
+		if !wheelrun.MarketIsOpen(symbol, s.now(), nil) {
+			s.cancelResting(ctx, signalID, sideName, symbol, side, qty, price, orderIDEx, orderID, "市场收盘,挂单自动撤单")
+			return
 		}
 		status, found, err := s.orders.OrderStatus(ctx, symbol, orderIDEx)
 		if err != nil {
-			s.logf("watch fill %s: %v", orderIDEx, err)
-			continue
+			// 状态无法确认 = 异常(fail-closed):立即撤单,不假装挂单仍受控。
+			s.logf("watch fill %s: %v; cancelling", orderIDEx, err)
+			s.cancelResting(ctx, signalID, sideName, symbol, side, qty, price, orderIDEx, orderID, "订单状态异常,自动撤单")
+			return
 		}
-		if !found {
-			continue // 网关尚未出现该订单,继续轮询
-		}
-		switch trdcommon.OrderStatus(status) {
-		case trdcommon.OrderStatus_OrderStatus_Filled_All, trdcommon.OrderStatus_OrderStatus_Filled_Part:
-			s.sendToChats(ctx, fmt.Sprintf(
-				"✅ <b>已成交</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n成交时间 %s",
-				signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
-			))
-			if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
-				SignalID: signalID, Action: "FILL", Actor: "system:watch",
-				Details: map[string]any{"order_id_ex": orderIDEx, "status": trdcommon.OrderStatus(status).String(), "symbol": symbol, "side": side, "qty": qty, "price": price},
-			}); err != nil {
-				s.logf("watch fill %s: fill record: %v", orderIDEx, err)
+		if found {
+			switch trdcommon.OrderStatus(status) {
+			case trdcommon.OrderStatus_OrderStatus_Filled_All, trdcommon.OrderStatus_OrderStatus_Filled_Part:
+				s.sendToChats(ctx, fmt.Sprintf(
+					"✅ <b>已成交</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n成交时间 %s",
+					signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
+				))
+				if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
+					SignalID: signalID, Action: "FILL", Actor: "system:watch",
+					Details: map[string]any{"order_id_ex": orderIDEx, "status": trdcommon.OrderStatus(status).String(), "symbol": symbol, "side": side, "qty": qty, "price": price},
+				}); err != nil {
+					s.logf("watch fill %s: fill record: %v", orderIDEx, err)
+				}
+				return
+			case trdcommon.OrderStatus_OrderStatus_Cancelled_Part, trdcommon.OrderStatus_OrderStatus_Cancelled_All,
+				trdcommon.OrderStatus_OrderStatus_Cancelling_Part, trdcommon.OrderStatus_OrderStatus_Cancelling_All,
+				trdcommon.OrderStatus_OrderStatus_SubmitFailed:
+				s.sendToChats(ctx, fmt.Sprintf(
+					"⚠️ <b>订单未成交(%s)</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n时间 %s",
+					trdcommon.OrderStatus(status).String(), signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
+				))
+				return
 			}
-			return
-		case trdcommon.OrderStatus_OrderStatus_Cancelled_Part, trdcommon.OrderStatus_OrderStatus_Cancelled_All,
-			trdcommon.OrderStatus_OrderStatus_Cancelling_Part, trdcommon.OrderStatus_OrderStatus_Cancelling_All,
-			trdcommon.OrderStatus_OrderStatus_SubmitFailed:
+		}
+		// 观察窗内未成交:先推送挂单状态,不假装成功;随后继续观察至收盘。
+		if !reportedPending && s.now().Sub(started) >= reportAfter {
 			s.sendToChats(ctx, fmt.Sprintf(
-				"⚠️ <b>订单未成交(%s)</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n时间 %s",
-				trdcommon.OrderStatus(status).String(), signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
+				"⏳ <b>订单挂单中未成交</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n观察 %s",
+				signalID, sideName, symbol, qty, price, orderIDEx,
+				s.now().Format("2006-01-02 15:04:05"),
 			))
+			reportedPending = true
+		}
+		select {
+		case <-ctx.Done():
 			return
+		case <-time.After(pollEvery):
 		}
 	}
-	// 观察窗内未成交:挂单仍在市场,告知状态不假装成功。
+}
+
+// cancelResting cancels an unfilled resting order immediately (无理由撤单,
+// 老板指令 2026-08-13) and pushes the outcome so the boss always sees the
+// state. A failed cancel is pushed as a manual action item, never silent.
+func (s *telegramScheduler) cancelResting(ctx context.Context, signalID int64, sideName, symbol, side string, qty, price float64, orderIDEx string, orderID uint64, note string) {
+	if orderID == 0 {
+		s.logf("watch fill %s: no numeric order id to cancel; %s", orderIDEx, note)
+		s.sendToChats(ctx, fmt.Sprintf(
+			"⚠️ <b>挂单未撤(缺少订单号)</b> · 信号 #%d\n%s\n订单号 <code>%s</code> · 请手动在模拟盘撤单",
+			signalID, note, orderIDEx,
+		))
+		return
+	}
+	if err := s.orders.CancelOrder(ctx, symbol, strconv.FormatUint(orderID, 10)); err != nil {
+		s.logf("watch fill %s: cancel: %v", orderIDEx, err)
+		s.sendToChats(ctx, fmt.Sprintf(
+			"⚠️ <b>撤单失败</b> · 信号 #%d\n%s\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code> · 请手动在模拟盘撤单\n错误 %v",
+			signalID, note, sideName, symbol, qty, price, orderIDEx, err,
+		))
+		return
+	}
+	if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
+		SignalID: signalID, Action: "NO", Actor: "system:watch",
+		Note: note, Details: map[string]any{"order_id_ex": orderIDEx, "order_id": orderID, "symbol": symbol},
+	}); err != nil {
+		s.logf("watch fill %s: cancel record: %v", orderIDEx, err)
+	}
 	s.sendToChats(ctx, fmt.Sprintf(
-		"⏳ <b>订单挂单中未成交</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n观察 %s",
-		signalID, sideName, symbol, qty, price, orderIDEx,
+		"❌ <b>已撤单</b> · 信号 #%d · %s\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n时间 %s",
+		signalID, note, sideName, symbol, qty, price, orderIDEx,
 		s.now().Format("2006-01-02 15:04:05"),
 	))
 }
@@ -725,16 +798,28 @@ type candidateQuote struct {
 	OpenInterest int64
 }
 
-// firstCandidate reads the signal's first candidate into order facts. The
-// wheel sells the option in both directions (PUT sell / CALL sell), so side
-// is always sell; quantity defaults to 1 when missing.
+// firstCandidate reads the signal's *accepted* candidate into order facts.
+// 资金安全(老板指令 2026-08-13: 所有必须完美匹配,不设退化策略,异常直接
+// 取消订单):候选列表保留输入顺序,被排除的候选(如同合约挂单)排在列表
+// 头部但 Accepted=false;执行/卡片/成交监控必须用策略实际选中的候选——
+// signal 757 教训:LLM 审核批的 P28500(accepted),执行却落在列表首位的
+// P29000(挂单合约被排除),审核与下单不一致。**全无 accepted 候选 = 审核
+// 与策略不一致异常,直接返回错误由执行层拒绝下单,绝不回退列表首位**。
+// wheel 卖出期权(PUT/CALL sell),quantity 缺省 1。
 func firstCandidate(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
 	if sig == nil || len(sig.Candidates) == 0 {
 		return nil, errors.New("signal has no candidates")
 	}
-	c := sig.Candidates[0]
+	var c wheelstore.Candidate
+	for i := range sig.Candidates {
+		cand := sig.Candidates[i]
+		if cand.Accepted && cand.Quote != nil && strings.TrimSpace(cand.Quote.Symbol) != "" {
+			c = cand
+			break
+		}
+	}
 	if c.Quote == nil || strings.TrimSpace(c.Quote.Symbol) == "" {
-		return nil, errors.New("candidate has no option symbol")
+		return nil, errors.New("signal has no approved candidate")
 	}
 	quote := c.Quote
 	direction := strings.ToUpper(strings.TrimSpace(c.Direction))

@@ -336,7 +336,14 @@ func signInteraction(t *testing.T, priv ed25519.PrivateKey, ts string, body []by
 
 func signedInteractionRequest(t *testing.T, priv ed25519.PrivateKey, body []byte) *http.Request {
 	t.Helper()
-	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	return signedInteractionRequestAt(t, priv, body, time.Now())
+}
+
+// signedInteractionRequestAt 用给定的时钟签名:校验方按 s.now() 判新鲜度,
+// 冻结时钟(openMarketNow)的测试必须传同一时钟,否则 401。
+func signedInteractionRequestAt(t *testing.T, priv ed25519.PrivateKey, body []byte, now time.Time) *http.Request {
+	t.Helper()
+	ts := strconv.FormatInt(now.Unix(), 10)
 	r := httptest.NewRequest(http.MethodPost, "/v1/discord/interactions", strings.NewReader(string(body)))
 	r.Header.Set("X-Signature-Timestamp", ts)
 	r.Header.Set("X-Signature-Ed25519", signInteraction(t, priv, ts, body))
@@ -555,7 +562,7 @@ func TestDiscordPushRetriesMissingReview(t *testing.T) {
 
 func TestDiscordConfirmPlacesLimitOrder(t *testing.T) {
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
@@ -590,7 +597,7 @@ func TestDiscordConfirmPlacesLimitOrder(t *testing.T) {
 func TestDiscordConfirmReplaceCancelsThenPlaces(t *testing.T) {
 	// 改单:确认信号携带 replace 时先撤旧挂单再下新单,成功消息标注改单。
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.signals[7].Replace = &wheelstore.ReplaceRecord{OrderID: "206158430256", Contract: "US.AAPL260815C240000"}
@@ -620,7 +627,7 @@ func TestDiscordConfirmReplaceCancelsThenPlaces(t *testing.T) {
 func TestDiscordConfirmReplaceCancelFailureRefuses(t *testing.T) {
 	// 撤旧挂单失败 = 不执行新单(旧单仍在,再下单即重复敞口)。
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.signals[7].Replace = &wheelstore.ReplaceRecord{OrderID: "206158430256", Contract: "US.AAPL260815C240000"}
@@ -642,7 +649,7 @@ func TestDiscordConfirmReplaceCancelFailureRefuses(t *testing.T) {
 
 func TestDiscordConfirmExpiredRejected(t *testing.T) {
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now.Add(-11*time.Minute))
 	store.reviews[7] = approvedReview()
@@ -665,7 +672,7 @@ func TestDiscordConfirmExpiredRejected(t *testing.T) {
 
 func TestDiscordConfirmMissingLimitPriceRejected(t *testing.T) {
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	sig := signalFixture(7, "US.AAPL", now)
 	sig.Candidates[0].Quote.Last = 0 // #36 强类型化后等价于旧 map 删 last 键:触发「no usable limit price」拒绝路径
@@ -685,7 +692,7 @@ func TestDiscordConfirmMissingLimitPriceRejected(t *testing.T) {
 
 func TestDiscordConfirmConcurrentDoublePressRejected(t *testing.T) {
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
@@ -918,7 +925,7 @@ func TestDiscordHandleInteractionStaleSignature401(t *testing.T) {
 
 func TestDiscordHandleInteractionYesDispatchesConfirm(t *testing.T) {
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
@@ -927,7 +934,7 @@ func TestDiscordHandleInteractionYesDispatchesConfirm(t *testing.T) {
 
 	body := []byte(`{"id":"i1","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:7:yes"}}`)
 	rec := httptest.NewRecorder()
-	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	s.handleInteraction(rec, signedInteractionRequestAt(t, priv, body, now))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rec.Code)
 	}
@@ -952,7 +959,7 @@ func TestDiscordHandleInteractionYesDispatchesConfirm(t *testing.T) {
 // 处理,按钮没了 = 已处理)。
 func TestDiscordHandleInteractionClearsButtonsOnPress(t *testing.T) {
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
@@ -961,7 +968,7 @@ func TestDiscordHandleInteractionClearsButtonsOnPress(t *testing.T) {
 
 	body := []byte(`{"id":"i1","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:7:yes"},"message":{"id":"m7","channel_id":"chan-1"}}`)
 	rec := httptest.NewRecorder()
-	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	s.handleInteraction(rec, signedInteractionRequestAt(t, priv, body, now))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; want 200", rec.Code)
 	}
@@ -1019,7 +1026,7 @@ func TestDiscordHandleInteractionNoRecordsAndAnswers(t *testing.T) {
 
 func TestDiscordHandleInteractionNoConfirmedCancelsOrder(t *testing.T) {
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[9] = signalFixture(9, "US.AAPL", now)
 	store.appended = append(store.appended, wheelstore.ActionRecord{
@@ -1031,7 +1038,7 @@ func TestDiscordHandleInteractionNoConfirmedCancelsOrder(t *testing.T) {
 
 	body := []byte(`{"id":"i2","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:9:no"}}`)
 	rec := httptest.NewRecorder()
-	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	s.handleInteraction(rec, signedInteractionRequestAt(t, priv, body, now))
 	if placer.cancelCalls != 1 || placer.cancelID != "12345" {
 		t.Fatalf("CancelOrder calls=%d id=%q; want 1/12345", placer.cancelCalls, placer.cancelID)
 	}
@@ -1046,7 +1053,7 @@ func TestDiscordHandleInteractionNoConfirmedCancelsOrder(t *testing.T) {
 
 func TestDiscordHandleInteractionNoCancelFailureTellsManual(t *testing.T) {
 	fake, _ := startFakeDC(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[9] = signalFixture(9, "US.AAPL", now)
 	store.appended = append(store.appended, wheelstore.ActionRecord{
@@ -1058,7 +1065,7 @@ func TestDiscordHandleInteractionNoCancelFailureTellsManual(t *testing.T) {
 
 	body := []byte(`{"id":"i2","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:9:no"}}`)
 	rec := httptest.NewRecorder()
-	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	s.handleInteraction(rec, signedInteractionRequestAt(t, priv, body, now))
 	act := store.lastAppended(t)
 	if act.Action != "NO" || !strings.Contains(act.Note, "请手动在模拟盘撤单") {
 		t.Fatalf("action = %+v; want NO with manual-cancel note", act)
@@ -1141,11 +1148,11 @@ func TestStartDiscordSchedulerConfiguredWiresClient(t *testing.T) {
 func TestDiscordWatchFillPushesFill(t *testing.T) {
 	fake, _ := startFakeDC(t)
 	store := newFakeTGStore()
-	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	now := openMarketNow
 	placer := &fakePlacer{orderIDEx: "ord-1", statusCode: int32(trdcommon.OrderStatus_OrderStatus_Filled_All)}
 	s, _ := newTestDiscordScheduler(t, fake, store, placer, now)
 
-	s.watchFillDiscord(context.Background(), 7, "HK.00700", "buy", 100, 457.4, "ord-1")
+	s.watchFillDiscord(context.Background(), 7, "US.AAPL", "buy", 100, 457.4, "ord-1", 12345)
 	embed := lastEmbed(t, fake)
 	desc, _ := embed["description"].(string)
 	if !strings.Contains(embed["title"].(string), "已成交") || !strings.Contains(desc, "信号 #7") || !strings.Contains(desc, "ord-1") {
@@ -1156,5 +1163,26 @@ func TestDiscordWatchFillPushesFill(t *testing.T) {
 	}
 	if placer.statusCalls != 1 {
 		t.Fatalf("OrderStatus calls = %d; want 1", placer.statusCalls)
+	}
+}
+
+// TestDiscordWatchFillCancelsAtMarketClose: 收盘订单立即无理由取消(老板
+// 指令 2026-08-13)——市场已收盘时未成交挂单立刻撤单并推送 embed。
+func TestDiscordWatchFillCancelsAtMarketClose(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	store := newFakeTGStore()
+	placer := &fakePlacer{orderIDEx: "ord-1"}
+	s, _ := newTestDiscordScheduler(t, fake, store, placer, closedMarketNow)
+
+	s.watchFillDiscord(context.Background(), 7, "US.AAPL", "sell", 1, 1.7, "ord-1", 206158430256)
+	if placer.cancelCalls != 1 || placer.cancelID != "206158430256" {
+		t.Fatalf("CancelOrder calls=%d id=%q; want 1/206158430256 at close", placer.cancelCalls, placer.cancelID)
+	}
+	embed := lastEmbed(t, fake)
+	if !strings.Contains(embed["title"].(string), "已撤单") || !strings.Contains(embed["description"].(string), "市场收盘") {
+		t.Fatalf("cancel embed = %#v; want 已撤单 + 市场收盘", embed)
+	}
+	if a := store.lastAppended(t); a.Action != "NO" || !strings.Contains(a.Note, "市场收盘") {
+		t.Fatalf("action = %+v; want NO with 市场收盘 note", a)
 	}
 }

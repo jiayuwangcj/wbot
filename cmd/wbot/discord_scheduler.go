@@ -16,6 +16,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/discord"
 	"github.com/jiayu/wbot/internal/futu"
+	"github.com/jiayu/wbot/internal/wheelrun"
 	"github.com/jiayu/wbot/internal/wheelstore"
 	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
 )
@@ -44,6 +45,10 @@ type discordScheduler struct {
 	allowed   map[string]struct{}
 	askCh     chan askRequest // FIFO 问题队列;单 worker 串行处理(老板指令 2026-08-13)
 	confirmMu sync.Mutex      // one confirm at a time: dedup is HasAction→AppendAction across a network PlaceOrder
+	// watchEvery/watchReport 与 telegram 侧同语义(收盘/异常立即撤单,
+	// 老板指令 2026-08-13);测试可缩短。
+	watchEvery  time.Duration
+	watchReport time.Duration
 }
 
 // askRequest is one queued assistant question. 所有 /ask 都 append 进队列,
@@ -59,8 +64,10 @@ func newDiscordScheduler(ctx context.Context, dc *discord.Client, verifier *disc
 	s := &discordScheduler{
 		ctx: ctx, dc: dc, verifier: verifier, appID: appID, channelID: channelID,
 		store: store, orders: orders, quoter: quoter,
-		askCh: make(chan askRequest, 16),
-		now:   time.Now,
+		askCh:       make(chan askRequest, 16),
+		now:         time.Now,
+		watchEvery:  30 * time.Second,
+		watchReport: 2 * time.Minute,
 		logf: func(format string, a ...any) {
 			fmt.Fprintf(os.Stderr, "discord: "+format+"\n", a...)
 		},
@@ -722,6 +729,11 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 		s.rejectDiscord(ctx, in, signalID, "llm review not approved")
 		return
 	}
+	// 收盘闸门(老板指令 2026-08-13: 收盘订单立即无理由取消)。
+	if !wheelrun.MarketIsOpen(sig.Symbol, s.now(), nil) {
+		s.rejectDiscord(ctx, in, signalID, "market closed")
+		return
+	}
 	if s.orders == nil {
 		s.rejectDiscord(ctx, in, signalID, "order placer unavailable")
 		return
@@ -797,63 +809,108 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 		signalID, sideName, cand.Code, cand.Side, cand.Quantity, price, orderIDEx, orderID, replaceLine,
 		s.now().Format("2006-01-02 15:04:05"),
 	))
-	go s.watchFillDiscord(ctx, signalID, cand.Code, cand.Side, float64(cand.Quantity), price, orderIDEx)
+	go s.watchFillDiscord(ctx, signalID, cand.Code, cand.Side, float64(cand.Quantity), price, orderIDEx, orderID)
 }
 
-// watchFillDiscord polls the placed order until it fills, cancels or the watch
-// window closes, pushing the outcome to the channel (same cadence and window
-// as the telegram watcher; 成交结果要推送, 老板指令 2026-08-12).
-func (s *discordScheduler) watchFillDiscord(ctx context.Context, signalID int64, symbol, side string, qty, price float64, orderIDEx string) {
-	const (
-		pollEvery = 15 * time.Second
-		maxPolls  = 8
-	)
+// watchFillDiscord polls the placed order until it fills, cancels or the
+// market closes, pushing the outcome to the channel (same semantics as the
+// telegram watcher; 收盘订单和异常订单立即无理由取消, 老板指令 2026-08-13)。
+func (s *discordScheduler) watchFillDiscord(ctx context.Context, signalID int64, symbol, side string, qty, price float64, orderIDEx string, orderID uint64) {
+	pollEvery := s.watchEvery
+	reportAfter := s.watchReport
+	if pollEvery <= 0 {
+		pollEvery = 30 * time.Second
+	}
+	if reportAfter <= 0 {
+		reportAfter = 2 * time.Minute
+	}
 	sideName := "买入"
 	if side == "sell" {
 		sideName = "卖出"
 	}
-	for i := 0; i < maxPolls; i++ {
-		if i > 0 {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(pollEvery):
-			}
+	started := s.now()
+	reportedPending := false
+	for {
+		// 收盘闸门:市场已收盘,未成交挂单立即无理由撤单。
+		if !wheelrun.MarketIsOpen(symbol, s.now(), nil) {
+			s.cancelRestingDiscord(ctx, signalID, sideName, symbol, side, qty, price, orderIDEx, orderID, "市场收盘,挂单自动撤单")
+			return
 		}
 		status, found, err := s.orders.OrderStatus(ctx, symbol, orderIDEx)
 		if err != nil {
-			s.logf("watch fill %s: %v", orderIDEx, err)
-			continue
+			s.logf("watch fill %s: %v; cancelling", orderIDEx, err)
+			s.cancelRestingDiscord(ctx, signalID, sideName, symbol, side, qty, price, orderIDEx, orderID, "订单状态异常,自动撤单")
+			return
 		}
-		if !found {
-			continue
-		}
-		switch trdcommon.OrderStatus(status) {
-		case trdcommon.OrderStatus_OrderStatus_Filled_All, trdcommon.OrderStatus_OrderStatus_Filled_Part:
-			s.noticeDiscord(ctx, "✅ 已成交", fmt.Sprintf(
-				"信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 `%s`\n成交时间 %s",
-				signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
-			))
-			if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
-				SignalID: signalID, Action: "FILL", Actor: "system:watch",
-				Details: map[string]any{"order_id_ex": orderIDEx, "status": trdcommon.OrderStatus(status).String(), "symbol": symbol, "side": side, "qty": qty, "price": price},
-			}); err != nil {
-				s.logf("watch fill %s: fill record: %v", orderIDEx, err)
+		if found {
+			switch trdcommon.OrderStatus(status) {
+			case trdcommon.OrderStatus_OrderStatus_Filled_All, trdcommon.OrderStatus_OrderStatus_Filled_Part:
+				s.noticeDiscord(ctx, "✅ 已成交", fmt.Sprintf(
+					"信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 `%s`\n成交时间 %s",
+					signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
+				))
+				if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
+					SignalID: signalID, Action: "FILL", Actor: "system:watch",
+					Details: map[string]any{"order_id_ex": orderIDEx, "status": trdcommon.OrderStatus(status).String(), "symbol": symbol, "side": side, "qty": qty, "price": price},
+				}); err != nil {
+					s.logf("watch fill %s: fill record: %v", orderIDEx, err)
+				}
+				return
+			case trdcommon.OrderStatus_OrderStatus_Cancelled_Part, trdcommon.OrderStatus_OrderStatus_Cancelled_All,
+				trdcommon.OrderStatus_OrderStatus_Cancelling_Part, trdcommon.OrderStatus_OrderStatus_Cancelling_All,
+				trdcommon.OrderStatus_OrderStatus_SubmitFailed:
+				s.noticeDiscord(ctx, "⚠️ 订单未成交("+trdcommon.OrderStatus(status).String()+")", fmt.Sprintf(
+					"信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 `%s`\n时间 %s",
+					signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
+				))
+				return
 			}
-			return
-		case trdcommon.OrderStatus_OrderStatus_Cancelled_Part, trdcommon.OrderStatus_OrderStatus_Cancelled_All,
-			trdcommon.OrderStatus_OrderStatus_Cancelling_Part, trdcommon.OrderStatus_OrderStatus_Cancelling_All,
-			trdcommon.OrderStatus_OrderStatus_SubmitFailed:
-			s.noticeDiscord(ctx, "⚠️ 订单未成交("+trdcommon.OrderStatus(status).String()+")", fmt.Sprintf(
-				"信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 `%s`\n时间 %s",
-				signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
+		}
+		if !reportedPending && s.now().Sub(started) >= reportAfter {
+			s.noticeDiscord(ctx, "⏳ 订单挂单中未成交", fmt.Sprintf(
+				"信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 `%s`\n观察 %s",
+				signalID, sideName, symbol, qty, price, orderIDEx,
+				s.now().Format("2006-01-02 15:04:05"),
 			))
+			reportedPending = true
+		}
+		select {
+		case <-ctx.Done():
 			return
+		case <-time.After(pollEvery):
 		}
 	}
-	s.noticeDiscord(ctx, "⏳ 订单挂单中未成交", fmt.Sprintf(
-		"信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 `%s`\n观察 %s",
-		signalID, sideName, symbol, qty, price, orderIDEx,
+}
+
+// cancelRestingDiscord cancels an unfilled resting order immediately (无理由
+// 撤单, 老板指令 2026-08-13) and pushes the outcome; failed cancels are a
+// manual action item, never silent.
+func (s *discordScheduler) cancelRestingDiscord(ctx context.Context, signalID int64, sideName, symbol, side string, qty, price float64, orderIDEx string, orderID uint64, note string) {
+	if orderID == 0 {
+		s.logf("watch fill %s: no numeric order id to cancel; %s", orderIDEx, note)
+		s.noticeDiscord(ctx, "⚠️ 挂单未撤(缺少订单号)", fmt.Sprintf(
+			"信号 #%d\n%s\n订单号 `%s` · 请手动在模拟盘撤单",
+			signalID, note, orderIDEx,
+		))
+		return
+	}
+	if err := s.orders.CancelOrder(ctx, symbol, strconv.FormatUint(orderID, 10)); err != nil {
+		s.logf("watch fill %s: cancel: %v", orderIDEx, err)
+		s.noticeDiscord(ctx, "⚠️ 撤单失败", fmt.Sprintf(
+			"信号 #%d\n%s\n%s %s %.0f 股 @ %.2f\n订单号 `%s` · 请手动在模拟盘撤单\n错误 %v",
+			signalID, note, sideName, symbol, qty, price, orderIDEx, err,
+		))
+		return
+	}
+	if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
+		SignalID: signalID, Action: "NO", Actor: "system:watch",
+		Note: note, Details: map[string]any{"order_id_ex": orderIDEx, "order_id": orderID, "symbol": symbol},
+	}); err != nil {
+		s.logf("watch fill %s: cancel record: %v", orderIDEx, err)
+	}
+	s.noticeDiscord(ctx, "❌ 已撤单", fmt.Sprintf(
+		"信号 #%d · %s\n%s %s %.0f 股 @ %.2f\n订单号 `%s`\n时间 %s",
+		signalID, note, sideName, symbol, qty, price, orderIDEx,
 		s.now().Format("2006-01-02 15:04:05"),
 	))
 }

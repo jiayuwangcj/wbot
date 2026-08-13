@@ -248,7 +248,15 @@ func (f *fakeTGStore) lastAppended(t *testing.T) wheelstore.ActionRecord {
 	return f.appended[len(f.appended)-1]
 }
 
+// appendedCount: 异步测试在 waitFor 里轮询已追加动作数(与 goroutine 写入同锁)。
+func (f *fakeTGStore) appendedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.appended)
+}
+
 type fakePlacer struct {
+	mu        sync.Mutex // confirm/watch run in goroutines; async tests poll fields
 	err       error
 	orderIDEx string
 	orderID   uint64
@@ -269,12 +277,16 @@ type fakePlacer struct {
 }
 
 func (p *fakePlacer) PlaceOrder(_ context.Context, symbol, side string, qty, price float64) (string, uint64, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.calls++
 	p.gotSymbol, p.gotSide, p.gotQty, p.gotPrice = symbol, side, qty, price
 	return p.orderIDEx, p.orderID, p.err
 }
 
 func (p *fakePlacer) OrderStatus(_ context.Context, _, orderIDEx string) (int32, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.statusCalls++
 	if p.statusErr != nil {
 		return 0, false, p.statusErr
@@ -286,9 +298,34 @@ func (p *fakePlacer) OrderStatus(_ context.Context, _, orderIDEx string) (int32,
 }
 
 func (p *fakePlacer) CancelOrder(_ context.Context, _, orderID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.cancelCalls++
 	p.cancelID = orderID
 	return p.cancelErr
+}
+
+// 异步测试读访问器(与 goroutine 内的写入加同一把锁)。
+func (p *fakePlacer) callsCount() int { p.mu.Lock(); defer p.mu.Unlock(); return p.calls }
+func (p *fakePlacer) statusCallsCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.statusCalls
+}
+func (p *fakePlacer) cancelCallsCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cancelCalls
+}
+func (p *fakePlacer) cancelIDValue() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.cancelID
+}
+func (p *fakePlacer) gotOrder() (string, string, float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.gotSymbol, p.gotSide, p.gotQty
 }
 
 func startFakeTG(t *testing.T) (*fakeTGServer, *httptest.Server) {
@@ -311,7 +348,8 @@ func newTestScheduler(t *testing.T, server *httptest.Server, store *fakeTGStore,
 	return s
 }
 
-// signalFixture is an ALERT with a full first candidate.
+// signalFixture is an ALERT with a full accepted candidate (Accepted=true 是
+// 执行前置条件:firstCandidate 只取策略实际选中的候选,757 教训)。
 func signalFixture(id int64, symbol string, created time.Time) *wheelstore.SignalRecord {
 	return &wheelstore.SignalRecord{
 		ID: id, Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
@@ -322,6 +360,7 @@ func signalFixture(id int64, symbol string, created time.Time) *wheelstore.Signa
 		Candidates: []wheelstore.Candidate{{
 			Direction: "PUT",
 			Quantity:  2,
+			Accepted:  true,
 			Quote: &wheelstore.Quote{
 				Symbol: "US.AAPL260815C250000", OptionType: "CALL", Strike: 250.0,
 				Expiry: "2026-08-15T00:00:00Z", Bid: 3.2, Ask: 3.35, Last: 3.28, Delta: 0.42,
@@ -331,6 +370,16 @@ func signalFixture(id int64, symbol string, created time.Time) *wheelstore.Signa
 		Reason: "gap", CreatedAt: created,
 	}
 }
+
+// openMarketNow is a fixed weekday instant when US.AAPL is trading
+// (2026-08-12 Wed 11:00 America/New_York). Confirm/watch tests freeze time
+// here so the 收盘闸门 does not reject the simulated order.
+var openMarketNow = time.Date(2026, 8, 12, 15, 0, 0, 0, time.UTC)
+
+// closedMarketNow is a fixed instant when the US market is closed
+// (2026-08-12 Wed 18:00 America/New_York): unfilled resting orders must be
+// cancelled immediately without reason (老板指令 2026-08-13).
+var closedMarketNow = time.Date(2026, 8, 12, 22, 0, 0, 0, time.UTC)
 
 func f64ptr(v float64) *float64 { return &v }
 
@@ -358,7 +407,7 @@ func TestCallbackUnknownUserRejected(t *testing.T) {
 
 func TestCallbackYesPlacesSimOrder(t *testing.T) {
 	fake, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
@@ -366,11 +415,13 @@ func TestCallbackYesPlacesSimOrder(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
-	if placer.calls != 1 {
-		t.Fatalf("PlaceOrder calls = %d; want 1", placer.calls)
+	// 异步执行(点击立即回执,处理走 goroutine):先断言即时 toast,再等结果推送。
+	if toast := fake.lastToast(t); toast != "已收到,处理中…" {
+		t.Fatalf("toast = %q; want 已收到,处理中…", toast)
 	}
-	if placer.gotSymbol != "US.AAPL260815C250000" || placer.gotSide != "sell" || placer.gotQty != 2 {
-		t.Fatalf("order = %s %s %v", placer.gotSymbol, placer.gotSide, placer.gotQty)
+	waitFor(t, func() bool { return placer.callsCount() == 1 }, "PlaceOrder never happened")
+	if sym, side, qty := placer.gotOrder(); sym != "US.AAPL260815C250000" || side != "sell" || qty != 2 {
+		t.Fatalf("order = %s %s %v", sym, side, qty)
 	}
 	act := store.lastAppended(t)
 	if act.Action != "CONFIRM" || act.Actor != "telegram:42" {
@@ -379,8 +430,9 @@ func TestCallbackYesPlacesSimOrder(t *testing.T) {
 	if act.Details["order_id"] != uint64(12345) || act.Details["symbol"] != "US.AAPL260815C250000" {
 		t.Fatalf("details = %+v", act.Details)
 	}
-	if toast := fake.lastToast(t); !strings.Contains(toast, "12345") {
-		t.Fatalf("toast = %q; want order number", toast)
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "已下单") || !strings.Contains(text, "12345") {
+		t.Fatalf("push = %q; want 已下单 + 订单号", text)
 	}
 }
 
@@ -388,7 +440,7 @@ func TestCallbackYesReplaceCancelsThenPlaces(t *testing.T) {
 	// 改单(老板指令 2026-08-13):确认信号携带 replace 时,先撤旧挂单再下
 	// 新单;成功消息标注改单。撤单与新单顺序由 placer 记录验证。
 	fake, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.signals[7].Replace = &wheelstore.ReplaceRecord{OrderID: "206158430256", Contract: "US.AAPL260815C240000"}
@@ -397,11 +449,9 @@ func TestCallbackYesReplaceCancelsThenPlaces(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
-	if placer.cancelCalls != 1 || placer.cancelID != "206158430256" {
-		t.Fatalf("CancelOrder calls=%d id=%q; want 1/206158430256", placer.cancelCalls, placer.cancelID)
-	}
-	if placer.calls != 1 {
-		t.Fatalf("PlaceOrder calls = %d; want 1 after cancel", placer.calls)
+	waitFor(t, func() bool { return placer.cancelCallsCount() == 1 && placer.callsCount() == 1 }, "cancel+place never completed")
+	if id := placer.cancelIDValue(); id != "206158430256" {
+		t.Fatalf("CancelOrder id=%q; want 206158430256", id)
 	}
 	act := store.lastAppended(t)
 	if act.Action != "CONFIRM" || act.Details["order_id"] != uint64(12345) {
@@ -419,7 +469,7 @@ func TestCallbackYesReplaceCancelFailureRefuses(t *testing.T) {
 	// 撤旧挂单失败 = 不执行新单:旧单仍在,再下单即重复敞口(JD 747-752
 	// 重复暴露教训)。拒绝并留痕,由用户人工处理旧挂单。
 	fake, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.signals[7].Replace = &wheelstore.ReplaceRecord{OrderID: "206158430256", Contract: "US.AAPL260815C240000"}
@@ -428,24 +478,23 @@ func TestCallbackYesReplaceCancelFailureRefuses(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
-	if placer.cancelCalls != 1 {
-		t.Fatalf("CancelOrder calls = %d; want 1", placer.cancelCalls)
-	}
-	if placer.calls != 0 {
-		t.Fatalf("PlaceOrder calls = %d; want 0 (cancel failed, no new order)", placer.calls)
+	waitFor(t, func() bool { return placer.cancelCallsCount() == 1 }, "CancelOrder never happened")
+	if calls := placer.callsCount(); calls != 0 {
+		t.Fatalf("PlaceOrder calls = %d; want 0 (cancel failed, no new order)", calls)
 	}
 	act := store.lastAppended(t)
 	if act.Action != "REJECTED" || act.Note != "cancel pending order failed" {
 		t.Fatalf("action = %+v; want REJECTED cancel pending order failed", act)
 	}
-	if toast := fake.lastToast(t); !strings.Contains(toast, "撤单失败") {
-		t.Fatalf("toast = %q; want 撤单失败", toast)
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "撤单失败") {
+		t.Fatalf("push = %q; want 撤单失败", text)
 	}
 }
 
 func TestCallbackYesRealEnvRejected(t *testing.T) {
 	fake, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
@@ -453,21 +502,20 @@ func TestCallbackYesRealEnvRejected(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
-	if placer.calls != 1 {
-		t.Fatalf("PlaceOrder calls = %d; want 1 (guard lives in the placer)", placer.calls)
-	}
+	waitFor(t, func() bool { return placer.callsCount() == 1 }, "PlaceOrder never happened")
 	act := store.lastAppended(t)
 	if act.Action != "REJECTED" || act.Note != "live env not allowed" {
 		t.Fatalf("action = %+v; want REJECTED with live-env reason", act)
 	}
-	if toast := fake.lastToast(t); !strings.Contains(toast, "实盘下单不允许") {
-		t.Fatalf("toast = %q; want 实盘下单不允许", toast)
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "实盘下单不允许") {
+		t.Fatalf("push = %q; want 实盘下单不允许", text)
 	}
 }
 
 func TestCallbackYesExpiredRejected(t *testing.T) {
 	fake, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now.Add(-11*time.Minute))
 	store.reviews[7] = approvedReview()
@@ -475,15 +523,17 @@ func TestCallbackYesExpiredRejected(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
-	if placer.calls != 0 {
-		t.Fatalf("expired signal placed an order; calls = %d", placer.calls)
+	waitFor(t, func() bool { return store.appendedCount() > 0 }, "REJECTED never recorded")
+	if placer.callsCount() != 0 {
+		t.Fatalf("expired signal placed an order; calls = %d", placer.callsCount())
 	}
 	act := store.lastAppended(t)
 	if act.Action != "REJECTED" || act.Note != "signal expired" {
 		t.Fatalf("action = %+v; want REJECTED with expired reason", act)
 	}
-	if toast := fake.lastToast(t); !strings.Contains(toast, "已过期") {
-		t.Fatalf("toast = %q; want 已过期", toast)
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "已过期") {
+		t.Fatalf("push = %q; want 已过期", text)
 	}
 }
 
@@ -494,7 +544,7 @@ func TestCallbackYesReviewNotApprovedRejected(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			fake, server := startFakeTG(t)
-			now := time.Now()
+			now := openMarketNow
 			store := newFakeTGStore()
 			store.signals[7] = signalFixture(7, "US.AAPL", now)
 			if review != nil {
@@ -504,15 +554,17 @@ func TestCallbackYesReviewNotApprovedRejected(t *testing.T) {
 			s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 			s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
-			if placer.calls != 0 {
-				t.Fatalf("unapproved signal placed an order; calls = %d", placer.calls)
+			waitFor(t, func() bool { return store.appendedCount() > 0 }, "REJECTED never recorded")
+			if placer.callsCount() != 0 {
+				t.Fatalf("unapproved signal placed an order; calls = %d", placer.callsCount())
 			}
 			act := store.lastAppended(t)
 			if act.Action != "REJECTED" || !strings.Contains(act.Note, "llm review") {
 				t.Fatalf("action = %+v; want REJECTED with review reason", act)
 			}
-			if toast := fake.lastToast(t); !strings.Contains(toast, "审核未通过") {
-				t.Fatalf("toast = %q; want 审核未通过", toast)
+			text, _ := fake.lastSend(t)["text"].(string)
+			if !strings.Contains(text, "审核未通过") {
+				t.Fatalf("push = %q; want 审核未通过", text)
 			}
 		})
 	}
@@ -521,9 +573,10 @@ func TestCallbackYesReviewNotApprovedRejected(t *testing.T) {
 func TestCallbackYesMissingSignalRejected(t *testing.T) {
 	_, server := startFakeTG(t)
 	store := newFakeTGStore() // no signal 7
-	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, time.Now())
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, openMarketNow)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	waitFor(t, func() bool { return store.appendedCount() > 0 }, "REJECTED never recorded")
 	act := store.lastAppended(t)
 	if act.Action != "REJECTED" || act.Note != "signal not found" {
 		t.Fatalf("action = %+v", act)
@@ -533,15 +586,17 @@ func TestCallbackYesMissingSignalRejected(t *testing.T) {
 func TestCallbackNoRecordsAndAnswers(t *testing.T) {
 	fake, server := startFakeTG(t)
 	store := newFakeTGStore()
-	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, time.Now())
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, openMarketNow)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
+	waitFor(t, func() bool { return store.appendedCount() > 0 }, "NO never recorded")
 	act := store.lastAppended(t)
 	if act.Action != "NO" || act.Actor != "telegram:42" || act.SignalID != 9 {
 		t.Fatalf("action = %+v", act)
 	}
-	if toast := fake.lastToast(t); !strings.Contains(toast, "继续等待") {
-		t.Fatalf("toast = %q", toast)
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "继续等待机会") {
+		t.Fatalf("push = %q; want 继续等待机会", text)
 	}
 }
 
@@ -549,7 +604,7 @@ func TestCallbackNoConfirmedCancelsOrder(t *testing.T) {
 	// 老板指令 2026-08-13: 已确认未成交的挂单(701→702 双挂场景),❌ 升级为
 	// 撤单:撤销模拟盘挂单 + 记录 NO 解除 pending-order 阻塞。
 	fake, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[9] = signalFixture(9, "US.AAPL", now)
 	store.appended = append(store.appended, wheelstore.ActionRecord{
@@ -560,22 +615,24 @@ func TestCallbackNoConfirmedCancelsOrder(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
-	if placer.cancelCalls != 1 || placer.cancelID != "12345" {
-		t.Fatalf("CancelOrder calls=%d id=%q; want 1/12345", placer.cancelCalls, placer.cancelID)
+	waitFor(t, func() bool { return placer.cancelCallsCount() == 1 }, "CancelOrder never happened")
+	if id := placer.cancelIDValue(); id != "12345" {
+		t.Fatalf("CancelOrder id=%q; want 12345", id)
 	}
 	act := store.lastAppended(t)
 	if act.Action != "NO" || act.Note != "撤单成功 订单号 12345" {
 		t.Fatalf("action = %+v; want NO 撤单成功", act)
 	}
-	if toast := fake.lastToast(t); !strings.Contains(toast, "已撤单 订单号 12345") {
-		t.Fatalf("toast = %q", toast)
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "撤单成功") {
+		t.Fatalf("push = %q; want 撤单成功", text)
 	}
 }
 
 func TestCallbackNoCancelFailureTellsManual(t *testing.T) {
 	// 撤单失败必须显式告知手动撤,挂单不能被静默遗留(否则再次双挂)。
 	fake, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[9] = signalFixture(9, "US.AAPL", now)
 	store.appended = append(store.appended, wheelstore.ActionRecord{
@@ -586,15 +643,14 @@ func TestCallbackNoCancelFailureTellsManual(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
-	if placer.cancelCalls != 1 {
-		t.Fatalf("CancelOrder calls = %d; want 1", placer.cancelCalls)
-	}
+	waitFor(t, func() bool { return placer.cancelCallsCount() == 1 }, "CancelOrder never happened")
 	act := store.lastAppended(t)
 	if act.Action != "NO" || !strings.Contains(act.Note, "请手动在模拟盘撤单") {
 		t.Fatalf("action = %+v; want NO with manual-cancel note", act)
 	}
-	if toast := fake.lastToast(t); !strings.Contains(toast, "撤单失败") {
-		t.Fatalf("toast = %q", toast)
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "撤单失败") {
+		t.Fatalf("push = %q; want 撤单失败", text)
 	}
 }
 
@@ -826,6 +882,50 @@ func TestFirstCandidateOrderFacts(t *testing.T) {
 	}
 }
 
+// TestFirstCandidatePrefersAcceptedOverHead: signal 757 回归——被排除的挂单
+// 合约排在候选列表首位(Accepted=false),LLM 审核批准的是列表后部的 accepted
+// 候选;firstCandidate 必须返回 accepted 候选,绝不回退列表首位(757:审核
+// 批 28.5 的 P28500,执行却落 29.0 的 P29000)。
+func TestFirstCandidatePrefersAcceptedOverHead(t *testing.T) {
+	sig := signalFixture(1, "US.AAPL", time.Now())
+	sig.Candidates = []wheelstore.Candidate{
+		{ // 挂单合约被排除,排在列表头部
+			Direction: "PUT", Quantity: 1,
+			Quote: &wheelstore.Quote{Symbol: "US.JD260821P29000", OptionType: "PUT", Strike: 29.0, Expiry: "2026-08-21T00:00:00Z", Last: 1.5},
+		},
+		{ // 策略实际选中的候选(LLM 审核批准)
+			Direction: "PUT", Quantity: 1, Accepted: true,
+			Quote: &wheelstore.Quote{Symbol: "US.JD260821P28500", OptionType: "PUT", Strike: 28.5, Expiry: "2026-08-21T00:00:00Z", Last: 1.7},
+		},
+	}
+	c, err := firstCandidate(sig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Code != "US.JD260821P28500" {
+		t.Fatalf("candidate = %q; want the accepted P28500, never the excluded head P29000", c.Code)
+	}
+}
+
+// TestFirstCandidateRefusesNoAccepted: 资金安全(老板指令 2026-08-13: 不设
+// 退化策略,异常直接取消订单)——全无 accepted 候选时 firstCandidate 必须
+// 报错,执行层拒绝下单,而不是回退列表首位。
+func TestFirstCandidateRefusesNoAccepted(t *testing.T) {
+	sig := signalFixture(1, "US.AAPL", time.Now())
+	sig.Candidates[0].Accepted = false
+	if _, err := firstCandidate(sig); err == nil {
+		t.Fatal("no-accepted signal must error; refusing the order is the only safe move")
+	}
+	// 候选带符号但 accepted=false + 空候选混合:同样必须拒绝。
+	sig.Candidates = append(sig.Candidates, wheelstore.Candidate{
+		Direction: "PUT", Quantity: 1,
+		Quote: &wheelstore.Quote{Symbol: "US.AAPL260815C260000", OptionType: "CALL", Strike: 260.0, Last: 1.1},
+	})
+	if _, err := firstCandidate(sig); err == nil {
+		t.Fatal("mixed no-accepted signal must error")
+	}
+}
+
 func TestParseCallbackData(t *testing.T) {
 	for _, tc := range []struct {
 		data   string
@@ -990,7 +1090,7 @@ func TestRunPushWaterlineRetainsPendingPrefixAndDeduplicatesTail(t *testing.T) {
 
 func TestCallbackYesDoubleConfirmRejected(t *testing.T) {
 	fake, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
@@ -1000,22 +1100,25 @@ func TestCallbackYesDoubleConfirmRejected(t *testing.T) {
 	first := callback(42, "wheel:7:yes")
 	second := callback(42, "wheel:7:yes")
 	s.handleCallback(context.Background(), first)
+	waitFor(t, func() bool { return placer.callsCount() == 1 }, "first PlaceOrder never happened")
 	s.handleCallback(context.Background(), second)
-	if placer.calls != 1 {
-		t.Fatalf("PlaceOrder calls = %d; want 1 (second press must be refused)", placer.calls)
+	waitFor(t, func() bool { return store.appendedCount() >= 2 }, "second press never recorded")
+	if placer.callsCount() != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want 1 (second press must be refused)", placer.callsCount())
 	}
 	act := store.lastAppended(t)
 	if act.Action != "REJECTED" || act.Note != "already confirmed" {
 		t.Fatalf("last action = %+v; want REJECTED already confirmed", act)
 	}
-	if toast := fake.lastToast(t); !strings.Contains(toast, "请勿重复确认") {
-		t.Fatalf("toast = %q; want 请勿重复确认", toast)
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "请勿重复确认") {
+		t.Fatalf("push = %q; want 请勿重复确认", text)
 	}
 }
 
 func TestCallbackYesAuditFailureStillCannotRepeatOrder(t *testing.T) {
 	_, server := startFakeTG(t)
-	now := time.Now()
+	now := openMarketNow
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
@@ -1024,9 +1127,18 @@ func TestCallbackYesAuditFailureStillCannotRepeatOrder(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	waitFor(t, func() bool { return placer.callsCount() == 1 }, "PlaceOrder never happened")
 	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
-	if placer.calls != 1 {
-		t.Fatalf("PlaceOrder calls = %d; want durable claim to block retry", placer.calls)
+	waitFor(t, func() bool {
+		store.mu.Lock()
+		defer store.mu.Unlock()
+		if len(store.appended) == 0 {
+			return false
+		}
+		return store.appended[len(store.appended)-1].Action == "REJECTED"
+	}, "second press never rejected")
+	if placer.callsCount() != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want durable claim to block retry", placer.callsCount())
 	}
 	if act := store.lastAppended(t); act.Action != "REJECTED" || act.Note != "already confirmed" {
 		t.Fatalf("last action = %+v", act)
@@ -1038,11 +1150,11 @@ func TestCallbackYesAuditFailureStillCannotRepeatOrder(t *testing.T) {
 func TestWatchFillPushesFill(t *testing.T) {
 	fake, server := startFakeTG(t)
 	store := newFakeTGStore()
-	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	now := openMarketNow
 	placer := &fakePlacer{orderIDEx: "ord-1", statusCode: int32(trdcommon.OrderStatus_OrderStatus_Filled_All)}
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
-	s.watchFill(context.Background(), 7, "HK.00700", "buy", 100, 457.4, "ord-1")
+	s.watchFill(context.Background(), 7, "US.AAPL", "buy", 100, 457.4, "ord-1", 12345)
 	text, _ := fake.lastSend(t)["text"].(string)
 	if !strings.Contains(text, "已成交") || !strings.Contains(text, "信号 #7") {
 		t.Fatalf("fill push = %q; want 已成交 + 信号 #7", text)
@@ -1058,21 +1170,133 @@ func TestWatchFillPushesFill(t *testing.T) {
 	}
 }
 
-// TestWatchFillWindowClosePushesPending: an unfilled order inside the watch
-// window must push 挂单中未成交 instead of silence (fail-closed reporting).
-func TestWatchFillWindowClosePushesPending(t *testing.T) {
+// TestWatchFillReportsPendingThenKeepsWatching: an unfilled order inside the
+// watch window pushes 挂单中未成交 once, then keeps watching (until close /
+// terminal state / ctx cancel) instead of going silent.
+func TestWatchFillReportsPendingThenKeepsWatching(t *testing.T) {
 	fake, server := startFakeTG(t)
 	store := newFakeTGStore()
-	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	now := openMarketNow
 	placer := &fakePlacer{orderIDEx: "ord-1"} // statusCode 0 → gateway never knows it
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
-
-	s.watchFill(context.Background(), 7, "HK.00700", "buy", 100, 457.4, "ord-1")
-	text, _ := fake.lastSend(t)["text"].(string)
-	if !strings.Contains(text, "挂单中未成交") {
-		t.Fatalf("push = %q; want 挂单中未成交", text)
+	s.watchEvery = 5 * time.Millisecond
+	s.watchReport = 12 * time.Millisecond
+	// 测试时钟需随轮询前进,否则 s.now().Sub(started) 恒为 0,挂单报告永不触发。
+	var clockMu sync.Mutex
+	clock := now
+	s.now = func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock = clock.Add(25 * time.Millisecond)
+		return clock
 	}
-	if placer.statusCalls != 8 {
-		t.Fatalf("OrderStatus calls = %d; want 8 (full watch window)", placer.statusCalls)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		s.watchFill(ctx, 7, "US.AAPL", "buy", 100, 457.4, "ord-1", 12345)
+		close(done)
+	}()
+	waitFor(t, func() bool {
+		fake.mu.Lock()
+		defer fake.mu.Unlock()
+		for _, send := range fake.sends {
+			text, _ := send["text"].(string)
+			if strings.Contains(text, "挂单中未成交") {
+				return true
+			}
+		}
+		return false
+	}, "挂单中未成交 never pushed")
+	// 报告后仍继续轮询(未成交 → 观察至收盘/终态),不静默退出。
+	polls := placer.statusCallsCount()
+	waitFor(t, func() bool { return placer.statusCallsCount() > polls }, "watch stopped polling after report")
+	cancel()
+	<-done
+	if c := placer.cancelCallsCount(); c != 0 {
+		t.Fatalf("CancelOrder calls = %d; want 0 (market still open)", c)
+	}
+}
+
+// TestWatchFillCancelsAtMarketClose: 收盘订单立即无理由取消(老板指令
+// 2026-08-13)——市场已收盘时未成交挂单立刻撤单并推送。
+func TestWatchFillCancelsAtMarketClose(t *testing.T) {
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	placer := &fakePlacer{orderIDEx: "ord-1"} // resting, unfilled
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, closedMarketNow)
+
+	s.watchFill(context.Background(), 7, "US.AAPL", "sell", 1, 1.7, "ord-1", 206158430256)
+	if placer.cancelCalls != 1 || placer.cancelID != "206158430256" {
+		t.Fatalf("CancelOrder calls=%d id=%q; want 1/206158430256 at close", placer.cancelCalls, placer.cancelID)
+	}
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "已撤单") || !strings.Contains(text, "市场收盘") {
+		t.Fatalf("cancel push = %q; want 已撤单 + 市场收盘", text)
+	}
+	if a := store.lastAppended(t); a.Action != "NO" || !strings.Contains(a.Note, "市场收盘") {
+		t.Fatalf("action = %+v; want NO with 市场收盘 note", a)
+	}
+}
+
+// TestWatchFillCancelsOnStatusError: 异常订单立即无理由取消(fail-closed,
+// 资金安全)——状态查询失败(无法确认订单状态)立即撤单,不假装挂单受控。
+func TestWatchFillCancelsOnStatusError(t *testing.T) {
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	placer := &fakePlacer{orderIDEx: "ord-1", statusErr: errors.New("gateway blip")}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, openMarketNow)
+
+	s.watchFill(context.Background(), 7, "US.AAPL", "sell", 1, 1.7, "ord-1", 12345)
+	if placer.cancelCalls != 1 || placer.cancelID != "12345" {
+		t.Fatalf("CancelOrder calls=%d id=%q; want 1/12345 on status error", placer.cancelCalls, placer.cancelID)
+	}
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "已撤单") || !strings.Contains(text, "状态异常") {
+		t.Fatalf("cancel push = %q; want 已撤单 + 状态异常", text)
+	}
+}
+
+// TestWatchFillMissingOrderIDRefusesCancel: 没有 numeric 订单号时不能发起
+// 撤单(可能撤错),推送手动撤单提示——不静默。
+func TestWatchFillMissingOrderIDRefusesCancel(t *testing.T) {
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	placer := &fakePlacer{orderIDEx: "ord-1"}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, closedMarketNow)
+
+	s.watchFill(context.Background(), 7, "US.AAPL", "sell", 1, 1.7, "ord-1", 0)
+	if placer.cancelCalls != 0 {
+		t.Fatalf("CancelOrder calls = %d; want 0 (no numeric id)", placer.cancelCalls)
+	}
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "请手动在模拟盘撤单") {
+		t.Fatalf("push = %q; want 手动撤单提示", text)
+	}
+}
+
+// TestCallbackYesMarketClosedRejected: 收盘订单立即无理由取消(老板指令
+// 2026-08-13)——市场已收盘时确认按钮拒绝下单,不产生收盘即失效的挂单。
+func TestCallbackYesMarketClosedRejected(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := closedMarketNow
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	waitFor(t, func() bool { return store.appendedCount() > 0 }, "REJECTED never recorded")
+	if placer.callsCount() != 0 {
+		t.Fatalf("closed-market signal placed an order; calls = %d", placer.callsCount())
+	}
+	act := store.lastAppended(t)
+	if act.Action != "REJECTED" || act.Note != "market closed" {
+		t.Fatalf("action = %+v; want REJECTED market closed", act)
+	}
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "市场已收盘") {
+		t.Fatalf("push = %q; want 市场已收盘", text)
 	}
 }
