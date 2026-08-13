@@ -467,10 +467,14 @@ func TestAccountForSymbol(t *testing.T) {
 	stock := int32(trdcommon.SimAccType_SimAccType_Stock)
 	option := int32(trdcommon.SimAccType_SimAccType_Option)
 	accounts := []*trdcommon.TrdAcc{
-		simAcc(1907141, stock, 1),      // HK 股票模拟 (market 1=HK)
-		simAcc(1907143, stock, 21, 22), // SH/SZ 股票模拟 (market 21/22)
-		simAcc(13477968, option, 1),    // HK 期权模拟
-		simAcc(13477966, stock, 11),    // US 股票模拟 (market 11=US)
+		// TrdMarketAuthList 是 TrdMarket 枚举(HK=1/US=2/CN=3),不是 TrdSecMarket
+		// (ParseSymbol 的 marketCode: HK=1/US=11/SH=21/SZ=22);fixture 曾按旧
+		// 枚举写 11/21/22,与真实网关(2026-08-13 实测 13477966 markets=[2])
+		// 不符,恰好掩盖了 AccountForSymbol 的枚举混用 bug。
+		simAcc(1907141, stock, 1),   // HK 股票模拟
+		simAcc(1907143, stock, 3),   // SH/SZ 股票模拟 (TrdMarket CN=3)
+		simAcc(13477968, option, 1), // HK 期权模拟
+		simAcc(13477966, 4, 2),      // US 模拟: 实测 SimAccType=4 (网关未文档化, 全能)
 	}
 	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
 		if protoID == protoAccs {
@@ -488,7 +492,9 @@ func TestAccountForSymbol(t *testing.T) {
 		{"00700.HK", 1907141},             // code-first 形式
 		{"HK.TCH260821P460000", 13477968}, // 港股期权 → 期权账户
 		{"HK.TCH260821C335000", 13477968},
-		{"US.AAPL", 13477966},  // 美股正股 → 美股账户
+		{"US.AAPL", 13477966},           // 美股正股 → US 模拟账户 (unknown 全能)
+		{"US.JD260821P29500", 13477966}, // 美股期权 → US 账户 (2026-08-13 修复: 枚举映射 + unknown 放行)
+		{"US.JD260821C45000", 13477966},
 		{"SH.600000", 1907143}, // 沪深正股 → CN 账户
 		{"SZ.000001", 1907143}, // 深市正股 → CN 账户
 	}
@@ -511,13 +517,35 @@ func TestAccountForSymbol(t *testing.T) {
 		t.Fatalf("explicit accID = %d; want 1907141", acc.GetAccID())
 	}
 
-	// fail-closed: 该市场/类型无账户 → 报错并列出可用账户 (US 无期权账户)。
-	if _, err := tc.AccountForSymbol(context.Background(), EnvSim, "US.AAPL260821P123", 0); err == nil {
-		t.Fatalf("option on market with no option account: want error")
-	} else if !strings.Contains(err.Error(), "available") {
-		t.Fatalf("want available-accounts list in error, got %v", err)
-	}
 	if _, err := tc.AccountForSymbol(context.Background(), EnvSim, "bad-symbol", 0); err == nil {
 		t.Fatalf("bad symbol: want error")
+	}
+}
+
+// TestAccountForSymbolFailClosed: 该市场/类型无账户 → fail-closed 报错并列出
+// 可用账户 (2026-08-13 修复前 US 期权因枚举混用落入此分支; 修复后 US 期权
+// 路由到 unknown 全能账户, 此测试用「仅 HK 账户」场景保持覆盖)。
+func TestAccountForSymbolFailClosed(t *testing.T) {
+	stock := int32(trdcommon.SimAccType_SimAccType_Stock)
+	option := int32(trdcommon.SimAccType_SimAccType_Option)
+	accounts := []*trdcommon.TrdAcc{
+		simAcc(1907141, stock, 1),
+		simAcc(13477968, option, 1),
+	}
+	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
+		if protoID == protoAccs {
+			return fakegw.AccountsBody(accounts)
+		}
+		return nil
+	}))
+	tc := openTrade(t, addr)
+	for _, symbol := range []string{"US.JD260821P29500", "US.AAPL"} {
+		acc, err := tc.AccountForSymbol(context.Background(), EnvSim, symbol, 0)
+		if err == nil {
+			t.Fatalf("AccountForSymbol(%s): want error, got acc %d", symbol, acc.GetAccID())
+		}
+		if !strings.Contains(err.Error(), "available") {
+			t.Fatalf("AccountForSymbol(%s): want available-accounts list, got %v", symbol, err)
+		}
 	}
 }

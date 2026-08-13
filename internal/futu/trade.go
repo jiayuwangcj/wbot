@@ -236,6 +236,10 @@ func SimAccTypeName(t int32) string {
 		return "option (仅期权)"
 	case trdcommon.SimAccType_SimAccType_Futures:
 		return "futures"
+	case 4:
+		// 网关未文档化值, 实测 2026-08-13 美股模拟账户 13477966 返回 4;
+		// 按全能账户 (股票+期权) 展示。
+		return "all-in-one (SimAccType=4)"
 	}
 	return "unknown"
 }
@@ -247,6 +251,24 @@ func SimAccTypeName(t int32) string {
 var optionCodeRe = regexp.MustCompile(`^[A-Z]{1,6}\d{6}[CP]\d{1,10}$`)
 
 func IsOptionCode(code string) bool { return optionCodeRe.MatchString(code) }
+
+// secMarketToTrdMarket maps the TrdSecMarket enum ParseSymbol returns
+// (1=HK, 11=US, 21=SH, 22=SZ) onto the TrdMarket enum TrdMarketAuthList
+// uses (1=HK, 2=US, 3=CN). HK/US values coincide by luck (1==1), but US is
+// 11≠2 and SH/SZ are 21/22≠3 — AccountForSymbol matched the raw value, so
+// US option orders always failed "no simulate account … market=11" while
+// HK worked (2026-08-13: signal 739 ✅ click on US.JD260821P29500).
+func secMarketToTrdMarket(sec int) int {
+	switch sec {
+	case 1:
+		return 1 // HK
+	case 11:
+		return 2 // US
+	case 21, 22:
+		return 3 // CN (SH/SZ)
+	}
+	return 0
+}
 
 // AccountForSymbol resolves the account for env and symbol: with accID != 0
 // that exact account (original behavior); with accID == 0 the account is
@@ -268,16 +290,32 @@ func (tc *TradeClient) AccountForSymbol(ctx context.Context, env Env, symbol str
 		return nil, err
 	}
 	option := IsOptionCode(code)
+	trdMkt := secMarketToTrdMarket(market)
 	var matched []*trdcommon.TrdAcc
 	for _, acc := range accounts {
 		if acc.GetTrdEnv() != int32(env) {
 			continue
 		}
-		if option != (acc.GetSimAccType() == int32(trdcommon.SimAccType_SimAccType_Option)) {
-			continue
+		// 证券类型过滤(排除式):期权避开 SimAccType=Stock 专用股票账户, 正股
+		// 避开 SimAccType=Option 专用期权账户 (实测 2026-08-12: 股票模拟账户
+		// 拒绝期权 "Can't trade this type of securities")。其余类型按全能账户
+		// 尝试, 由市场授权过滤 + 网关侧拒绝兜底。实测 2026-08-13: 美股模拟
+		// 账户 13477966 的 SimAccType=4 —— 富途官方枚举仅 0-3(Unknown/Stock/
+		// Option/Futures), 4 是网关未文档化值(美股模拟账户类型); 若用白名单
+		// 式 (只放行 0/2) 会在此枚举扩展时静默断路由, 排除式对未知类型保持
+		// 可用, 且专用账户的错误语义不变。
+		switch acc.GetSimAccType() {
+		case int32(trdcommon.SimAccType_SimAccType_Option):
+			if !option {
+				continue
+			}
+		case int32(trdcommon.SimAccType_SimAccType_Stock):
+			if option {
+				continue
+			}
 		}
 		for _, m := range acc.GetTrdMarketAuthList() {
-			if m == int32(market) {
+			if m == int32(trdMkt) {
 				matched = append(matched, acc)
 				break
 			}
