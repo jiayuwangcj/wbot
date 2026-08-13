@@ -20,11 +20,13 @@ import (
 func main() {
 	fs := flag.NewFlagSet("tg-test", flag.ContinueOnError)
 	discordMode := fs.Bool("discord", false, "send a test embed to the configured Discord channel instead of Telegram")
+	buttons := fs.Bool("buttons", false, "discord mode only: attach the wheel confirm buttons (yes/no/dismiss) routed to -signal")
+	signalID := fs.Int64("signal", 0, "discord -buttons: signal id the buttons' custom_id targets")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		os.Exit(2)
 	}
 	if fs.NArg() < 1 {
-		fmt.Fprintln(os.Stderr, "usage: go run ./tools/tg-test [-discord] <text>")
+		fmt.Fprintln(os.Stderr, "usage: go run ./tools/tg-test [-discord] [-buttons -signal <id>] <text>")
 		os.Exit(2)
 	}
 	text := fmt.Sprintf("%s\n\n⏱ %s", strings.Join(fs.Args(), " "), time.Now().Format("2006-01-02 15:04:05"))
@@ -36,7 +38,11 @@ func main() {
 		os.Exit(1)
 	}
 	if *discordMode {
-		sendDiscord(ctx, cfg, text)
+		if *buttons && *signalID <= 0 {
+			fmt.Fprintln(os.Stderr, "-buttons requires -signal <id>")
+			os.Exit(2)
+		}
+		sendDiscord(ctx, cfg, text, *buttons, *signalID)
 		return
 	}
 	sendTelegram(ctx, cfg, text)
@@ -73,7 +79,7 @@ func sendTelegram(ctx context.Context, cfg *config.Store, text string) {
 	fmt.Println("ok")
 }
 
-func sendDiscord(ctx context.Context, cfg *config.Store, text string) {
+func sendDiscord(ctx context.Context, cfg *config.Store, text string, buttons bool, signalID int64) {
 	token, tokenSet, err := cfg.Lookup("credentials.discord.bot_token")
 	if err != nil || !tokenSet {
 		fmt.Fprintf(os.Stderr, "bot_token: %v (set=%v)\n", err, tokenSet)
@@ -95,6 +101,13 @@ func sendDiscord(ctx context.Context, cfg *config.Store, text string) {
 		Color:       discord.ColorApprove,
 		Timestamp:   time.Now().UTC().Format(time.RFC3339),
 	}}}
+	if buttons {
+		msg.Components = [][]discord.Button{{
+			{Type: 2, Style: 3, Label: "✅ 下单", CustomID: fmt.Sprintf("wheel:%d:yes", signalID)},
+			{Type: 2, Style: 4, Label: "❌ 拒绝", CustomID: fmt.Sprintf("wheel:%d:no", signalID)},
+			{Type: 2, Style: 2, Label: "⚠️ Dismiss", CustomID: fmt.Sprintf("wheel:%d:dismiss", signalID)},
+		}}
+	}
 	if err := dc.CreateMessage(ctx, channel, msg); err != nil {
 		fmt.Fprintf(os.Stderr, "send to %s: %v\n", channel, err)
 		os.Exit(1)
