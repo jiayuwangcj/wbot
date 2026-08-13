@@ -54,10 +54,13 @@ Discord 作为第二条推送/确认通道:信号/订单/拒绝理由通知 + em
 
 ## Next
 
+- ✅ 按钮交互闭环已验证(2026-08-13,信号 500 CONFIRM+FILL),456 卡片按钮已超窗(signal expired 属预期);待 00700 实测数据积累后评估 wheel 策略有效性
+- 注意:Discord 后台若改动 Interactions Endpoint URL,**必须配置在应用(General Information)页而非 Bot 页**,否则交互事件不达 endpoint
 - CI(feat/llm-signal-endpoint,已 push)→ 合批发布(feature)
 - backlog:wheel_signal_actions 部分唯一索引 (signal_id) WHERE action='CONFIRM'(Telegram×Discord 交叉确认兜底)、doc/API.md 补 /v1/discord/interactions 契约、allowed_user_ids 白名单(与 chat_ids 对齐)、embed 发送失败重试、公网端点限速
 - 观测缺口(2026-08-13 监控发现):pushRejectedDiscord `_ = s.pushEmbedDiscord(...)` 吞错且无日志,拒绝推送成败 serve 侧不可见(telegram 有「pushing reasons」,APPROVE 路径有错误日志)——补日志/错误上报
 - 澄清(2026-08-13):推送循环启动 cursor=MaxSignalID,重启**不会**重推已处理信号(454 于 00:21 重建后无重推实证);此前 453「重复 pushing reasons」为跨容器日志时序误读
 - 现网观察(2026-08-13):US.JD signal=454 模型真实拒绝(cash_available null + quote 时间戳全零),与 429 同因——US.JD 模拟账户现金/行情数据缺口,LLM 连续 fail-closed
-- 按钮交互排查(2026-08-13):456 卡片「✅ 下单」点击两次(00:29 与上午)均 Discord 提示失败、serve 零 interaction 日志 → 逐层排查:内网 serve 健康(interactions 路由 401 正确)→ 公网链路用**正确域名 tradedev.w-cloud.top + UA=discord** 验证全通(401=达 serve 验签层)→ 断点定位为旧域名 w-cloud.top 排查误导 + curl 未带 UA 假超时;全链路实测闭环,待用户重试点按钮验证下单
+- 按钮交互排查与根因(2026-08-13):456 卡片「✅ 下单」点击两次(00:29 与上午)均 Discord 提示失败、serve 零 interaction 日志 → 逐层排查:内网 serve 健康(interactions 路由 401 正确)→ 公网链路用**正确域名 tradedev.w-cloud.top + UA=discord** 验证全通(401=达 serve 验签层)→ 排查中收到真实 Discord 请求 `signature mismatch`(01:45:01,用户 Save URL 时的 PING,证明请求可穿透 haproxy 达 serve)→ **根因:Interactions Endpoint URL 配置位置错误——之前配在 Bot 页,应配在应用 App/General Information 页**(配错位置 Discord 不向该 endpoint 发交互事件,表现为点击即失败+serve 零日志)→ 老板更正配置后**端到端闭环首次实测成功**:信号 500(HK.00700,PUT 缺口 300)01:45:33 收到真实交互(CONFIRM,actor=`discord:1486343344065089648`)→ 01:45:50 模拟盘 FILL 成交
+- 排查工具沉淀:tg-test 新增 `-buttons -signal <id>` 模式(可推带 ✅/❌/⚠️ 按钮的测试卡片,与 serve 推送同构),供链路测试复用
 - 晚上老板提供 Public Key / Bot Token / channel_id / Interaction URL 配置 → `tools/tg-test -discord` 实测 → 公网→内网连通 → Discord 面板验收
