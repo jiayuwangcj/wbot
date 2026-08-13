@@ -36,6 +36,10 @@ services:
       LLM_API_KEY: "${LLM_API_KEY:?set by tools/serve-env.sh}"
       LLM_MODEL: "${LLM_MODEL:?set by tools/serve-env.sh}"
       WBOT_PG_DSN: "${WBOT_PG_DSN:?set by tools/serve-env.sh}"
+      # assistant 走 Claude CLI:凭据继承当前运行环境(可选;assistant 未配置时
+      # serve 主功能不受影响,故用 :- 而非 :?)
+      ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN:-}"
+      ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL:-}"
       TZ: "Asia/Shanghai"   # datacheck/轮询按本地时区
     volumes:
       # 配置目录:HOME=/root,config store(os.UserHomeDir)读 /root/.wbot/wbot.conf
