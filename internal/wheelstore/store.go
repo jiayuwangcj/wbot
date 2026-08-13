@@ -100,6 +100,10 @@ type SignalRecord struct {
 	RejectionReasons []string
 	Reason           string
 	CreatedAt        time.Time
+	// Strategy is the signal origin: "llm" (大模型策略) or "wheel"
+	// (固化规则策略). Push cards label it so the operator can tell where an
+	// order came from (老板指令 2026-08-13).
+	Strategy string
 }
 
 // ActionRecord records an operator's disposition. FILL means a human reported
@@ -577,8 +581,12 @@ func (s *Store) AppendSignal(ctx context.Context, r SignalRecord) (int64, error)
 	if e != nil {
 		return 0, e
 	}
+	strategy := strings.TrimSpace(r.Strategy)
+	if strategy == "" {
+		strategy = "wheel"
+	}
 	var id int64
-	err := s.db.QueryRowContext(ctx, `INSERT INTO wheel_signals (symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,$15) RETURNING id`, r.Symbol, r.Action, r.ConfigVersion, r.CapabilityStatus, string(blocked), farg(r.Inventory.CurrentPrice), farg(r.Inventory.ActualInventory), farg(r.Inventory.OptionDeltaStock), farg(r.Inventory.EffectiveInventory), farg(r.Inventory.TargetInventory), farg(r.Inventory.InventoryGap), string(inv), string(c), string(rej), r.Reason).Scan(&id)
+	err := s.db.QueryRowContext(ctx, `INSERT INTO wheel_signals (symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,strategy) VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb,$14::jsonb,$15,$16) RETURNING id`, r.Symbol, r.Action, r.ConfigVersion, r.CapabilityStatus, string(blocked), farg(r.Inventory.CurrentPrice), farg(r.Inventory.ActualInventory), farg(r.Inventory.OptionDeltaStock), farg(r.Inventory.EffectiveInventory), farg(r.Inventory.TargetInventory), farg(r.Inventory.InventoryGap), string(inv), string(c), string(rej), r.Reason, strategy).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("wheelstore: append signal: %w", err)
 	}
@@ -588,7 +596,7 @@ func scanSignal(scanner interface{ Scan(...any) error }) (SignalRecord, error) {
 	var r SignalRecord
 	var inv, c, rej, blocked []byte
 	var cp, ai, ods, ei, ti, ig sql.NullFloat64
-	if err := scanner.Scan(&r.ID, &r.Symbol, &r.Action, &r.ConfigVersion, &r.CapabilityStatus, &blocked, &cp, &ai, &ods, &ei, &ti, &ig, &inv, &c, &rej, &r.Reason, &r.CreatedAt); err != nil {
+	if err := scanner.Scan(&r.ID, &r.Symbol, &r.Action, &r.ConfigVersion, &r.CapabilityStatus, &blocked, &cp, &ai, &ods, &ei, &ti, &ig, &inv, &c, &rej, &r.Reason, &r.CreatedAt, &r.Strategy); err != nil {
 		return r, err
 	}
 	r.Inventory = InventorySnapshot{nullFloat(cp), nullFloat(ai), nullFloat(ods), nullFloat(ei), nullFloat(ti), nullFloat(ig)}
@@ -614,7 +622,7 @@ func (s *Store) GetSignal(ctx context.Context, id int64) (*SignalRecord, error) 
 	if id <= 0 {
 		return nil, fmt.Errorf("%w: positive signal id required", ErrInvalidRecord)
 	}
-	r, e := scanSignal(s.db.QueryRowContext(ctx, `SELECT id,symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,created_at FROM wheel_signals WHERE id=$1`, id))
+	r, e := scanSignal(s.db.QueryRowContext(ctx, `SELECT id,symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,created_at,strategy FROM wheel_signals WHERE id=$1`, id))
 	if e == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -654,7 +662,7 @@ func (s *Store) ListSignals(ctx context.Context, symbol, action, capability stri
 		conds = append(conds, fmt.Sprintf("capability_status=$%d", len(args)))
 	}
 	args = append(args, limit)
-	q := fmt.Sprintf(`SELECT id,symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,created_at FROM wheel_signals WHERE %s ORDER BY created_at DESC,id DESC LIMIT $%d`, strings.Join(conds, " AND "), len(args))
+	q := fmt.Sprintf(`SELECT id,symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,created_at,strategy FROM wheel_signals WHERE %s ORDER BY created_at DESC,id DESC LIMIT $%d`, strings.Join(conds, " AND "), len(args))
 	rows, e := s.db.QueryContext(ctx, q, args...)
 	if e != nil {
 		return nil, fmt.Errorf("wheelstore: list signals: %w", e)
@@ -911,7 +919,7 @@ func (s *Store) QuerySignalsSince(ctx context.Context, action string, afterID in
 		conds = append(conds, fmt.Sprintf("action = $%d", len(args)))
 	}
 	args = append(args, limit)
-	q := fmt.Sprintf(`SELECT id,symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,created_at FROM wheel_signals WHERE %s ORDER BY id ASC LIMIT $%d`, strings.Join(conds, " AND "), len(args))
+	q := fmt.Sprintf(`SELECT id,symbol,action,config_version,capability_status,blocked_by,current_price,actual_inventory,option_delta_stock,effective_inventory,target_inventory,inventory_gap,inventory_snapshot,candidates,rejection_reasons,reason,created_at,strategy FROM wheel_signals WHERE %s ORDER BY id ASC LIMIT $%d`, strings.Join(conds, " AND "), len(args))
 	rows, e := s.db.QueryContext(ctx, q, args...)
 	if e != nil {
 		return nil, fmt.Errorf("wheelstore: query signals since: %w", e)

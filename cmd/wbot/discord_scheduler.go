@@ -317,7 +317,7 @@ func signalDiscordEmbeds(sig *wheelstore.SignalRecord, reasons []string, sentAt 
 	}
 	embeds := []discord.Embed{{
 		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
-		Title:       fmt.Sprintf("🔴 模拟盘 · 📌 信号 #%d · %s · %s", sig.ID, sig.Symbol, directionLabel(c.Direction)),
+		Title:       fmt.Sprintf("🔴 模拟盘 · 📌 信号 #%d · %s · %s · %s", sig.ID, sig.Symbol, directionLabel(c.Direction), strategyBadge(sig.Strategy)),
 		Description: fmt.Sprintf("LLM 审核 ✅ APPROVE — 候选 `%s` 已就绪,缺口方向一致", discordInlineCode(c.Code)),
 		Color:       discord.ColorApprove,
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d · %s", sig.ConfigVersion, sig.ID, created)},
@@ -441,10 +441,10 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 	// verdict: the fail-closed disposition carries an "error" detail, and the
 	// user should see 审核失败 rather than 被拒绝 (2026-08-13: signal 453 was
 	// REJECTED for a client timeout but displayed as a model rejection).
-	title := fmt.Sprintf("🔴 模拟盘 · ❌ 信号 #%d 被 LLM 审核拒绝", sig.ID)
+	title := fmt.Sprintf("🔴 模拟盘 · ❌ 信号 #%d 被 LLM 审核拒绝 · %s", sig.ID, strategyBadge(sig.Strategy))
 	if rejection != nil {
 		if e, ok := rejection.Details["error"]; ok && e != nil {
-			title = fmt.Sprintf("⚠️ 模拟盘 · 信号 #%d LLM 审核失败", sig.ID)
+			title = fmt.Sprintf("⚠️ 模拟盘 · 信号 #%d LLM 审核失败 · %s", sig.ID, strategyBadge(sig.Strategy))
 		}
 	}
 	// 与通过单同式样:标题 embed 只声明结论,信息块随后,理由放最后一条

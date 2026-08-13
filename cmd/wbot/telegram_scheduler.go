@@ -720,9 +720,10 @@ func alertCard(sig *wheelstore.SignalRecord, verdictLabel string, reasons ...str
 	gap := countText(sig.Inventory.InventoryGap)
 
 	// 正股信号(BUY/SELL)渲染标的侧信息;期权信号渲染行权/到期/希腊。
-	// 标题带信号编号(老板指令 2026-08-12: 推送必须带编号以区分订单)。
+	// 标题带信号编号与策略来源(老板指令 2026-08-12: 推送必须带编号以区分订单;
+	// 2026-08-13: 单子须标明是大模型策略还是固化策略生成的)。
 	lines := []string{
-		fmt.Sprintf("<b>📌 %s · %s · 信号 #%d</b>", html.EscapeString(sig.Symbol), directionLabel(c.Direction), sig.ID),
+		fmt.Sprintf("<b>📌 %s · %s · 信号 #%d · %s</b>", html.EscapeString(sig.Symbol), directionLabel(c.Direction), sig.ID, strategyBadge(sig.Strategy)),
 		alertOuterRule,
 		"🎯 <b>订单</b>",
 		alertRow("候选", fmt.Sprintf("<b><code>%s</code></b>", html.EscapeString(c.Code))),
@@ -770,6 +771,17 @@ func alertCard(sig *wheelstore.SignalRecord, verdictLabel string, reasons ...str
 		fmt.Sprintf("信号 #%d · 配置 v%d · %s", sig.ID, sig.ConfigVersion, created),
 	)
 	return strings.Join(lines, "\n"), nil
+}
+
+// strategyBadge labels the signal origin on push cards: "llm" (大模型策略)
+// vs "wheel" (固化规则策略), so the operator can tell at a glance where an
+// order came from (老板指令 2026-08-13: 单子未标明是大模型策略还是固化策略
+// 生成的)。Unknown/empty strategy defaults to the fixed wheel label.
+func strategyBadge(strategy string) string {
+	if strings.TrimSpace(strategy) == "llm" {
+		return "🤖 LLM 策略"
+	}
+	return "⚙️ 固化策略"
 }
 
 func reviewReasons(review *wheelstore.ActionRecord) []string {

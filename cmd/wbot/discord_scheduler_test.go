@@ -395,7 +395,7 @@ func TestDiscordPushApprovedSignalPushesEmbed(t *testing.T) {
 	if header["timestamp"] != "2026-08-12T10:00:00Z" {
 		t.Fatalf("header timestamp = %#v", header["timestamp"])
 	}
-	if title := header["title"]; title != "🔴 模拟盘 · 📌 信号 #7 · US.AAPL · 卖出认沽 (SELL PUT)" {
+	if title := header["title"]; title != "🔴 模拟盘 · 📌 信号 #7 · US.AAPL · 卖出认沽 (SELL PUT) · ⚙️ 固化策略" {
 		t.Fatalf("header title = %#v", title)
 	}
 	if desc := header["description"].(string); !strings.Contains(desc, "候选 `US.AAPL260815C250000` 已就绪") {
@@ -458,7 +458,7 @@ func TestDiscordPushApprovedStockSignalOmitsOptionEmbed(t *testing.T) {
 	if len(embeds) != 4 {
 		t.Fatalf("stock embed count = %d; want 4", len(embeds))
 	}
-	if title := discordEmbedAt(t, embeds, 0)["title"]; title != "🔴 模拟盘 · 📌 信号 #8 · US.AAPL · BUY" {
+	if title := discordEmbedAt(t, embeds, 0)["title"]; title != "🔴 模拟盘 · 📌 信号 #8 · US.AAPL · BUY · ⚙️ 固化策略" {
 		t.Fatalf("header title = %#v", title)
 	}
 	for i := 1; i < len(embeds); i++ {
@@ -493,11 +493,13 @@ func TestDiscordPushRejectedReviewPushesGrayEmbed(t *testing.T) {
 		t.Fatalf("embed color = %v; want rejection gray", embed["color"])
 	}
 	author, _ := embed["author"].(map[string]any)
-	if author["name"] != "🤖 Wheel Bot" || embed["title"] != "🔴 模拟盘 · ❌ 信号 #10 被 LLM 审核拒绝" {
+	if author["name"] != "🤖 Wheel Bot" || embed["title"] != "🔴 模拟盘 · ❌ 信号 #10 被 LLM 审核拒绝 · ⚙️ 固化策略" {
 		t.Fatalf("rejection author/title = %#v / %#v", author, embed["title"])
 	}
 	desc, _ := embed["description"].(string)
-	if !strings.Contains(desc, "• risk limit") || !strings.Contains(desc, "US.AAPL · REJECT") {
+	// 首条 embed 只声明结论(2026-08-13 老板指令:IM 注意力在末尾,理由在
+	// 最后一条 embed),候选代码与结论必须在首条。
+	if !strings.Contains(desc, "LLM 审核 ❌ REJECT") || !strings.Contains(desc, "US.AAPL260815C250000") {
 		t.Fatalf("rejection embed = %#v", embed)
 	}
 	// 拒绝的单也要推送完整提示单(候选/缺口信息块),只是不带按钮
@@ -513,7 +515,7 @@ func TestDiscordPushRejectedReviewPushesGrayEmbed(t *testing.T) {
 			}
 		}
 	}
-	for _, want := range []string{"候选", "现价", "缺口"} {
+	for _, want := range []string{"候选", "现价", "缺口", "risk limit"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("reject card missing %q in info blocks: %s", want, joined)
 		}

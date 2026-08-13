@@ -309,6 +309,7 @@ func (r *Runner) persistDataBlocked(ctx context.Context, symbol string, version 
 		CapabilityStatus: wheel.CapabilityDataBlocked,
 		BlockedBy:        []string{blocker},
 		Reason:           reason,
+		Strategy:         "wheel",
 	}
 	id, appendErr := r.deps.Store.AppendSignal(ctx, record)
 	if appendErr != nil {
@@ -444,6 +445,7 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 		ConfigVersion:    version,
 		CapabilityStatus: capStatus,
 		BlockedBy:        blocked,
+		Strategy:         "wheel",
 		Inventory: wheelstore.InventorySnapshot{
 			CurrentPrice:       fptr(price),
 			ActualInventory:    fptr(sig.ActualInventory),

@@ -507,6 +507,18 @@ func TestCallbackMalformedDataRejected(t *testing.T) {
 	}
 }
 
+func TestStrategyBadge(t *testing.T) {
+	if got := strategyBadge("llm"); got != "🤖 LLM 策略" {
+		t.Fatalf("llm badge = %q", got)
+	}
+	if got := strategyBadge("wheel"); got != "⚙️ 固化策略" {
+		t.Fatalf("wheel badge = %q", got)
+	}
+	if got := strategyBadge(""); got != "⚙️ 固化策略" {
+		t.Fatalf("empty badge = %q, want wheel default", got)
+	}
+}
+
 func TestAlertMessageFormat(t *testing.T) {
 	created := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
 	sig := signalFixture(7, "US.AAPL", created)
@@ -514,7 +526,7 @@ func TestAlertMessageFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `<b>📌 US.AAPL · 卖出认沽 (SELL PUT) · 信号 #7</b>
+	want := `<b>📌 US.AAPL · 卖出认沽 (SELL PUT) · 信号 #7 · ⚙️ 固化策略</b>
 ━━━━━━━━━━━━━━━━━━━━
 🎯 <b>订单</b>
 候选      <b><code>US.AAPL260815C250000</code></b>

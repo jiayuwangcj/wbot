@@ -160,6 +160,7 @@ func (s *Service) RecordGenerationRejection(ctx context.Context, symbol string, 
 	return s.Store.AppendSignal(ctx, wheelstore.SignalRecord{
 		Symbol: symbol, Action: "HOLD", ConfigVersion: 1, CapabilityStatus: "DATA_BLOCKED",
 		BlockedBy: []string{"llm_generation_validation"}, RejectionReasons: []string{reason}, Reason: reason,
+		Strategy: "llm",
 	})
 }
 
@@ -325,7 +326,7 @@ func (s *Service) validate(ctx context.Context, d Decision, account Context, p P
 }
 
 func buildRecord(d Decision, inv wheelstore.InventorySnapshot) wheelstore.SignalRecord {
-	return wheelstore.SignalRecord{Symbol: d.Symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY", BlockedBy: []string{}, Inventory: inv,
+	return wheelstore.SignalRecord{Symbol: d.Symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY", BlockedBy: []string{}, Strategy: "llm", Inventory: inv,
 		Candidates: []wheelstore.Candidate{wheelstore.AsCompactCandidate(wheelstore.Candidate{Direction: d.Direction, Quantity: d.Quantity, Accepted: true,
 			Quote: &wheelstore.Quote{Symbol: d.Contract, OptionType: strings.ToLower(d.Direction), Strike: d.Strike, Expiry: d.Expiry, Bid: d.Premium, Ask: d.Premium, Last: d.Premium, Delta: d.Delta, ImpliedVol: d.IV, OpenInterest: d.OpenInterest}})},
 		Reason: d.Reason}
