@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"math"
 	"fmt"
 	"os"
 	"strings"
@@ -140,8 +141,12 @@ func (p futuPositions) Positions(ctx context.Context, _ any) ([]wheelrun.Positio
 			out = append(out, wheelrun.Position{
 				Symbol: qualifySymbol(pos.GetSecMarket(), pos.GetCode()),
 				Code:   pos.GetCode(),
-				Qty:    pos.GetQty(),
-				Side:   int(pos.GetPositionSide()),
+				// GetQty is already signed by the gateway (short = negative);
+				// wheelrun.Position wants a positive qty with Side carrying
+				// the sign (2026-08-13: the sold 450P came back qty=-1 side=1
+				// and PositionsInput rejects negative qtys).
+				Qty:  math.Abs(pos.GetQty()),
+				Side: int(pos.GetPositionSide()),
 			})
 		}
 	}
