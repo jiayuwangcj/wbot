@@ -29,6 +29,17 @@
 
 **DONE**(2026-08-13)。存量 741 的 REJECTED 记录不动 DB(已过推送游标,审计可查;改 DB 审计数据风险大于收益)。
 
+## 补充修复(2026-08-13 当晚,commits 2fee07c + 16ac054)
+
+**事故**:部署 f78e88b 后,LLM_REVIEW_FAILED 落库与推送器 HasAction 查询全部失败——`validAction` 白名单与 DB CHECK 约束都缺这个新 disposition,747 推送链卡死(failed check 循环,监控捕获)。
+
+- **2fee07c**:internal/wheelstore/store.go `validAction` 加 `LLM_REVIEW_FAILED`(Go 层校验)。
+- **16ac054**:internal/db/migrations/012_wheel_action_llm_review_failed.sql 重建 `wheel_signal_actions_action_check` 约束加 `LLM_REVIEW_FAILED`(010 迁移建的约束不含,落库被 CHECK 拒绝)。
+
+**验证**:迁移 012 已应用(pg_get_constraintdef 确认);747 推送链解除,telegram/discord 正常推送 REJECTED 卡片。
+
+**教训**:新增 disposition/枚举必须同步 Go 校验 + DB CHECK 约束两处,verify.sh 全绿也测不到 DB 约束(测试用内存 fake repo);以后枚举变化加一条「DB 约束检查」清单项。
+
 ## Next / Known Limitations
 
 - **孤儿信号重放未实现**:重启/部署杀在途审核导致的「无动作信号」不会自动补审补推(742 丢失)。自动重审需重建当时审核上下文(positions/cash/pending),用当前状态审旧信号有失真风险;且补推历史卡片有骚扰用户风险。如需,应做成「启动时扫描 <30min 无动作新鲜 ALERT,人工确认后重审」的小工具,需老板拍板。
