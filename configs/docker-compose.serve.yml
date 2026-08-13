@@ -39,7 +39,7 @@ services:
       TZ: "Asia/Shanghai"   # datacheck/轮询按本地时区
     volumes:
       # 配置目录:HOME=/root,config store(os.UserHomeDir)读 /root/.wbot/wbot.conf
-      # (telegram token/chat_ids);admin PUT 写 wbot.conf 需目录可写,故 rw。
+      # (telegram/Discord/assistant credentials);admin PUT 写 wbot.conf 需目录可写,故 rw。
       # 源必须用 macOS 宿主侧路径(见顶部注释):/Users/jiayu/.wbot 是数据真实
       # 所在(virtiofs),/home/jiayu/.wbot 仅为软连接——dockerd 在 macOS 侧,
       # 解析不到 /home/jiayu,写软连接目标一样会挂成空 overlay。

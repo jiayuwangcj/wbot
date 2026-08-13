@@ -3,6 +3,7 @@ package discord
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -120,5 +121,63 @@ func TestNewRejectsBadTokenAndBaseURL(t *testing.T) {
 	}
 	if _, err := New("tok", "ftp://x", nil); err == nil {
 		t.Fatal("non-http base URL accepted")
+	}
+}
+
+func TestRegisterGlobalCommandsIsRepeatable(t *testing.T) {
+	var mu sync.Mutex
+	var payloads [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/applications/app-1/commands" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bot "+testBotToken {
+			t.Errorf("authorization = %q", got)
+		}
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		payloads = append(payloads, body)
+		mu.Unlock()
+		w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+	c, err := New(testBotToken, server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands := []ApplicationCommand{{Name: "ask", Description: "向智能助手提问", Options: []ApplicationCommandOption{{Type: 3, Name: "question", Description: "要问的问题", Required: true}}}}
+	for i := 0; i < 2; i++ {
+		if err := c.RegisterGlobalCommands(context.Background(), "app-1", commands); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(payloads) != 2 || string(payloads[0]) != string(payloads[1]) {
+		t.Fatalf("registration payloads = %q", payloads)
+	}
+}
+
+func TestEditInteractionReply(t *testing.T) {
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch || r.URL.Path != "/webhooks/app-1/tok/messages/@original" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		w.Write([]byte(`{"id":"m1"}`))
+	}))
+	defer server.Close()
+	c, err := New(testBotToken, server.URL, server.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.EditInteractionReply(context.Background(), "app-1", "tok", "回答"); err != nil {
+		t.Fatal(err)
+	}
+	if got["content"] != "回答" {
+		t.Fatalf("payload = %#v", got)
 	}
 }

@@ -359,6 +359,9 @@ func runServe(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "discord: %v\n", err)
 		} else if ds != nil {
 			top.Handle("POST /v1/discord/interactions", http.HandlerFunc(ds.handleInteraction))
+			if err := ds.registerAssistantCommands(runCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "discord: register /ask: %v\n", err)
+			}
 			go ds.runDiscordPush(runCtx, discordPushInterval)
 		}
 		go startTelegramScheduler(runCtx, database, wheelEnvVal)

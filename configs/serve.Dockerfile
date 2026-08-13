@@ -11,7 +11,9 @@ COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wbot ./cmd/wbot
 
 FROM alpine:3.21
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates nodejs npm \
+    && npm install --global @anthropic-ai/claude-code@2.1.229 \
+    && npm cache clean --force
 WORKDIR /app
 COPY --from=build /out/wbot /app/wbot
 # root 运行:HOME=/root,~/.wbot 由 compose 挂载到 /root/.wbot(wbot.conf 读取
