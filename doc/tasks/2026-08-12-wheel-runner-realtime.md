@@ -90,6 +90,8 @@ wheel runner 实盘评估**实时化**:pass 从 ~6 分钟降到秒级。三管�
 
 **性能曲线**:全量 5-6 分钟 → ATM 扩展冷缓存 4-5 分钟 → 缓存命中 28 秒 → 方向过滤 + 新容器首轮 30 秒。
 
+**第三处 P0(2026-08-13,成交后 inventory 永不收敛)**:signal 500 卖出 HK.TCH260821P450000 成交后,option_delta_stock 仍为 0(actual=200/effective=200/gap=300)。根因:PositionsInput 将 Delta/LotSize 留零(注释声称 "runner fills quotes from OptionQuotes" 但从未实现)→ OptionDeltaStock=0×delta×lot=0,卖出 PUT 敞口漏出 effective_inventory → 重复 ALERT/错误决策。修复(9c637df):runner 在 collectOptionQuotes 之后、Evaluate 之前——持仓合约若不在方向过滤后的 quotes map(持了反方向腿),单独拉取 quote 合并;回填 opts[i].Delta 与 LotSize。验证:signal 520(HK 开盘后新部署首轮)option_delta_stock=52.66(−1×−0.5266×100 ✓)、effective=252.7、gap 300→247.3,数学自洽。**教训:PositionsInput 注释承诺的 "runner fills" 契约从未实现,注释即需求,欠账必还。**
+
 **残留观察项**:
 - deepseek-v4-pro 审核 168s 接近 180s 上限,若上游再慢会再次 fail-closed;考虑审核异步化或提高超时(产品决策)
 - Evaluate 选中逻辑按「距目标库存最近」优先,报价新鲜度只做 Validate 门槛——阈值与排序的权衡已在配置层解决(1h),若低流动性合约频繁旧报价,可考虑排序加分
