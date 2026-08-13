@@ -100,6 +100,41 @@ func (a *blockingAssistant) Ask(ctx context.Context, prompt string) (string, err
 	}
 }
 
+type discordLogRecorder struct {
+	mu    sync.Mutex
+	lines []string
+}
+
+func (r *discordLogRecorder) logf(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lines = append(r.lines, fmt.Sprintf(format, args...))
+}
+
+func (r *discordLogRecorder) contains(parts ...string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, line := range r.lines {
+		matched := true
+		for _, part := range parts {
+			if !strings.Contains(line, part) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *discordLogRecorder) joined() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return strings.Join(r.lines, "\n")
+}
+
 // hasClearRequest reports whether a PATCH with an empty components array (the
 // remove-buttons payload) was sent.
 func (f *fakeDCSchedulerServer) hasClearRequest() bool {
@@ -630,6 +665,8 @@ func TestDiscordHandleInteractionAskDefersBeforeAnswer(t *testing.T) {
 	asker := &blockingAssistant{started: make(chan string, 1), release: make(chan struct{}), reply: "测试回答"}
 	s.asker = asker
 	s.allowed = parseDiscordAllowedUsers("42")
+	logs := &discordLogRecorder{}
+	s.logf = logs.logf
 
 	body := []byte(`{"id":"ask-1","type":2,"token":"interaction-token","member":{"user":{"id":"42"}},"data":{"name":"ask","options":[{"name":"question","value":"你好"}]}}`)
 	rec := httptest.NewRecorder()
@@ -655,6 +692,44 @@ func TestDiscordHandleInteractionAskDefersBeforeAnswer(t *testing.T) {
 	if got := fake.lastSend(t)["content"]; got != "测试回答" {
 		t.Fatalf("followup content = %#v", got)
 	}
+	waitFor(t, func() bool { return logs.contains("interaction ask-1: /ask followup sent", "truncated=false") }, "followup success log")
+	for _, want := range [][]string{
+		{"interaction ask-1: /ask queued", `question="你好"`},
+		{"interaction ask-1: /ask started", `question="你好"`, "queue_depth="},
+		{"interaction ask-1: /ask completed", "elapsed=", "answer_runes=4"},
+	} {
+		if !logs.contains(want...) {
+			t.Fatalf("missing log parts %q in:\n%s", want, logs.joined())
+		}
+	}
+}
+
+func TestDiscordAskQueueFullLogsWithoutToken(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	s, _ := newTestDiscordScheduler(t, fake, newFakeTGStore(), &fakePlacer{}, time.Now())
+	asker := &blockingAssistant{started: make(chan string, 32), release: make(chan struct{}), reply: "ok"}
+	s.asker = asker
+	logs := &discordLogRecorder{}
+	s.logf = logs.logf
+
+	s.queueAsk(context.Background(), &discord.Interaction{ID: "ask-running", Token: "running-secret"}, "正在处理")
+	select {
+	case <-asker.started:
+	case <-time.After(time.Second):
+		t.Fatal("first question not started")
+	}
+	for i := 0; i < cap(s.askCh); i++ {
+		s.queueAsk(context.Background(), &discord.Interaction{ID: fmt.Sprintf("ask-%d", i), Token: "queued-secret"}, "排队")
+	}
+	s.queueAsk(context.Background(), &discord.Interaction{ID: "ask-full", Token: "full-secret"}, "队满")
+
+	if !logs.contains("interaction ask-full: /ask queue-full") {
+		t.Fatalf("queue-full log missing:\n%s", logs.joined())
+	}
+	if got := logs.joined(); strings.Contains(got, "running-secret") || strings.Contains(got, "queued-secret") || strings.Contains(got, "full-secret") {
+		t.Fatalf("interaction token leaked in logs:\n%s", got)
+	}
+	close(asker.release)
 }
 
 func TestDiscordAskQueueSerializes(t *testing.T) {

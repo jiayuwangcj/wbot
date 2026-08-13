@@ -596,8 +596,10 @@ func (s *discordScheduler) queueAsk(ctx context.Context, in *discord.Interaction
 	}
 	select {
 	case s.askCh <- askRequest{in: in, question: question}:
+		s.logf("interaction %s: /ask queued: question=%q", in.ID, truncateRunes(question, 80))
 	default:
 		// 队列满:不阻塞交互处理,明确告知稍后再试
+		s.logf("interaction %s: /ask queue-full", in.ID)
 		if err := s.dc.EditInteractionReply(ctx, s.appID, in.Token, "❌ 处理队列已满,请稍后再试"); err != nil {
 			s.logf("interaction %s: /ask queue-full: %v", in.ID, err)
 		}
@@ -612,14 +614,23 @@ func (s *discordScheduler) askWorker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case req := <-s.askCh:
+			s.logf("interaction %s: /ask started: question=%q queue_depth=%d", req.in.ID, truncateRunes(req.question, 80), len(s.askCh))
+			started := time.Now()
 			answer, err := s.asker.Ask(ctx, req.question)
+			elapsed := time.Since(started)
 			reply := answer
 			if err != nil {
+				s.logf("interaction %s: /ask failed: elapsed=%s: %v", req.in.ID, elapsed, err)
 				reply = "调用失败: " + err.Error()
+			} else {
+				s.logf("interaction %s: /ask completed: elapsed=%s answer_runes=%d", req.in.ID, elapsed, len([]rune(answer)))
 			}
+			truncated := len([]rune(strings.TrimSpace(reply))) > discordAssistantMaxLen
 			reply = truncateAssistantReply(reply)
 			if err := s.dc.EditInteractionReply(ctx, s.appID, req.in.Token, reply); err != nil {
 				s.logf("interaction %s: /ask followup: %v", req.in.ID, err)
+			} else {
+				s.logf("interaction %s: /ask followup sent: truncated=%t", req.in.ID, truncated)
 			}
 		}
 	}
