@@ -1,6 +1,6 @@
 # S3 未成交模拟与基础指标
 
-**State**: 已合入 main(merge 3f5f781,2026-08-13;feature 待合批发布)
+**State**: 已合入开发主干线 feat/llm-signal-endpoint(merge 3f5f781,2026-08-13;feature 待合批发布进 main)
 **分支/worktree**: feat/s3-unfilled-model @ .claude/worktrees/s3-unfilled-model(main 基线 3fd2fba)
 
 ## Goal
