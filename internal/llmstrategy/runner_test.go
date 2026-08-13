@@ -106,7 +106,8 @@ func TestRunOnceRejectsFabricatedOptionWhenSnapshotOptionsEmpty(t *testing.T) {
 	if err := r.RunOnce(context.Background()); err == nil {
 		t.Fatal("want pass error")
 	}
-	if s.submits != 1 || s.rejections != 1 {
+	// 价格注入发生在 Submit 之前:合约不在快照 → 注入层拒绝,不再调用 Submit。
+	if s.submits != 0 || s.rejections != 1 {
 		t.Fatalf("submits/rejections=%d/%d", s.submits, s.rejections)
 	}
 }

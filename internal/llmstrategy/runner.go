@@ -114,10 +114,24 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "llmstrategy: %s: generation: %v\n", it.Symbol, err)
 			continue
 		}
-		// Market fields are authoritative; the model selects a contract, it does
-		// not get to rewrite the underlying quote.
+		// Market fields are authoritative: the model decides direction,
+		// quantity and contract only; every price field is injected from the
+		// live snapshot, so the model cannot fabricate quotes (老板指令
+		// 2026-08-13). A contract missing from the snapshot is rejected here,
+		// before Submit, and recorded as a generation rejection.
 		decision.Symbol = it.Symbol
 		decision.CurrentPrice = snap.CurrentPrice
+		if isStockDirection(decision.Direction) {
+			decision.Premium = snap.CurrentPrice // 正股限价 = 现价
+		} else if o, ok := snapshotOption(snap.Options, decision.Contract); ok {
+			decision.Strike, decision.Expiry, decision.Premium, decision.Delta, decision.IV, decision.OpenInterest = o.Strike, o.Expiry, o.Premium, o.Delta, o.IV, o.OpenInterest
+		} else {
+			failed++
+			err := fmt.Errorf("contract %q not in market snapshot", decision.Contract)
+			_, _ = r.Submitter.RecordGenerationRejection(ctx, it.Symbol, err)
+			fmt.Fprintf(os.Stderr, "llmstrategy: %s: submit: %v\n", it.Symbol, err)
+			continue
+		}
 		account := llmsignal.Context{Positions: snap.Positions, CashAvailable: snap.CashAvailable, ObservedOptions: map[string]llmsignal.ObservedOption{}}
 		actual := positionQty(snap.Positions, it.Symbol)
 		optionDelta := snap.OptionDeltaStock
@@ -184,6 +198,19 @@ func compactDecision(d llmsignal.Decision) string {
 	return s
 }
 
+func isStockDirection(d string) bool {
+	return d == "BUY" || d == "SELL"
+}
+
+func snapshotOption(opts []Option, contract string) (Option, bool) {
+	for _, o := range opts {
+		if o.Contract == contract {
+			return o, true
+		}
+	}
+	return Option{}, false
+}
+
 func positionQty(ps []llmsignal.Position, s string) float64 {
 	var n float64
 	for _, p := range ps {
@@ -217,7 +244,7 @@ func NewClient(baseURL, apiKey string) (*Client, error) {
 	return &Client{baseURL: strings.TrimRight(baseURL, "/"), apiKey: apiKey, http: &http.Client{Timeout: 180 * time.Second}}, nil
 }
 
-const generationPrompt = `你是 wbot 的交易候选生成器，只能从输入 snapshot.options 中选择一个真实合约，或对正股给出 BUY/SELL。不得编造、改写行情字段。所有订单为正限价单，期权仅卖出 PUT/CALL。正股 BUY/SELL 的 premium 限价必须等于 current_price(±10% 以内)，不得填入其他数值。理由必须具体说明现价/行权价、权利金、到期日与风险。只输出一个严格 JSON 对象，字段为 symbol,direction,quantity,contract,strike,expiry,current_price,premium,delta,iv,open_interest,reason,notes。无法形成安全决策时仍输出 JSON，但 quantity=0，让确定性校验拒绝。`
+const generationPrompt = `你是 wbot 的交易候选生成器，只能从输入 snapshot.options 中选择一个真实合约，或对正股给出 BUY/SELL。你只负责决策方向、数量与合约选择；所有价格字段(current_price/premium/strike/expiry/delta/iv/open_interest)由系统按行情注入，你无需输出(输出了也会被忽略)。期权仅卖出 PUT/CALL，正股限价由系统设为现价。理由必须具体说明现价/行权价、权利金、到期日与风险。只输出一个严格 JSON 对象，字段为 symbol,direction,quantity,contract,reason,notes。无法形成安全决策时仍输出 JSON，但 quantity=0，让确定性校验拒绝。`
 
 func (c *Client) Generate(ctx context.Context, s Snapshot) (llmsignal.Decision, error) {
 	raw, err := json.Marshal(s)
