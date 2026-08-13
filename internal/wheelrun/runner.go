@@ -227,6 +227,35 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 	if err != nil {
 		return fmt.Errorf("option quotes: %w", err)
 	}
+	// Held options need live delta/lot from the quote map for the effective
+	// inventory; PositionsInput leaves Delta/LotSize zero (its contract:
+	// "the runner fills quotes ... from OptionQuotes" — implemented here,
+	// 2026-08-13: signal 500's sold 450P contributed zero delta stock, so
+	// the inventory gap never closed after the fill). The directional
+	// fetch may have skipped a held contract of the opposite direction,
+	// so pull those individually.
+	for _, p := range opts {
+		if _, ok := quotes[p.Symbol]; ok {
+			continue
+		}
+		if page, err := r.deps.Quoter.OptionQuotes(ctx, []string{p.Symbol}); err == nil {
+			for k, q := range page {
+				if q.Symbol == "" {
+					q.Symbol = k
+				}
+				quotes[k] = q
+				quotes[q.Symbol] = q
+			}
+		}
+	}
+	for i := range opts {
+		if q, ok := quotes[opts[i].Symbol]; ok {
+			opts[i].Delta = q.Delta
+			if opts[i].LotSize <= 0 && q.LotSize > 0 {
+				opts[i].LotSize = q.LotSize
+			}
+		}
+	}
 	asOf := r.now()
 	r.enqueueQuoteSnapshots(symbol, price, quoteContracts, quotes, asOf)
 	dailyOrders, err := r.dailyOrders(ctx, symbol, now)
