@@ -258,6 +258,14 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 	}
 	asOf := r.now()
 	r.enqueueQuoteSnapshots(symbol, price, quoteContracts, quotes, asOf)
+	// Unfilled orders must gate the candidate selection, not just the review:
+	// without this, an unfilled order keeps re-alerting the same contract and
+	// the LLM gate rejects the duplicate every cycle (2026-08-13: P29000 over
+	// pending order 206158430256 rejected on signals 747/749/750/751).
+	pending, perr := r.deps.Store.ListPendingOrders(ctx, symbol)
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: list pending orders: %v\n", symbol, perr)
+	}
 	in := wheel.DecisionInput{
 		CurrentPrice:     price,
 		AsOf:             asOf,
@@ -266,6 +274,7 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		Quotes:           assembleQuotes(symbol, quoteContracts, quotes),
 		CashAvailable:    0,
 		HasCashAvailable: false,
+		Pending:          mapPending(pending),
 	}
 	if r.deps.Funds != nil {
 		if cash, err := r.deps.Funds(ctx); err == nil {
@@ -466,6 +475,19 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 		}
 	}
 	return record, status, reason
+}
+
+// mapPending converts store pending-order rows to the strategy's minimal
+// duplicate-detection footprint (contract + direction only).
+func mapPending(rows []wheelstore.PendingOrder) []wheel.PendingOrder {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]wheel.PendingOrder, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, wheel.PendingOrder{Contract: r.Contract, Direction: r.Direction})
+	}
+	return out
 }
 
 // candidateRecords converts domain candidates directly to the shared signal

@@ -188,6 +188,63 @@ func TestEvaluateAlertIncludesExpectedGain(t *testing.T) {
 	}
 }
 
+// TestEvaluatePendingOrderExclusion: 未成交挂单必须排除同合约同方向的
+// 候选——否则每次评估都重新 alert 同一合约,LLM 审核反复拒绝重复敞口
+// (2026-08-13: US.JD P29000 挂单 206158430256 未成交,747/749/750/751
+// 连续被 REJECT)。
+func TestEvaluatePendingOrderExclusion(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))  // Symbol P-4
+	put2 := testQuote(string(Put), 500, asOf.AddDate(0, 0, 7)) // Symbol P-5
+	cfg := testConfig(StateNormal)
+	base := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
+
+	// 首选(P-4)在挂单中:该候选被排除,信号改选 P-5。
+	sig, err := Evaluate(cfg, base)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("baseline signal = %+v err=%v; want ALERT", sig, err)
+	}
+	withPending := base
+	withPending.Pending = []PendingOrder{{Contract: put.Symbol, Direction: string(Put)}}
+	sig, err = Evaluate(cfg, withPending)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("pending signal = %+v err=%v; want ALERT on next contract", sig, err)
+	}
+	if sig.Quote == nil || sig.Quote.Symbol != put2.Symbol {
+		t.Fatalf("chosen quote = %+v; want %s (pending %s must be skipped)", sig.Quote, put2.Symbol, put.Symbol)
+	}
+	for _, c := range sig.Candidates {
+		if !c.Accepted && strings.Contains(strings.Join(c.Reasons, " "), "pending order") {
+			continue
+		}
+		if c.Accepted && c.Quote.Symbol == put.Symbol {
+			t.Fatalf("candidate %s accepted despite pending order", put.Symbol)
+		}
+	}
+
+	// 全部候选被挂单覆盖:HOLD,且不得误报 DATA_BLOCKED(行情是好的)。
+	allPending := base
+	allPending.Pending = []PendingOrder{{Contract: put.Symbol, Direction: string(Put)}, {Contract: put2.Symbol, Direction: string(Put)}}
+	sig, err = Evaluate(cfg, allPending)
+	if err != nil || sig.Action != ActionHold {
+		t.Fatalf("all-pending signal = %+v err=%v; want HOLD", sig, err)
+	}
+	if sig.CapabilityStatus != CapabilityReady {
+		t.Fatalf("all-pending capability = %s; want READY (book full, not data blocked)", sig.CapabilityStatus)
+	}
+	if !strings.Contains(sig.Reason, "pending orders") {
+		t.Fatalf("all-pending reason = %q; want explicit pending mention", sig.Reason)
+	}
+
+	// 方向不匹配的挂单不排除候选(反向挂单是另一笔敞口)。
+	callPending := base
+	callPending.Pending = []PendingOrder{{Contract: put.Symbol, Direction: string(Call)}}
+	sig, err = Evaluate(cfg, callPending)
+	if err != nil || sig.Action != ActionAlert || sig.Quote == nil || sig.Quote.Symbol != put.Symbol {
+		t.Fatalf("wrong-direction pending signal = %+v err=%v; want ALERT on %s", sig, err, put.Symbol)
+	}
+}
+
 func TestEvaluateTacticalGates(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))

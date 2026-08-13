@@ -517,6 +517,19 @@ type DecisionInput struct {
 	LastEffectiveFillPrice float64
 	CashAvailable          float64
 	HasCashAvailable       bool
+	// Pending lists unfilled orders already resting for this symbol.
+	// Candidates whose contract+direction match an entry are excluded:
+	// re-alerting the same contract while a prior order is unfilled would
+	// ask the user to double up an open position (2026-08-13: LLM gate
+	// kept rejecting repeated US.JD P29000 alerts over pending order 206158430256).
+	Pending []PendingOrder
+}
+
+// PendingOrder is the unfilled-order footprint the strategy needs to avoid
+// duplicate alerts. Kept intentionally minimal; runner maps the store row.
+type PendingOrder struct {
+	Contract  string
+	Direction string
 }
 
 type CandidateEvaluation struct {
@@ -640,13 +653,21 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	}
 	validDirectionQuoteCount := 0
 	dependencyBlocked := false
+	pendingExcluded := 0
 	for _, q := range in.Quotes {
 		// A signal remains one human-reviewed contract suggestion. Removing the
 		// daily cap means later valid evaluations are not suppressed; it does not
 		// turn one reminder into an unbounded multi-contract order.
 		qty := 1
 		candidate := CandidateEvaluation{Quote: q, Direction: direction, Quantity: qty, SignedContracts: -qty, Quality: QualityScore(q)}
-		if err := q.Validate(in.AsOf, cfg); err != nil {
+		if hasPendingContract(in.Pending, q.Symbol, string(direction)) {
+			// Pending matches imply direction agreement, so the quote still
+			// counts as direction-valid: all-candidates-pending must read as
+			// HOLD, not DATA_BLOCKED (quotes are fresh, the book is full).
+			candidate.Reasons = append(candidate.Reasons, "wheel: contract already has an unfilled pending order")
+			pendingExcluded++
+			validDirectionQuoteCount++
+		} else if err := q.Validate(in.AsOf, cfg); err != nil {
 			candidate.Reasons = append(candidate.Reasons, err.Error())
 		} else {
 			if (direction == DirectionPut && q.optionType() != string(Put)) || (direction == DirectionCall && q.optionType() != string(Call)) {
@@ -712,6 +733,12 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			base.CapabilityStatus = CapabilityDataBlocked
 			base.BlockedBy = append(base.BlockedBy, "cash_available")
 		}
+		if pendingExcluded > 0 && validDirectionQuoteCount == pendingExcluded {
+			// Every direction-valid quote is already covered by an unfilled
+			// order: the book is full, not the data. HOLD quietly instead of
+			// asking the user to double an open position.
+			return hold("all qualified candidates already have unfilled pending orders", base), nil
+		}
 		return hold("no quote passed validation and risk checks", base), nil
 	}
 	sort.SliceStable(accepted, func(i, j int) bool {
@@ -748,6 +775,18 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds trade gap %.2f", direction, gap, cfg.TradeGap)
 	base.Reasons = []string{base.Reason}
 	return base, nil
+}
+
+// hasPendingContract reports whether an unfilled order for the same contract
+// and direction is already resting, so the strategy does not re-alert it.
+// Direction is compared case-insensitively (store rows say PUT/CALL).
+func hasPendingContract(pending []PendingOrder, contract, direction string) bool {
+	for _, p := range pending {
+		if p.Contract == contract && strings.EqualFold(p.Direction, direction) {
+			return true
+		}
+	}
+	return false
 }
 
 func expectedGain(q OptionQuote, quantity int) float64 {
