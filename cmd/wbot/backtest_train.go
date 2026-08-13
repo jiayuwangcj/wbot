@@ -15,6 +15,7 @@ import (
 	"github.com/jiayu/wbot/internal/backtestreport"
 	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/strategy"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 type backtestTrainFlags struct {
@@ -22,6 +23,7 @@ type backtestTrainFlags struct {
 	Timeout                                      time.Duration
 	Report                                       bool
 	ReportDir                                    string
+	Cache                                        bool
 }
 
 func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags backtestTrainFlags) int {
@@ -204,6 +206,13 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 		return 1
+	}
+	if flags.Cache {
+		if err := cacheBacktestReport(context.Background(), database, rep, jsonPath, false); err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+		fmt.Printf("cache_symbol=%s approved_state=%s\n", rep.Identity.Symbol, wheelstore.StrategyCacheResearchCandidate)
 	}
 	fmt.Printf("report_id=%s json=%s html=%s\n", rep.ReportID, jsonPath, htmlPath)
 	return 0

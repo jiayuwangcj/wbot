@@ -21,6 +21,11 @@ import (
 
 const Model = "deepseek-v4-flash"
 
+const (
+	StrategyCachePayloadVersion = "strategy-cache-1.0"
+	StrategyCacheMaxAge         = 30 * 24 * time.Hour
+)
+
 type Option struct {
 	Contract     string  `json:"contract"`
 	Direction    string  `json:"direction"`
@@ -39,6 +44,10 @@ type Snapshot struct {
 	Positions        []llmsignal.Position      `json:"positions"`
 	Options          []Option                  `json:"options"`
 	PendingOrders    []wheelstore.PendingOrder `json:"pending_orders"`
+	// StrategyCacheSummary is a bounded, deterministic projection of approved
+	// research evidence. The full cache payload and training trajectory are
+	// never sent to the model.
+	StrategyCacheSummary string `json:"strategy_cache_summary,omitempty"`
 }
 
 type Market interface {
@@ -54,6 +63,9 @@ type DedupeStore interface {
 	// 2026-08-13: 未成交订单要传入策略与审核综合考虑)。
 	ListPendingOrders(context.Context, string) ([]wheelstore.PendingOrder, error)
 }
+type StrategyCache interface {
+	GetStrategyCache(context.Context, string) (*wheelstore.StrategyCacheRecord, error)
+}
 type Submitter interface {
 	Submit(context.Context, llmsignal.Decision, llmsignal.Context, llmsignal.Policy) (llmsignal.Result, error)
 	RecordGenerationRejection(context.Context, string, error) (int64, error)
@@ -65,6 +77,7 @@ type Generator interface {
 type Runner struct {
 	Watchlist  Watchlist
 	Dedupe     DedupeStore
+	Cache      StrategyCache
 	Market     Market
 	Generator  Generator
 	Submitter  Submitter
@@ -123,6 +136,17 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "llmstrategy: %s: snapshot: %v\n", it.Symbol, err)
 			continue
 		}
+		if r.Cache != nil {
+			cached, cacheErr := r.Cache.GetStrategyCache(ctx, it.Symbol)
+			if cacheErr == nil {
+				snap.StrategyCacheSummary = strategyCacheSummary(cached, now)
+			} else if !errors.Is(cacheErr, wheelstore.ErrNotFound) {
+				// Cache evidence is optional context. A repository outage must not
+				// turn an otherwise valid live snapshot into fabricated evidence or
+				// stop the existing decision pipeline.
+				fmt.Fprintf(os.Stderr, "llmstrategy: %s: strategy cache: %v\n", it.Symbol, cacheErr)
+			}
+		}
 		snap.PendingOrders = pendingOrders
 		decision, err := r.Generator.Generate(ctx, snap)
 		if err != nil {
@@ -176,6 +200,30 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 		return fmt.Errorf("llmstrategy: %d of %d bindings failed", failed, total)
 	}
 	return nil
+}
+
+func strategyCacheSummary(r *wheelstore.StrategyCacheRecord, now time.Time) string {
+	if r == nil || r.ApprovedState != wheelstore.StrategyCacheApprovedCandidate || r.Payload == nil || r.UpdatedAt.IsZero() || r.UpdatedAt.Before(now.Add(-StrategyCacheMaxAge)) || r.UpdatedAt.After(now.Add(5*time.Minute)) {
+		return ""
+	}
+	version, _ := r.Payload["schema_version"].(string)
+	capability, _ := r.Payload["capability_state"].(string)
+	reference, _ := r.Payload["report_reference"].(map[string]any)
+	reportID, _ := reference["report_id"].(string)
+	params := r.Payload["best_params"]
+	returns := r.Payload["return_metrics"]
+	interval := r.Payload["confidence_interval"]
+	if version != StrategyCachePayloadVersion || capability == "" || reportID == "" || params == nil || returns == nil || interval == nil {
+		return ""
+	}
+	paramsJSON, pErr := json.Marshal(params)
+	returnsJSON, rErr := json.Marshal(returns)
+	intervalJSON, iErr := json.Marshal(interval)
+	if pErr != nil || rErr != nil || iErr != nil {
+		return ""
+	}
+	return fmt.Sprintf("strategy_cache[%s] best_params=%s return_metrics=%s confidence_interval=%s capability_state=%s report_id=%s",
+		version, paramsJSON, returnsJSON, intervalJSON, capability, reportID)
 }
 
 func (r *Runner) Run(ctx context.Context, interval time.Duration) error {

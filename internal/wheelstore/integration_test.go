@@ -207,6 +207,49 @@ VALUES ($1, $2, 1, $3, $4::jsonb, 'invalid fixture')`, symbol, tc.action, tc.sta
 	}
 }
 
+func TestStrategyCacheUpsertIntegration(t *testing.T) {
+	database := openIntegrationDB(t)
+	ctx := context.Background()
+	symbol := "CACHE.IDEMPOTENT"
+	if _, err := database.Exec(`DELETE FROM strategy_cache WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = database.Exec(`DELETE FROM strategy_cache WHERE symbol = $1`, symbol) })
+	record := StrategyCacheRecord{
+		Symbol: symbol, Market: "US", Currency: "USD", ConfigVersion: 1, ModelVersion: "test-model",
+		DataWindow:    StrategyCacheWindow{From: "2025-01-01T00:00:00Z", To: "2025-12-31T00:00:00Z"},
+		ApprovedState: StrategyCacheResearchCandidate,
+		Payload:       map[string]any{"schema_version": "strategy-cache-1.0", "report_reference": map[string]any{"report_id": "same-report"}},
+	}
+	store := New(database)
+	if err := store.UpsertStrategyCache(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	record.Payload["return_metrics"] = map[string]any{"net_return_pct": 0.2}
+	if err := store.UpsertStrategyCache(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := database.QueryRow(`SELECT count(*) FROM strategy_cache WHERE symbol = $1`, symbol).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("cache rows=%d err=%v; want one upserted row", count, err)
+	}
+	got, err := store.GetStrategyCache(ctx, symbol)
+	if err != nil || got.Payload["return_metrics"] == nil {
+		t.Fatalf("GetStrategyCache=%+v err=%v; second write did not overwrite payload", got, err)
+	}
+	record.Payload["approval_gates"] = map[string]any{"data_gate_passed": true, "sample_out_passed": true, "human_approved": false}
+	if err := store.UpsertStrategyCache(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApproveStrategyCache(ctx, symbol); err != nil {
+		t.Fatal(err)
+	}
+	approved, err := store.GetStrategyCache(ctx, symbol)
+	if err != nil || approved.ApprovedState != StrategyCacheApprovedCandidate {
+		t.Fatalf("approved cache=%+v err=%v", approved, err)
+	}
+}
+
 // TestWheelTelegramDispositionIntegration covers migrations 009/010 and the
 // Telegram confirm-loop store surface: dismissals (idempotent, per-day),
 // LatestLLMReview, QuerySignalsSince/MaxSignalID cursor semantics, and the

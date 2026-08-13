@@ -45,6 +45,71 @@ func (f *marketFake) Snapshot(context.Context, string, map[string]any, time.Time
 	return Snapshot{Symbol: "HK.00700", CurrentPrice: 459, CashAvailable: &cash, Options: []Option{{Contract: "HK.TCH260821P450000", Direction: "PUT", Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5, Delta: -.35, IV: .4, OpenInterest: 100}}}, nil
 }
 
+type cacheFake struct {
+	record *wheelstore.StrategyCacheRecord
+	err    error
+}
+
+func (f cacheFake) GetStrategyCache(context.Context, string) (*wheelstore.StrategyCacheRecord, error) {
+	return f.record, f.err
+}
+
+func validStrategyCache(now time.Time) *wheelstore.StrategyCacheRecord {
+	return &wheelstore.StrategyCacheRecord{
+		Symbol: "HK.00700", ApprovedState: wheelstore.StrategyCacheApprovedCandidate, UpdatedAt: now.Add(-time.Hour),
+		Payload: map[string]any{
+			"schema_version":      StrategyCachePayloadVersion,
+			"best_params":         map[string]any{"move_interval_pct": 0.018},
+			"return_metrics":      map[string]any{"median_return_pct": 0.12},
+			"confidence_interval": map[string]any{"p10_return_pct": 0.08, "p90_return_pct": 0.16},
+			"capability_state":    "RESEARCH_ONLY",
+			"report_reference":    map[string]any{"report_id": "bt-HK.00700-42-deadbeef"},
+		},
+	}
+}
+
+func TestRunOnceInjectsOnlyEligibleStrategyCacheSummary(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		cache     cacheFake
+		wantCache bool
+	}{
+		{name: "valid cache", cache: cacheFake{record: validStrategyCache(now)}, wantCache: true},
+		{name: "empty cache", cache: cacheFake{err: wheelstore.ErrNotFound}},
+		{name: "expired cache", cache: cacheFake{record: func() *wheelstore.StrategyCacheRecord {
+			r := validStrategyCache(now)
+			r.UpdatedAt = now.Add(-StrategyCacheMaxAge - time.Second)
+			return r
+		}()}},
+		{name: "unqualified state", cache: cacheFake{record: func() *wheelstore.StrategyCacheRecord {
+			r := validStrategyCache(now)
+			r.ApprovedState = wheelstore.StrategyCacheResearchCandidate
+			return r
+		}()}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := &genFake{}
+			r := Runner{Watchlist: wlFake{[]watchlist.Item{{Symbol: "HK.00700", Strategy: "llm"}}}, Dedupe: &dedupeFake{}, Cache: tc.cache, Market: &marketFake{}, Generator: g, Submitter: &submitFake{}, Now: func() time.Time { return now }}
+			if err := r.RunOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			got := g.snap.StrategyCacheSummary
+			if tc.wantCache {
+				if !strings.Contains(got, `best_params={"move_interval_pct":0.018}`) || !strings.Contains(got, "report_id=bt-HK.00700-42-deadbeef") {
+					t.Fatalf("prompt snapshot missing compact cache summary: %q", got)
+				}
+				if strings.Contains(got, "generations") || strings.Contains(got, "trajectory") {
+					t.Fatalf("prompt snapshot leaked training trajectory: %q", got)
+				}
+			} else if got != "" {
+				t.Fatalf("ineligible cache injected into prompt snapshot: %q", got)
+			}
+		})
+	}
+}
+
 type genFake struct {
 	err   error
 	calls int
