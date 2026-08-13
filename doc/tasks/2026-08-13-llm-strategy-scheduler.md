@@ -49,3 +49,10 @@ LLM 策略按固定节奏定时运行:每 5 分钟对 watchlist 标的生成策�
 1. 转 reviewer 独立评审并判定 feature/bugfix。
 2. 有可用 `WBOT_PG_DSN` 的环境补跑 `go test ./internal/wheelstore -run Integration -count=1`。
 3. 运维以 `serve -llm-run -llm-interval 15m -telegram-run` 启动并观察真实 watchlist 的生成、推送、人工确认闭环。
+
+## 实跑进展(2026-08-13 下午)
+
+- **实盘信号**:631(HOLD/DATA_BLOCKED 首轮 generation rejection)、637(首个 ALERT:SELL 2 股,审核 REJECTED——决策/理由不一致)、648/653(LLM 信号 ALERT,审核 REJECTED:「数据不全」)。
+- **审核输入补全(f81ed8c)**:老板判断「数据不全=程序 bug」。648 审核 4 条拒绝理由逐条对应缺失:inventory(effective/target/gap)、observed_options(期权链快照)、current_date(无法验证 DTE)、规则未声明数据范围(模型按 wheel 参数集核对 llm 策略)。修复:ReviewRequest 加 Inventory/ObservedOptions/AsOf;Submit 填充;ObservedOption 补 json tag;optionRules/stockRules 声明「缺失即不存在,不得因缺字段拒绝」。
+- **agent 框架合入(53bde40)**:codex 02ab64c 合入主分支,generationPrompt 合并 agent 版 + direction 枚举规则(P1-1),P2-2 option_chain DTE 过滤/P2-3 工具描述对齐/P2-4 工具调用日志一并落地。
+- **部署**:已重建 serve 容器(2026-08-13 15:00 前后),等待下一 llm tick 验证审核输入与 agent 工具调用。
