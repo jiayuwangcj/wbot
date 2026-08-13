@@ -63,7 +63,7 @@ func TestContractSchemaRequiredAndDefaults(t *testing.T) {
 		"move_interval_pct": 0.0, "min_premium_per_share": 0.0,
 		"stock_switch_pct": 0.0, "trade_gap": 50.0,
 		"min_dte": 5.0, "max_dte": 10.0, "min_option_quality": 0.6,
-		"strategic_state": wheel.StateNormal,
+		"max_quote_age_seconds": 86400.0, "strategic_state": wheel.StateNormal,
 	}
 	for name, want := range defaults {
 		if got := byName[name].Default; got != want {
@@ -88,8 +88,37 @@ func TestParseConfigRequiresStrategicInputs(t *testing.T) {
 		t.Fatalf("ParseConfig(defaults) error: %v", err)
 	}
 	if cfg.MoveIntervalPct != 0 || cfg.MinPremiumPerShare != 0 || cfg.StockSwitchPct != 0 || cfg.TradeGap != 50 ||
-		cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 || cfg.StrategicState != wheel.StateNormal {
+		cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 || cfg.MaxQuoteAgeSeconds != 86400 ||
+		cfg.StrategicState != wheel.StateNormal {
 		t.Fatalf("defaults = %+v", cfg)
+	}
+}
+
+func TestParseConfigMaxQuoteAgeSeconds(t *testing.T) {
+	params := validParams()
+	params["max_quote_age_seconds"] = 3600
+	cfg, err := ParseConfig(params)
+	if err != nil {
+		t.Fatalf("ParseConfig(explicit) error: %v", err)
+	}
+	if cfg.MaxQuoteAgeSeconds != 3600 {
+		t.Fatalf("MaxQuoteAgeSeconds = %d; want 3600", cfg.MaxQuoteAgeSeconds)
+	}
+
+	cfg, err = ParseConfig(validParams())
+	if err != nil {
+		t.Fatalf("ParseConfig(missing) error: %v", err)
+	}
+	if cfg.MaxQuoteAgeSeconds != 86400 {
+		t.Fatalf("default MaxQuoteAgeSeconds = %d; want 86400", cfg.MaxQuoteAgeSeconds)
+	}
+
+	for _, bad := range []any{0, -1, "abc"} {
+		p := validParams()
+		p["max_quote_age_seconds"] = bad
+		if _, err := ParseConfig(p); err == nil || !strings.Contains(err.Error(), "max_quote_age_seconds") {
+			t.Fatalf("invalid %v: error = %v; want max_quote_age_seconds error", bad, err)
+		}
 	}
 }
 

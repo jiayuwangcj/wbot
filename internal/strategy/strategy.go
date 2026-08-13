@@ -55,6 +55,7 @@ var templates = []Template{
 			{Name: "min_dte", Type: "number", Default: 5.0, Min: 5, Max: 10, Help: "最小到期天数（DTE）"},
 			{Name: "max_dte", Type: "number", Default: 10.0, Min: 5, Max: 10, Help: "最大到期天数（DTE）"},
 			{Name: "min_option_quality", Type: "number", Default: 0.6, Min: 0, Max: 1, Help: "候选期权质量最低门槛"},
+			{Name: "max_quote_age_seconds", Type: "number", Default: 86400.0, Min: 1, Max: math.MaxFloat64, Help: "候选期权报价最大可接受年龄（秒），超出视为陈旧"},
 			{Name: "strategic_state", Type: "choice", Default: wheel.StateNormal, Allowed: []string{wheel.StateNormal, wheel.StateCaution, wheel.StatePauseBuy, wheel.StateExit}, Help: "战略状态"},
 		},
 	},
@@ -148,6 +149,10 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param min_option_quality: %w", err)
 	}
+	maxQuoteAge, err := asInt(values["max_quote_age_seconds"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param max_quote_age_seconds: %w", err)
+	}
 	state, ok := values["strategic_state"].(string)
 	if !ok {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param strategic_state: want a choice")
@@ -166,6 +171,7 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 		MaxDTE:                 maxDTE,
 		MinOptionQuality:       minQuality,
 		StrategicState:         state,
+		MaxQuoteAgeSeconds:     maxQuoteAge,
 		MigrationLossy:         audit.lossy,
 		MigrationWarningCount:  len(audit.warnings),
 		MigrationWarnings:      audit.warnings,
