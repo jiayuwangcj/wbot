@@ -349,7 +349,11 @@ func (c *Client) Generate(ctx context.Context, s Snapshot) (llmsignal.Decision, 
 func (c *Client) complete(ctx context.Context, messages []agentMessage) (agentMessage, error) {
 	payload := map[string]any{"model": Model, "messages": messages, "tools": agentTools, "tool_choice": "auto", "response_format": map[string]string{"type": "json_object"}}
 	body, _ := json.Marshal(payload)
-	roundCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// The post-tool-calls round must reason to a final decision; 30s was too
+	// tight and timed out twice with the same signature (signal 668, and
+	// 2026-08-13 15:20: tools round ok, final round decode deadline). roundCtx
+	// derives from totalCtx so the 180s generation budget still binds.
+	roundCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(roundCtx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
