@@ -47,6 +47,9 @@ var WhitelistedKeys = []Key{
 	{"credentials.discord.public_key", "credentials.discord"},
 	{"credentials.discord.bot_token", "credentials.discord"},
 	{"credentials.discord.channel_id", "credentials.discord"},
+	{"assistant.discord.allowed_user_ids", "assistant.discord"},
+	{"assistant.claude.cli_path", "assistant.claude"},
+	{"assistant.claude.api_key", "assistant.claude"},
 	{"system.listen", "system"},
 }
 

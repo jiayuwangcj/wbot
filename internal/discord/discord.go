@@ -62,6 +62,21 @@ type Message struct {
 	Components [][]Button `json:"components,omitempty"`
 }
 
+// ApplicationCommand describes a global CHAT_INPUT command.
+type ApplicationCommand struct {
+	Name        string                     `json:"name"`
+	Description string                     `json:"description"`
+	Options     []ApplicationCommandOption `json:"options,omitempty"`
+}
+
+// ApplicationCommandOption describes one slash-command argument.
+type ApplicationCommandOption struct {
+	Type        int    `json:"type"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Required    bool   `json:"required,omitempty"`
+}
+
 // actionRow is Discord's required top-level wrapper for message components.
 // Message retains [][]Button as its public construction shape so existing
 // callers do not need to change when the wire representation is corrected.
@@ -163,6 +178,57 @@ func (c *Client) DeleteInteractionReply(ctx context.Context, appID, interactionT
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("discord: delete interaction reply: HTTP status %d", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+// EditInteractionReply replaces the original deferred interaction response.
+func (c *Client) EditInteractionReply(ctx context.Context, appID, interactionToken, content string) error {
+	body, err := json.Marshal(Message{Content: content})
+	if err != nil {
+		return fmt.Errorf("discord: edit interaction reply: encode request")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+		c.baseURL+"/webhooks/"+appID+"/"+interactionToken+"/messages/@original", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("discord: edit interaction reply: create request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bot "+c.token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord: edit interaction reply: request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("discord: edit interaction reply: HTTP status %d", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
+// RegisterGlobalCommands bulk-overwrites an application's global commands.
+// Repeating the same PUT is idempotent according to Discord's bulk endpoint.
+func (c *Client) RegisterGlobalCommands(ctx context.Context, appID string, commands []ApplicationCommand) error {
+	body, err := json.Marshal(commands)
+	if err != nil {
+		return fmt.Errorf("discord: register commands: encode request")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		c.baseURL+"/applications/"+appID+"/commands", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("discord: register commands: create request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bot "+c.token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord: register commands: request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("discord: register commands: HTTP status %d", resp.StatusCode)
 	}
 	io.Copy(io.Discard, resp.Body)
 	return nil

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -75,6 +76,28 @@ func (f *fakeDCSchedulerServer) lastSend(t *testing.T) map[string]any {
 		t.Fatal("no discord message received")
 	}
 	return f.sends[len(f.sends)-1]
+}
+
+func (f *fakeDCSchedulerServer) sendCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sends)
+}
+
+type blockingAssistant struct {
+	started chan string
+	release chan struct{}
+	reply   string
+}
+
+func (a *blockingAssistant) Ask(ctx context.Context, prompt string) (string, error) {
+	a.started <- prompt
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case <-a.release:
+		return a.reply, nil
+	}
 }
 
 // hasClearRequest reports whether a PATCH with an empty components array (the
@@ -601,6 +624,82 @@ func TestDiscordHandleInteractionPingPong(t *testing.T) {
 	}
 }
 
+func TestDiscordHandleInteractionAskDefersBeforeAnswer(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	s, priv := newTestDiscordScheduler(t, fake, newFakeTGStore(), &fakePlacer{}, time.Now())
+	asker := &blockingAssistant{started: make(chan string, 1), release: make(chan struct{}), reply: "测试回答"}
+	s.asker = asker
+	s.allowed = parseDiscordAllowedUsers("42")
+
+	body := []byte(`{"id":"ask-1","type":2,"token":"interaction-token","member":{"user":{"id":"42"}},"data":{"name":"ask","options":[{"name":"question","value":"你好"}]}}`)
+	rec := httptest.NewRecorder()
+	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"type":5`) {
+		t.Fatalf("deferred response = %d %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case prompt := <-asker.started:
+		if prompt != "你好" {
+			t.Fatalf("prompt = %q", prompt)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("assistant was not started")
+	}
+	if got := fake.sendCount(); got != 0 {
+		t.Fatalf("followup arrived before assistant completed: %d requests", got)
+	}
+	close(asker.release)
+	waitFor(t, func() bool { return fake.sendCount() == 1 }, "assistant followup PATCH")
+	if got := fake.lastSend(t)["content"]; got != "测试回答" {
+		t.Fatalf("followup content = %#v", got)
+	}
+}
+
+func TestDiscordHandleInteractionAskWhitelistRejects(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	s, priv := newTestDiscordScheduler(t, fake, newFakeTGStore(), &fakePlacer{}, time.Now())
+	asker := &blockingAssistant{started: make(chan string, 1), release: make(chan struct{})}
+	s.asker = asker
+	s.allowed = parseDiscordAllowedUsers("99")
+
+	body := []byte(`{"id":"ask-2","type":2,"token":"interaction-token","member":{"user":{"id":"42"}},"data":{"name":"ask","options":[{"name":"question","value":"你好"}]}}`)
+	rec := httptest.NewRecorder()
+	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "没有权限") {
+		t.Fatalf("response = %d %s", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-asker.started:
+		t.Fatal("unauthorized question reached assistant")
+	default:
+	}
+}
+
+func TestDiscordHandleInteractionAskEmptyWhitelistAllowsWithLog(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	s, priv := newTestDiscordScheduler(t, fake, newFakeTGStore(), &fakePlacer{}, time.Now())
+	asker := &blockingAssistant{started: make(chan string, 1), release: make(chan struct{}), reply: "ok"}
+	s.asker = asker
+	logs := make(chan string, 1)
+	s.logf = func(format string, args ...any) { logs <- fmt.Sprintf(format, args...) }
+
+	body := []byte(`{"id":"ask-3","type":2,"token":"interaction-token","user":{"id":"42"},"data":{"name":"ask","options":[{"name":"question","value":"你好"}]}}`)
+	rec := httptest.NewRecorder()
+	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	if !strings.Contains(rec.Body.String(), `"type":5`) {
+		t.Fatalf("response = %s", rec.Body.String())
+	}
+	select {
+	case logLine := <-logs:
+		if !strings.Contains(logLine, "backlog") || !strings.Contains(logLine, "allowing") {
+			t.Fatalf("log = %q", logLine)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("empty-whitelist log missing")
+	}
+	close(asker.release)
+}
+
 func TestDiscordHandleInteractionBadSignature401(t *testing.T) {
 	fake, _ := startFakeDC(t)
 	s, _ := newTestDiscordScheduler(t, fake, newFakeTGStore(), &fakePlacer{}, time.Now())
@@ -777,6 +876,9 @@ func TestStartDiscordSchedulerConfiguredWiresClient(t *testing.T) {
 		{"credentials.discord.public_key", strings.Repeat("ab", 32)},
 		{"credentials.discord.bot_token", "tok"},
 		{"credentials.discord.channel_id", "chan-1"},
+		{"assistant.discord.allowed_user_ids", "42, 43"},
+		{"assistant.claude.cli_path", "/fake/claude"},
+		{"assistant.claude.api_key", "fake-key"},
 	} {
 		if err := cfg.Set(kv[0], kv[1]); err != nil {
 			t.Fatal(err)
@@ -786,8 +888,15 @@ func TestStartDiscordSchedulerConfiguredWiresClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("configured scheduler: %v", err)
 	}
-	if ds == nil || ds.channelID != "chan-1" || ds.dc == nil || ds.verifier == nil {
+	if ds == nil {
+		t.Fatal("scheduler is nil; want fully wired")
+	}
+	claude, ok := ds.asker.(*claudeAssistant)
+	if ds.channelID != "chan-1" || ds.dc == nil || ds.verifier == nil || !ok || claude.cliPath != "/fake/claude" || claude.apiKey != "fake-key" {
 		t.Fatalf("scheduler = %+v; want fully wired", ds)
+	}
+	if _, ok := ds.allowed["42"]; !ok || len(ds.allowed) != 2 {
+		t.Fatalf("allowed users = %#v", ds.allowed)
 	}
 }
 

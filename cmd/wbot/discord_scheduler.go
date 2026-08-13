@@ -38,6 +38,8 @@ type discordScheduler struct {
 	orders    wheelOrderPlacer
 	now       func() time.Time
 	logf      func(format string, a ...any)
+	asker     assistant
+	allowed   map[string]struct{}
 	confirmMu sync.Mutex // one confirm at a time: dedup is HasAction→AppendAction across a network PlaceOrder
 }
 
@@ -91,7 +93,39 @@ func startDiscordScheduler(ctx context.Context, database *sql.DB, env futu.Env) 
 	if err != nil {
 		return nil, fmt.Errorf("discord: %w", err)
 	}
-	return newDiscordScheduler(ctx, dc, verifier, strings.TrimSpace(appID), strings.TrimSpace(channelRaw), wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env}), nil
+	cliPath, _, err := cfg.Lookup("assistant.claude.cli_path")
+	if err != nil {
+		return nil, fmt.Errorf("discord: assistant claude cli_path: %w", err)
+	}
+	apiKey, _, err := cfg.Lookup("assistant.claude.api_key")
+	if err != nil {
+		return nil, fmt.Errorf("discord: assistant claude api_key: %w", err)
+	}
+	allowedRaw, _, err := cfg.Lookup("assistant.discord.allowed_user_ids")
+	if err != nil {
+		return nil, fmt.Errorf("discord: assistant allowed_user_ids: %w", err)
+	}
+	s := newDiscordScheduler(ctx, dc, verifier, strings.TrimSpace(appID), strings.TrimSpace(channelRaw), wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env})
+	s.asker = newClaudeAssistant(cliPath, apiKey)
+	s.allowed = parseDiscordAllowedUsers(allowedRaw)
+	return s, nil
+}
+
+func parseDiscordAllowedUsers(raw string) map[string]struct{} {
+	allowed := make(map[string]struct{})
+	for _, id := range strings.Split(raw, ",") {
+		if id = strings.TrimSpace(id); id != "" {
+			allowed[id] = struct{}{}
+		}
+	}
+	return allowed
+}
+
+func (s *discordScheduler) registerAssistantCommands(ctx context.Context) error {
+	return s.dc.RegisterGlobalCommands(ctx, s.appID, []discord.ApplicationCommand{{
+		Name: "ask", Description: "向智能助手提问",
+		Options: []discord.ApplicationCommandOption{{Type: 3, Name: "question", Description: "要问的问题", Required: true}},
+	}})
 }
 
 // runDiscordPush polls new ALERT signals and pushes APPROVE-approved ones to
@@ -444,7 +478,7 @@ func (s *discordScheduler) clearDiscordButtons(ctx context.Context, in *discord.
 // handleInteraction serves POST /v1/discord/interactions: Ed25519 verification
 // first (this endpoint is reachable through the public haproxy path, so every
 // failed check is 401), then PING → PONG and message components → the wheel
-// confirm flow. The response is written before any order work so Discord's
+// confirm flow or /ask. The response is written before any background work so Discord's
 // 3-second reply window is never missed.
 func (s *discordScheduler) handleInteraction(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
@@ -465,18 +499,20 @@ func (s *discordScheduler) handleInteraction(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "invalid interaction", http.StatusBadRequest)
 		return
 	}
-	// 老板指令(2026-08-13):无论按哪个按钮,收到交互后就删掉卡片按钮——
-	// 按钮在 = 该单未处理,按钮没了 = 已处理。验签通过即生效,任何响应
-	// 路径都清(异步,不占 3 秒响应窗口)。
-	defer func() { go s.clearDiscordButtons(s.ctx, &in) }()
 	if in.Type == discord.TypePing {
 		discord.WriteResponse(w, discord.Pong())
+		return
+	}
+	if in.Type == discord.TypeApplicationCmd {
+		s.handleApplicationCommand(w, &in)
 		return
 	}
 	if in.Type != discord.TypeMessageComponent || in.Data == nil {
 		http.Error(w, "unsupported interaction", http.StatusBadRequest)
 		return
 	}
+	// Buttons disappear as soon as a verified component interaction arrives.
+	defer func() { go s.clearDiscordButtons(s.ctx, &in) }()
 	signalID, action, err := parseCallbackData(in.Data.CustomID)
 	if err != nil {
 		s.logf("interaction %s: malformed custom_id %q", in.ID, in.Data.CustomID)
@@ -499,6 +535,50 @@ func (s *discordScheduler) handleInteraction(w http.ResponseWriter, r *http.Requ
 		s.recordDismissDiscord(w, &in, signalID)
 	default:
 		discord.WriteResponse(w, discord.EphemeralMessage("未知操作"))
+	}
+}
+
+func (s *discordScheduler) handleApplicationCommand(w http.ResponseWriter, in *discord.Interaction) {
+	if in.Data == nil || in.Data.Name != "ask" {
+		discord.WriteResponse(w, discord.EphemeralMessage("不支持的命令"))
+		return
+	}
+	userID := in.UserID()
+	if len(s.allowed) == 0 {
+		s.logf("assistant: allowed_user_ids empty; allowing user %q (backlog: require owner whitelist)", userID)
+	} else if _, ok := s.allowed[userID]; !ok {
+		s.logf("assistant: rejected user %q outside allowed_user_ids", userID)
+		discord.WriteResponse(w, discord.EphemeralMessage("你没有权限使用此命令"))
+		return
+	}
+	question := ""
+	for _, option := range in.Data.Options {
+		if option.Name == "question" {
+			question = strings.TrimSpace(option.Value)
+			break
+		}
+	}
+	if question == "" {
+		discord.WriteResponse(w, discord.EphemeralMessage("question 参数不能为空"))
+		return
+	}
+	discord.WriteResponse(w, discord.DeferredChannelMessage())
+	go s.answerDiscordQuestion(s.ctx, in, question)
+}
+
+func (s *discordScheduler) answerDiscordQuestion(ctx context.Context, in *discord.Interaction, question string) {
+	reply := "调用失败: 助手未配置"
+	if s.asker != nil {
+		answer, err := s.asker.Ask(ctx, question)
+		if err != nil {
+			reply = "调用失败: " + err.Error()
+		} else {
+			reply = answer
+		}
+	}
+	reply = truncateAssistantReply(reply)
+	if err := s.dc.EditInteractionReply(ctx, s.appID, in.Token, reply); err != nil {
+		s.logf("interaction %s: /ask followup: %v", in.ID, err)
 	}
 }
 

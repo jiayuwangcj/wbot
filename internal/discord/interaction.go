@@ -95,7 +95,15 @@ type InteractionUser struct {
 
 // InteractionData carries the pressed button's custom_id.
 type InteractionData struct {
-	CustomID string `json:"custom_id"`
+	Name     string              `json:"name"`
+	CustomID string              `json:"custom_id"`
+	Options  []InteractionOption `json:"options"`
+}
+
+// InteractionOption is one slash-command argument.
+type InteractionOption struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // UserID returns the actor id (message components carry member.user).
@@ -113,6 +121,7 @@ func (i *Interaction) UserID() string {
 const (
 	ResponsePong                  = 1
 	ResponseChannelMessageWithSrc = 4
+	ResponseDeferredChannelMsg    = 5
 )
 
 // flagEphemeral makes a CHANNEL_MESSAGE_WITH_SOURCE visible only to the actor.
@@ -137,6 +146,9 @@ func Pong() Response { return Response{Type: ResponsePong} }
 func EphemeralMessage(content string) Response {
 	return Response{Type: ResponseChannelMessageWithSrc, Data: &ResponseData{Content: content, Flags: flagEphemeral}}
 }
+
+// DeferredChannelMessage acknowledges a command while work continues.
+func DeferredChannelMessage() Response { return Response{Type: ResponseDeferredChannelMsg} }
 
 // WriteResponse encodes resp as the interaction reply.
 func WriteResponse(w http.ResponseWriter, resp Response) {
