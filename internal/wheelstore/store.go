@@ -21,7 +21,7 @@ var (
 	ErrInvalidRecord = errors.New("wheelstore: invalid record")
 	ErrInvalidAction = errors.New("wheelstore: action must be ALERT or HOLD")
 	ErrInvalidStatus = errors.New("wheelstore: capability status must be READY or DATA_BLOCKED")
-	ErrInvalidOp     = errors.New("wheelstore: action must be CONFIRM, IGNORE, FILL, NOTE, LLM_REVIEW, NO, or REJECTED")
+	ErrInvalidOp     = errors.New("wheelstore: action must be CONFIRM, IGNORE, FILL, NOTE, LLM_REVIEW, LLM_REVIEW_FAILED, NO, or REJECTED")
 )
 
 // ConfigRecord is one version of a symbol's strategy configuration. Config
@@ -688,7 +688,7 @@ func (s *Store) QuerySignals(ctx context.Context, symbol, action string, limit i
 
 func validAction(a string) bool {
 	switch strings.ToUpper(strings.TrimSpace(a)) {
-	case "CONFIRM", "IGNORE", "FILL", "NOTE", "LLM_REVIEW", "NO", "REJECTED":
+	case "CONFIRM", "IGNORE", "FILL", "NOTE", "LLM_REVIEW", "LLM_REVIEW_FAILED", "NO", "REJECTED":
 		return true
 	}
 	return false
