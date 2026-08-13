@@ -53,12 +53,12 @@ type Context struct {
 }
 
 type ObservedOption struct {
-	Strike       float64
-	Expiry       string
-	Premium      float64
-	Delta        float64
-	IV           float64
-	OpenInterest int64
+	Strike       float64 `json:"strike"`
+	Expiry       string  `json:"expiry"`
+	Premium      float64 `json:"premium"`
+	Delta        float64 `json:"delta"`
+	IV           float64 `json:"iv"`
+	OpenInterest int64   `json:"open_interest"`
 }
 
 type Policy struct {
@@ -135,6 +135,8 @@ func (s *Service) Submit(ctx context.Context, d Decision, account Context, polic
 			StrategyConfig: map[string]any{"strategy": "llm", "policy": policy},
 			Signal:         decision, Positions: account.Positions, CashAvailable: account.CashAvailable,
 			CurrentPrice: normalized.CurrentPrice, RulesText: rules, Symbol: normalized.Symbol,
+			Inventory: account.Inventory, ObservedOptions: account.ObservedOptions,
+			AsOf: s.now().UTC().Format(time.RFC3339),
 		},
 		Summary: map[string]any{"signal_id": id, "decision": decision},
 	})
@@ -400,5 +402,10 @@ func optionPrefix(symbol string) string {
 	}
 }
 
-const optionRules = `审核 LLM 期权决策。确定性代码已检查数量、正价格、合约/到期日/行权价、Delta、资金和库存；你仍须从经济理由、数据一致性和系统性风险独立复核。仅全部通过时 APPROVE。`
-const stockRules = `审核 LLM 正股决策。确定性代码已检查数量、正限价、现金或库存覆盖；你仍须从经济理由、价格一致性和系统性风险独立复核。仅全部通过时 APPROVE。`
+const optionRules = `审核 LLM 期权决策。确定性代码已检查数量、正价格、合约/到期日/行权价、Delta、资金和库存；你仍须从经济理由、数据一致性和系统性风险独立复核。仅全部通过时 APPROVE。
+
+数据范围(缺失即不存在,不得因缺字段拒绝):current_date 是审核基准时间,到期日 DTE 按它计算;signal 与 observed_options 只提供 strike/expiry/premium(=last 成交参考)/delta/iv/open_interest,无 bid/ask/volume/theta;llm 策略参数范围见 strategy_config.policy(数量上限与 lot),无 max_inventory/DTE 硬参数,合约范围由快照过滤保证;inventory 提供 effective/target/gap 可复核库存一致性。`
+
+const stockRules = `审核 LLM 正股决策。确定性代码已检查数量、正限价、现金或库存覆盖；你仍须从经济理由、价格一致性和系统性风险独立复核。仅全部通过时 APPROVE。
+
+数据范围(缺失即不存在,不得因缺字段拒绝):current_date 是审核基准时间;strategy_config.policy 是 llm 策略全部参数(数量上限),无 max_inventory/DTE 硬参数;inventory 提供 effective/target/gap 可复核库存一致性。`

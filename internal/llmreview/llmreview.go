@@ -87,6 +87,18 @@ type ReviewRequest struct {
 	CurrentPrice   float64
 	RulesText      string
 	Symbol         string
+	// Inventory is the inventory snapshot (current/actual/option_delta/
+	// effective/target/gap); without it a review model has no way to check
+	// whether a sell direction reverses the position (2026-08-13 signal 648
+	// REJECTED: "缺少 effective_inventory、inventory_gap、target_inventory").
+	Inventory any
+	// ObservedOptions is the option chain snapshot the decision was made
+	// against, letting the model verify the chosen contract exists and its
+	// price/greeks are plausible.
+	ObservedOptions any
+	// AsOf is the ISO8601 UTC review timestamp; the model needs today's date
+	// to verify expiry/DTE (2026-08-13 signal 648: "未提供当前日期").
+	AsOf string
 }
 
 // ReviewResult is the structured verdict; Verdict is "APPROVE" or "REJECT".
@@ -150,13 +162,16 @@ type chatCompletion struct {
 
 func userContent(req ReviewRequest) (string, error) {
 	data := map[string]any{
-		"symbol":          req.Symbol,
-		"strategy_config": req.StrategyConfig,
-		"signal":          req.Signal,
-		"positions":       req.Positions,
-		"cash_available":  req.CashAvailable,
-		"current_price":   req.CurrentPrice,
-		"rules":           req.RulesText,
+		"symbol":           req.Symbol,
+		"strategy_config":  req.StrategyConfig,
+		"signal":           req.Signal,
+		"positions":        req.Positions,
+		"cash_available":   req.CashAvailable,
+		"current_price":    req.CurrentPrice,
+		"rules":            req.RulesText,
+		"inventory":        req.Inventory,
+		"observed_options": req.ObservedOptions,
+		"current_date":     req.AsOf,
 	}
 	// Marshal first so structs (Signal, Config, …) become plain maps, then
 	// strip zero-valued time.Time encodings: Go marshals a zero time.Time as
