@@ -4,6 +4,7 @@
 package wheel
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -75,19 +76,26 @@ type PricePoint struct {
 	TargetInventory float64 `json:"target_inventory" yaml:"target_inventory"`
 }
 
-// Config is the complete, structured wheel configuration.
+// Config is the complete, structured wheel configuration. Strategic price
+// anchors are deliberately separate from tactical parameters: callers choose
+// the former, while optimizers may tune only the latter.
 type Config struct {
-	Strategy              string       `json:"strategy" yaml:"strategy"`
-	PricePositionCurve    []PricePoint `json:"price_position_curve" yaml:"price_position_curve"`
-	MaxInventory          float64      `json:"max_inventory" yaml:"max_inventory"`
-	LotSize               int          `json:"lot_size" yaml:"lot_size"`
-	MinDTE                int          `json:"min_dte" yaml:"min_dte"`
-	MaxDTE                int          `json:"max_dte" yaml:"max_dte"`
-	MinOptionQuality      float64      `json:"min_option_quality" yaml:"min_option_quality"`
-	MaxDailyOrders        int          `json:"max_daily_orders" yaml:"max_daily_orders"`
-	ExtremeMaxDailyOrders int          `json:"extreme_max_daily_orders" yaml:"extreme_max_daily_orders"`
-	NoTradeGap            float64      `json:"no_trade_gap" yaml:"no_trade_gap"`
-	StrategicState        string       `json:"strategic_state" yaml:"strategic_state"`
+	Strategy               string          `json:"strategy" yaml:"strategy"`
+	FullPositionPrice      float64         `json:"full_position_price" yaml:"full_position_price"`
+	ZeroPositionPrice      float64         `json:"zero_position_price" yaml:"zero_position_price"`
+	MaxInventory           float64         `json:"max_inventory" yaml:"max_inventory"`
+	MoveIntervalPct        float64         `json:"move_interval_pct" yaml:"move_interval_pct"`
+	MinPremiumPerShare     float64         `json:"min_premium_per_share" yaml:"min_premium_per_share"`
+	StockSwitchPct         float64         `json:"stock_switch_pct" yaml:"stock_switch_pct"`
+	TradeGap               float64         `json:"trade_gap" yaml:"trade_gap"`
+	MinOptionQuality       float64         `json:"min_option_quality" yaml:"min_option_quality"`
+	MinDTE                 int             `json:"min_dte" yaml:"min_dte"`
+	MaxDTE                 int             `json:"max_dte" yaml:"max_dte"`
+	StrategicState         string          `json:"strategic_state" yaml:"strategic_state"`
+	MigrationLossy         bool            `json:"migration_lossy,omitempty" yaml:"migration_lossy,omitempty"`
+	MigrationWarningCount  int             `json:"migration_warning_count,omitempty" yaml:"migration_warning_count,omitempty"`
+	MigrationWarnings      []string        `json:"migration_warnings,omitempty" yaml:"migration_warnings,omitempty"`
+	MigrationOriginalCurve json.RawMessage `json:"migration_original_price_position_curve,omitempty" yaml:"-"`
 	// MaxQuoteAgeSeconds is required freshness in seconds. Zero uses the
 	// conservative one-day default so a quote can never be timeless.
 	MaxQuoteAgeSeconds int `json:"max_quote_age_seconds,omitempty" yaml:"max_quote_age_seconds,omitempty"`
@@ -97,36 +105,32 @@ func (c Config) Validate() error {
 	if c.Strategy != "wheel" {
 		return fmt.Errorf("wheel: strategy must be wheel")
 	}
-	if len(c.PricePositionCurve) < 2 {
-		return fmt.Errorf("wheel: price_position_curve requires at least two points")
+	if !finite(c.FullPositionPrice) || c.FullPositionPrice <= 0 {
+		return fmt.Errorf("wheel: full_position_price must be positive")
 	}
-	if !finite(c.MaxInventory) || c.MaxInventory <= 0 {
-		return fmt.Errorf("wheel: max_inventory must be positive")
+	if !finite(c.ZeroPositionPrice) || c.ZeroPositionPrice <= c.FullPositionPrice {
+		return fmt.Errorf("wheel: zero_position_price must be greater than full_position_price")
 	}
-	var prev PricePoint
-	for i, p := range c.PricePositionCurve {
-		if !finite(p.Price) || p.Price <= 0 || !finite(p.TargetInventory) {
-			return fmt.Errorf("wheel: invalid curve point %d", i)
-		}
-		if p.TargetInventory < 0 || p.TargetInventory > c.MaxInventory {
-			return fmt.Errorf("wheel: target inventory out of bounds at point %d", i)
-		}
-		if i > 0 && (p.Price <= prev.Price || p.TargetInventory > prev.TargetInventory) {
-			return fmt.Errorf("wheel: curve must have increasing prices and non-increasing targets")
-		}
-		prev = p
+	if !finite(c.MaxInventory) || c.MaxInventory <= 0 || math.Trunc(c.MaxInventory) != c.MaxInventory {
+		return fmt.Errorf("wheel: max_inventory must be a positive integer")
 	}
-	if c.LotSize <= 0 || c.MinDTE < 5 || c.MaxDTE > 10 || c.MinDTE > c.MaxDTE {
-		return fmt.Errorf("wheel: DTE must be a valid range within 5..10 and lot_size positive")
+	if c.MinDTE < 5 || c.MaxDTE > 10 || c.MinDTE > c.MaxDTE {
+		return fmt.Errorf("wheel: DTE must be a valid range within 5..10")
 	}
 	if !finite(c.MinOptionQuality) || c.MinOptionQuality < 0 || c.MinOptionQuality > 1 {
 		return fmt.Errorf("wheel: min_option_quality must be in [0,1]")
 	}
-	if c.MaxDailyOrders < 1 || c.MaxDailyOrders > 1 || c.ExtremeMaxDailyOrders < 1 || c.ExtremeMaxDailyOrders > 2 || c.ExtremeMaxDailyOrders < c.MaxDailyOrders {
-		return fmt.Errorf("wheel: daily order limits exceed hard limits")
+	if !finite(c.MoveIntervalPct) || c.MoveIntervalPct < 0 {
+		return fmt.Errorf("wheel: move_interval_pct must be non-negative")
 	}
-	if !finite(c.NoTradeGap) || c.NoTradeGap < 0 {
-		return fmt.Errorf("wheel: no_trade_gap must be non-negative")
+	if !finite(c.MinPremiumPerShare) || c.MinPremiumPerShare < 0 {
+		return fmt.Errorf("wheel: min_premium_per_share must be non-negative")
+	}
+	if !finite(c.StockSwitchPct) || c.StockSwitchPct < 0 {
+		return fmt.Errorf("wheel: stock_switch_pct must be non-negative")
+	}
+	if !finite(c.TradeGap) || c.TradeGap < 0 {
+		return fmt.Errorf("wheel: trade_gap must be non-negative")
 	}
 	switch c.StrategicState {
 	case StateNormal, StateCaution, StatePauseBuy, StateExit:
@@ -140,7 +144,17 @@ func (c Config) Validate() error {
 func ValidateConfig(c Config) error { return c.Validate() }
 
 func (c Config) TargetInventory(price float64) (float64, error) {
-	return InterpolateTargetInventory(c.PricePositionCurve, price)
+	if !finite(price) || price <= 0 || !finite(c.FullPositionPrice) || !finite(c.ZeroPositionPrice) || c.FullPositionPrice <= 0 || c.ZeroPositionPrice <= c.FullPositionPrice || !finite(c.MaxInventory) || c.MaxInventory <= 0 {
+		return 0, errors.New("wheel: invalid price anchors or current price")
+	}
+	if price <= c.FullPositionPrice {
+		return c.MaxInventory, nil
+	}
+	if price >= c.ZeroPositionPrice {
+		return 0, nil
+	}
+	ratio := (price - c.FullPositionPrice) / (c.ZeroPositionPrice - c.FullPositionPrice)
+	return c.MaxInventory * (1 - ratio), nil
 }
 
 func (c Config) Interpolate(price float64) (float64, error) { return c.TargetInventory(price) }
@@ -344,9 +358,6 @@ func (q OptionQuote) Validate(asOf time.Time, cfg Config) error {
 	if !finite(q.impliedVol()) || q.impliedVol() <= 0 || q.Theta == nil || !finite(*q.Theta) || q.Volume <= 0 || q.openInterest() <= 0 || q.LotSize <= 0 {
 		return errors.New("wheel: quote missing IV, Theta, liquidity or lot size")
 	}
-	if cfg.LotSize > 0 && q.LotSize != cfg.LotSize {
-		return errors.New("wheel: quote lot size does not match config")
-	}
 	qt := q.quoteTime()
 	if !asOf.IsZero() && qt.IsZero() {
 		return errors.New("wheel: quote timestamp is missing")
@@ -482,10 +493,11 @@ type DecisionInput struct {
 	FuturesEquivalentShares float64
 	Positions               []OptionPosition
 	Quotes                  []OptionQuote
-	DailyOrders             int
-	ExtremeDay              bool
-	CashAvailable           float64
-	HasCashAvailable        bool
+	// LastEffectiveFillPrice is optional. A zero value means that no prior
+	// effective fill is available, so movement-based tactical gates stay off.
+	LastEffectiveFillPrice float64
+	CashAvailable          float64
+	HasCashAvailable       bool
 }
 
 type CandidateEvaluation struct {
@@ -498,6 +510,14 @@ type CandidateEvaluation struct {
 	AssignmentInventory float64     `json:"assignment_inventory"`
 	Accepted            bool        `json:"accepted"`
 	Reasons             []string    `json:"reasons,omitempty"`
+}
+
+// StockSuggestion is a non-executing tactical suggestion. It is attached to
+// a HOLD signal so existing option-alert and human-review gates cannot mistake
+// it for an option order.
+type StockSuggestion struct {
+	Side   string  `json:"side"`
+	Shares float64 `json:"shares"`
 }
 
 type Signal struct {
@@ -523,6 +543,7 @@ type Signal struct {
 	Reasons             []string              `json:"reasons"`
 	RejectReasons       []string              `json:"reject_reasons,omitempty"`
 	Candidates          []CandidateEvaluation `json:"candidates,omitempty"`
+	StockSuggestion     *StockSuggestion      `json:"stock_suggestion,omitempty"`
 	CapabilityStatus    string                `json:"capability_status"`
 	BlockedBy           []string              `json:"blocked_by,omitempty"`
 }
@@ -564,51 +585,47 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	if err != nil {
 		return Signal{Action: ActionHold, Direction: DirectionHold, Reason: err.Error(), Reasons: []string{err.Error()}}, err
 	}
-	inv := CalculateInventory(in.StockShares, in.FuturesEquivalentShares, in.Positions, cfg.LotSize)
+	inv := CalculateInventory(in.StockShares, in.FuturesEquivalentShares, in.Positions, 100)
 	gap := target - inv.EffectiveInventory
 	base := Signal{Action: ActionHold, Direction: DirectionHold, TargetInventory: target, InventoryGap: gap, ActualInventory: inv.ActualInventory, OptionDeltaStock: inv.OptionDeltaStock, EffectiveInventory: inv.EffectiveInventory, CapabilityStatus: CapabilityReady}
-	if math.Abs(gap) <= cfg.NoTradeGap {
+	if math.Abs(gap) <= cfg.TradeGap {
 		return hold("inventory gap is within no-trade band", base), nil
+	}
+	if in.LastEffectiveFillPrice > 0 && cfg.MoveIntervalPct > 0 {
+		move := math.Abs(in.CurrentPrice-in.LastEffectiveFillPrice) / in.LastEffectiveFillPrice
+		if move < cfg.MoveIntervalPct {
+			return hold("price move is below move_interval_pct", base), nil
+		}
+	}
+	if in.LastEffectiveFillPrice > 0 && cfg.StockSwitchPct > 0 {
+		move := math.Abs(in.CurrentPrice-in.LastEffectiveFillPrice) / in.LastEffectiveFillPrice
+		if move >= cfg.StockSwitchPct {
+			side := "BUY"
+			if gap < 0 {
+				side = "SELL"
+			}
+			base.StockSuggestion = &StockSuggestion{Side: side, Shares: math.Abs(gap)}
+			return hold("stock_switch_pct reached; stock suggestion only", base), nil
+		}
 	}
 	direction := DirectionPut
 	if gap < 0 {
 		direction = DirectionCall
 	}
 	base.Direction = direction
-	if in.DailyOrders < 0 {
-		return hold("daily order count is invalid", base), nil
-	}
-	limit := cfg.MaxDailyOrders
-	if in.ExtremeDay {
-		limit = cfg.ExtremeMaxDailyOrders
-	}
-	if in.DailyOrders >= limit || limit <= 0 {
-		return hold("daily order limit reached", base), nil
-	}
 	switch cfg.StrategicState {
 	case StatePauseBuy, StateExit:
 		if direction == DirectionPut {
 			return hold("strategic state does not permit new puts", base), nil
 		}
 	}
-	remaining := limit - in.DailyOrders
-	qty := int(math.Ceil(math.Abs(gap) / float64(cfg.LotSize)))
-	if qty < 1 {
-		qty = 1
-	}
-	if qty > remaining {
-		qty = remaining
-	}
-	if cfg.StrategicState == StateCaution && direction == DirectionPut && qty > 1 {
-		qty = (qty + 1) / 2
-	}
-	if qty < 1 {
-		return hold("inventory gap cannot produce an order", base), nil
-	}
-
 	validDirectionQuoteCount := 0
 	dependencyBlocked := false
 	for _, q := range in.Quotes {
+		// A signal remains one human-reviewed contract suggestion. Removing the
+		// daily cap means later valid evaluations are not suppressed; it does not
+		// turn one reminder into an unbounded multi-contract order.
+		qty := 1
 		candidate := CandidateEvaluation{Quote: q, Direction: direction, Quantity: qty, SignedContracts: -qty, Quality: QualityScore(q)}
 		if err := q.Validate(in.AsOf, cfg); err != nil {
 			candidate.Reasons = append(candidate.Reasons, err.Error())
@@ -621,19 +638,22 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			if len(candidate.Reasons) == 0 && candidate.Quality < cfg.MinOptionQuality {
 				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: option quality %.4f below minimum %.4f", candidate.Quality, cfg.MinOptionQuality))
 			}
+			if len(candidate.Reasons) == 0 && q.Bid < cfg.MinPremiumPerShare {
+				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: premium per share %.4f below minimum %.4f", q.Bid, cfg.MinPremiumPerShare))
+			}
 		}
 		if len(candidate.Reasons) == 0 {
 			signed := -float64(qty)
 			if direction == DirectionCall {
 				signed = -float64(qty)
 			}
-			postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(cfg.LotSize)
+			postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(q.LotSize)
 			candidate.PostTradeEffective = EffectiveInventory(inv.ActualInventory, postDelta)
 			candidate.AssignmentInventory = inv.ActualInventory
 			if direction == DirectionPut {
-				candidate.AssignmentInventory += PutAssignmentShares(in.Positions, cfg.LotSize) + float64(qty*cfg.LotSize)
+				candidate.AssignmentInventory += PutAssignmentShares(in.Positions, q.LotSize) + float64(qty*q.LotSize)
 			} else {
-				candidate.AssignmentInventory -= CoveredShares(in.Positions, cfg.LotSize) + float64(qty*cfg.LotSize)
+				candidate.AssignmentInventory -= CoveredShares(in.Positions, q.LotSize) + float64(qty*q.LotSize)
 			}
 			if direction == DirectionPut && candidate.AssignmentInventory > cfg.MaxInventory+1e-9 {
 				candidate.Reasons = append(candidate.Reasons, "wheel: put assignment exceeds max inventory")
@@ -644,7 +664,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			if direction == DirectionPut && !in.HasCashAvailable {
 				candidate.Reasons = append(candidate.Reasons, "wheel: cash/margin availability is missing")
 				dependencyBlocked = true
-			} else if direction == DirectionPut && in.CashAvailable+1e-9 < PutAssignmentCash(in.Positions, cfg.LotSize)+q.Strike*float64(qty*cfg.LotSize) {
+			} else if direction == DirectionPut && in.CashAvailable+1e-9 < PutAssignmentCash(in.Positions, q.LotSize)+q.Strike*float64(qty*q.LotSize) {
 				candidate.Reasons = append(candidate.Reasons, "wheel: cash/margin is insufficient for put assignment")
 			}
 			if math.Abs(target-candidate.PostTradeEffective) > math.Abs(gap)+1e-9 {
@@ -705,7 +725,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	base.ExpectedGain = expectedGain(chosen.Quote, chosen.Quantity)
 	base.Quote = &chosen.Quote
 	base.PostTradeEffective, base.AssignmentInventory = chosen.PostTradeEffective, chosen.AssignmentInventory
-	base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds no-trade gap %.2f", direction, gap, cfg.NoTradeGap)
+	base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds trade gap %.2f", direction, gap, cfg.TradeGap)
 	base.Reasons = []string{base.Reason}
 	return base, nil
 }

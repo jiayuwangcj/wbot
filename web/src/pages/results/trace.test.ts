@@ -59,52 +59,48 @@ describe("toSignalRow", () => {
 });
 
 describe("toRerunWheelParams", () => {
-  const curve = [
-    { price: 400, target_inventory: 100 },
-    { price: 500, target_inventory: 0 },
-  ];
-
   it("unwraps strategy_params saved from the watchlist", () => {
     const params = toRerunWheelParams({
       strategy_params: {
-        price_position_curve: curve,
+        full_position_price: 400,
+        zero_position_price: 500,
         max_inventory: 100,
-        lot_size: 100,
+        move_interval_pct: 0.018,
+		min_premium_per_share: 1.2,
+		stock_switch_pct: 0.03,
+		trade_gap: 50,
         min_dte: 5,
         max_dte: 10,
         min_option_quality: 0.6,
-        max_daily_orders: 1,
-        extreme_max_daily_orders: 2,
-        no_trade_gap: 50,
         strategic_state: "CAUTION",
       },
     });
     expect(params).not.toBeNull();
-    expect(params?.price_position_curve).toEqual(curve);
+	expect(params?.full_position_price).toBe(400);
+	expect(params?.zero_position_price).toBe(500);
     expect(params?.max_inventory).toBe(100);
     expect(params?.strategic_state).toBe("CAUTION");
   });
 
   it("reads flat manual-run params", () => {
     const params = toRerunWheelParams({
-      price_position_curve: curve,
+      full_position_price: 400,
+	  zero_position_price: 500,
       max_inventory: 300,
-      lot_size: 100,
       min_dte: 5,
       max_dte: 10,
       min_option_quality: 0.6,
-      max_daily_orders: 1,
-      extreme_max_daily_orders: 2,
-      no_trade_gap: 50,
+	  trade_gap: 50,
       strategic_state: "NORMAL",
     });
     expect(params?.max_inventory).toBe(300);
   });
 
   it("omits unknown fields and rejects non-wheel shapes", () => {
-    const params = toRerunWheelParams({ price_position_curve: curve, max_inventory: 100, strategic_state: "BOGUS" });
+	const params = toRerunWheelParams({ full_position_price: 400, zero_position_price: 500, max_inventory: 100, strategic_state: "BOGUS" });
     expect(params?.strategic_state).toBeUndefined();
     expect(toRerunWheelParams({})).toBeNull();
-    expect(toRerunWheelParams({ price_position_curve: [{ price: "x" }] })).toBeNull();
+	expect(toRerunWheelParams({ price_position_curve: [{ price: 400 }, { price: 500 }] })?.full_position_price).toBe(400);
+	expect(toRerunWheelParams({ price_position_curve: [{ price: "x" }] })).toBeNull();
   });
 });

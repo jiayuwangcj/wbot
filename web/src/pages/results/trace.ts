@@ -1,5 +1,5 @@
 import { WHEEL_STATES } from "../../components/WheelForm";
-import type { WheelCurvePoint, WheelParams, WheelState } from "../../api/types";
+import type { WheelParams, WheelState } from "../../api/types";
 
 // Backtest detail signal rows; the API returns flat fields (backtest.SignalTrace),
 // while the shared type nests them under inventory — decode both shapes at runtime.
@@ -72,33 +72,31 @@ export function toRerunWheelParams(value: unknown): Partial<WheelParams> | null 
   const raw = asRecord(value);
   const nested = asRecord(raw.strategy_params);
   const source = Object.keys(nested).length > 0 ? nested : raw;
+  let fullPrice = asNumber(source.full_position_price);
+  let zeroPrice = asNumber(source.zero_position_price);
   const curveRaw = source.price_position_curve;
-  if (!Array.isArray(curveRaw)) return null;
-  const curve: WheelCurvePoint[] = [];
-  for (const point of curveRaw) {
-    const record = asRecord(point);
-    const price = asNumber(record.price);
-    const targetInventory = asNumber(record.target_inventory);
-    if (price === null || targetInventory === null) return null;
-    curve.push({ price, target_inventory: targetInventory });
+  if ((fullPrice === null || zeroPrice === null) && Array.isArray(curveRaw) && curveRaw.length >= 2) {
+	fullPrice = asNumber(asRecord(curveRaw[0]).price);
+	zeroPrice = asNumber(asRecord(curveRaw[curveRaw.length - 1]).price);
   }
-  const result: Partial<WheelParams> = { price_position_curve: curve };
+  if (fullPrice === null || zeroPrice === null) return null;
+  const result: Partial<WheelParams> = { full_position_price: fullPrice, zero_position_price: zeroPrice };
   const maxInventory = asNumber(source.max_inventory);
   if (maxInventory !== null) result.max_inventory = maxInventory;
-  const lotSize = asNumber(source.lot_size);
-  if (lotSize !== null) result.lot_size = lotSize;
+  const moveInterval = asNumber(source.move_interval_pct);
+  if (moveInterval !== null) result.move_interval_pct = moveInterval;
+  const minPremium = asNumber(source.min_premium_per_share);
+  if (minPremium !== null) result.min_premium_per_share = minPremium;
+  const stockSwitch = asNumber(source.stock_switch_pct);
+  if (stockSwitch !== null) result.stock_switch_pct = stockSwitch;
+  const tradeGap = firstOf([asNumber(source.trade_gap), asNumber(source.no_trade_gap)]);
+  if (tradeGap !== null) result.trade_gap = tradeGap;
   const minDte = asNumber(source.min_dte);
   if (minDte !== null) result.min_dte = minDte;
   const maxDte = asNumber(source.max_dte);
   if (maxDte !== null) result.max_dte = maxDte;
   const minOptionQuality = asNumber(source.min_option_quality);
   if (minOptionQuality !== null) result.min_option_quality = minOptionQuality;
-  const maxDailyOrders = asNumber(source.max_daily_orders);
-  if (maxDailyOrders !== null) result.max_daily_orders = maxDailyOrders;
-  const extremeMaxDailyOrders = asNumber(source.extreme_max_daily_orders);
-  if (extremeMaxDailyOrders !== null) result.extreme_max_daily_orders = extremeMaxDailyOrders;
-  const noTradeGap = asNumber(source.no_trade_gap);
-  if (noTradeGap !== null) result.no_trade_gap = noTradeGap;
   const strategicState = asString(source.strategic_state);
   if (WHEEL_STATES.includes(strategicState as WheelState)) result.strategic_state = strategicState as WheelState;
   return result;

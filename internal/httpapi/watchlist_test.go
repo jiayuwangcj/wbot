@@ -16,11 +16,9 @@ import (
 
 func wheelParams() map[string]any {
 	return map[string]any{
-		"price_position_curve": []any{
-			map[string]any{"price": 400.0, "target_inventory": 1200.0},
-			map[string]any{"price": 550.0, "target_inventory": 0.0},
-		},
-		"max_inventory": 1200.0,
+		"full_position_price": 400.0,
+		"zero_position_price": 550.0,
+		"max_inventory":       1200.0,
 	}
 }
 
@@ -66,17 +64,19 @@ func TestStrategiesListOnlyWheelWithRequiredRiskInputs(t *testing.T) {
 	if len(got) != 1 || got[0].Name != "wheel" {
 		t.Fatalf("strategies = %+v; want only wheel", got)
 	}
-	var curve, max strategy.ContractParam
+	var full, zero, max strategy.ContractParam
 	for _, p := range got[0].Params {
 		switch p.Name {
-		case "price_position_curve":
-			curve = p
+		case "full_position_price":
+			full = p
+		case "zero_position_price":
+			zero = p
 		case "max_inventory":
 			max = p
 		}
 	}
-	if curve.Type != "curve" || !curve.Required || max.Type != "number" || !max.Required {
-		t.Fatalf("required wheel schema = curve=%+v max=%+v", curve, max)
+	if full.Type != "number" || !full.Required || zero.Type != "number" || !zero.Required || max.Type != "number" || !max.Required {
+		t.Fatalf("required wheel schema = full=%+v zero=%+v max=%+v", full, zero, max)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestWatchlistListIncludesVersionAndExecutionFields(t *testing.T) {
 
 func TestWatchlistPutValidWheel(t *testing.T) {
 	fake := &fakeWatchlistStore{}
-	rec := put(t, WatchlistHandler(fake), "/v1/watchlist/HK.00700", `{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}}`)
+	rec := put(t, WatchlistHandler(fake), "/v1/watchlist/HK.00700", `{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
 	}
@@ -115,13 +115,32 @@ func TestWatchlistPutValidWheel(t *testing.T) {
 	}
 }
 
+func TestWatchlistPutMigratesLegacyAndWritesOnlyNewKeys(t *testing.T) {
+	fake := &fakeWatchlistStore{}
+	rec := put(t, WatchlistHandler(fake), "/v1/watchlist/HK.00883", `{"strategy":"wheel","params":{"price_position_curve":[{"price":40,"target_inventory":22000},{"price":48,"target_inventory":11000},{"price":55,"target_inventory":0}],"max_inventory":22000,"no_trade_gap":50,"max_daily_orders":1,"extreme_max_daily_orders":2,"lot_size":100}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body %s", rec.Code, rec.Body)
+	}
+	for _, key := range []string{"price_position_curve", "no_trade_gap", "max_daily_orders", "extreme_max_daily_orders", "lot_size"} {
+		if _, ok := fake.gotParams[key]; ok {
+			t.Fatalf("persisted legacy key %q in %v", key, fake.gotParams)
+		}
+	}
+	if fake.gotParams["full_position_price"] != 40.0 || fake.gotParams["zero_position_price"] != 55.0 || fake.gotParams["trade_gap"] != 50.0 || fake.gotParams["migration_lossy"] != true || fake.gotParams["migration_warning_count"] != 3.0 {
+		t.Fatalf("canonical migration = %v", fake.gotParams)
+	}
+	if _, ok := fake.gotParams["migration_original_price_position_curve"]; !ok {
+		t.Fatalf("migration curve audit missing: %v", fake.gotParams)
+	}
+}
+
 func TestWatchlistPutRejectsLegacyNamesAndIncompleteWheel(t *testing.T) {
 	h := WatchlistHandler(&fakeWatchlistStore{})
 	for _, body := range []string{
 		`{"strategy":"covered-call"}`,
 		`{"strategy":"cash-secured-put"}`,
 		`{"strategy":"wheel"}`,
-		`{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200}],"max_inventory":1200}}`,
+		`{"strategy":"wheel","params":{"full_position_price":400,"max_inventory":1200}}`,
 	} {
 		rec := put(t, h, "/v1/watchlist/HK.00700", body)
 		if rec.Code != http.StatusBadRequest {

@@ -120,11 +120,11 @@ function configParams(config: Record<string, unknown>): Record<string, unknown> 
 }
 
 function configSummary(config: WheelConfigVersion): string {
-  const params = configParams(config.config);
-  const curve = params.price_position_curve;
-  const anchors = Array.isArray(curve) ? curve.length : "?";
-  const maxInventory = numberValue(params.max_inventory);
-  return `wheel · 曲线 ${anchors} 锚点 · 最大库存 ${maxInventory === null ? "?" : formatNumber(maxInventory)}`;
+	const params = configParams(config.config);
+	const fullPrice = numberValue(params.full_position_price);
+	const zeroPrice = numberValue(params.zero_position_price);
+	const maxInventory = numberValue(params.max_inventory);
+	return `wheel · 满仓价 ${fullPrice === null ? "?" : formatNumber(fullPrice)} · 清仓价 ${zeroPrice === null ? "?" : formatNumber(zeroPrice)} · 最大库存 ${maxInventory === null ? "?" : formatNumber(maxInventory)}`;
 }
 
 function configState(config: WheelConfigVersion): string {
@@ -450,7 +450,7 @@ export function WatchlistPage(): ReactNode {
         <div className="watchlist-strategy-card-heading">
           <div>
             <Typography.Title level={3}>动态 Wheel · 仅提醒</Typography.Title>
-            <Typography.Paragraph>按价格—目标库存曲线管理仓位缺口；策略只扫描 Put/Call 并记录 ALERT 或 HOLD，不调用交易 API。</Typography.Paragraph>
+            <Typography.Paragraph>按满仓价—清仓价区间管理仓位缺口；策略只产生需人工处置的建议并记录 ALERT 或 HOLD，不自动下单。</Typography.Paragraph>
           </div>
           <Tag color="blue">wheel</Tag>
         </div>

@@ -46,7 +46,6 @@ type SignalStore interface {
 	LatestConfig(ctx context.Context, symbol string) (*wheelstore.ConfigRecord, error)
 	AppendSignal(ctx context.Context, r wheelstore.SignalRecord) (int64, error)
 	AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error)
-	ListSignals(ctx context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error)
 }
 
 // WatchlistLister lists wheel bindings and syncs their execution status
@@ -81,13 +80,13 @@ func NewRunner(deps Dependencies) *Runner { return &Runner{deps: deps} }
 const fallbackBlocker = "no complete quote snapshot"
 
 // 与 doc/WHEEL_STRATEGY.md「LLM 审核规则摘要（单一来源）」小节同步，文档为源。
-const wheelReviewRules = `仅审核 wheel 区间策略；信号只能是 ALERT 或 HOLD，审核不得触发自动下单。策略在价格区间内通过卖出现金担保 Put 或备兑 Call 收取权利金，并在价格超出区间时依照价格-目标库存曲线调整风险敞口：目标库存高于有效库存时只能考虑卖 Put 增加库存敞口，目标库存低于有效库存时只能考虑卖 Call 降低库存敞口。
+const wheelReviewRules = `仅审核 wheel 区间策略；信号只能是 ALERT 或 HOLD，审核不得触发自动下单。策略在满仓价到清仓价区间内线性计算目标库存，通过卖出现金担保 Put 或备兑 Call 收取权利金：目标库存高于有效库存时只能考虑卖 Put 增加库存敞口，目标库存低于有效库存时只能考虑卖 Call 降低库存敞口。
 当前情况由标的现价、策略配置版本、现金可用额及股票/期权持仓组成；signal 描述提示动作、方向、卖出合约数、候选报价、当前/目标/有效/交易后库存、库存缺口、能力状态和阻断原因；预期收益 expected_gain 是按卖价 Bid × 合约乘数 × 数量估算的毛权利金，不含手续费、滑点、税费及指派损益，不代表保证收益，缺失或为零不得推断为有收益。
 必须逐项审核：
-1. 方向反转检查（硬性项）：核对 signal.direction 与当前持仓、effective_inventory、inventory_gap、target_inventory 及价格-目标库存曲线一致；缺口为正时卖 Put、缺口为负时卖 Call，卖出/买入符号与目标库存变化必须一致，任何方向反转或符号矛盾都必须 REJECT。
-2. 策略参数：核对 min_dte/max_dte、价格区间、max_inventory、max_daily_orders、strategic_state 及候选合约参数。
+1. 方向反转检查（硬性项）：核对 signal.direction 与当前持仓、effective_inventory、inventory_gap、target_inventory 及满仓价—清仓价区间一致；缺口为正时卖 Put、缺口为负时卖 Call，卖出/买入符号与目标库存变化必须一致，任何方向反转或符号矛盾都必须 REJECT。
+2. 策略参数：核对 full_position_price/zero_position_price、max_inventory、move_interval_pct、min_premium_per_share、stock_switch_pct、trade_gap、min_option_quality、min_dte/max_dte、strategic_state 及候选合约参数。
 3. 数据质量：报价必须完整且新鲜，Bid/Ask 正数且未倒挂，IV/Delta/Theta 合理，Volume/OI 非零；不得用缺失 Greeks 或过期、拼接数据作判断。
-4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量、交易后有效库存和 extreme 每日限制。
+4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量和交易后有效库存；策略不设每日提醒次数上限。
 5. 系统性错误：排查闭市或停牌误判、同一合约重复动作、与现有持仓或历史动作矛盾、合约类型/到期日/乘数错误及 Greeks 缺失。
 6. 数据不足：capability_status 为 DATA_BLOCKED、blocked_by 非空，或任一关键字段不足时必须 REJECT；不得以 expected_gain 补偿或放宽任何校验。`
 
@@ -182,18 +181,12 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 		return fmt.Errorf("option quotes: %w", err)
 	}
 	asOf := time.Now()
-	dailyOrders, err := r.dailyOrders(ctx, symbol, now)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "wheelrun: %s: daily orders: %v (using 0)\n", symbol, err)
-	}
 	in := wheel.DecisionInput{
 		CurrentPrice:     price,
 		AsOf:             asOf,
 		StockShares:      stockShares,
 		Positions:        opts,
 		Quotes:           assembleQuotes(symbol, contracts, quotes),
-		DailyOrders:      dailyOrders,
-		ExtremeDay:       false,
 		CashAvailable:    0,
 		HasCashAvailable: false,
 	}
@@ -329,23 +322,6 @@ func reviewDetails(verdict string, reasons []string, notes string, summary map[s
 	return details
 }
 
-// dailyOrders counts today's (UTC) ALERT signals as the day's order usage.
-// The count is best-effort: a store failure logs and yields 0.
-func (r *Runner) dailyOrders(ctx context.Context, symbol string, now time.Time) (int, error) {
-	signals, err := r.deps.Store.ListSignals(ctx, symbol, "", "", 1000)
-	if err != nil {
-		return 0, err
-	}
-	start := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	n := 0
-	for _, s := range signals {
-		if s.Action == "ALERT" && !s.CreatedAt.Before(start) {
-			n++
-		}
-	}
-	return n, nil
-}
-
 // assembleQuotes merges chain metadata (type/expiry/strike) with live quotes
 // into wheel candidates. Contracts the gateway did not answer stay absent;
 // zero fields flow through and Evaluate turns them into HOLD.
@@ -395,6 +371,10 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 	if capStatus != wheel.CapabilityReady && len(blocked) == 0 {
 		blocked = []string{fallbackBlocker}
 	}
+	candidates := candidateMaps(sig.Candidates)
+	if sig.StockSuggestion != nil {
+		candidates = append(candidates, map[string]any{"instrument": "STOCK", "side": sig.StockSuggestion.Side, "shares": sig.StockSuggestion.Shares})
+	}
 	record := wheelstore.SignalRecord{
 		Symbol:           symbol,
 		Action:           strings.ToUpper(sig.Action),
@@ -409,7 +389,7 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 			TargetInventory:    fptr(sig.TargetInventory),
 			InventoryGap:       fptr(sig.InventoryGap),
 		},
-		Candidates:       candidateMaps(sig.Candidates),
+		Candidates:       candidates,
 		RejectionReasons: sig.RejectReasons,
 		Reason:           sig.Reason,
 	}

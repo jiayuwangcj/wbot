@@ -51,24 +51,25 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 [
   {
     "name": "wheel",
-    "description": "按价格—目标库存曲线管理库存，只生成人工提醒，不自动下单",
+    "description": "按满仓价—清仓价区间管理库存，只生成人工提醒，不自动下单",
     "params": [
-      {"name":"price_position_curve","type":"curve","required":true},
+      {"name":"full_position_price","type":"number","required":true},
+      {"name":"zero_position_price","type":"number","required":true},
       {"name":"max_inventory","type":"number","required":true},
-      {"name":"lot_size","type":"number","default":100},
+      {"name":"move_interval_pct","type":"number","default":0},
+      {"name":"min_premium_per_share","type":"number","default":0},
+      {"name":"stock_switch_pct","type":"number","default":0},
+      {"name":"trade_gap","type":"number","default":50},
       {"name":"min_dte","type":"number","default":5},
       {"name":"max_dte","type":"number","default":10},
       {"name":"min_option_quality","type":"number","default":0.6},
-      {"name":"max_daily_orders","type":"number","default":1},
-      {"name":"extreme_max_daily_orders","type":"number","default":2},
-      {"name":"no_trade_gap","type":"number","default":50},
       {"name":"strategic_state","type":"choice","default":"NORMAL","choices":["NORMAL","CAUTION","PAUSE_BUY","EXIT"]}
     ]
   }
 ]
 ```
 
-`price_position_curve` 至少两个锚点，`price` 严格递增，`target_inventory` 单调不增且在 `[0,max_inventory]`；DTE 必须位于 5–10，质量分在 `[0,1]`，正常/极端提醒张数硬上限为 1/2。缺少两个 required 字段、未知字段、类型或范围非法时返回 `400 invalid_request`。
+满仓价必须大于 0，清仓价必须大于满仓价，最大库存为正整数；DTE 必须位于 5–10，质量分在 `[0,1]`，其余战术参数非负。百分比输入使用小数（`0.018` 表示 `1.8%`）。新战术键可省略且 0 表示关闭相应门槛；策略不设每日提醒次数上限。缺少三个 required 字段、未知字段、类型或范围非法时返回 `400 invalid_request`。
 
 ## GET /v1/watchlist
 
@@ -80,15 +81,16 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
     "symbol":"HK.00700",
     "strategy":"wheel",
     "params": {
-      "price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],
+      "full_position_price":400,
+      "zero_position_price":550,
       "max_inventory":1200,
-      "lot_size":100,
+      "move_interval_pct":0.018,
+      "min_premium_per_share":1.2,
+      "stock_switch_pct":0.03,
+      "trade_gap":50,
       "min_dte":5,
       "max_dte":10,
       "min_option_quality":0.6,
-      "max_daily_orders":1,
-      "extreme_max_daily_orders":2,
-      "no_trade_gap":50,
       "strategic_state":"NORMAL"
     },
     "created_at":"2026-08-10T01:00:00Z",
@@ -97,16 +99,16 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 ]
 ```
 
-迁移留下的旧行保留审计数据并标记 `NEEDS_RECONFIGURATION`；它们不能被本端点当作可执行 Wheel 配置返回，也不能通过默认值自动修复。
+旧曲线配置可读取并转换为新键；转换后的新版本带 `migration_lossy`、原曲线审计值和迁移告警计数，持久化不再写旧参数键。
 
 ## PUT /v1/watchlist/{symbol}
 
-新增或更新一个标的。请求必须显式传 `price_position_curve` 与 `max_inventory`；其余字段可使用 `/v1/strategies` 中的文档默认值。当前 serve 路由负责 schema 校验、追加 `wheel_configs(symbol, version)` 不可变版本并把 watchlist 指向新版本；它不会覆盖已产生信号引用的版本。
+新增或更新一个标的。新请求必须显式传 `full_position_price`、`zero_position_price` 与 `max_inventory`；其余字段可使用 `/v1/strategies` 中的文档默认值。兼容读取旧曲线请求，但持久化统一写新键。当前 serve 路由负责 schema 校验、追加 `wheel_configs(symbol, version)` 不可变版本并把 watchlist 指向新版本；它不会覆盖已产生信号引用的版本。
 
 ```bash
 curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
   -H 'Content-Type: application/json' \
-  -d '{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":50,"strategic_state":"NORMAL"}}'
+  -d '{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200,"move_interval_pct":0.018,"min_premium_per_share":1.2,"stock_switch_pct":0.03,"trade_gap":50,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"strategic_state":"NORMAL"}}'
 ```
 
 成功返回 `200` 和存储后的 watchlist 行。`400 invalid_request` 覆盖缺 symbol/strategy、strategy 不是 `wheel`、缺 required 字段、非法曲线、未知字段、类型/范围错误或非 JSON body；`405` 表示方法不允许。`DELETE /v1/watchlist/{symbol}` 只删除关注绑定，不删除配置/快照/信号审计；不存在返回 `404`。

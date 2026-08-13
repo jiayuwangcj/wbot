@@ -109,18 +109,12 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		curve       []EquityPoint
 		trades      []Trade
 		signals     []SignalTrace
-		lastDate    time.Time
 	)
 	for i, b := range bars {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
 		st.Pending = nil
-		barDate := b.Ts.UTC().Truncate(24 * time.Hour)
-		if lastDate.IsZero() || !barDate.Equal(lastDate) {
-			st.DailyOrders = 0
-			lastDate = barDate
-		}
 		st.Price = b.Close
 		// DATA_BLOCKED: this remains bar-time replay with the latest atomic
 		// snapshot at or before the bar. Without a trusted event timeline we do
@@ -327,9 +321,6 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, trades
 		delete(st.Options, p.Code)
 	} else {
 		st.Options[p.Code] = pos
-	}
-	if act == ActionSellCall || act == ActionSellPut {
-		st.DailyOrders++
 	}
 	st.OptPrice[p.Code] = price
 	st.Pending = nil

@@ -44,18 +44,16 @@ function detail(id: number, overrides: Partial<BacktestDetail> = {}): BacktestDe
 }
 
 const wheelParams = {
-  price_position_curve: [
-    { price: 400, target_inventory: 100 },
-    { price: 500, target_inventory: 0 },
-  ],
+  full_position_price: 400,
+  zero_position_price: 500,
   max_inventory: 100,
-  lot_size: 100,
+  move_interval_pct: 0,
+  min_premium_per_share: 0,
+  stock_switch_pct: 0,
+  trade_gap: 50,
   min_dte: 5,
   max_dte: 10,
   min_option_quality: 0.6,
-  max_daily_orders: 1,
-  extreme_max_daily_orders: 2,
-  no_trade_gap: 50,
   strategic_state: "NORMAL",
 } as const;
 

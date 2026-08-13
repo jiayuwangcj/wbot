@@ -103,8 +103,6 @@ type State struct {
 	Quotes      []wheel.OptionQuote
 	ObservedAt  time.Time
 	SnapshotKey string
-	DailyOrders int
-	ExtremeDay  bool
 }
 
 // Equity returns total portfolio value: cash + position at price plus option

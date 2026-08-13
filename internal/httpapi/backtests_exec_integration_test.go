@@ -20,17 +20,15 @@ import (
 
 func integrationWheelParams() map[string]any {
 	return map[string]any{
-		"price_position_curve": []any{
-			map[string]any{"price": 90.0, "target_inventory": 100.0},
-			map[string]any{"price": 130.0, "target_inventory": 100.0},
-		},
-		"max_inventory":      100.0,
-		"min_option_quality": 0.0,
+		"full_position_price": 90.0,
+		"zero_position_price": 130.0,
+		"max_inventory":       100.0,
+		"min_option_quality":  0.0,
 	}
 }
 
 func integrationWheelExecBody(symbol string) string {
-	return `{"symbol":"` + symbol + `","strategy":"wheel","params":{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":100}],"max_inventory":100,"min_option_quality":0}}`
+	return `{"symbol":"` + symbol + `","strategy":"wheel","params":{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"min_option_quality":0}}`
 }
 
 // execTestServer wires the serve topology as in cmd/wbot: backtests GET mux +

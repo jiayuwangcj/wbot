@@ -203,7 +203,7 @@ VALUES ('CLIO95P', $1, 'PUT', 95, $2, 'fixture', $3, $4, -0.30, $5, $6, 0.30, -0
 	}
 
 	argv := []string{"wbot", "backtest", "-dsn", dsn, "-symbol", symbol, "-timeframe", "1d", "-adjust", "none",
-		"-strategy", "wheel", "-params", `{"price_position_curve":[{"price":90,"target_inventory":100},{"price":110,"target_inventory":100}],"max_inventory":100,"min_option_quality":0,"no_trade_gap":0}`}
+		"-strategy", "wheel", "-params", `{"full_position_price":90,"zero_position_price":110,"max_inventory":100,"min_option_quality":0,"trade_gap":0}`}
 	// Day 0 sells one P95 for 300. Existing assignment commitment consumes the
 	// max inventory, so later snapshots cannot open another. Final bid mark is 1.
 	out := captureRunOutput(t, argv)
@@ -643,7 +643,7 @@ func TestServeMuxWatchlistRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/v1/watchlist = %d; want 200 (body %s)", rec.Code, rec.Body)
 	}
-	req := httptest.NewRequest(http.MethodPut, "/v1/watchlist/HK.00700", strings.NewReader(`{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}}`))
+	req := httptest.NewRequest(http.MethodPut, "/v1/watchlist/HK.00700", strings.NewReader(`{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200}}`))
 	rec = httptest.NewRecorder()
 	top.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -669,7 +669,7 @@ func TestWatchlistCLIIntegration(t *testing.T) {
 		t.Fatalf("cleanup remove = %d; want 0 or 1", got)
 	}
 
-	addArgs := []string{"wbot", "watchlist", "add", "-symbol", symbol, "-strategy", "wheel", "-params", `{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}`}
+	addArgs := []string{"wbot", "watchlist", "add", "-symbol", symbol, "-strategy", "wheel", "-params", `{"full_position_price":400,"zero_position_price":550,"max_inventory":1200}`}
 	if out := captureRunOutput(t, addArgs); !strings.Contains(out, symbol) {
 		t.Fatalf("add output missing symbol: %q", out)
 	}
@@ -942,7 +942,7 @@ func TestServeMuxWheelAuditRoutes(t *testing.T) {
 func TestServeMuxBacktestExecuteRoute(t *testing.T) {
 	top := serveMuxForTest()
 	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
-		strings.NewReader(`{"symbol":"DEMO.US","strategy":"wheel","params":{"price_position_curve":[{"price":100,"target_inventory":100},{"price":200,"target_inventory":0}],"max_inventory":100}}`))
+		strings.NewReader(`{"symbol":"DEMO.US","strategy":"wheel","params":{"full_position_price":100,"zero_position_price":200,"max_inventory":100}}`))
 	rec := httptest.NewRecorder()
 	top.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -1309,7 +1309,7 @@ VALUES ($1, $2, 'PUT', 95, $3, 'fixture', $4, $5, -0.30, $6, $7, 0.30, -0.10, 10
 			t.Fatal(err)
 		}
 	}
-	wheelParams := `{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":100}],"max_inventory":100,"min_option_quality":0}`
+	wheelParams := `{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"min_option_quality":0}`
 
 	// CLI -save: baseline Wheel output from immutable quote snapshots.
 	cliOut := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", os.Getenv("WBOT_PG_DSN"),

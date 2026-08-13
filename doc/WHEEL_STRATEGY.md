@@ -4,7 +4,7 @@
 
 ## 1. 边界
 
-- 战略层由人定义价格—目标库存曲线、最大库存和状态，不由回测优化。
+- 战略层由人定义满仓价、清仓价、最大库存和状态，不由回测优化。
 - 战术层根据目标库存与有效库存之差，只选择 5–10 DTE 的 Put 或 Call。
 - 执行层只产生提醒与日志；LLM 审核通过后，Telegram 人工确认仅允许模拟环境下单，任何情况下都不自动下单。
 - 技术指标、方向预测、宏观预测和单点参数寻优不进入 v1。
@@ -17,25 +17,22 @@
 {
   "strategy": "wheel",
   "params": {
-    "price_position_curve": [
-      {"price": 400, "target_inventory": 1200},
-      {"price": 480, "target_inventory": 600},
-      {"price": 550, "target_inventory": 0}
-    ],
+    "full_position_price": 400,
+    "zero_position_price": 550,
     "max_inventory": 1200,
-    "lot_size": 100,
+    "move_interval_pct": 0.018,
+    "min_premium_per_share": 1.2,
+    "stock_switch_pct": 0.03,
+    "trade_gap": 50,
     "min_dte": 5,
     "max_dte": 10,
     "min_option_quality": 0.6,
-    "max_daily_orders": 1,
-    "extreme_max_daily_orders": 2,
-    "no_trade_gap": 50,
     "strategic_state": "NORMAL"
   }
 }
 ```
 
-约束：曲线价格严格递增，目标库存单调不增并位于 `[0, max_inventory]`；DTE 范围有效；质量分在 `[0,1]`；正常日最多 1 张，极端日硬上限 2 张。价格落在锚点之间时线性插值，区间外钳制到端点。
+约束：`full_position_price > 0`，`zero_position_price > full_position_price`，`max_inventory` 为正整数；DTE 范围有效，质量分在 `[0,1]`，其余战术参数非负。百分比 JSON/CLI 一律使用小数（`0.018` 表示 `1.8%`）；界面显示 `%` 时乘 100。两价之间按满仓到零仓线性插值，区间外钳制；策略不设每日提醒次数上限。
 
 战略状态：
 
@@ -50,7 +47,7 @@
 actual_inventory    = stock_shares + futures_equivalent_shares
 option_delta_stock  = Σ(signed_contracts × market_delta × lot_size)
 effective_inventory = actual_inventory + option_delta_stock
-target_inventory    = interpolate(price_position_curve, current_price)
+target_inventory    = interpolate(full_position_price, zero_position_price, max_inventory, current_price)
 inventory_gap       = target_inventory - effective_inventory
 ```
 
@@ -58,8 +55,8 @@ inventory_gap       = target_inventory - effective_inventory
 
 决策规则：
 
-- `gap > no_trade_gap`：只扫描 Put。
-- `gap < -no_trade_gap`：只扫描 Call。
+- `gap > trade_gap`：只扫描 Put。
+- `gap < -trade_gap`：只扫描 Call。
 - 其余：`HOLD`，写入不交易原因。
 
 ## 4. 候选与风控
@@ -78,12 +75,11 @@ inventory_gap       = target_inventory - effective_inventory
 - Put 指派后实际库存不超过 `max_inventory`，且现金检查覆盖所有已有空 Put 的行权价×张数×lot 承诺，再加本次候选；不能只检查新的一张；
 - Call 指派后不会形成裸空头；
 - 开仓后的有效库存不比开仓前更偏离目标；
-- 当日次数未达到正常/极端上限；
 - 战略状态允许该方向。
 
 输出包含方向、数量、报价、质量分、交易前后库存、指派后库存、触发理由和全部拒绝理由。输出的唯一动作是 `ALERT` 或 `HOLD`。
 
-正常日硬上限 1 张已由领域层执行；第二张只允许在外部已确认“显著二次价格/库存偏移”的极端日上下文中评估。当前产品尚未接入可审计的二次偏移判定，因此不会自行把普通日升级为极端日；该触发器在证据完成前保持 `INTEGRATION_BLOCKED`。
+每次评估仍只生成一张待人工审核的合约建议，但后续有效评估不会因当日已产生提醒或成交而被抑制。每日提醒/成交次数可作为报告统计，不能作为领域限制。
 
 ## 5. 数据与持久化
 
@@ -97,7 +93,7 @@ inventory_gap       = target_inventory - effective_inventory
 - `backtest_results.signals`（migration 006）：保存逐 bar 的 `ALERT/HOLD` 决策轨迹，包括 `capability_status`、`blocked_by`、原子 `snapshot_key/observed_at` 和库存分解；回测输入同时保存完整 `strategy_params`，用于复现。
 - 只读审计 API：`GET /v1/wheel/configs`、`GET /v1/wheel/signals`、`GET /v1/wheel/signals/{id}/actions`。不提供写动作，不具备身份/授权闭环。
 
-历史 watchlist 参数迁移采用显式失效：旧策略行标记为需要重新配置，不猜测价格曲线或最大库存。
+存量参数按“新读旧、只写新”迁移：旧 `price_position_curve` 取首尾价格作为满仓价/清仓价，标记 `migration_lossy=true` 并保留原曲线审计 JSON；`no_trade_gap` 映射为 `trade_gap`；旧每日限额键和 `lot_size` 忽略并累计迁移告警。新写入只包含新参数键和迁移审计字段。
 
 ### 5.1 实时链路与人工闸门
 
@@ -140,12 +136,11 @@ inventory_gap       = target_inventory - effective_inventory
 
 | Capability | Status | 缺口 / 启用闸门 |
 | --- | --- | --- |
-| 价格曲线、库存计算、状态和风险决策 | `READY`（P0-A） | `go test ./internal/wheel` 通过；保持单测与确定性样例 |
+| 两价区间、库存计算、状态和风险决策 | `READY`（P0-A） | `go test ./internal/wheel` 通过；保持单测与确定性样例 |
 | 唯一 `wheel` 注册表、required schema、watchlist 校验 | `READY`（P0-B） | registry/watchlist 单测和 API 契约回归通过；旧名称明确拒绝 |
 | 版本配置、不可变 snapshot、signal/action repository | `READY`（P0-C） | migration、repository、fail-closed 测试及真实 PostgreSQL integration 已通过 |
 | bar-time 最新原子 snapshot 回放 | `READY`（研究/验证） | 同输入同 trace；每根 bar 取截至该时点的最新批次 |
 | Web 结构化配置、只读信号和回测 trace | `READY` | Mac Chrome desktop/390px 与动态 DOM 断言通过；人工动作仍只读 |
-| 极端日第二张触发判定 | `INTEGRATION_BLOCKED` | 领域硬上限已实现；显著二次价格/库存偏移的可信事件输入和审计规则尚未接入 |
 | 真实供应商 adapter 与实时 Put/Call 提醒 | `DATA_BLOCKED` | 尚无验收过的可信源能提供同一时点完整 Delta、bid/ask、IV、OI、Theta、volume、lot size 和 freshness |
 | 历史事件 Wheel 回测 | `DATA_BLOCKED` | 历史 snapshot/quote/成交事件覆盖不足，不能还原事件顺序 |
 | 人工确认/忽略/成交回填 | `INTEGRATION_BLOCKED` | 需完成 Web/API 身份边界、权限和操作审计；仍不得自动下单 |
@@ -180,12 +175,12 @@ Futu 接入未确认的字段或权限必须留在 `INTEGRATION_BLOCKED`，不�
 
 > 此段为 LLM 审核规则唯一维护点，修改需同步 `internal/wheelrun/runner.go` 的 `wheelReviewRules` 常量。
 
-仅审核 wheel 区间策略；信号只能是 ALERT 或 HOLD，审核不得触发自动下单。策略在价格区间内通过卖出现金担保 Put 或备兑 Call 收取权利金，并在价格超出区间时依照价格-目标库存曲线调整风险敞口：目标库存高于有效库存时只能考虑卖 Put 增加库存敞口，目标库存低于有效库存时只能考虑卖 Call 降低库存敞口。
+仅审核 wheel 区间策略；信号只能是 ALERT 或 HOLD，审核不得触发自动下单。策略在满仓价到清仓价区间内线性计算目标库存，通过卖出现金担保 Put 或备兑 Call 收取权利金：目标库存高于有效库存时只能考虑卖 Put 增加库存敞口，目标库存低于有效库存时只能考虑卖 Call 降低库存敞口。
 当前情况由标的现价、策略配置版本、现金可用额及股票/期权持仓组成；signal 描述提示动作、方向、卖出合约数、候选报价、当前/目标/有效/交易后库存、库存缺口、能力状态和阻断原因；预期收益 expected_gain 是按卖价 Bid × 合约乘数 × 数量估算的毛权利金，不含手续费、滑点、税费及指派损益，不代表保证收益，缺失或为零不得推断为有收益。
 必须逐项审核：
-1. 方向反转检查（硬性项）：核对 signal.direction 与当前持仓、effective_inventory、inventory_gap、target_inventory 及价格-目标库存曲线一致；缺口为正时卖 Put、缺口为负时卖 Call，卖出/买入符号与目标库存变化必须一致，任何方向反转或符号矛盾都必须 REJECT。
-2. 策略参数：核对 min_dte/max_dte、价格区间、max_inventory、max_daily_orders、strategic_state 及候选合约参数。
+1. 方向反转检查（硬性项）：核对 signal.direction 与当前持仓、effective_inventory、inventory_gap、target_inventory 及满仓价—清仓价区间一致；缺口为正时卖 Put、缺口为负时卖 Call，卖出/买入符号与目标库存变化必须一致，任何方向反转或符号矛盾都必须 REJECT。
+2. 策略参数：核对 full_position_price/zero_position_price、max_inventory、move_interval_pct、min_premium_per_share、stock_switch_pct、trade_gap、min_option_quality、min_dte/max_dte、strategic_state 及候选合约参数。
 3. 数据质量：报价必须完整且新鲜，Bid/Ask 正数且未倒挂，IV/Delta/Theta 合理，Volume/OI 非零；不得用缺失 Greeks 或过期、拼接数据作判断。
-4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量、交易后有效库存和 extreme 每日限制。
+4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量和交易后有效库存；策略不设每日提醒次数上限。
 5. 系统性错误：排查闭市或停牌误判、同一合约重复动作、与现有持仓或历史动作矛盾、合约类型/到期日/乘数错误及 Greeks 缺失。
 6. 数据不足：capability_status 为 DATA_BLOCKED、blocked_by 非空，或任一关键字段不足时必须 REJECT；不得以 expected_gain 补偿或放宽任何校验。
