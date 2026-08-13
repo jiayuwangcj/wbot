@@ -358,6 +358,9 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 			RulesText:      wheelReviewRules,
 			Symbol:         symbol,
 			PendingOrders:  pending,
+			// 审核模型需要当前日期验证 DTE/报价时效(signal 736:
+			// "current_date 为空,无法验证 max_quote_age_seconds=3600")。
+			AsOf: r.now().UTC().Format(time.RFC3339),
 		},
 		Summary: summary,
 	})
