@@ -448,6 +448,7 @@ func runBacktest(prog string, argv []string) int {
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
 	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
+	seed := fs.Int64("seed", 42, "seed for the unfilled-attempt draw (same seed, same trace; 0 = default 42)")
 	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
 	params := fs.String("params", "", `Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md`)
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
@@ -462,6 +463,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "The wheel strategy reads quote snapshots and contract metadata, so it requires -dsn input.\n")
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
+		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
 		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
@@ -583,6 +585,7 @@ func runBacktest(prog string, argv []string) int {
 		Limit:     *limit,
 		Cash:      *cash,
 		Fee:       *fee,
+		Seed:      *seed,
 	}
 
 	var (
@@ -602,7 +605,7 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
-		res, err = backtest.RunOptions(context.Background(), bars, *cash, *fee, s, nil)
+		res, err = backtest.RunOptions(context.Background(), bars, *cash, *fee, s, &backtest.OptionsData{RunSeed: *seed})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1

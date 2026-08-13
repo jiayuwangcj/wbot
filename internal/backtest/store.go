@@ -61,10 +61,15 @@ func SaveResult(ctx context.Context, db *sql.DB, strategy, symbol string, params
 		return 0, fmt.Errorf("backtest: save result: params: %w", err)
 	}
 	metricsJSON, err := json.Marshal(map[string]any{
-		"equity":       r.Equity,
-		"total_return": r.TotalReturn,
-		"max_drawdown": r.MaxDrawdown,
-		"bars":         r.Bars,
+		"equity":         r.Equity,
+		"total_return":   r.TotalReturn,
+		"max_drawdown":   r.MaxDrawdown,
+		"bars":           r.Bars,
+		"attempt_count":  r.Unfilled.AttemptCount,
+		"fill_count":     r.Unfilled.FillCount,
+		"unfilled_count": r.Unfilled.UnfilledCount,
+		"unfilled_ratio": r.Unfilled.UnfilledRatio, // null when no attempts
+		"unfilled_model": unfilledModelLabel(),
 	})
 	if err != nil {
 		return 0, fmt.Errorf("backtest: save result: metrics: %w", err)

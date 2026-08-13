@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
+	"github.com/jiayu/wbot/internal/wheel"
 )
 
 // scriptStrategy replays a fixed action/size/pending per bar (index-aligned),
@@ -37,7 +38,8 @@ func (s *scriptStrategy) OnBar(_ context.Context, _ ingest.Bar, st *State) (Acti
 }
 
 // mkOptionsData builds an OptionsData from per-code close lists (bars on the
-// same days as mkBars: Jan 1+i 2024) and a chain.
+// same days as mkBars: Jan 1+i 2024) and a chain, plus one liquid quote batch
+// at day 0 (tight ask, high vol/oi) so sell attempts sample the 0.05 floor.
 func mkOptionsData(chain map[string]OptionContract, closes map[string][]float64) *OptionsData {
 	data := &OptionsData{Chain: OptionChain{}, Bars: OptionBars{}}
 	for code, c := range chain {
@@ -51,6 +53,19 @@ func mkOptionsData(chain map[string]OptionContract, closes map[string][]float64)
 			})
 		}
 	}
+	quotes := make([]wheel.OptionQuote, 0, len(chain))
+	for code, cs := range closes {
+		quotes = append(quotes, wheel.OptionQuote{
+			Symbol: code, Code: code, Bid: cs[0], Ask: cs[0] * 1.001,
+			Volume: 100_000, OpenInterest: 1_000_000,
+		})
+	}
+	data.QuoteBatches = []QuoteSnapshotBatch{{
+		ObservedAt:  time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
+		SnapshotKey: "fixture", Underlying: "U.US", UnderlyingPrice: 100, Quotes: quotes,
+	}}
+	data.Snapshots = data.QuoteBatches
+	data.QuoteSnapshots = data.QuoteBatches
 	return data
 }
 
@@ -118,7 +133,10 @@ func TestShortCallITMExercise(t *testing.T) {
 		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
 	}
 	// 100 shares in @100, premium 200, then ITM at 120: shares out at strike 105.
-	res, err := RunOptions(context.Background(), mkBars(100, 110, 120), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"C105": {2, 2}}))
+	// RunSeed 1 fills the single sell attempt (unfilled.go draw outcome).
+	opts := mkOptionsData(chain, map[string][]float64{"C105": {2, 2}})
+	opts.RunSeed = 1
+	res, err := RunOptions(context.Background(), mkBars(100, 110, 120), 10000, 0, sc, opts)
 	if err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
@@ -137,7 +155,9 @@ func TestShortCallOTMExpiry(t *testing.T) {
 		sizes:   []float64{100, 1, 0},
 		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
 	}
-	res, err := RunOptions(context.Background(), mkBars(100, 102, 101), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"C105": {2, 2}}))
+	opts := mkOptionsData(chain, map[string][]float64{"C105": {2, 2}})
+	opts.RunSeed = 1
+	res, err := RunOptions(context.Background(), mkBars(100, 102, 101), 10000, 0, sc, opts)
 	if err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
@@ -158,7 +178,9 @@ func TestShortPutITMExercise(t *testing.T) {
 		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 3}, nil, nil},
 	}
 	// premium 300, assigned at strike 95 on close 85: cash 10000+300-9500, stock 100.
-	res, err := RunOptions(context.Background(), mkBars(100, 90, 85), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"P95": {3, 3}}))
+	opts := mkOptionsData(chain, map[string][]float64{"P95": {3, 3}})
+	opts.RunSeed = 0
+	res, err := RunOptions(context.Background(), mkBars(100, 90, 85), 10000, 0, sc, opts)
 	if err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
@@ -177,7 +199,9 @@ func TestShortPutOTMExpiry(t *testing.T) {
 		sizes:   []float64{1, 0, 0},
 		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 3}, nil, nil},
 	}
-	res, err := RunOptions(context.Background(), mkBars(100, 103, 102), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"P95": {3, 3}}))
+	opts := mkOptionsData(chain, map[string][]float64{"P95": {3, 3}})
+	opts.RunSeed = 0
+	res, err := RunOptions(context.Background(), mkBars(100, 103, 102), 10000, 0, sc, opts)
 	if err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
@@ -306,7 +330,9 @@ func TestOptionLegMerge(t *testing.T) {
 			{Code: "C1", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2.2},
 		},
 	}
-	if _, err := RunOptions(context.Background(), mkBars(100, 101), 10000, 0, sc, mkOptionsData(chain, map[string][]float64{"C1": {2, 2}})); err != nil {
+	opts := mkOptionsData(chain, map[string][]float64{"C1": {2, 2}})
+	opts.RunSeed = 1 // fills both sell attempts (draw outcomes, unfilled.go)
+	if _, err := RunOptions(context.Background(), mkBars(100, 101), 10000, 0, sc, opts); err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
 	pos, ok := sc.st.Options["C1"]

@@ -80,6 +80,7 @@ func TestRun(t *testing.T) {
 		{"backtest dsn no value", []string{"wbot", "backtest", "-dsn"}, 2},
 		{"backtest bad strategy", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "nope"}, 2},
 		{"backtest bad params json", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "hold", "-params", "{"}, 2},
+		{"backtest bad seed", []string{"wbot", "backtest", "-file", "/dev/null", "-seed", "abc"}, 2},
 		{"backtest params with hold", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "hold", "-params", `{"a":1}`}, 2},
 		{"backtest covered-call bad param", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "covered-call", "-params", `{"strike_pct_otm":-1}`}, 2},
 		{"backtest covered-call unknown param", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "covered-call", "-params", `{"bogus":1}`}, 2},
@@ -215,6 +216,16 @@ VALUES ('CLIO95P', $1, 'PUT', 95, $2, 'fixture', $3, $4, -0.30, $5, $6, 0.30, -0
 	// Determinism: a second run prints the identical summary line.
 	if out2 := captureRunOutput(t, argv); out2 != out {
 		t.Fatalf("runs differ: %q vs %q", out2, out)
+	}
+	// -seed overrides the unfilled-attempt draws: seed 5's day-0 attempt
+	// unfills (draw outcome, unfilled.go), so the summary line must differ
+	// while the same seed stays reproducible.
+	out5 := captureRunOutput(t, append(argv, "-seed", "5"))
+	if out5 == out {
+		t.Fatalf("-seed 5 output %q; want a different (unfilled) run", out5)
+	}
+	if out5b := captureRunOutput(t, append(argv, "-seed", "5")); out5b != out5 {
+		t.Fatalf("-seed 5 runs differ: %q vs %q", out5b, out5)
 	}
 }
 
