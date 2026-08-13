@@ -55,7 +55,9 @@ func TestBacktestExecuteIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer database.Close()
+	// Register via t.Cleanup (not defer): Cleanup runs LIFO, so the watchlist
+	// restore below executes while the connection is still open.
+	t.Cleanup(func() { database.Close() })
 	if err := db.MigrateUp(database); err != nil {
 		t.Fatal(err)
 	}
@@ -103,9 +105,47 @@ VALUES ($1, $2, 'PUT', 95, $3, 'fixture', $4, $5, -0.30, $6, $7, 0.30, -0.10, 10
 		}
 	}
 	// The batch runs every watchlist row, so the test needs a clean list.
+	// Snapshot existing bindings first and restore them afterwards: local
+	// integration runs share the serve database (WBOT_PG_DSN), and wiping
+	// watchlist here silently stops live wheel monitoring (2026-08-13).
+	type wlBinding struct {
+		symbol, strategy, params, status, reason string
+		version                                  *int64
+	}
+	var existing []wlBinding
+	rows, err := database.Query(`SELECT symbol, strategy, params::text, config_version, execution_status, invalidation_reason FROM watchlist`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var b wlBinding
+		var v sql.NullInt64
+		var st, rs sql.NullString
+		if err := rows.Scan(&b.symbol, &b.strategy, &b.params, &v, &st, &rs); err != nil {
+			t.Fatal(err)
+		}
+		if v.Valid {
+			b.version = &v.Int64
+		}
+		b.status, b.reason = st.String, rs.String
+		existing = append(existing, b)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := database.Exec(`DELETE FROM watchlist`); err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		for _, b := range existing {
+			if _, err := database.Exec(`INSERT INTO watchlist
+  (symbol, strategy, params, config_version, execution_status, invalidation_reason)
+VALUES ($1, $2, $3::jsonb, $4, $5, $6)`, b.symbol, b.strategy, b.params, b.version, b.status, b.reason); err != nil {
+				t.Errorf("restore watchlist %s: %v", b.symbol, err)
+			}
+		}
+	})
 	if _, err := watchlist.Upsert(ctx, database, batchA, "wheel", integrationWheelParams()); err != nil {
 		t.Fatal(err)
 	}
@@ -279,6 +319,17 @@ VALUES ($1, $2, 'PUT', 95, $3, 'fixture', $4, $5, -0.30, $6, $7, 0.30, -0.10, 10
 	// Cleanup watchlist rows this test added.
 	for _, s := range []string{batchA, batchB} {
 		if _, err := watchlist.Delete(ctx, database, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Cleanup wheel_configs versions the test appended (Upsert writes one
+	// version per run) so reruns don't accumulate config versions; wheel_signals
+	// references them via FK, so it must be cleared first.
+	for _, s := range []string{symbol, batchA, batchB, noDataSym} {
+		if _, err := database.Exec(`DELETE FROM wheel_signals WHERE symbol = $1`, s); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := database.Exec(`DELETE FROM wheel_configs WHERE symbol = $1`, s); err != nil {
 			t.Fatal(err)
 		}
 	}
