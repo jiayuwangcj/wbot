@@ -58,6 +58,23 @@ func (f *fakeDCSchedulerServer) lastSend(t *testing.T) map[string]any {
 	return f.sends[len(f.sends)-1]
 }
 
+// hasClearRequest reports whether a PATCH with an empty components array (the
+// remove-buttons payload) was sent.
+func (f *fakeDCSchedulerServer) hasClearRequest() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.sends {
+		comps, ok := p["components"]
+		if !ok {
+			continue
+		}
+		if arr, ok := comps.([]any); ok && len(arr) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // syncPlacer guards a fakePlacer whose methods run on the confirm goroutine
 // while the test polls its call count (race-detector clean).
 type syncPlacer struct {
@@ -393,6 +410,27 @@ func TestDiscordPushRejectedReviewPushesGrayEmbed(t *testing.T) {
 	if !strings.Contains(desc, "• risk limit") || !strings.Contains(desc, "US.AAPL · REJECT") {
 		t.Fatalf("rejection embed = %#v", embed)
 	}
+	// 拒绝的单也要推送完整提示单(候选/缺口信息块),只是不带按钮
+	// (2026-08-13 老板指令)。
+	if len(embeds) < 3 {
+		t.Fatalf("reject card embeds = %d; want status + info blocks", len(embeds))
+	}
+	var joined string
+	for _, e := range embeds {
+		if m, ok := e.(map[string]any); ok {
+			if d, ok := m["description"].(string); ok {
+				joined += d
+			}
+		}
+	}
+	for _, want := range []string{"候选", "现价", "缺口"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("reject card missing %q in info blocks: %s", want, joined)
+		}
+	}
+	if _, ok := payload["components"]; ok {
+		t.Fatalf("reject card must not carry buttons: %#v", payload["components"])
+	}
 }
 
 func TestDiscordPushRetriesMissingReview(t *testing.T) {
@@ -584,6 +622,56 @@ func TestDiscordHandleInteractionYesDispatchesConfirm(t *testing.T) {
 	}
 	if act := store.lastAppended(t); act.Action != "CONFIRM" || act.Actor != "discord:42" {
 		t.Fatalf("action = %+v; want CONFIRM by discord:42", act)
+	}
+}
+
+// TestDiscordHandleInteractionClearsButtonsOnPress: 老板指令 2026-08-13 —
+// 无论按哪个按钮(yes/no/dismiss),收到交互后都删掉卡片按钮(按钮在 = 未
+// 处理,按钮没了 = 已处理)。
+func TestDiscordHandleInteractionClearsButtonsOnPress(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = approvedReview()
+	placer := &syncPlacer{fake: &fakePlacer{orderID: 99}}
+	s, priv := newTestDiscordScheduler(t, fake, store, placer, now)
+
+	body := []byte(`{"id":"i1","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:7:yes"},"message":{"id":"m7","channel_id":"chan-1"}}`)
+	rec := httptest.NewRecorder()
+	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	deadline := time.After(5 * time.Second)
+	for !fake.hasClearRequest() {
+		select {
+		case <-deadline:
+			t.Fatal("clear-components PATCH never arrived after yes press")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
+}
+
+// TestDiscordHandleInteractionNoClearsButtons: no 分支同样删按钮(响应后异步)。
+func TestDiscordHandleInteractionNoClearsButtons(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	store := newFakeTGStore()
+	s, priv := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, time.Now())
+
+	body := []byte(`{"id":"i2","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:9:no"},"message":{"id":"m9","channel_id":"chan-1"}}`)
+	rec := httptest.NewRecorder()
+	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200", rec.Code)
+	}
+	deadline := time.After(5 * time.Second)
+	for !fake.hasClearRequest() {
+		select {
+		case <-deadline:
+			t.Fatal("clear-components PATCH never arrived after no press")
+		case <-time.After(2 * time.Millisecond):
+		}
 	}
 }
 

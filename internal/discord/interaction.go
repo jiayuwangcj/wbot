@@ -71,6 +71,15 @@ type Interaction struct {
 	Member    *InteractionMember `json:"member"`
 	User      *InteractionUser   `json:"user"`
 	Data      *InteractionData   `json:"data"`
+	// Message is the message that hosted the pressed component; it carries the
+	// message id used to strip buttons after the interaction is handled.
+	Message *InteractionMessage `json:"message"`
+}
+
+// InteractionMessage is the message context of a component interaction.
+type InteractionMessage struct {
+	ID        string `json:"id"`
+	ChannelID string `json:"channel_id"`
 }
 
 // InteractionMember is the guild member context of a button press.

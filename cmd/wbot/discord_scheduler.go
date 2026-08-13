@@ -219,6 +219,40 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 
 const discordCodeLabelWidth = 6
 
+// signalInfoBlocks renders the candidate/quote/inventory detail lines shared
+// by the APPROVE and REJECT cards (老板指令 2026-08-13: 拒绝的单也要显示完整
+// 提示单,只是不带按钮,一眼可辨哪个单已处理)。无可用候选时返回 err,调用方
+// 降级为只推状态卡。与 signalDiscordEmbeds 共享 firstCandidate/isStockDirection
+// 语义,保证显示与下单执行一致。
+func signalInfoBlocks(sig *wheelstore.SignalRecord) ([][]string, error) {
+	c, err := firstCandidate(sig)
+	if err != nil {
+		return nil, err
+	}
+	unit := "张"
+	if isStockDirection(c.Direction) {
+		unit = "股"
+	}
+	blocks := [][]string{{
+		discordCodeRow("候选", valueOrDash(c.Code)),
+		discordCodeRow("数量", fmt.Sprintf("%s %s", commaInt(int64(c.Quantity)), unit)),
+		discordCodeRow("限价", positiveDecimal(c.Quote.Last)),
+	}}
+	if !isStockDirection(c.Direction) {
+		blocks = append(blocks, []string{
+			fmt.Sprintf("行权  %s  Δ %s", positiveDecimal(c.Quote.Strike), nonZeroDecimal(c.Quote.Delta)),
+			fmt.Sprintf("到期  %s  IV %s", shortExpiry(c.Quote.Expiry), positiveDecimal(c.Quote.ImpliedVol)),
+			fmt.Sprintf("报价  %s  OI %s", bidAsk(c.Quote.Bid, c.Quote.Ask), positiveCount(c.Quote.OpenInterest)),
+		})
+	}
+	blocks = append(blocks, []string{
+		discordCodeRow("现价", discordPrice(sig.Inventory.CurrentPrice)),
+		discordCodeRow("缺口", discordShares(sig.Inventory.InventoryGap)),
+		discordCodeRow("目标", fmt.Sprintf("%s / 持仓 %s", discordCount(sig.Inventory.TargetInventory), discordCount(sig.Inventory.ActualInventory))),
+	})
+	return blocks, nil
+}
+
 // signalDiscordEmbeds renders the approved signal as compact mobile-friendly
 // sections. It deliberately shares firstCandidate and isStockDirection with
 // the Telegram path so display and order execution keep the same semantics.
@@ -242,30 +276,14 @@ func signalDiscordEmbeds(sig *wheelstore.SignalRecord, reasons []string, sentAt 
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d · %s", sig.ConfigVersion, sig.ID, created)},
 		Timestamp:   sentAt.UTC().Format(time.RFC3339),
 	}}
-	unit := "张"
-	if isStockDirection(c.Direction) {
-		unit = "股"
+	blocks, err := signalInfoBlocks(sig)
+	if err != nil {
+		return nil, err
 	}
-	embeds = append(embeds, common(discordCodeBlock(
-		discordCodeRow("候选", valueOrDash(c.Code)),
-		discordCodeRow("数量", fmt.Sprintf("%s %s", commaInt(int64(c.Quantity)), unit)),
-		discordCodeRow("限价", positiveDecimal(c.Quote.Last)),
-	)))
-	if !isStockDirection(c.Direction) {
-		embeds = append(embeds, common(discordCodeBlock(
-			fmt.Sprintf("行权  %s  Δ %s", positiveDecimal(c.Quote.Strike), nonZeroDecimal(c.Quote.Delta)),
-			fmt.Sprintf("到期  %s  IV %s", shortExpiry(c.Quote.Expiry), positiveDecimal(c.Quote.ImpliedVol)),
-			fmt.Sprintf("报价  %s  OI %s", bidAsk(c.Quote.Bid, c.Quote.Ask), positiveCount(c.Quote.OpenInterest)),
-		)))
+	for _, block := range blocks {
+		embeds = append(embeds, common(discordCodeBlock(block...)))
 	}
-	embeds = append(embeds,
-		common(discordCodeBlock(
-			discordCodeRow("现价", discordPrice(sig.Inventory.CurrentPrice)),
-			discordCodeRow("缺口", discordShares(sig.Inventory.InventoryGap)),
-			discordCodeRow("目标", fmt.Sprintf("%s / 持仓 %s", discordCount(sig.Inventory.TargetInventory), discordCount(sig.Inventory.ActualInventory))),
-		)),
-		common(discordReasonBullets(reasons)),
-	)
+	embeds = append(embeds, common(discordReasonBullets(reasons)))
 	return embeds, nil
 }
 
@@ -383,14 +401,24 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 		}
 	}
 	description := fmt.Sprintf("**%s · %s**\n%s", sig.Symbol, verdict, discordReasonBullets(reasons))
-	_ = s.pushEmbedDiscord(ctx, discord.Message{Embeds: []discord.Embed{{
+	embeds := []discord.Embed{{
 		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
 		Title:       title,
 		Description: description,
 		Color:       discord.ColorRejected,
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d", sig.ConfigVersion, sig.ID)},
 		Timestamp:   s.now().UTC().Format(time.RFC3339),
-	}}})
+	}}
+	// 拒绝的单同样推送完整提示单(候选/缺口信息),只是不带按钮
+	// (2026-08-13 老板指令:无按钮 = 无需人工处置,但提示单信息完整可查)。
+	if blocks, err := signalInfoBlocks(&sig); err == nil {
+		for _, block := range blocks {
+			embeds = append(embeds, discord.Embed{Description: discordCodeBlock(block...), Color: discord.ColorRejected})
+		}
+	} else {
+		s.logf("push: %s signal=%d: reject card without info blocks: %v", sig.Symbol, sig.ID, err)
+	}
+	_ = s.pushEmbedDiscord(ctx, discord.Message{Embeds: embeds})
 }
 
 // pushEmbedDiscord sends one message to the configured channel.
@@ -399,6 +427,18 @@ func (s *discordScheduler) pushEmbedDiscord(ctx context.Context, msg discord.Mes
 		return errors.New("channel not configured")
 	}
 	return s.dc.CreateMessage(ctx, s.channelID, msg)
+}
+
+// clearDiscordButtons strips the confirm buttons off the card that hosted the
+// interaction (老板指令 2026-08-13: 无论按哪个按钮,收到后删按钮,一眼可辨
+// 哪个单已处理)。交互不携带 message(如 PING)时为空操作。
+func (s *discordScheduler) clearDiscordButtons(ctx context.Context, in *discord.Interaction) {
+	if in == nil || in.Message == nil || in.Message.ID == "" || s.dc == nil {
+		return
+	}
+	if err := s.dc.ClearMessageComponents(ctx, in.Message.ChannelID, in.Message.ID); err != nil {
+		s.logf("interaction %s: clear buttons on message %s: %v", in.ID, in.Message.ID, err)
+	}
 }
 
 // handleInteraction serves POST /v1/discord/interactions: Ed25519 verification
@@ -425,6 +465,10 @@ func (s *discordScheduler) handleInteraction(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "invalid interaction", http.StatusBadRequest)
 		return
 	}
+	// 老板指令(2026-08-13):无论按哪个按钮,收到交互后就删掉卡片按钮——
+	// 按钮在 = 该单未处理,按钮没了 = 已处理。验签通过即生效,任何响应
+	// 路径都清(异步,不占 3 秒响应窗口)。
+	defer func() { go s.clearDiscordButtons(s.ctx, &in) }()
 	if in.Type == discord.TypePing {
 		discord.WriteResponse(w, discord.Pong())
 		return

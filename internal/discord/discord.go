@@ -119,6 +119,32 @@ func New(token, baseURL string, client *http.Client) (*Client, error) {
 	return &Client{token: strings.TrimSpace(token), baseURL: strings.TrimRight(baseURL, "/"), client: httpClient(client)}, nil
 }
 
+// ClearMessageComponents strips all component rows (buttons) from an existing
+// message — used after any confirm button is pressed so the decision is
+// visually consumed. The PATCH body is a raw literal because Message's
+// omitempty would drop an empty components slice, which is exactly the signal
+// Discord needs to remove buttons.
+func (c *Client) ClearMessageComponents(ctx context.Context, channelID, messageID string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+		c.baseURL+"/channels/"+channelID+"/messages/"+messageID,
+		strings.NewReader(`{"components":[]}`))
+	if err != nil {
+		return fmt.Errorf("discord: clear components: create request")
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bot "+c.token)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return fmt.Errorf("discord: clear components: request failed")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("discord: clear components: HTTP status %d", resp.StatusCode)
+	}
+	io.Copy(io.Discard, resp.Body)
+	return nil
+}
+
 // CreateMessage posts msg to a channel with Bot authorization.
 func (c *Client) CreateMessage(ctx context.Context, channelID string, msg Message) error {
 	body, err := json.Marshal(msg)
