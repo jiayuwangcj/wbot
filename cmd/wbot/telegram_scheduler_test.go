@@ -1300,3 +1300,82 @@ func TestCallbackYesMarketClosedRejected(t *testing.T) {
 		t.Fatalf("push = %q; want 市场已收盘", text)
 	}
 }
+
+func TestCallbackYesStubOrderIDRejected(t *testing.T) {
+	// 2026-08-14 美股期权 stub 教训:网关对未获券商确认的订单返回占位
+	// stub(order_id_ex="0"),订单从未真实生效,30 秒后被网关 purge。
+	// 确认必须拒绝并留痕,绝不推送「已下单」(资金安全铁律:异常直接取消)。
+	fake, server := startFakeTG(t)
+	now := openMarketNow
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{orderID: 206158430256, orderIDEx: "0"} // 网关 stub:非零 id 但 order_id_ex="0"
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	waitFor(t, func() bool { return store.appendedCount() > 0 }, "REJECTED never recorded")
+	act := store.lastAppended(t)
+	if act.Action != "REJECTED" || act.Note != "order unconfirmed" {
+		t.Fatalf("action = %+v; want REJECTED order unconfirmed", act)
+	}
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "下单未获券商确认") {
+		t.Fatalf("push = %q; want 下单未获券商确认", text)
+	}
+	if fake.lastSend(t)["text"] == nil {
+		t.Fatal("no push sent")
+	}
+}
+
+func TestWatchFillOrderNotVisibleWarnsAndCancels(t *testing.T) {
+	// 2026-08-14 美股期权 stub 教训:订单在券商端连续查询不到(网关 stub
+	// 30s 后被 purge),watchFill 曾静默轮询无任何留痕。现在连续
+	// missingWarnAfter 轮 → 推送警示 + NOTE 留痕 + 尝试撤单;撤单成功即结束。
+	fake, server := startFakeTG(t)
+	store := newFakeTGStore()
+	// statusCode 默认 0 = OrderStatus 永远 found=false(与网关 stub 被
+	// purge 后的视图一致)。
+	placer := &fakePlacer{orderID: 12345, orderIDEx: "ord-12345"}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, openMarketNow)
+	s.watchEvery = time.Millisecond
+	s.missingWarnAfter = 2
+
+	done := make(chan struct{})
+	go func() {
+		s.watchFill(context.Background(), 7, "US.AAPL", "sell", 2, 3.2, "ord-12345", 12345)
+		close(done)
+	}()
+	waitFor(t, func() bool { return placer.cancelCallsCount() == 1 }, "cancel never attempted")
+	if id := placer.cancelIDValue(); id != "12345" {
+		t.Fatalf("CancelOrder id=%q; want 12345", id)
+	}
+	if n := placer.statusCallsCount(); n < 2 {
+		t.Fatalf("OrderStatus polls = %d; want >= 2", n)
+	}
+	// NOTE 留痕(append 在 cancel 前),推送警示 + 已撤单。
+	waitFor(t, func() bool { return store.appendedCount() >= 1 }, "NOTE never recorded")
+	act := store.lastAppended(t)
+	if act.Action != "NOTE" || act.Actor != "system:watch" {
+		t.Fatalf("action = %+v; want NOTE system:watch", act)
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("watchFill never returned after cancel")
+	}
+	// 最近一条推送是「已撤单」;警示(订单券商端未确认)在发送历史里。
+	text, _ := fake.lastSend(t)["text"].(string)
+	if !strings.Contains(text, "已撤单") {
+		t.Fatalf("push = %q; want 已撤单", text)
+	}
+	foundWarn := false
+	for _, s := range fake.sends {
+		if t2, _ := s["text"].(string); strings.Contains(t2, "订单券商端未确认") {
+			foundWarn = true
+		}
+	}
+	if !foundWarn {
+		t.Fatal("no 订单券商端未确认 warning in push history")
+	}
+}

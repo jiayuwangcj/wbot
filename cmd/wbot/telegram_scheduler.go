@@ -50,6 +50,12 @@ type wheelOrderPlacer interface {
 	CancelOrder(ctx context.Context, symbol, orderID string) error
 }
 
+// orderLogf 是真实下单留痕的统一出口(老板指令 2026-08-14: 真实下单的接口
+// 必须有日志供查证),telegram/discord 两处 placer 构造共用。
+var orderLogf = func(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, "order: "+format+"\n", a...)
+}
+
 // futuOrderPlacer adapts the proto TradeClient to wheelOrderPlacer: it opens
 // the gateway per order, resolves the env account and submits a limit order.
 // Real-env placement is refused with errLiveEnvNotAllowed (the
@@ -57,6 +63,16 @@ type wheelOrderPlacer interface {
 type futuOrderPlacer struct {
 	addr string
 	env  futu.Env
+	// logf 是真实下单留痕(老板指令 2026-08-14: 真实下单的接口必须有日志供
+	// 查证)——账户/合约/数量/价格/响应订单号/耗时/错误全部落日志,单证
+	// 可查。零值 nil 时静默(log 方法兜底),测试构造无需传。
+	logf func(format string, a ...any)
+}
+
+func (p futuOrderPlacer) log(format string, a ...any) {
+	if p.logf != nil {
+		p.logf(format, a...)
+	}
 }
 
 func (p futuOrderPlacer) PlaceOrder(ctx context.Context, symbol, side string, qty, price float64) (string, uint64, error) {
@@ -65,14 +81,25 @@ func (p futuOrderPlacer) PlaceOrder(ctx context.Context, symbol, side string, qt
 	}
 	tc, err := futu.AcquireTrade(ctx, p.addr)
 	if err != nil {
+		p.log("place FAIL %s %s %v @ %v: open trade: %v", symbol, side, qty, price, err)
 		return "", 0, fmt.Errorf("open trade: %w", err)
 	}
 	defer tc.Close()
 	acc, err := tc.AccountForSymbol(ctx, p.env, symbol, 0)
 	if err != nil {
+		p.log("place FAIL %s %s %v @ %v: account resolve: %v", symbol, side, qty, price, err)
 		return "", 0, err
 	}
-	return tc.PlaceOrder(ctx, acc, futu.OrderRequest{Symbol: symbol, Side: side, Qty: qty, Price: price})
+	start := time.Now()
+	orderIDEx, orderID, err := tc.PlaceOrder(ctx, acc, futu.OrderRequest{Symbol: symbol, Side: side, Qty: qty, Price: price})
+	elapsed := time.Since(start)
+	if err != nil {
+		p.log("place FAIL acc=%d %s %s %v @ %v: %v (%s)", acc.GetAccID(), symbol, side, qty, price, err, elapsed)
+		return "", 0, err
+	}
+	p.log("place OK acc=%d %s %s %v @ %v -> order_id=%d order_id_ex=%q (%s)",
+		acc.GetAccID(), symbol, side, qty, price, orderID, orderIDEx, elapsed)
+	return orderIDEx, orderID, nil
 }
 
 // OrderStatus polls the env account's order list for orderIDEx (watches reuse
@@ -136,6 +163,10 @@ type telegramScheduler struct {
 	// 收盘仍未成交立即无理由撤单(老板指令 2026-08-13)。测试可缩短。
 	watchEvery  time.Duration
 	watchReport time.Duration
+	// missingWarnAfter:订单在券商端连续查询不到(missing)多少轮后判定
+	// 异常——警示 + 尝试撤单(2026-08-14 美股期权 stub 教训:网关返回的
+	// stub 订单号 30 秒后被 purge,订单从未生效,必须显式暴露并撤单)。
+	missingWarnAfter int
 }
 
 // sendToChats pushes one text message to every whitelisted chat. Button
@@ -151,14 +182,15 @@ func (s *telegramScheduler) sendToChats(ctx context.Context, text string) {
 
 func newTelegramScheduler(tg *telegram.Client, store wheelstore.SignalRepository, orders wheelOrderPlacer, quoter underlyingQuoter, chatIDs map[int64]bool) *telegramScheduler {
 	return &telegramScheduler{
-		tg:          tg,
-		store:       store,
-		orders:      orders,
-		quoter:      quoter,
-		chatIDs:     chatIDs,
-		now:         time.Now,
-		watchEvery:  30 * time.Second,
-		watchReport: 2 * time.Minute,
+		tg:               tg,
+		store:            store,
+		orders:           orders,
+		quoter:           quoter,
+		chatIDs:          chatIDs,
+		now:              time.Now,
+		watchEvery:       30 * time.Second,
+		watchReport:      2 * time.Minute,
+		missingWarnAfter: 4, // ≈2 分钟(30s×4)
 		logf: func(format string, a ...any) {
 			fmt.Fprintf(os.Stderr, "telegram: "+format+"\n", a...)
 		},
@@ -200,7 +232,7 @@ func startTelegramScheduler(ctx context.Context, database *sql.DB, env futu.Env)
 		fmt.Fprintf(os.Stderr, "telegram: %v\n", err)
 		return
 	}
-	s := newTelegramScheduler(tg, wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env}, futuQuoter{client: futu.NewClient(resolveFutuGateway(""))}, chatIDs)
+	s := newTelegramScheduler(tg, wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env, logf: orderLogf}, futuQuoter{client: futu.NewClient(resolveFutuGateway(""))}, chatIDs)
 	go func() {
 		if err := s.runPush(ctx, telegramPushInterval); err != nil && !errors.Is(err, context.Canceled) {
 			s.logf("push: %v", err)
@@ -565,6 +597,15 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 		s.reject(ctx, cq, signalID, reason, toast)
 		return
 	}
+	// 订单号校验(2026-08-14 美股期权 stub 教训):网关对未获券商确认的订单
+	// 返回占位 stub(order_id_ex="0"),订单从未真实生效,30 秒后被网关
+	// purge。无真实券商订单号 = 下单未确认,按失败处理留痕,绝不推送
+	// 「已下单」。资金安全铁律:异常直接取消,不设退化。
+	if orderIDEx == "" || orderIDEx == "0" || orderID == 0 {
+		s.logf("callback %s: order unconfirmed: order_id_ex=%q order_id=%d; treating as failure", cq.ID, orderIDEx, orderID)
+		s.reject(ctx, cq, signalID, "order unconfirmed", "下单未获券商确认,订单未生效(请人工核实)")
+		return
+	}
 	details := map[string]any{"order_id": orderID, "order_id_ex": orderIDEx, "symbol": cand.Code, "side": cand.Side, "qty": cand.Quantity}
 	if err := claims.CompleteOrderClaim(ctx, signalID, orderID, orderIDEx, details); err != nil {
 		// The durable pre-broker claim is retained.  Retrying is forbidden even
@@ -618,6 +659,12 @@ func (s *telegramScheduler) watchFill(ctx context.Context, signalID int64, symbo
 	}
 	started := s.now()
 	reportedPending := false
+	// missingWarnAfter 零值兜底(测试构造可不传)。
+	missingWarnAfter := s.missingWarnAfter
+	if missingWarnAfter <= 0 {
+		missingWarnAfter = 4
+	}
+	missing := 0
 	for {
 		// 收盘闸门:市场已收盘,未成交挂单立即无理由撤单。
 		if !wheelrun.MarketIsOpen(symbol, s.now(), nil) {
@@ -632,6 +679,7 @@ func (s *telegramScheduler) watchFill(ctx context.Context, signalID int64, symbo
 			return
 		}
 		if found {
+			missing = 0
 			switch trdcommon.OrderStatus(status) {
 			case trdcommon.OrderStatus_OrderStatus_Filled_All, trdcommon.OrderStatus_OrderStatus_Filled_Part:
 				s.sendToChats(ctx, fmt.Sprintf(
@@ -653,6 +701,50 @@ func (s *telegramScheduler) watchFill(ctx context.Context, signalID int64, symbo
 					trdcommon.OrderStatus(status).String(), signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
 				))
 				return
+			}
+		} else {
+			// 订单在券商端不可见:正常订单下单后立即出现在订单列表(即便
+			// 未成交),连续多轮查询不到 = 订单可能从未生效——2026-08-14
+			// 美股期权 stub 教训:网关对未获券商确认的订单返回占位 stub,
+			// 30 秒后被 purge,watchFill 却静默轮询无任何留痕。连续
+			// missingWarnAfter 轮 → 推送警示 + NOTE 留痕 + 尝试撤单;撤单
+			// 成功即结束,失败继续观察(订单可能晚确认,终态仍推送)。
+			missing++
+			if missing >= missingWarnAfter {
+				s.logf("watch fill %s: order not visible after %d polls; warning+cancel", orderIDEx, missing)
+				s.sendToChats(ctx, fmt.Sprintf(
+					"⚠️ <b>订单券商端未确认</b> · 信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 <code>%s</code>\n订单在券商端查询不到,可能未生效,尝试撤单",
+					signalID, sideName, symbol, qty, price, orderIDEx,
+				))
+				if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
+					SignalID: signalID, Action: "NOTE", Actor: "system:watch",
+					Note:    "order not visible to broker; attempting cancel",
+					Details: map[string]any{"order_id_ex": orderIDEx, "order_id": orderID, "symbol": symbol, "side": side, "missing_polls": missing},
+				}); err != nil {
+					s.logf("watch fill %s: note record: %v", orderIDEx, err)
+				}
+				if orderID != 0 {
+					if cerr := s.orders.CancelOrder(ctx, symbol, strconv.FormatUint(orderID, 10)); cerr != nil {
+						s.logf("watch fill %s: cancel unconfirmed order: %v", orderIDEx, cerr)
+						s.sendToChats(ctx, fmt.Sprintf(
+							"⚠️ <b>撤单失败</b> · 信号 #%d\n订单号 <code>%s</code> · 请手动在模拟盘撤单\n错误 %v",
+							signalID, orderIDEx, cerr,
+						))
+					} else {
+						s.sendToChats(ctx, fmt.Sprintf(
+							"❌ <b>已撤单</b> · 信号 #%d\n订单号 <code>%s</code> · 订单未获券商确认,已撤单",
+							signalID, orderIDEx,
+						))
+						return
+					}
+				} else {
+					// 缺订单号无法撤单 → 显式提示手动撤单,不静默遗留。
+					s.sendToChats(ctx, fmt.Sprintf(
+						"⚠️ <b>挂单未撤(缺少订单号)</b> · 信号 #%d\n订单号 <code>%s</code> · 请手动在模拟盘撤单",
+						signalID, orderIDEx,
+					))
+					return
+				}
 			}
 		}
 		// 观察窗内未成交:先推送挂单状态,不假装成功;随后继续观察至收盘。

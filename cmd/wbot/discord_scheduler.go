@@ -49,6 +49,9 @@ type discordScheduler struct {
 	// 老板指令 2026-08-13);测试可缩短。
 	watchEvery  time.Duration
 	watchReport time.Duration
+	// missingWarnAfter 与 telegram 侧同语义:订单在券商端连续查询不到
+	// missingWarnAfter 轮 → 警示 + 尝试撤单(2026-08-14 美股期权 stub 教训)。
+	missingWarnAfter int
 }
 
 // askRequest is one queued assistant question. 所有 /ask 都 append 进队列,
@@ -64,10 +67,11 @@ func newDiscordScheduler(ctx context.Context, dc *discord.Client, verifier *disc
 	s := &discordScheduler{
 		ctx: ctx, dc: dc, verifier: verifier, appID: appID, channelID: channelID,
 		store: store, orders: orders, quoter: quoter,
-		askCh:       make(chan askRequest, 16),
-		now:         time.Now,
-		watchEvery:  30 * time.Second,
-		watchReport: 2 * time.Minute,
+		askCh:            make(chan askRequest, 16),
+		now:              time.Now,
+		watchEvery:       30 * time.Second,
+		watchReport:      2 * time.Minute,
+		missingWarnAfter: 4, // ≈2 分钟(30s×4),与 telegram 侧一致
 		logf: func(format string, a ...any) {
 			fmt.Fprintf(os.Stderr, "discord: "+format+"\n", a...)
 		},
@@ -127,7 +131,7 @@ func startDiscordScheduler(ctx context.Context, database *sql.DB, env futu.Env) 
 	if err != nil {
 		return nil, fmt.Errorf("discord: assistant allowed_user_ids: %w", err)
 	}
-	s := newDiscordScheduler(ctx, dc, verifier, strings.TrimSpace(appID), strings.TrimSpace(channelRaw), wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env}, futuQuoter{client: futu.NewClient(resolveFutuGateway(""))})
+	s := newDiscordScheduler(ctx, dc, verifier, strings.TrimSpace(appID), strings.TrimSpace(channelRaw), wheelstore.New(database), futuOrderPlacer{addr: futuProtoAddr(), env: env, logf: orderLogf}, futuQuoter{client: futu.NewClient(resolveFutuGateway(""))})
 	s.asker = newClaudeAssistant(cliPath, apiKey)
 	s.allowed = parseDiscordAllowedUsers(allowedRaw)
 	return s, nil
@@ -786,6 +790,15 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 		s.rejectDiscord(ctx, in, signalID, reason)
 		return
 	}
+	// 订单号校验(2026-08-14 美股期权 stub 教训,与 telegram 侧同语义):
+	// 网关对未获券商确认的订单返回占位 stub(order_id_ex="0"),订单从未
+	// 真实生效。无真实券商订单号 = 下单未确认,按失败处理,绝不推送
+	// 「已下单」。
+	if orderIDEx == "" || orderIDEx == "0" || orderID == 0 {
+		s.logf("interaction %s: order unconfirmed: order_id_ex=%q order_id=%d; treating as failure", in.ID, orderIDEx, orderID)
+		s.rejectDiscord(ctx, in, signalID, "order unconfirmed")
+		return
+	}
 	details := map[string]any{"order_id": orderID, "order_id_ex": orderIDEx, "symbol": cand.Code, "side": cand.Side, "qty": cand.Quantity}
 	if err := claims.CompleteOrderClaim(ctx, signalID, orderID, orderIDEx, details); err != nil {
 		s.logf("interaction %s: complete order claim: %v", in.ID, err)
@@ -830,6 +843,12 @@ func (s *discordScheduler) watchFillDiscord(ctx context.Context, signalID int64,
 	}
 	started := s.now()
 	reportedPending := false
+	// missingWarnAfter 零值兜底(测试构造可不传)。
+	missingWarnAfter := s.missingWarnAfter
+	if missingWarnAfter <= 0 {
+		missingWarnAfter = 4
+	}
+	missing := 0
 	for {
 		// 收盘闸门:市场已收盘,未成交挂单立即无理由撤单。
 		if !wheelrun.MarketIsOpen(symbol, s.now(), nil) {
@@ -843,6 +862,7 @@ func (s *discordScheduler) watchFillDiscord(ctx context.Context, signalID int64,
 			return
 		}
 		if found {
+			missing = 0
 			switch trdcommon.OrderStatus(status) {
 			case trdcommon.OrderStatus_OrderStatus_Filled_All, trdcommon.OrderStatus_OrderStatus_Filled_Part:
 				s.noticeDiscord(ctx, "✅ 已成交", fmt.Sprintf(
@@ -864,6 +884,47 @@ func (s *discordScheduler) watchFillDiscord(ctx context.Context, signalID int64,
 					signalID, sideName, symbol, qty, price, orderIDEx, s.now().Format("2006-01-02 15:04:05"),
 				))
 				return
+			}
+		} else {
+			// 订单在券商端不可见(与 telegram 侧同语义,2026-08-14 美股期权
+			// stub 教训):连续 missingWarnAfter 轮 → 警示 + NOTE 留痕 + 尝试
+			// 撤单;撤单成功即结束,失败继续观察(订单可能晚确认)。
+			missing++
+			if missing >= missingWarnAfter {
+				s.logf("watch fill %s: order not visible after %d polls; warning+cancel", orderIDEx, missing)
+				s.noticeDiscord(ctx, "⚠️ 订单券商端未确认", fmt.Sprintf(
+					"信号 #%d\n%s %s %.0f 股 @ %.2f\n订单号 `%s`\n订单在券商端查询不到,可能未生效,尝试撤单",
+					signalID, sideName, symbol, qty, price, orderIDEx,
+				))
+				if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
+					SignalID: signalID, Action: "NOTE", Actor: "system:watch",
+					Note:    "order not visible to broker; attempting cancel",
+					Details: map[string]any{"order_id_ex": orderIDEx, "order_id": orderID, "symbol": symbol, "side": side, "missing_polls": missing},
+				}); err != nil {
+					s.logf("watch fill %s: note record: %v", orderIDEx, err)
+				}
+				if orderID != 0 {
+					if cerr := s.orders.CancelOrder(ctx, symbol, strconv.FormatUint(orderID, 10)); cerr != nil {
+						s.logf("watch fill %s: cancel unconfirmed order: %v", orderIDEx, cerr)
+						s.noticeDiscord(ctx, "⚠️ 撤单失败", fmt.Sprintf(
+							"信号 #%d\n订单号 `%s` · 请手动在模拟盘撤单\n错误 %v",
+							signalID, orderIDEx, cerr,
+						))
+					} else {
+						s.noticeDiscord(ctx, "❌ 已撤单", fmt.Sprintf(
+							"信号 #%d\n订单号 `%s` · 订单未获券商确认,已撤单",
+							signalID, orderIDEx,
+						))
+						return
+					}
+				} else {
+					// 缺订单号无法撤单 → 显式提示手动撤单,不静默遗留。
+					s.noticeDiscord(ctx, "⚠️ 挂单未撤(缺少订单号)", fmt.Sprintf(
+						"信号 #%d\n订单号 `%s` · 请手动在模拟盘撤单",
+						signalID, orderIDEx,
+					))
+					return
+				}
 			}
 		}
 		if !reportedPending && s.now().Sub(started) >= reportAfter {

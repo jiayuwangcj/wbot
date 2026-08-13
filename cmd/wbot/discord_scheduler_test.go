@@ -929,7 +929,7 @@ func TestDiscordHandleInteractionYesDispatchesConfirm(t *testing.T) {
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
-	placer := &syncPlacer{fake: &fakePlacer{orderID: 99}}
+	placer := &syncPlacer{fake: &fakePlacer{orderID: 99, orderIDEx: "ord-99"}}
 	s, priv := newTestDiscordScheduler(t, fake, store, placer, now)
 
 	body := []byte(`{"id":"i1","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:7:yes"}}`)
@@ -963,7 +963,7 @@ func TestDiscordHandleInteractionClearsButtonsOnPress(t *testing.T) {
 	store := newFakeTGStore()
 	store.signals[7] = signalFixture(7, "US.AAPL", now)
 	store.reviews[7] = approvedReview()
-	placer := &syncPlacer{fake: &fakePlacer{orderID: 99}}
+	placer := &syncPlacer{fake: &fakePlacer{orderID: 99, orderIDEx: "ord-99"}}
 	s, priv := newTestDiscordScheduler(t, fake, store, placer, now)
 
 	body := []byte(`{"id":"i1","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:7:yes"},"message":{"id":"m7","channel_id":"chan-1"}}`)
