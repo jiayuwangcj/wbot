@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
@@ -24,6 +25,19 @@ type Result struct {
 	Trades      []Trade
 	Signals     []SignalTrace
 	Unfilled    UnfilledStats
+	Fees        FeeSummary
+}
+
+// FeeSummary is the fee ledger for fills produced by one run. Included means
+// the configured fixed fee was applied to every filled stock/option trade;
+// unfilled attempts and mechanical expiry events are never charged.
+type FeeSummary struct {
+	Included          bool    `json:"included"`
+	PerTrade          float64 `json:"per_trade"`
+	TotalAmount       float64 `json:"total_amount"`
+	StockAmount       float64 `json:"stock_amount"`
+	OptionAmount      float64 `json:"option_amount"`
+	ChargedTradeCount int64   `json:"charged_trade_count"`
 }
 
 // UnfilledStats is one run's fill accounting. UnfilledRatio is nil (null in
@@ -88,6 +102,7 @@ type Trade struct {
 	Size          float64   `json:"size"`  // shares for stock/exercise, contracts for option fills
 	Price         float64   `json:"price"` // close, premium, or strike
 	CashAfter     float64   `json:"cash_after"`
+	Fee           float64   `json:"fee"`
 	Filled        bool      `json:"filled"`
 	UnfilledModel string    `json:"unfilled_model,omitempty"`
 }
@@ -197,7 +212,33 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		Trades:      trades,
 		Signals:     signals,
 		Unfilled:    unfilled,
+		Fees:        summarizeFees(trades, feePerTrade),
 	}, nil
+}
+
+func summarizeFees(trades []Trade, feePerTrade float64) FeeSummary {
+	fees := FeeSummary{Included: true, PerTrade: feePerTrade}
+	for _, tr := range trades {
+		if !feeBearingTrade(tr) {
+			continue
+		}
+		fees.ChargedTradeCount++
+		fees.TotalAmount += tr.Fee
+		if tr.Action == "buy" || tr.Action == "sell" {
+			fees.StockAmount += tr.Fee
+		} else {
+			fees.OptionAmount += tr.Fee
+		}
+	}
+	return fees
+}
+
+func feeBearingTrade(tr Trade) bool {
+	if tr.UnfilledModel != "" && !tr.Filled {
+		return false
+	}
+	return tr.Action == "buy" || tr.Action == "sell" ||
+		strings.HasPrefix(tr.Action, "buy-") || strings.HasPrefix(tr.Action, "sell-")
 }
 
 func latestQuoteBatch(opts *OptionsData, ts time.Time) *QuoteSnapshotBatch {
@@ -285,16 +326,16 @@ func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade
 		}
 		st.Cash -= size*b.Close + feePerTrade
 		st.Position += size
-		*trades = append(*trades, Trade{Ts: b.Ts, Action: "buy", Size: size, Price: b.Close, CashAfter: st.Cash})
+		*trades = append(*trades, Trade{Ts: b.Ts, Action: "buy", Size: size, Price: b.Close, CashAfter: st.Cash, Fee: feePerTrade})
 	case ActionSell:
 		if size < 0 || size > st.Position+buyTol {
 			return fmt.Errorf("sell %v shares exceeds position %v", size, st.Position)
 		}
 		st.Cash += size*b.Close - feePerTrade
 		st.Position -= size
-		*trades = append(*trades, Trade{Ts: b.Ts, Action: "sell", Size: size, Price: b.Close, CashAfter: st.Cash})
+		*trades = append(*trades, Trade{Ts: b.Ts, Action: "sell", Size: size, Price: b.Close, CashAfter: st.Cash, Fee: feePerTrade})
 	case ActionSellCall, ActionBuyCall, ActionSellPut, ActionBuyPut:
-		return settleOptionTrade(st, act, size, b, seed, trades)
+		return settleOptionTrade(st, act, size, b, feePerTrade, seed, trades)
 	default:
 		return fmt.Errorf("unknown action %s", act)
 	}
@@ -307,7 +348,7 @@ func settleAction(st *State, act Action, size float64, b ingest.Bar, feePerTrade
 // unfilled attempt books nothing (cash/positions unchanged) but stays in the
 // ledger as a Filled:false Trade, and Pending is consumed so later bars never
 // assume the order filled. Buys settle unconditionally (no sampling).
-func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, seed int64, trades *[]Trade) error {
+func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, feePerTrade float64, seed int64, trades *[]Trade) error {
 	if size <= 0 {
 		return fmt.Errorf("%s size %v; want > 0 contracts", act, size)
 	}
@@ -343,14 +384,15 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, seed i
 	// contract count. Keeping this multiplier here also makes the cash ledger
 	// use the same unit as option mark-to-market in State.Equity.
 	flow := -contracts * p.AvgPremium * float64(lot)
-	if flow < 0 && st.Cash+flow < -buyTol {
-		return fmt.Errorf("%s %v contracts costs %v; exceeds cash %v", act, size, -flow, st.Cash)
+	netFlow := flow - feePerTrade
+	if flow < 0 && st.Cash+netFlow < -buyTol {
+		return fmt.Errorf("%s %v contracts costs %v plus fee %v; exceeds cash %v", act, size, -flow, feePerTrade, st.Cash)
 	}
 	if act == ActionSellPut {
 		reserve := shortPutCashReserve(st.Options) + size*float64(lot)*p.Strike
-		if st.Cash+flow < reserve {
+		if st.Cash+netFlow < reserve {
 			return fmt.Errorf("sell-put %v contracts needs cash reserve %v cumulative across open short puts, have %v",
-				size, reserve, st.Cash+flow)
+				size, reserve, st.Cash+netFlow)
 		}
 	}
 	if sign < 0 {
@@ -388,8 +430,8 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, seed i
 			pos.AvgPremium = net / pos.Contracts
 		}
 	}
-	st.Cash += flow
-	*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash, Filled: true})
+	st.Cash += netFlow
+	*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash, Fee: feePerTrade, Filled: true})
 	if pos.Contracts == 0 {
 		delete(st.Options, p.Code)
 	} else {

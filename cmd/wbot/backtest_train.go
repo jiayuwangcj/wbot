@@ -87,7 +87,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		if err != nil {
 			return backtestes.Metrics{}, err
 		}
-		return trainMetrics(out.Result, opts.Cash, opts.Fee), nil
+		return trainMetrics(out.Result, opts.Cash), nil
 	}
 	started := time.Now()
 	search, err := backtestes.Search(context.Background(), space, windows, cfg, evaluator)
@@ -123,7 +123,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 				return 1
 			}
 			tc.outcomes = append(tc.outcomes, out)
-			tc.metrics = append(tc.metrics, trainMetrics(out.Result, opts.Cash, opts.Fee))
+			tc.metrics = append(tc.metrics, trainMetrics(out.Result, opts.Cash))
 		}
 		scores := make([]float64, len(tc.metrics))
 		for i, m := range tc.metrics {
@@ -196,7 +196,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		Generations: gens, Candidates: reportCandidates, Reward: backtestreport.RewardAudit{FunctionVersion: backtestes.RewardVersion,
 			Weights:             backtestreport.RewardWeights{LambdaDD: cfg.Weights.LambdaDD, LambdaTail: cfg.Weights.LambdaTail, LambdaTurnover: cfg.Weights.LambdaTurnover},
 			HardFailureHandling: "策略层候选 mask 预防硬失败,违规候选不进入评估;未成交已含于净收益,不重复计罚"}, SearchSpace: searchAudit,
-		Trajectory: buildTrajectory(selectedOutcome.Result, selected.candidate.Params, opts.Symbol, version, selectedOutcome.SourceHash, opts.Fee), TailLossPct: selected.metrics[medianIndex].TailLoss,
+		Trajectory: buildTrajectory(selectedOutcome.Result, selected.candidate.Params, opts.Symbol, version, selectedOutcome.SourceHash), TailLossPct: selected.metrics[medianIndex].TailLoss,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
@@ -218,14 +218,14 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 	return 0
 }
 
-func trainMetrics(r *backtest.Result, initialCash, fee float64) backtestes.Metrics {
+func trainMetrics(r *backtest.Result, initialCash float64) backtestes.Metrics {
 	filled := 0
 	for _, tr := range r.Trades {
 		if isChargedTrade(tr) && (tr.Filled || tr.UnfilledModel == "") {
 			filled++
 		}
 	}
-	return backtestes.Metrics{NetReturn: r.TotalReturn, MaxDrawdown: r.MaxDrawdown, TailLoss: tailLoss(r.EquityCurve), CostPct: fee * float64(filled) / initialCash,
+	return backtestes.Metrics{NetReturn: r.TotalReturn, MaxDrawdown: r.MaxDrawdown, TailLoss: tailLoss(r.EquityCurve), CostPct: r.Fees.TotalAmount / initialCash,
 		UnfilledRatio: r.Unfilled.UnfilledRatio, EffectiveTrades: filled}
 }
 
@@ -319,7 +319,7 @@ func reportWindows(w backtestes.Windows) backtestreport.Windows {
 	return backtestreport.Windows{Train: cv(w.Train), Valid: cv(w.Valid), Test: cv(w.Test)}
 }
 
-func buildTrajectory(r *backtest.Result, params map[string]any, symbol, codeVersion, dataHash string, fee float64) []backtestreport.TrajectoryStep {
+func buildTrajectory(r *backtest.Result, params map[string]any, symbol, codeVersion, dataHash string) []backtestreport.TrajectoryStep {
 	out := make([]backtestreport.TrajectoryStep, 0, len(r.Signals))
 	peak := 0.0
 	for i, s := range r.Signals {
@@ -334,14 +334,16 @@ func buildTrajectory(r *backtest.Result, params map[string]any, symbol, codeVers
 		}
 		filled := false
 		fillModel := r.Unfilled.ModelVersion
-		charged := false
+		chargedFee := 0.0
 		for _, tr := range r.Trades {
 			if tr.Ts.Equal(s.Ts) && tr.Symbol == s.CandidateCode {
 				filled = tr.Filled
 				if tr.UnfilledModel != "" {
 					fillModel = tr.UnfilledModel
 				}
-				charged = isChargedTrade(tr) && (tr.Filled || tr.UnfilledModel == "")
+				if isChargedTrade(tr) && (tr.Filled || tr.UnfilledModel == "") {
+					chargedFee = tr.Fee
+				}
 				break
 			}
 		}
@@ -364,12 +366,7 @@ func buildTrajectory(r *backtest.Result, params map[string]any, symbol, codeVers
 		out = append(out, backtestreport.TrajectoryStep{Step: i, DecisionTime: s.Ts.UTC().Format(time.RFC3339Nano), BarTS: s.Ts.UTC().Format(time.RFC3339Nano),
 			StateBefore: map[string]any{"underlying_price": s.UnderlyingPrice, "actual_inventory": s.ActualInventory, "effective_inventory": s.EffectiveInventory, "target_inventory": s.TargetInventory, "cash": s.CashBefore, "strategy_state": params["strategic_state"], "last_filled_price": nil, "bars_since_last_action": nil}, Candidates: candidates,
 			Action: map[string]any{"type": trajectoryAction(s), "candidate_index": candidateIndex(candidates, s.CandidateCode), "quantity": s.Quantity}, Fill: map[string]any{"simulated": s.CandidateCode != "", "filled": filled, "unfilled_model_version": fillModel},
-			StateAfter: map[string]any{"effective_inventory": s.EffectiveInventory, "cash": s.CashAfter}, RewardAtoms: map[string]any{"equity_delta": equityDelta, "fees": func() float64 {
-				if charged {
-					return fee
-				}
-				return 0
-			}(), "slippage": 0.0, "incremental_drawdown": incrementalDD, "tail_exposure_delta": 0.0}, Termination: termination,
+			StateAfter: map[string]any{"effective_inventory": s.EffectiveInventory, "cash": s.CashAfter}, RewardAtoms: map[string]any{"equity_delta": equityDelta, "fees": chargedFee, "slippage": 0.0, "incremental_drawdown": incrementalDD, "tail_exposure_delta": 0.0}, Termination: termination,
 			Versions: map[string]any{"config": 1, "data_hash": dataHash, "code": codeVersion, "fill_model": r.Unfilled.ModelVersion, "symbol": symbol}})
 	}
 	return out

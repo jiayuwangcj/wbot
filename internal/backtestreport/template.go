@@ -40,7 +40,7 @@ var reportTemplate = template.Must(template.New("backtest-report").Funcs(templat
     <article class="card"><div class="label">停止原因</div><div class="value">{{.StopReason}}</div></article>
   </section>
   <section class="risk" aria-label="风险提示">{{range .Report.Risk}}<p>{{.}}</p>{{end}}</section>
-  <details><summary>身份与审计</summary><dl><dt>数据区间</dt><dd>{{.Report.Identity.DataWindow.From}} — {{.Report.Identity.DataWindow.To}}</dd><dt>运行种子</dt><dd>{{.Report.Identity.RunSeed}}</dd><dt>代码版本</dt><dd>{{.Report.Identity.CodeVersion}}</dd><dt>输入快照</dt><dd>{{.Report.Audit.InputSnapshotHash}}</dd><dt>基线收益</dt><dd>{{percent .Report.Result.BaselineReturnPct}}</dd></dl></details>
+	  <details><summary>身份与审计</summary><dl><dt>数据区间</dt><dd>{{.Report.Identity.DataWindow.From}} — {{.Report.Identity.DataWindow.To}}</dd><dt>运行种子</dt><dd>{{.Report.Identity.RunSeed}}</dd><dt>代码版本</dt><dd>{{.Report.Identity.CodeVersion}}</dd><dt>输入快照</dt><dd>{{.Report.Audit.InputSnapshotHash}}</dd><dt>基线收益</dt><dd>{{percent .Report.Result.BaselineReturnPct}}</dd><dt>总费用</dt><dd>{{amount .Report.Result.CostModel.TotalFeesAmount .Report.Identity.Currency}}</dd><dt>期权费用</dt><dd>{{amount .Report.Result.CostModel.OptionFeesAmount .Report.Identity.Currency}}</dd></dl></details>
   <details><summary>完整 JSON（唯一事实源）</summary><pre>{{.Details}}</pre></details>
 </main></body></html>
 `))

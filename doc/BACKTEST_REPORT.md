@@ -98,6 +98,11 @@
   },
   "cost_model": {
     "fees_included": true,
+    "fee_per_trade": 3.0,
+    "total_fees_amount": 288.0,
+    "stock_fees_amount": 0.0,
+    "option_fees_amount": 288.0,
+    "charged_trade_count": 96,
     "slippage_included": false,
     "taxes_included": false,
     "assignment_included": false,
@@ -113,6 +118,7 @@
 
 - `unfilled_ratio = unfilled_count / attempt_count`;`attempt_count` **只计真正发出成交尝试的期权动作**;正股建议/HOLD/DATA_BLOCKED/候选淘汰不入分母;分母为 0 时 `unfilled_ratio = null`(返回 `not_applicable`,不得报 0%)。
 - `fill_count` 可由 `attempt_count - unfilled_count` 推导,但两者同时输出计数,防舍入/口径不一致。
+- `cost_model.total_fees_amount` 必须等于成交明细 `fee` 之和；固定 `fee_per_trade` 对正股和期权实际成交逐笔从现金扣除，未成交、HOLD 和机械到期事件不收费。`fees_included` 只在该扣账路径真实启用时为 `true`。
 - `manual_not_executed_count`:模拟成交但人工未执行的条数(与模拟未成交区分)。
 - `hard_violations`:最大库存违规/裸 Call/资金不足/未来泄漏计数;>0 时报告必须显著警示。
 

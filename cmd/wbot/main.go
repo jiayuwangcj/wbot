@@ -450,7 +450,7 @@ func runBacktest(prog string, argv []string) int {
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
-	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
+	fee := fs.Float64("fee", 0, "fixed fee deducted from every filled stock/option trade")
 	seed := fs.Int64("seed", 42, "seed for the unfilled-attempt draw (same seed, same trace; 0 = default 42)")
 	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
 	params := fs.String("params", "", `Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md`)
@@ -716,10 +716,10 @@ func runBacktest(prog string, argv []string) int {
 	}
 
 	if res.Unfilled.AttemptCount == 0 {
-		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d 未成交 N/A(无成交尝试)\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
+		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试)\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount)
 	} else {
-		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d 未成交 %d/%d (%.2f%%)\n",
-			res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
+		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n",
+			res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
 	}
 	if *report {
 		reportParams := paramsMap

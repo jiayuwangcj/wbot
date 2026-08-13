@@ -78,6 +78,9 @@ func TestRunFee(t *testing.T) {
 	if math.Abs(res.Equity-12099) > 1e-9 {
 		t.Fatalf("Run().Equity = %v; want ~12099", res.Equity)
 	}
+	if !res.Fees.Included || res.Fees.PerTrade != 1 || res.Fees.TotalAmount != 1 || res.Fees.StockAmount != 1 || res.Fees.OptionAmount != 0 || res.Fees.ChargedTradeCount != 1 {
+		t.Fatalf("Run().Fees = %+v; want one charged stock fill", res.Fees)
+	}
 	if res.Bars != 3 {
 		t.Fatalf("Run() = %+v; want Bars 3", res)
 	}
@@ -88,6 +91,9 @@ func TestRunFee(t *testing.T) {
 	}
 	if resHold.Equity != 10000 || resHold.TotalReturn != 0 {
 		t.Fatalf("Run() hold = %+v; want Equity 10000, TotalReturn 0 (hold settles charge no fee)", resHold)
+	}
+	if !resHold.Fees.Included || resHold.Fees.TotalAmount != 0 || resHold.Fees.ChargedTradeCount != 0 {
+		t.Fatalf("Run() hold fees = %+v; want an enabled zero-charge fee model", resHold.Fees)
 	}
 }
 

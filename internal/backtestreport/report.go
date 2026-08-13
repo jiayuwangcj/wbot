@@ -88,11 +88,16 @@ type UnfilledComponents struct {
 }
 
 type CostModel struct {
-	FeesIncluded       bool   `json:"fees_included"`
-	SlippageIncluded   bool   `json:"slippage_included"`
-	TaxesIncluded      bool   `json:"taxes_included"`
-	AssignmentIncluded bool   `json:"assignment_included"`
-	Description        string `json:"description"`
+	FeesIncluded       bool    `json:"fees_included"`
+	FeePerTrade        float64 `json:"fee_per_trade"`
+	TotalFeesAmount    float64 `json:"total_fees_amount"`
+	StockFeesAmount    float64 `json:"stock_fees_amount"`
+	OptionFeesAmount   float64 `json:"option_fees_amount"`
+	ChargedTradeCount  int64   `json:"charged_trade_count"`
+	SlippageIncluded   bool    `json:"slippage_included"`
+	TaxesIncluded      bool    `json:"taxes_included"`
+	AssignmentIncluded bool    `json:"assignment_included"`
+	Description        string  `json:"description"`
 }
 
 type Audit struct {
@@ -311,13 +316,25 @@ func Build(in Input) (*Report, error) {
 				OrderAssumption: orderAssumption,
 				Components:      UnfilledComponents{SpreadWeight: backtest.UnfilledSpreadWeight, VolumeWeight: backtest.UnfilledVolumeWeight, OIWeight: backtest.UnfilledOIWeight},
 			},
-			CostModel: CostModel{FeesIncluded: true, Description: "费用计入;滑点/税费/指派模型未接入"},
+			CostModel: CostModel{
+				FeesIncluded: in.Result.Fees.Included, FeePerTrade: in.Result.Fees.PerTrade,
+				TotalFeesAmount: in.Result.Fees.TotalAmount, StockFeesAmount: in.Result.Fees.StockAmount,
+				OptionFeesAmount: in.Result.Fees.OptionAmount, ChargedTradeCount: in.Result.Fees.ChargedTradeCount,
+				Description: feeDescription(in.Result.Fees.Included),
+			},
 		},
 		Audit: Audit{InputSnapshotHash: "sha256-" + hash, ParamsDictionaryVersion: ParamsDictionaryVersion,
 			StrategyParamsSnapshot: StrategyParamsSnapshot{MigrationLossy: in.MigrationLossy, OriginalJSON: in.OriginalJSON}},
 		Risk: risks(),
 	}
 	return r, nil
+}
+
+func feeDescription(included bool) string {
+	if included {
+		return "固定费用已从每笔成交扣除;未成交/HOLD/到期事件不收费;滑点/税费/指派费用模型未接入"
+	}
+	return "费用未计入;滑点/税费/指派费用模型未接入"
 }
 
 func JSON(r *Report) ([]byte, error) {

@@ -214,6 +214,57 @@ func TestShortPutOTMExpiry(t *testing.T) {
 	}
 }
 
+func TestFilledOptionTradeDeductsConfiguredFee(t *testing.T) {
+	chain := map[string]OptionContract{"P95": {Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2)}}
+	sc := &scriptStrategy{
+		actions: []Action{ActionSellPut},
+		sizes:   []float64{1},
+		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 3}},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"P95": {3}})
+	opts.RunSeed = 0
+	res, err := RunOptions(context.Background(), mkBars(100), 10000, 7.5, sc, opts)
+	if err != nil {
+		t.Fatalf("RunOptions() error: %v", err)
+	}
+	if len(res.Trades) != 1 || !res.Trades[0].Filled || res.Trades[0].Fee != 7.5 || res.Trades[0].CashAfter != 10292.5 {
+		t.Fatalf("option trade = %+v; want premium 300 less fee 7.5", res.Trades)
+	}
+	if !res.Fees.Included || res.Fees.PerTrade != 7.5 || res.Fees.TotalAmount != 7.5 || res.Fees.OptionAmount != 7.5 || res.Fees.StockAmount != 0 || res.Fees.ChargedTradeCount != 1 {
+		t.Fatalf("fees = %+v; want one charged option fill", res.Fees)
+	}
+	if math.Abs(res.Equity-9992.5) > 1e-9 {
+		t.Fatalf("equity = %v; want premium liability marked and fee deducted", res.Equity)
+	}
+}
+
+func TestUnfilledOptionTradeDoesNotChargeFee(t *testing.T) {
+	chain := map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
+	sc := &scriptStrategy{
+		actions: []Action{ActionSellCall},
+		sizes:   []float64{1},
+		pending: []*OptionPosition{{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"C105": {2}})
+	opts.QuoteBatches[0].Quotes[0].Bid = 0
+	opts.QuoteBatches[0].Quotes[0].Ask = 0
+	opts.QuoteBatches[0].Quotes[0].Volume = 0
+	opts.QuoteBatches[0].Quotes[0].OpenInterest = 0
+	opts.Snapshots = opts.QuoteBatches
+	opts.QuoteSnapshots = opts.QuoteBatches
+	opts.RunSeed = 1
+	res, err := RunOptions(context.Background(), mkBars(100), 10000, 7.5, sc, opts)
+	if err != nil {
+		t.Fatalf("RunOptions() error: %v", err)
+	}
+	if len(res.Trades) != 1 || res.Trades[0].Filled || res.Trades[0].Fee != 0 || res.Trades[0].CashAfter != 10000 {
+		t.Fatalf("unfilled option trade = %+v; want no booking and no fee", res.Trades)
+	}
+	if res.Fees.TotalAmount != 0 || res.Fees.ChargedTradeCount != 0 {
+		t.Fatalf("fees = %+v; want no charge for an unfilled attempt", res.Fees)
+	}
+}
+
 func TestLongCallExercise(t *testing.T) {
 	chain := map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
 	sc := &scriptStrategy{

@@ -27,7 +27,8 @@ func testInput(attempts, fills, unfilled int64) Input {
 		ConfigVersion: 1, CodeVersion: "test-sha", RunSeed: 42,
 		InitialCash: 10000, Start: start, End: end, BaselineReturnPct: 0.008,
 		SourceHash: "sha256-test-source",
-		Result:     &backtest.Result{Equity: 10123, TotalReturn: 0.0123, MaxDrawdown: 0.05, Bars: 2, Unfilled: stats},
+		Result: &backtest.Result{Equity: 10123, TotalReturn: 0.0123, MaxDrawdown: 0.05, Bars: 2, Unfilled: stats,
+			Fees: backtest.FeeSummary{Included: true, PerTrade: 3, TotalAmount: 9, StockAmount: 3, OptionAmount: 6, ChargedTradeCount: 3}},
 	}
 }
 
@@ -65,6 +66,10 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	if components["spread_weight"] != 0.55 || components["volume_weight"] != 0.30 || components["oi_weight"] != 0.15 {
 		t.Fatalf("components = %#v", components)
 	}
+	cost := result["cost_model"].(map[string]any)
+	if cost["fees_included"] != true || cost["fee_per_trade"] != 3.0 || cost["total_fees_amount"] != 9.0 || cost["stock_fees_amount"] != 3.0 || cost["option_fees_amount"] != 6.0 || cost["charged_trade_count"] != 3.0 {
+		t.Fatalf("cost_model = %#v; want the runner fee ledger", cost)
+	}
 }
 
 func TestBuildAttemptRatioAndDeterministicRendering(t *testing.T) {
@@ -96,7 +101,7 @@ func TestBuildAttemptRatioAndDeterministicRendering(t *testing.T) {
 	if !bytes.Equal(ha, hb) {
 		t.Fatal("same report rendered different HTML bytes")
 	}
-	for _, want := range []string{"og:title", "og:description", "theme-color", "净收益", "最大回撤", "未成交率", "停止原因", "40.00%", "overflow-x:hidden", "@media(max-width:430px)"} {
+	for _, want := range []string{"og:title", "og:description", "theme-color", "净收益", "最大回撤", "未成交率", "停止原因", "总费用", "期权费用", "40.00%", "overflow-x:hidden", "@media(max-width:430px)"} {
 		if !bytes.Contains(ha, []byte(want)) {
 			t.Fatalf("HTML missing %q", want)
 		}

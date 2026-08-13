@@ -41,7 +41,7 @@ wbot backtest \
 | `-cash` | 10000 | 初始现金（>0） |
 | `-strategy` | `hold` | CLI 实际默认是内部 `hold` 基准；显式 `-strategy wheel` 才运行 Wheel。产品 API/watchlist 只接受 `wheel` |
 | `-params` | — | `wheel` 新配置必须提供 `full_position_price`、`zero_position_price` 与 `max_inventory`；百分比用小数；旧曲线仅兼容读取；内部 `hold`/`buy-hold` 不接参数 |
-| `-fee` | 0 | 回测费用占位；不改变提醒契约 |
+| `-fee` | 0 | 每笔实际成交的固定费用；正股与期权 fill 均从现金扣除，未成交/HOLD/机械到期不收费 |
 | `-seed` | 42 | 未成交启发式抽样种子；同输入同 seed 产生同一成交 trace，`0` 等价于默认 42 |
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |

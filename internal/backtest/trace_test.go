@@ -56,7 +56,7 @@ func TestRunTraceBuyHoldFee(t *testing.T) {
 		t.Fatalf("Run() error: %v", err)
 	}
 	assertCurve(t, res, []eqPoint{{0, 9999}, {1, 10999}, {2, 12099}})
-	if tr := res.Trades[0]; tr.CashAfter != -1 || tr.Price != 100 {
+	if tr := res.Trades[0]; tr.CashAfter != -1 || tr.Price != 100 || tr.Fee != 1 {
 		t.Fatalf("Trades[0] = %+v; want cash_after -1 at close 100", tr)
 	}
 }
