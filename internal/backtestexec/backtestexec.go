@@ -32,16 +32,19 @@ var ErrNoOptionData = errors.New("backtest: no option quote snapshots in range")
 // caller must set Timeframe/Adjust/Cash/Fee/Limit explicitly (the CLI from
 // flags, the API from its documented defaults).
 type Options struct {
-	Symbol    string
-	Strategy  string
-	Params    map[string]any
-	Timeframe string
-	Adjust    string
-	From      time.Time
-	To        time.Time
-	Limit     int
-	Cash      float64
-	Fee       float64
+	Symbol   string
+	Strategy string
+	Params   map[string]any
+	// ConfigVersion is non-nil only when Params came from a versioned
+	// production binding (for example CLI -from-watchlist).
+	ConfigVersion *int
+	Timeframe     string
+	Adjust        string
+	From          time.Time
+	To            time.Time
+	Limit         int
+	Cash          float64
+	Fee           float64
 	// Seed seeds the unfilled-attempt draws (0 = backtest default 42).
 	Seed int64
 }

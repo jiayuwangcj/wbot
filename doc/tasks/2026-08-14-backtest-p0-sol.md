@@ -43,7 +43,7 @@
 - [x] P0-1：核对官方接口与实际网关，裁决为无法历史回填；禁止伪数据
 - [ ] P0-1：报告数据质量卡与零 snapshot `DATA_BLOCKED` 路径
 - [x] P0-2：期权成交费用实际扣账并在报告输出
-- [ ] P0-3：多点曲线无损执行与真实 `config_version`
+- [x] P0-3：多点曲线无损执行；`-from-watchlist` 只读加载真实 `config_version`，ad-hoc 报告显式 `null`
 - [ ] P0-4：窗口末持仓、已实现/未实现 P&L、到期/指派统计
 - [ ] 全量 `scripts/verify.sh`
 

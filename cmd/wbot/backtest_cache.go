@@ -26,6 +26,10 @@ func cacheBacktestReport(ctx context.Context, database *sql.DB, rep *backtestrep
 }
 
 func strategyCacheRecord(rep *backtestreport.Report, jsonPath string, humanApproved bool) wheelstore.StrategyCacheRecord {
+	configVersion := 0
+	if rep.Identity.ConfigVersion != nil {
+		configVersion = *rep.Identity.ConfigVersion
+	}
 	bestParams := rep.Identity.Config.Params
 	returnMetrics := map[string]any{
 		"net_return_pct":      rep.Result.NetReturnPct,
@@ -70,7 +74,7 @@ func strategyCacheRecord(rep *backtestreport.Report, jsonPath string, humanAppro
 	}
 	return wheelstore.StrategyCacheRecord{
 		Symbol: rep.Identity.Symbol, Market: rep.Identity.Market, Currency: rep.Identity.Currency,
-		ConfigVersion: rep.Identity.ConfigVersion, Payload: payload, ModelVersion: rep.Identity.CodeVersion,
+		ConfigVersion: configVersion, Payload: payload, ModelVersion: rep.Identity.CodeVersion,
 		DataWindow:    wheelstore.StrategyCacheWindow{From: rep.Identity.DataWindow.From, To: rep.Identity.DataWindow.To},
 		ApprovedState: state,
 	}

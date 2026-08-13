@@ -49,6 +49,7 @@
 ```
 
 - `windows` 仅 `es_train` 必填;`single_run` 时 `data_window` 即回测区间。
+- `config_version` 仅在参数从版本化生产绑定加载时为正整数；手工/ad-hoc 参数必须为 `null`，不得默认或硬编码成 v1。该值参与输入哈希和 `report_id`。
 - `capability_status` 语义沿用 doc/BACKTEST.md;当前事件数据不足,所有训练产物 `RESEARCH_ONLY`。
 - `config.params` 记录**脱敏后的完整输入参数**(战略参数人工值 + 战术参数取值),供复现。
 

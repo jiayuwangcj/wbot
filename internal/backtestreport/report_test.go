@@ -21,10 +21,11 @@ func testInput(attempts, fills, unfilled int64) Input {
 		ratio := float64(unfilled) / float64(attempts)
 		stats.UnfilledRatio = &ratio
 	}
+	configVersion := 1
 	return Input{
 		Symbol: "HK.00883", Strategy: "wheel",
 		Params:        map[string]any{"full_position_price": 48.0, "zero_position_price": 55.0, "max_inventory": 22000.0},
-		ConfigVersion: 1, CodeVersion: "test-sha", RunSeed: 42,
+		ConfigVersion: &configVersion, CodeVersion: "test-sha", RunSeed: 42,
 		InitialCash: 10000, Start: start, End: end, BaselineReturnPct: 0.008,
 		SourceHash: "sha256-test-source",
 		Result: &backtest.Result{Equity: 10123, TotalReturn: 0.0123, MaxDrawdown: 0.05, Bars: 2, Unfilled: stats,
@@ -69,6 +70,35 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	cost := result["cost_model"].(map[string]any)
 	if cost["fees_included"] != true || cost["fee_per_trade"] != 3.0 || cost["total_fees_amount"] != 9.0 || cost["stock_fees_amount"] != 3.0 || cost["option_fees_amount"] != 6.0 || cost["charged_trade_count"] != 3.0 {
 		t.Fatalf("cost_model = %#v; want the runner fee ledger", cost)
+	}
+}
+
+func TestBuildConfigVersionIsExplicitAndAffectsIdentity(t *testing.T) {
+	adHoc := testInput(0, 0, 0)
+	adHoc.ConfigVersion = nil
+	adHocReport, err := Build(adHoc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adHocReport.Identity.ConfigVersion != nil {
+		t.Fatalf("ad-hoc config_version = %v; want null", *adHocReport.Identity.ConfigVersion)
+	}
+	one := 1
+	two := 2
+	v1 := testInput(0, 0, 0)
+	v2 := testInput(0, 0, 0)
+	v1.ConfigVersion = &one
+	v2.ConfigVersion = &two
+	r1, err := Build(v1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := Build(v2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.ReportID == r2.ReportID || r2.Identity.ConfigVersion == nil || *r2.Identity.ConfigVersion != 2 {
+		t.Fatalf("config versions did not produce distinct identities: %s %#v / %s %#v", r1.ReportID, r1.Identity.ConfigVersion, r2.ReportID, r2.Identity.ConfigVersion)
 	}
 }
 

@@ -189,14 +189,14 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 	duration := time.Since(started).Seconds()
 	estimate := fmt.Sprintf("启动前输出:预计最多 %d 次回测", min(searchBudget, backtestes.EstimatedEvaluations(cfg)+reserved))
 	rep, err := backtestreport.BuildES(backtestreport.ESInput{
-		Run: backtestreport.Input{Symbol: opts.Symbol, Strategy: opts.Strategy, Params: selected.candidate.Params, ConfigVersion: 1, CodeVersion: version, RunSeed: opts.Seed,
+		Run: backtestreport.Input{Symbol: opts.Symbol, Strategy: opts.Strategy, Params: selected.candidate.Params, ConfigVersion: opts.ConfigVersion, CodeVersion: version, RunSeed: opts.Seed,
 			InitialCash: opts.Cash, FeePerTrade: opts.Fee, Start: baseOutcome.StartTs, End: baseOutcome.EndTs, BaselineReturnPct: baseline, SourceHash: selectedOutcome.SourceHash, Result: selectedOutcome.Result},
 		Windows: reportWindows(windows), Train: backtestreport.Train{Algorithm: "ES", AlgorithmVersion: backtestes.AlgorithmVersion, GenerationCount: len(search.Generations), PopulationSize: cfg.Population,
 			EvaluationCount: search.EvaluationCount + reserved, Seeds: allSeeds, StopReason: search.StopReason, StopDetail: search.StopDetail, DurationSec: duration, EvaluationEstimate: estimate},
 		Generations: gens, Candidates: reportCandidates, Reward: backtestreport.RewardAudit{FunctionVersion: backtestes.RewardVersion,
 			Weights:             backtestreport.RewardWeights{LambdaDD: cfg.Weights.LambdaDD, LambdaTail: cfg.Weights.LambdaTail, LambdaTurnover: cfg.Weights.LambdaTurnover},
 			HardFailureHandling: "策略层候选 mask 预防硬失败,违规候选不进入评估;未成交已含于净收益,不重复计罚"}, SearchSpace: searchAudit,
-		Trajectory: buildTrajectory(selectedOutcome.Result, selected.candidate.Params, opts.Symbol, version, selectedOutcome.SourceHash), TailLossPct: selected.metrics[medianIndex].TailLoss,
+		Trajectory: buildTrajectory(selectedOutcome.Result, selected.candidate.Params, opts.ConfigVersion, opts.Symbol, version, selectedOutcome.SourceHash), TailLossPct: selected.metrics[medianIndex].TailLoss,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
@@ -319,7 +319,7 @@ func reportWindows(w backtestes.Windows) backtestreport.Windows {
 	return backtestreport.Windows{Train: cv(w.Train), Valid: cv(w.Valid), Test: cv(w.Test)}
 }
 
-func buildTrajectory(r *backtest.Result, params map[string]any, symbol, codeVersion, dataHash string) []backtestreport.TrajectoryStep {
+func buildTrajectory(r *backtest.Result, params map[string]any, configVersion *int, symbol, codeVersion, dataHash string) []backtestreport.TrajectoryStep {
 	out := make([]backtestreport.TrajectoryStep, 0, len(r.Signals))
 	peak := 0.0
 	for i, s := range r.Signals {
@@ -367,7 +367,7 @@ func buildTrajectory(r *backtest.Result, params map[string]any, symbol, codeVers
 			StateBefore: map[string]any{"underlying_price": s.UnderlyingPrice, "actual_inventory": s.ActualInventory, "effective_inventory": s.EffectiveInventory, "target_inventory": s.TargetInventory, "cash": s.CashBefore, "strategy_state": params["strategic_state"], "last_filled_price": nil, "bars_since_last_action": nil}, Candidates: candidates,
 			Action: map[string]any{"type": trajectoryAction(s), "candidate_index": candidateIndex(candidates, s.CandidateCode), "quantity": s.Quantity}, Fill: map[string]any{"simulated": s.CandidateCode != "", "filled": filled, "unfilled_model_version": fillModel},
 			StateAfter: map[string]any{"effective_inventory": s.EffectiveInventory, "cash": s.CashAfter}, RewardAtoms: map[string]any{"equity_delta": equityDelta, "fees": chargedFee, "slippage": 0.0, "incremental_drawdown": incrementalDD, "tail_exposure_delta": 0.0}, Termination: termination,
-			Versions: map[string]any{"config": 1, "data_hash": dataHash, "code": codeVersion, "fill_model": r.Unfilled.ModelVersion, "symbol": symbol}})
+			Versions: map[string]any{"config": configVersion, "data_hash": dataHash, "code": codeVersion, "fill_model": r.Unfilled.ModelVersion, "symbol": symbol}})
 	}
 	return out
 }

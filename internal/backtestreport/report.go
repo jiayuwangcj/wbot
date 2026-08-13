@@ -35,7 +35,7 @@ type Identity struct {
 	Symbol           string       `json:"symbol"`
 	Market           string       `json:"market"`
 	Currency         string       `json:"currency"`
-	ConfigVersion    int          `json:"config_version"`
+	ConfigVersion    *int         `json:"config_version"`
 	CodeVersion      string       `json:"code_version"`
 	DataWindow       Window       `json:"data_window"`
 	Windows          *Windows     `json:"windows,omitempty"`
@@ -216,7 +216,7 @@ type Input struct {
 	Symbol            string
 	Strategy          string
 	Params            map[string]any
-	ConfigVersion     int
+	ConfigVersion     *int
 	CodeVersion       string
 	RunSeed           int64
 	InitialCash       float64
@@ -262,8 +262,8 @@ func Build(in Input) (*Report, error) {
 	if in.Start.IsZero() || in.End.IsZero() || in.End.Before(in.Start) {
 		return nil, errors.New("backtest report: invalid data window")
 	}
-	if in.ConfigVersion <= 0 {
-		in.ConfigVersion = 1
+	if in.ConfigVersion != nil && *in.ConfigVersion <= 0 {
+		return nil, errors.New("backtest report: config version must be positive when present")
 	}
 	if in.CodeVersion == "" {
 		in.CodeVersion = "unknown"
@@ -275,16 +275,17 @@ func Build(in Input) (*Report, error) {
 	capability, blocked := capability(in.Result.Signals)
 	market, currency := marketCurrency(in.Symbol)
 	snapshot := struct {
-		Symbol      string         `json:"symbol"`
-		Strategy    string         `json:"strategy"`
-		Params      map[string]any `json:"params"`
-		RunSeed     int64          `json:"run_seed"`
-		InitialCash float64        `json:"initial_cash"`
-		Fee         float64        `json:"fee"`
-		Start       string         `json:"start"`
-		End         string         `json:"end"`
-		SourceHash  string         `json:"source_hash,omitempty"`
-	}{in.Symbol, in.Strategy, in.Params, effectiveSeed(in.RunSeed), in.InitialCash, in.FeePerTrade,
+		Symbol        string         `json:"symbol"`
+		Strategy      string         `json:"strategy"`
+		Params        map[string]any `json:"params"`
+		ConfigVersion *int           `json:"config_version"`
+		RunSeed       int64          `json:"run_seed"`
+		InitialCash   float64        `json:"initial_cash"`
+		Fee           float64        `json:"fee"`
+		Start         string         `json:"start"`
+		End           string         `json:"end"`
+		SourceHash    string         `json:"source_hash,omitempty"`
+	}{in.Symbol, in.Strategy, in.Params, in.ConfigVersion, effectiveSeed(in.RunSeed), in.InitialCash, in.FeePerTrade,
 		rfc3339(in.Start), rfc3339(in.End), in.SourceHash}
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {

@@ -180,12 +180,15 @@ func TestParseConfigMigratesLegacyParamsWithAudit(t *testing.T) {
 	if cfg.FullPositionPrice != 40 || cfg.ZeroPositionPrice != 55 || cfg.TradeGap != 50 {
 		t.Fatalf("migrated config = %+v", cfg)
 	}
-	if !cfg.MigrationLossy || cfg.MigrationWarningCount != 3 || len(cfg.MigrationWarnings) != 3 {
+	if cfg.MigrationLossy || cfg.MigrationWarningCount != 3 || len(cfg.MigrationWarnings) != 3 {
 		t.Fatalf("migration audit = %+v", cfg)
 	}
-	var preserved []map[string]any
-	if err := json.Unmarshal(cfg.MigrationOriginalCurve, &preserved); err != nil || len(preserved) != 3 || preserved[1]["price"] != 48.0 {
-		t.Fatalf("preserved curve = %s err=%v", cfg.MigrationOriginalCurve, err)
+	if len(cfg.PricePositionCurve) != 3 || cfg.PricePositionCurve[1].Price != 48 || cfg.PricePositionCurve[1].TargetInventory != 11000 {
+		t.Fatalf("preserved curve = %+v", cfg.PricePositionCurve)
+	}
+	target, err := cfg.TargetInventory(48)
+	if err != nil || target != 11000 {
+		t.Fatalf("TargetInventory(48) = %v, %v; want exact middle anchor 11000", target, err)
 	}
 	b, err := json.Marshal(cfg)
 	if err != nil {
@@ -196,8 +199,24 @@ func TestParseConfigMigratesLegacyParamsWithAudit(t *testing.T) {
 			t.Fatalf("new config wrote legacy key %s: %s", oldKey, b)
 		}
 	}
-	if strings.Contains(string(b), `"price_position_curve":`) {
-		t.Fatalf("new config wrote legacy curve key: %s", b)
+	if !strings.Contains(string(b), `"price_position_curve":`) {
+		t.Fatalf("config dropped first-class price curve: %s", b)
+	}
+	canonical, err := CanonicalParams(map[string]any{
+		"price_position_curve": legacyCurve,
+		"max_inventory":        22000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := canonical["price_position_curve"]; !ok {
+		t.Fatalf("canonical params dropped curve: %+v", canonical)
+	}
+	if _, ok := canonical["full_position_price"]; ok {
+		t.Fatalf("canonical params exposed compatibility endpoint: %+v", canonical)
+	}
+	if _, ok := canonical["zero_position_price"]; ok {
+		t.Fatalf("canonical params exposed compatibility endpoint: %+v", canonical)
 	}
 }
 
