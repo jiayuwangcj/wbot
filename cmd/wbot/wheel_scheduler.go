@@ -15,6 +15,7 @@ import (
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/wheelrun"
 	"github.com/jiayu/wbot/internal/wheelstore"
+	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
 )
 
 // startWheelRunner runs the wheel live loop for serve until ctx is cancelled
@@ -89,11 +90,34 @@ func (q futuQuoter) OptionQuotes(ctx context.Context, symbols []string) (map[str
 }
 
 // futuPositions adapts the proto TradeClient to wheelrun.TradePositions: it
-// resolves the first account of env and maps every position row (acc is
-// ignored; the runner always passes nil).
+// merges every account of env (stock account + option account + futures …)
+// and maps every position row (acc is ignored; the runner always passes nil).
+// The per-account merge matters since 2026-08-12's multi-account order
+// routing: AccountForSymbol places option orders on the SimAccType=Option
+// account, so reading only the first env account (the stock account) hides
+// sold puts and the inventory gap never closes (2026-08-13: signal 500 filled
+// HK.TCH260821P450000, yet subsequent passes still showed gap 300).
 type futuPositions struct {
 	addr string
 	env  futu.Env
+}
+
+// envAccounts returns every gateway account of p.env.
+func (p futuPositions) envAccounts(ctx context.Context, tc *futu.TradeClient) ([]*trdcommon.TrdAcc, error) {
+	accounts, err := tc.ListAccounts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []*trdcommon.TrdAcc
+	for _, a := range accounts {
+		if a.GetTrdEnv() == int32(p.env) {
+			out = append(out, a)
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no %s account (trd_env=%d)", futu.EnvName(p.env), p.env)
+	}
+	return out, nil
 }
 
 func (p futuPositions) Positions(ctx context.Context, _ any) ([]wheelrun.Position, error) {
@@ -102,28 +126,30 @@ func (p futuPositions) Positions(ctx context.Context, _ any) ([]wheelrun.Positio
 		return nil, fmt.Errorf("wheel positions: %w", err)
 	}
 	defer tc.Close()
-	acc, err := tc.Account(ctx, p.env, 0)
+	accs, err := p.envAccounts(ctx, tc)
 	if err != nil {
 		return nil, err
 	}
-	positions, err := tc.Positions(ctx, acc)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]wheelrun.Position, 0, len(positions))
-	for _, pos := range positions {
-		out = append(out, wheelrun.Position{
-			Symbol: qualifySymbol(pos.GetSecMarket(), pos.GetCode()),
-			Code:   pos.GetCode(),
-			Qty:    pos.GetQty(),
-			Side:   int(pos.GetPositionSide()),
-		})
+	out := make([]wheelrun.Position, 0, 16)
+	for _, acc := range accs {
+		positions, err := tc.Positions(ctx, acc)
+		if err != nil {
+			return nil, fmt.Errorf("wheel positions acc=%d: %w", acc.GetAccID(), err)
+		}
+		for _, pos := range positions {
+			out = append(out, wheelrun.Position{
+				Symbol: qualifySymbol(pos.GetSecMarket(), pos.GetCode()),
+				Code:   pos.GetCode(),
+				Qty:    pos.GetQty(),
+				Side:   int(pos.GetPositionSide()),
+			})
+		}
 	}
 	return out, nil
 }
 
-// Funds returns the account's available cash for the wheel put-assignment
-// check (read-only; simulate env resolves the same first account as
+// Funds returns the summed available cash across every env account for the
+// wheel put-assignment check (read-only; same per-account merge as
 // Positions).
 func (p futuPositions) Funds(ctx context.Context) (float64, error) {
 	tc, err := futu.AcquireTrade(ctx, p.addr)
@@ -131,15 +157,19 @@ func (p futuPositions) Funds(ctx context.Context) (float64, error) {
 		return 0, fmt.Errorf("wheel funds: %w", err)
 	}
 	defer tc.Close()
-	acc, err := tc.Account(ctx, p.env, 0)
+	accs, err := p.envAccounts(ctx, tc)
 	if err != nil {
 		return 0, err
 	}
-	funds, err := tc.Funds(ctx, acc)
-	if err != nil {
-		return 0, err
+	total := 0.0
+	for _, acc := range accs {
+		funds, err := tc.Funds(ctx, acc)
+		if err != nil {
+			return 0, fmt.Errorf("wheel funds acc=%d: %w", acc.GetAccID(), err)
+		}
+		total += funds.GetCash()
 	}
-	return funds.GetCash(), nil
+	return total, nil
 }
 
 // qualifySymbol reconstructs a market-qualified symbol from the TrdSecMarket
