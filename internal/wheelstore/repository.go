@@ -19,6 +19,10 @@ type SignalRepository interface {
 	HasAction(context.Context, int64, string) (bool, error)
 	QuerySignalsSince(context.Context, string, int64, int) ([]SignalRecord, error)
 	MaxSignalID(context.Context) (int64, error)
+	// ListPendingOrders returns the symbol's confirmed-but-unfilled orders;
+	// consumers pass the result to the LLM generator/reviewer as an explicit
+	// declaration of open exposure (老板指令 2026-08-13).
+	ListPendingOrders(context.Context, string) ([]PendingOrder, error)
 	Dismiss(context.Context, string, time.Time) error
 	IsDismissed(context.Context, string, time.Time) (bool, error)
 }
@@ -37,6 +41,13 @@ type OrderClaimRepository interface {
 // generation.  Store implements it with a DB query, never an in-memory map.
 type SchedulerRepository interface {
 	HasRecentUndisposedSignal(context.Context, string, time.Time) (bool, error)
+	// ListPendingOrders returns every confirmed-but-unfilled order (CONFIRM
+	// without FILL/NO/REJECTED) for the symbol. The generator and review gate
+	// receive this list as an explicit declaration of open exposure — an empty
+	// slice means "queried and none open" (2026-08-13: 701 confirmed 08:07,
+	// never filled, yet 702 was issued next tick; the fix is to let the LLM see
+	// and judge the open order, not to silently stack exposure).
+	ListPendingOrders(context.Context, string) ([]PendingOrder, error)
 }
 
 var _ OrderClaimRepository = (*Store)(nil)

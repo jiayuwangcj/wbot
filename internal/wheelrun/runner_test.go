@@ -206,6 +206,10 @@ func (f *fakeStore) HasAction(_ context.Context, signalID int64, action string) 
 	return false, nil
 }
 
+func (f *fakeStore) ListPendingOrders(context.Context, string) ([]wheelstore.PendingOrder, error) {
+	return []wheelstore.PendingOrder{}, nil
+}
+
 func (f *fakeStore) QuerySignalsSince(_ context.Context, action string, afterID int64, limit int) ([]wheelstore.SignalRecord, error) {
 	var out []wheelstore.SignalRecord
 	for i, signal := range f.signals {

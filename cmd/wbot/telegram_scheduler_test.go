@@ -198,6 +198,10 @@ func (f *fakeTGStore) HasAction(_ context.Context, signalID int64, action string
 	return false, nil
 }
 
+func (f *fakeTGStore) ListPendingOrders(context.Context, string) ([]wheelstore.PendingOrder, error) {
+	return []wheelstore.PendingOrder{}, nil
+}
+
 func (f *fakeTGStore) QuerySignalsSince(_ context.Context, _ string, afterID int64, _ int) ([]wheelstore.SignalRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -258,6 +262,10 @@ type fakePlacer struct {
 	statusCode  int32
 	statusErr   error
 	statusCalls int
+	// cancel handling: recorded id + error for the 撤单 path.
+	cancelID    string
+	cancelErr   error
+	cancelCalls int
 }
 
 func (p *fakePlacer) PlaceOrder(_ context.Context, symbol, side string, qty, price float64) (string, uint64, error) {
@@ -275,6 +283,12 @@ func (p *fakePlacer) OrderStatus(_ context.Context, _, orderIDEx string) (int32,
 		return p.statusCode, true, nil
 	}
 	return 0, false, nil
+}
+
+func (p *fakePlacer) CancelOrder(_ context.Context, _, orderID string) error {
+	p.cancelCalls++
+	p.cancelID = orderID
+	return p.cancelErr
 }
 
 func startFakeTG(t *testing.T) (*fakeTGServer, *httptest.Server) {
@@ -468,6 +482,59 @@ func TestCallbackNoRecordsAndAnswers(t *testing.T) {
 		t.Fatalf("action = %+v", act)
 	}
 	if toast := fake.lastToast(t); !strings.Contains(toast, "继续等待") {
+		t.Fatalf("toast = %q", toast)
+	}
+}
+
+func TestCallbackNoConfirmedCancelsOrder(t *testing.T) {
+	// 老板指令 2026-08-13: 已确认未成交的挂单(701→702 双挂场景),❌ 升级为
+	// 撤单:撤销模拟盘挂单 + 记录 NO 解除 pending-order 阻塞。
+	fake, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[9] = signalFixture(9, "US.AAPL", now)
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 9, Action: "CONFIRM", Actor: "telegram:42",
+		Details: map[string]any{"order_id": float64(12345)}, // JSONB 落库后为 float64
+	})
+	placer := &fakePlacer{}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
+	if placer.cancelCalls != 1 || placer.cancelID != "12345" {
+		t.Fatalf("CancelOrder calls=%d id=%q; want 1/12345", placer.cancelCalls, placer.cancelID)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "NO" || act.Note != "撤单成功 订单号 12345" {
+		t.Fatalf("action = %+v; want NO 撤单成功", act)
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "已撤单 订单号 12345") {
+		t.Fatalf("toast = %q", toast)
+	}
+}
+
+func TestCallbackNoCancelFailureTellsManual(t *testing.T) {
+	// 撤单失败必须显式告知手动撤,挂单不能被静默遗留(否则再次双挂)。
+	fake, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[9] = signalFixture(9, "US.AAPL", now)
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 9, Action: "CONFIRM", Actor: "telegram:42",
+		Details: map[string]any{"order_id": float64(12345)},
+	})
+	placer := &fakePlacer{cancelErr: errors.New("sim cancel failed")}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
+	if placer.cancelCalls != 1 {
+		t.Fatalf("CancelOrder calls = %d; want 1", placer.cancelCalls)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "NO" || !strings.Contains(act.Note, "请手动在模拟盘撤单") {
+		t.Fatalf("action = %+v; want NO with manual-cancel note", act)
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "撤单失败") {
 		t.Fatalf("toast = %q", toast)
 	}
 }

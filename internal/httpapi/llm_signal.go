@@ -165,6 +165,17 @@ func LLMSignalHandler(store wheelstore.SignalRepository, reviewer llmreview.Revi
 		gap := 0.0
 		account.Inventory = wheelstore.InventorySnapshot{CurrentPrice: fptr(req.CurrentPrice), ActualInventory: &actual, OptionDeltaStock: &optionDelta, EffectiveInventory: &effective, TargetInventory: &target, InventoryGap: &gap}
 
+		// 挂单声明是强制输入(老板指令 2026-08-13):查询失败拒绝提交,成功则
+		// 显式传入(空切片=明确无挂单),审核必须综合评估未成交订单。
+		pctx, pcancel := context.WithTimeout(r.Context(), 5*time.Second)
+		pending, perr := store.ListPendingOrders(pctx, req.Symbol)
+		pcancel()
+		if perr != nil {
+			writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{Code: "upstream_unavailable", Message: "pending orders: " + perr.Error(), Action: "retry after the store recovers"})
+			return
+		}
+		account.PendingOrders = pending
+
 		svc := &llmsignal.Service{Store: store, Reviewer: reviewer, Model: model}
 		result, err := svc.Submit(r.Context(), normalized, account, llmsignal.Policy{})
 		if err != nil {

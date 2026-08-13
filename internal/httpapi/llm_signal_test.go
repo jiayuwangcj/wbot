@@ -96,6 +96,10 @@ func (f *fakeLLMStore) HasAction(_ context.Context, signalID int64, action strin
 	return false, nil
 }
 
+func (f *fakeLLMStore) ListPendingOrders(context.Context, string) ([]wheelstore.PendingOrder, error) {
+	return []wheelstore.PendingOrder{}, nil
+}
+
 func (f *fakeLLMStore) QuerySignalsSince(_ context.Context, action string, afterID int64, limit int) ([]wheelstore.SignalRecord, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

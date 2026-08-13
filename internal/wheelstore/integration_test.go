@@ -176,11 +176,22 @@ VALUES ($1, $2, 1, $3, $4::jsonb, 'invalid fixture')`, symbol, tc.action, tc.sta
 		t.Fatalf("ListSignals capability=READY len=%d err=%v rows=%+v", len(ready), err, ready)
 	}
 
-	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "CONFIRM", Actor: "operator", Note: "reviewed"}); err != nil {
+	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "CONFIRM", Actor: "operator", Note: "reviewed", Details: map[string]any{"order_id": 12345}}); err != nil {
 		t.Fatalf("AppendAction CONFIRM: %v", err)
+	}
+	// ListPendingOrders surfaces the confirmed-but-unfilled order with the
+	// broker order id from the CONFIRM details (2026-08-13: LLM 策略输入)。
+	pendingOrders, err := store.ListPendingOrders(ctx, symbol)
+	if err != nil || len(pendingOrders) != 1 || pendingOrders[0].SignalID != alertID || pendingOrders[0].OrderID != "12345" {
+		t.Fatalf("ListPendingOrders = %+v err=%v; want one order id 12345", pendingOrders, err)
 	}
 	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "FILL", Actor: "operator", Note: "human-reported fill", Details: map[string]any{"contracts": 1}}); err != nil {
 		t.Fatalf("AppendAction FILL: %v", err)
+	}
+	// FILL 解除挂单:同一信号不再被视为 pending。
+	pendingOrders, err = store.ListPendingOrders(ctx, symbol)
+	if err != nil || len(pendingOrders) != 0 {
+		t.Fatalf("ListPendingOrders after FILL = %+v err=%v; want none", pendingOrders, err)
 	}
 	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "LLM_REVIEW", Actor: "llm:test-model", Details: map[string]any{"verdict": "APPROVE", "reasons": []string{"within budget"}}}); err != nil {
 		t.Fatalf("AppendAction LLM_REVIEW: %v", err)

@@ -3,6 +3,7 @@ package llmsignal
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,9 @@ func (s *testStore) HasAction(_ context.Context, signalID int64, action string) 
 	}
 	return false, nil
 }
+func (s *testStore) ListPendingOrders(context.Context, string) ([]wheelstore.PendingOrder, error) {
+	return nil, nil
+}
 func (s *testStore) QuerySignalsSince(context.Context, string, int64, int) ([]wheelstore.SignalRecord, error) {
 	return nil, nil
 }
@@ -70,6 +74,8 @@ func validContext() Context {
 		ObservedOptions: map[string]ObservedOption{
 			"HK.TCH260821P450000": {Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5, Delta: -.35, IV: .4, OpenInterest: 100},
 		},
+		// 挂单声明是强制输入:空切片 = 明确查询过且无挂单(2026-08-13)。
+		PendingOrders: []wheelstore.PendingOrder{},
 	}
 }
 func validDecision() Decision {
@@ -112,6 +118,65 @@ func TestSubmitRejectsHardConstraintsWithoutAlert(t *testing.T) {
 				t.Fatalf("rejected decision appended %+v", store.signals)
 			}
 		})
+	}
+}
+
+func TestSubmitRejectsMissingPendingOrdersDeclaration(t *testing.T) {
+	// 老板指令 2026-08-13: 未明确传入挂单信息(未查询)必须拒绝——调用方
+	// 必须显式声明,空切片表示明确无挂单。
+	store := &testStore{}
+	svc := &Service{Store: store, Now: func() time.Time { return time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC) }}
+	account := validContext()
+	account.PendingOrders = nil
+	_, err := svc.Submit(context.Background(), validDecision(), account, Policy{})
+	if !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "pending orders snapshot is required") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(store.signals) != 0 {
+		t.Fatalf("rejected decision appended %+v", store.signals)
+	}
+}
+
+func TestSubmitRejectsSameContractPendingOrder(t *testing.T) {
+	// 同合约已有挂单 = 确定性重复动作,不交给模型判断。
+	store := &testStore{}
+	svc := &Service{Store: store, Now: func() time.Time { return time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC) }}
+	account := validContext()
+	account.PendingOrders = []wheelstore.PendingOrder{{SignalID: 701, OrderID: "12345", Direction: "PUT", Quantity: 1, Contract: "HK.TCH260821P450000", Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5}}
+	_, err := svc.Submit(context.Background(), validDecision(), account, Policy{})
+	if !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "already has a pending order") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(store.signals) != 0 {
+		t.Fatalf("rejected decision appended %+v", store.signals)
+	}
+}
+
+type capturingReviewer struct {
+	approve
+	req llmreview.ReviewRequest
+}
+
+func (r *capturingReviewer) Review(ctx context.Context, req llmreview.ReviewRequest) (llmreview.ReviewResult, error) {
+	r.req = req
+	return r.approve.Review(ctx, req)
+}
+
+func TestSubmitDifferentContractPendingOrderPassesDeterministicGate(t *testing.T) {
+	// 不同合约的挂单通过确定性校验(是否叠加由审核门综合判断),但审核输入
+	// 必须带上挂单列表。
+	store := &testStore{}
+	reviewer := &capturingReviewer{}
+	svc := &Service{Store: store, Reviewer: reviewer, Model: "review", Now: func() time.Time { return time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC) }}
+	account := validContext()
+	account.PendingOrders = []wheelstore.PendingOrder{{SignalID: 701, OrderID: "12345", Direction: "PUT", Quantity: 1, Contract: "HK.TCH260821P445000", Strike: 445, Expiry: "2026-08-21T00:00:00Z", Premium: 9.1}}
+	if _, err := svc.Submit(context.Background(), validDecision(), account, Policy{}); err != nil {
+		t.Fatal(err)
+	}
+	// 审核输入必须包含挂单声明(否则模型按「未提供」拒绝)。
+	pending, ok := reviewer.req.PendingOrders.([]wheelstore.PendingOrder)
+	if !ok || len(pending) != 1 || pending[0].Contract != "HK.TCH260821P445000" {
+		t.Fatalf("review request pending orders = %+v (type %T)", reviewer.req.PendingOrders, reviewer.req.PendingOrders)
 	}
 }
 

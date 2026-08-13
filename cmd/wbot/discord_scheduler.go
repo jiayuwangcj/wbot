@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -542,13 +543,40 @@ func (s *discordScheduler) handleInteraction(w http.ResponseWriter, r *http.Requ
 		discord.WriteResponse(w, discord.EphemeralMessage("已记录,正在下单"))
 		go s.confirmOrderDiscord(s.ctx, &in, signalID)
 	case "no":
-		if _, err := s.store.AppendAction(s.ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "NO", Actor: discordActor(&in), Note: "继续等待机会"}); err != nil {
+		// 与 telegram 同语义(2026-08-13):已确认未成交单按 ❌ = 撤单,撤销
+		// 模拟盘挂单并记录 NO 解除 pending-order 阻塞,保证挂单被取消。
+		note, toast := "继续等待机会", "已记录,继续等待机会"
+		if confirm, cerr := s.store.LatestAction(s.ctx, signalID, "CONFIRM"); cerr == nil {
+			var oid uint64
+			switch v := confirm.Details["order_id"].(type) {
+			case float64: // JSONB 落库后数值读出为 float64
+				oid = uint64(v)
+			case uint64:
+				oid = v
+			}
+			symbol := ""
+			if sig, gerr := s.store.GetSignal(s.ctx, signalID); gerr == nil {
+				symbol = sig.Symbol
+			}
+			switch {
+			case oid == 0 || symbol == "":
+				note, toast = "撤单失败:缺少订单号或标的(请手动在模拟盘撤单)", "缺少订单信息,请手动撤单"
+			default:
+				if cerr := s.orders.CancelOrder(s.ctx, symbol, strconv.FormatUint(oid, 10)); cerr != nil {
+					s.logf("interaction %s: cancel order: %v", in.ID, cerr)
+					note, toast = fmt.Sprintf("撤单失败:%v(请手动在模拟盘撤单)", cerr), "撤单失败,请手动撤单"
+				} else {
+					note, toast = fmt.Sprintf("撤单成功 订单号 %d", oid), fmt.Sprintf("已撤单 订单号 %d", oid)
+				}
+			}
+		}
+		if _, err := s.store.AppendAction(s.ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "NO", Actor: discordActor(&in), Note: note}); err != nil {
 			s.logf("interaction %s: no: %v", in.ID, err)
 			discord.WriteResponse(w, discord.EphemeralMessage("记录失败"))
 			return
 		}
-		discord.WriteResponse(w, discord.EphemeralMessage("已记录,继续等待机会"))
-		s.noticeDiscord(s.ctx, "❌ 已拒绝", fmt.Sprintf("信号 #%d · %s\n老板拒绝该信号,继续等待机会", signalID, s.now().Format("2006-01-02 15:04:05")))
+		discord.WriteResponse(w, discord.EphemeralMessage(toast))
+		s.noticeDiscord(s.ctx, "❌ 已拒绝", fmt.Sprintf("信号 #%d · %s\n%s", signalID, s.now().Format("2006-01-02 15:04:05"), note))
 	case "dismiss":
 		s.recordDismissDiscord(w, &in, signalID)
 	default:

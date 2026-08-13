@@ -55,6 +55,10 @@ func (f *fakeGateRepo) HasAction(context.Context, int64, string) (bool, error) {
 	return false, errors.New("unused")
 }
 
+func (f *fakeGateRepo) ListPendingOrders(context.Context, string) ([]wheelstore.PendingOrder, error) {
+	return nil, errors.New("unused")
+}
+
 func (f *fakeGateRepo) QuerySignalsSince(context.Context, string, int64, int) ([]wheelstore.SignalRecord, error) {
 	return nil, errors.New("unused")
 }

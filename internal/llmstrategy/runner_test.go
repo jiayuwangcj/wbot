@@ -13,6 +13,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/llmsignal"
 	"github.com/jiayu/wbot/internal/watchlist"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 type wlFake struct{ items []watchlist.Item }
@@ -20,13 +21,20 @@ type wlFake struct{ items []watchlist.Item }
 func (f wlFake) List(context.Context) ([]watchlist.Item, error) { return f.items, nil }
 
 type dedupeFake struct {
-	pending bool
-	calls   int
+	pending      bool
+	orders       []wheelstore.PendingOrder
+	calls        int
+	pendingCalls int
 }
 
 func (f *dedupeFake) HasRecentUndisposedSignal(context.Context, string, time.Time) (bool, error) {
 	f.calls++
 	return f.pending, nil
+}
+
+func (f *dedupeFake) ListPendingOrders(context.Context, string) ([]wheelstore.PendingOrder, error) {
+	f.pendingCalls++
+	return f.orders, nil
 }
 
 type marketFake struct{ calls int }
@@ -40,20 +48,24 @@ func (f *marketFake) Snapshot(context.Context, string, map[string]any, time.Time
 type genFake struct {
 	err   error
 	calls int
+	snap  Snapshot
 }
 
-func (f *genFake) Generate(context.Context, Snapshot) (llmsignal.Decision, error) {
+func (f *genFake) Generate(_ context.Context, s Snapshot) (llmsignal.Decision, error) {
 	f.calls++
+	f.snap = s
 	return llmsignal.Decision{Direction: "PUT", Quantity: 1, Contract: "HK.TCH260821P450000", Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5, Delta: -.35, IV: .4, OpenInterest: 100, Reason: "specific reason"}, f.err
 }
 
 type submitFake struct {
 	submits, rejections int
 	rejectEmptyOptions  bool
+	account             llmsignal.Context
 }
 
 func (f *submitFake) Submit(_ context.Context, _ llmsignal.Decision, account llmsignal.Context, _ llmsignal.Policy) (llmsignal.Result, error) {
 	f.submits++
+	f.account = account
 	if f.rejectEmptyOptions && len(account.ObservedOptions) == 0 {
 		return llmsignal.Result{}, llmsignal.ErrRejected
 	}
@@ -77,6 +89,30 @@ func TestRunOnceDBDedupeSkipsGeneration(t *testing.T) {
 		t.Fatalf("calls=%d/%d/%d/%d", d.calls, m.calls, g.calls, s.submits)
 	}
 }
+func TestRunOncePassesPendingOrdersToGeneratorAndSubmitter(t *testing.T) {
+	// A confirmed-but-unfilled order no longer skips the tick: the generator
+	// and the review gate must see the open exposure and judge whether a new
+	// decision is still reasonable (老板指令 2026-08-13: 未成交订单要传入策略
+	// 与审核综合考虑;确定性校验仍拒绝同合约重复)。
+	d := &dedupeFake{orders: []wheelstore.PendingOrder{{SignalID: 701, OrderID: "12345", Direction: "PUT", Quantity: 1, Contract: "HK.TCH260821P450000", Strike: 450, Expiry: "2026-08-21T00:00:00Z", Premium: 8.5}}}
+	m := &marketFake{}
+	g := &genFake{}
+	s := &submitFake{}
+	r := Runner{Watchlist: wlFake{[]watchlist.Item{{Symbol: "HK.00700", Strategy: "llm"}}}, Dedupe: d, Market: m, Generator: g, Submitter: s}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if d.pendingCalls != 1 || m.calls != 1 || g.calls != 1 || s.submits != 1 {
+		t.Fatalf("calls=%d/%d/%d/%d; pending order must be passed, not skipped", d.pendingCalls, m.calls, g.calls, s.submits)
+	}
+	if len(g.snap.PendingOrders) != 1 || g.snap.PendingOrders[0].OrderID != "12345" {
+		t.Fatalf("generator snapshot pending orders = %+v", g.snap.PendingOrders)
+	}
+	if len(s.account.PendingOrders) != 1 || s.account.PendingOrders[0].Contract != "HK.TCH260821P450000" {
+		t.Fatalf("submitter account pending orders = %+v", s.account.PendingOrders)
+	}
+}
+
 func TestRunOnceGenerationFailureRecordedAndRetriable(t *testing.T) {
 	d := &dedupeFake{}
 	m := &marketFake{}

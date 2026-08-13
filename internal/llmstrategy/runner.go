@@ -16,6 +16,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/llmsignal"
 	"github.com/jiayu/wbot/internal/watchlist"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 const Model = "deepseek-v4-flash"
@@ -31,12 +32,13 @@ type Option struct {
 	OpenInterest int64   `json:"open_interest"`
 }
 type Snapshot struct {
-	Symbol           string               `json:"symbol"`
-	CurrentPrice     float64              `json:"current_price"`
-	CashAvailable    *float64             `json:"cash_available"`
-	OptionDeltaStock float64              `json:"option_delta_stock"`
-	Positions        []llmsignal.Position `json:"positions"`
-	Options          []Option             `json:"options"`
+	Symbol           string                    `json:"symbol"`
+	CurrentPrice     float64                   `json:"current_price"`
+	CashAvailable    *float64                  `json:"cash_available"`
+	OptionDeltaStock float64                   `json:"option_delta_stock"`
+	Positions        []llmsignal.Position      `json:"positions"`
+	Options          []Option                  `json:"options"`
+	PendingOrders    []wheelstore.PendingOrder `json:"pending_orders"`
 }
 
 type Market interface {
@@ -47,6 +49,10 @@ type Watchlist interface {
 }
 type DedupeStore interface {
 	HasRecentUndisposedSignal(context.Context, string, time.Time) (bool, error)
+	// ListPendingOrders returns the symbol's confirmed-but-unfilled orders;
+	// the generator and review gate must see open exposure (老板指令
+	// 2026-08-13: 未成交订单要传入策略与审核综合考虑)。
+	ListPendingOrders(context.Context, string) ([]wheelstore.PendingOrder, error)
 }
 type Submitter interface {
 	Submit(context.Context, llmsignal.Decision, llmsignal.Context, llmsignal.Policy) (llmsignal.Result, error)
@@ -101,12 +107,23 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 		if pending {
 			continue
 		}
+		// 未成交订单不是跳过信号,而是显式传给生成与审核(老板指令
+		// 2026-08-13):模型必须看到挂单并综合判断新单是否合理,确定性校验
+		// 再拒绝同合约重复。查询失败按 fail-closed 跳过该标的——无挂单
+		// 信息时不允许生成。
+		pendingOrders, err := r.Dedupe.ListPendingOrders(ctx, it.Symbol)
+		if err != nil {
+			failed++
+			fmt.Fprintf(os.Stderr, "llmstrategy: %s: pending orders: %v\n", it.Symbol, err)
+			continue
+		}
 		snap, err := r.Market.Snapshot(ctx, it.Symbol, it.Params, now)
 		if err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "llmstrategy: %s: snapshot: %v\n", it.Symbol, err)
 			continue
 		}
+		snap.PendingOrders = pendingOrders
 		decision, err := r.Generator.Generate(ctx, snap)
 		if err != nil {
 			failed++
@@ -132,7 +149,7 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 			fmt.Fprintf(os.Stderr, "llmstrategy: %s: submit: %v\n", it.Symbol, err)
 			continue
 		}
-		account := llmsignal.Context{Positions: snap.Positions, CashAvailable: snap.CashAvailable, ObservedOptions: map[string]llmsignal.ObservedOption{}}
+		account := llmsignal.Context{Positions: snap.Positions, CashAvailable: snap.CashAvailable, ObservedOptions: map[string]llmsignal.ObservedOption{}, PendingOrders: pendingOrders}
 		actual := positionQty(snap.Positions, it.Symbol)
 		optionDelta := snap.OptionDeltaStock
 		zero := 0.0
@@ -295,7 +312,9 @@ func NewClient(baseURL, apiKey string, opts ...ClientOption) (*Client, error) {
 	return c, nil
 }
 
-const generationPrompt = `你是 wbot 的交易候选生成器。初始输入是完整 snapshot；如果需要补充信息，可以调用系统提供的只读行情/账户工具，绝不能请求下单或任何写操作。最终只能从已观察的真实合约中选择一个，或对正股给出 BUY/SELL。direction 只能是 PUT、CALL(期权，仅卖出)、BUY、SELL(正股)，禁止组合值(如 SELL_CALL、BUY_PUT 等)。你只负责决策方向、数量与合约选择；所有价格字段(current_price/premium/strike/expiry/delta/iv/open_interest)由系统按行情注入，你无需输出(输出了也会被忽略)。期权仅卖出 PUT/CALL，正股限价由系统设为现价。数量必须大于 0 才可操作。理由必须具体说明现价/行权价、权利金、到期日与风险。不调用工具时，只输出一个严格 JSON 对象，字段为 symbol,direction,quantity,contract,reason,notes。无法形成安全决策时仍输出 JSON，但 quantity=0，让确定性校验拒绝。`
+const generationPrompt = `你是 wbot 的交易候选生成器。初始输入是完整 snapshot；如果需要补充信息，可以调用系统提供的只读行情/账户工具，绝不能请求下单或任何写操作。最终只能从已观察的真实合约中选择一个，或对正股给出 BUY/SELL。direction 只能是 PUT、CALL(期权，仅卖出)、BUY、SELL(正股)，禁止组合值(如 SELL_CALL、BUY_PUT 等)。你只负责决策方向、数量与合约选择；所有价格字段(current_price/premium/strike/expiry/delta/iv/open_interest)由系统按行情注入，你无需输出(输出了也会被忽略)。期权仅卖出 PUT/CALL，正股限价由系统设为现价。数量必须大于 0 才可操作。理由必须具体说明现价/行权价、权利金、到期日与风险。
+
+未成交订单(snapshot.pending_orders)：该标的有确认未成交的挂单。必须综合评估新决策与挂单的关系：同合约挂单已被确定性拒绝；不同合约/方向也要避免重复敞口与方向叠加，若新决策会放大未成交订单风险(如同方向加仓、临近合约叠加)，应放弃(quantity=0)并在 notes 说明原因。不调用工具时，只输出一个严格 JSON 对象，字段为 symbol,direction,quantity,contract,reason,notes。无法形成安全决策时仍输出 JSON，但 quantity=0，让确定性校验拒绝。`
 
 var agentTools = []map[string]any{
 	toolDefinition("quote", "查询正股实时报价(现价)", map[string]any{"symbol": stringProperty("正股代码")}, []string{"symbol"}),

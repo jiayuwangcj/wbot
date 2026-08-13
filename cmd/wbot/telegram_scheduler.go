@@ -42,6 +42,11 @@ type wheelOrderPlacer interface {
 	// know the order yet (caller retries); err only on gateway/account
 	// failures (成交监控用, 老板指令 2026-08-12: 成交结果要推送)。
 	OrderStatus(ctx context.Context, symbol, orderIDEx string) (status int32, found bool, err error)
+	// CancelOrder cancels a previously confirmed order in the env account of
+	// symbol (挂单撤单按钮 2026-08-13: 已下单未成交必须能确定地取消,否则
+	// 策略再发新单会重复下单)。orderID is the numeric order id recorded on
+	// the CONFIRM action.
+	CancelOrder(ctx context.Context, symbol, orderID string) error
 }
 
 // futuOrderPlacer adapts the proto TradeClient to wheelOrderPlacer: it opens
@@ -94,6 +99,24 @@ func (p futuOrderPlacer) OrderStatus(ctx context.Context, symbol, orderIDEx stri
 		}
 	}
 	return 0, false, nil
+}
+
+// CancelOrder cancels the confirmed order in the env account of symbol
+// (撤单按钮 2026-08-13: 挂单未成交必须能确定取消,否则新单重复下单)。
+func (p futuOrderPlacer) CancelOrder(ctx context.Context, symbol, orderID string) error {
+	if p.env != futu.EnvSim {
+		return errLiveEnvNotAllowed
+	}
+	tc, err := futu.AcquireTrade(ctx, p.addr)
+	if err != nil {
+		return fmt.Errorf("open trade: %w", err)
+	}
+	defer tc.Close()
+	acc, err := tc.AccountForSymbol(ctx, p.env, symbol, 0)
+	if err != nil {
+		return err
+	}
+	return tc.CancelOrder(ctx, acc, orderID)
 }
 
 // telegramScheduler pushes wheel ALERT signals to Telegram and disposes the
@@ -385,14 +408,43 @@ func (s *telegramScheduler) handleCallback(ctx context.Context, cq *telegram.Cal
 	case "yes":
 		s.confirmOrder(ctx, cq, signalID)
 	case "no":
-		if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "NO", Actor: telegramActor(cq), Note: "继续等待机会"}); err != nil {
+		// 老板指令 2026-08-13: 已下单未成交时策略又发新单(701 确认后未成交,
+		// 702 仍被生成并确认 → 双挂)。❌ 对已确认单升级为撤单:撤销模拟盘
+		// 挂单并记录 NO,解除策略的 pending-order 阻塞;撤单失败也必须告知
+		// 用户手动撤,保证挂单被取消而不是静默遗留。
+		note, toast := "继续等待机会", "已记录,继续等待机会"
+		if confirm, cerr := s.store.LatestAction(ctx, signalID, "CONFIRM"); cerr == nil {
+			var oid uint64
+			switch v := confirm.Details["order_id"].(type) {
+			case float64: // JSONB 落库后数值读出为 float64
+				oid = uint64(v)
+			case uint64:
+				oid = v
+			}
+			symbol := ""
+			if sig, gerr := s.store.GetSignal(ctx, signalID); gerr == nil {
+				symbol = sig.Symbol
+			}
+			switch {
+			case oid == 0 || symbol == "":
+				note, toast = "撤单失败:缺少订单号或标的(请手动在模拟盘撤单)", "缺少订单信息,请手动撤单"
+			default:
+				if cerr := s.orders.CancelOrder(ctx, symbol, strconv.FormatUint(oid, 10)); cerr != nil {
+					s.logf("callback %s: cancel order: %v", cq.ID, cerr)
+					note, toast = fmt.Sprintf("撤单失败:%v(请手动在模拟盘撤单)", cerr), "撤单失败,请手动撤单"
+				} else {
+					note, toast = fmt.Sprintf("撤单成功 订单号 %d", oid), fmt.Sprintf("已撤单 订单号 %d", oid)
+				}
+			}
+		}
+		if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{SignalID: signalID, Action: "NO", Actor: telegramActor(cq), Note: note}); err != nil {
 			s.logf("callback %s: no: %v", cq.ID, err)
 			_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, "记录失败")
 			return
 		}
-		_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, "已记录,继续等待机会")
+		_ = s.tg.AnswerCallbackQuery(ctx, cq.ID, toast)
 		// 老板指令 2026-08-12: 按钮点击要推送(时间/信号号可见)。
-		s.sendToChats(ctx, fmt.Sprintf("❌ <b>已拒绝</b> · 信号 #%d · %s\n%s", signalID, s.now().Format("2006-01-02 15:04:05"), "老板拒绝该信号,继续等待机会"))
+		s.sendToChats(ctx, fmt.Sprintf("❌ <b>已拒绝</b> · 信号 #%d · %s\n%s", signalID, s.now().Format("2006-01-02 15:04:05"), note))
 	case "dismiss":
 		s.recordDismiss(ctx, cq, signalID)
 	default:

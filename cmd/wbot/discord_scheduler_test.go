@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -171,6 +172,12 @@ func (p *syncPlacer) OrderStatus(ctx context.Context, symbol, orderIDEx string) 
 	return p.fake.OrderStatus(ctx, symbol, orderIDEx)
 }
 
+func (p *syncPlacer) CancelOrder(ctx context.Context, symbol, orderID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.fake.CancelOrder(ctx, symbol, orderID)
+}
+
 func (p *syncPlacer) calls() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -202,6 +209,12 @@ func (p *blockPlacer) OrderStatus(ctx context.Context, symbol, orderIDEx string)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.fake.OrderStatus(ctx, symbol, orderIDEx)
+}
+
+func (p *blockPlacer) CancelOrder(ctx context.Context, symbol, orderID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.fake.CancelOrder(ctx, symbol, orderID)
 }
 
 func (p *blockPlacer) enteredCount() int {
@@ -948,6 +961,57 @@ func TestDiscordHandleInteractionNoRecordsAndAnswers(t *testing.T) {
 	}
 	if desc := lastEmbedDesc(t, fake); !strings.Contains(desc, "信号 #9") {
 		t.Fatalf("push = %q; want 信号 #9", desc)
+	}
+}
+
+func TestDiscordHandleInteractionNoConfirmedCancelsOrder(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[9] = signalFixture(9, "US.AAPL", now)
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 9, Action: "CONFIRM", Actor: "discord:42",
+		Details: map[string]any{"order_id": float64(12345)},
+	})
+	placer := &fakePlacer{}
+	s, priv := newTestDiscordScheduler(t, fake, store, placer, now)
+
+	body := []byte(`{"id":"i2","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:9:no"}}`)
+	rec := httptest.NewRecorder()
+	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	if placer.cancelCalls != 1 || placer.cancelID != "12345" {
+		t.Fatalf("CancelOrder calls=%d id=%q; want 1/12345", placer.cancelCalls, placer.cancelID)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "NO" || act.Note != "撤单成功 订单号 12345" {
+		t.Fatalf("action = %+v; want NO 撤单成功", act)
+	}
+	if !strings.Contains(rec.Body.String(), "已撤单 订单号 12345") {
+		t.Fatalf("response = %s; want 已撤单 toast", rec.Body.String())
+	}
+}
+
+func TestDiscordHandleInteractionNoCancelFailureTellsManual(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[9] = signalFixture(9, "US.AAPL", now)
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 9, Action: "CONFIRM", Actor: "discord:42",
+		Details: map[string]any{"order_id": float64(12345)},
+	})
+	placer := &fakePlacer{cancelErr: errors.New("sim cancel failed")}
+	s, priv := newTestDiscordScheduler(t, fake, store, placer, now)
+
+	body := []byte(`{"id":"i2","type":3,"channel_id":"chan-1","member":{"user":{"id":"42"}},"data":{"custom_id":"wheel:9:no"}}`)
+	rec := httptest.NewRecorder()
+	s.handleInteraction(rec, signedInteractionRequest(t, priv, body))
+	act := store.lastAppended(t)
+	if act.Action != "NO" || !strings.Contains(act.Note, "请手动在模拟盘撤单") {
+		t.Fatalf("action = %+v; want NO with manual-cancel note", act)
+	}
+	if !strings.Contains(rec.Body.String(), "撤单失败") {
+		t.Fatalf("response = %s; want 撤单失败 toast", rec.Body.String())
 	}
 }
 

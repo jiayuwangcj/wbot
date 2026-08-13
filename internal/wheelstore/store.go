@@ -899,6 +899,119 @@ SELECT EXISTS (
 	return exists, nil
 }
 
+// HasPendingOrder reports whether the symbol has a confirmed-but-unfilled
+// order. "Confirmed" means the human pressed ✅ and the broker accepted an
+// order; without a FILL (or an explicit NO/REJECTED cancel) that order is
+// still open on the book and issuing another ALERT would double the exposure
+// (2026-08-13: signal 701 confirmed 08:07 and never filled, yet 702 was
+// generated next tick and confirmed too). Unlike HasRecentUndisposedSignal
+// there is no time window: an unfilled order blocks until it fills or is
+// cancelled, because the broker-side exposure does not age out.
+func (s *Store) HasPendingOrder(ctx context.Context, symbol string) (bool, error) {
+	if err := s.check(); err != nil {
+		return false, err
+	}
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" {
+		return false, fmt.Errorf("%w: symbol is required", ErrInvalidRecord)
+	}
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS (
+	SELECT 1 FROM wheel_signals s
+	WHERE s.symbol=$1 AND s.action='ALERT'
+	  AND EXISTS (
+		SELECT 1 FROM wheel_signal_actions a
+		WHERE a.signal_id=s.id AND a.action='CONFIRM'
+	  )
+	  AND NOT EXISTS (
+		SELECT 1 FROM wheel_signal_actions a
+		WHERE a.signal_id=s.id AND a.action='FILL'
+	  )
+	  AND NOT EXISTS (
+		SELECT 1 FROM wheel_signal_actions a
+		WHERE a.signal_id=s.id AND a.action IN ('NO','REJECTED')
+	  )
+)`, symbol).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("wheelstore: pending order: %w", err)
+	}
+	return exists, nil
+}
+
+// PendingOrder is one confirmed-but-unfilled order (CONFIRM without
+// FILL/NO/REJECTED) for the LLM strategy inputs: the generator and the review
+// gate must see open orders and judge whether a new decision is still
+// reasonable instead of silently stacking exposure (老板指令 2026-08-13:
+// 未成交订单要传入策略运行与 LLM 审核综合考虑;未明确传入时审核应拒绝)。
+type PendingOrder struct {
+	SignalID  int64     `json:"signal_id"`
+	OrderID   string    `json:"order_id"`
+	Direction string    `json:"direction"`
+	Quantity  int       `json:"quantity"`
+	Contract  string    `json:"contract"`
+	Strike    float64   `json:"strike"`
+	Expiry    string    `json:"expiry"`
+	Premium   float64   `json:"premium"`
+	PlacedAt  time.Time `json:"placed_at"`
+}
+
+// ListPendingOrders returns every confirmed-but-unfilled order for the symbol
+// (same predicate as HasPendingOrder). The caller passes the result on to the
+// generator/reviewer as an explicit declaration: an empty slice means "queried
+// and none open", which is what makes a missing (nil) declaration rejectable.
+func (s *Store) ListPendingOrders(ctx context.Context, symbol string) ([]PendingOrder, error) {
+	if err := s.check(); err != nil {
+		return nil, err
+	}
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" {
+		return nil, fmt.Errorf("%w: symbol is required", ErrInvalidRecord)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT s.id, a.details->>'order_id', a.created_at
+FROM wheel_signals s
+JOIN LATERAL (
+	SELECT details, created_at FROM wheel_signal_actions
+	WHERE signal_id=s.id AND action='CONFIRM'
+	ORDER BY id DESC LIMIT 1
+) a ON true
+WHERE s.symbol=$1 AND s.action='ALERT'
+  AND NOT EXISTS (SELECT 1 FROM wheel_signal_actions x WHERE x.signal_id=s.id AND x.action='FILL')
+  AND NOT EXISTS (SELECT 1 FROM wheel_signal_actions x WHERE x.signal_id=s.id AND x.action IN ('NO','REJECTED'))
+ORDER BY s.id`, symbol)
+	if err != nil {
+		return nil, fmt.Errorf("wheelstore: list pending orders: %w", err)
+	}
+	defer rows.Close()
+	var orders []PendingOrder
+	for rows.Next() {
+		var o PendingOrder
+		var placedAt time.Time
+		if err := rows.Scan(&o.SignalID, &o.OrderID, &placedAt); err != nil {
+			return nil, fmt.Errorf("wheelstore: list pending orders: %w", err)
+		}
+		o.PlacedAt = placedAt
+		// 合约/方向/数量来自信号候选;订单号来自 CONFIRM 的 details。
+		if sig, gerr := s.GetSignal(ctx, o.SignalID); gerr == nil && len(sig.Candidates) > 0 {
+			c := sig.Candidates[0]
+			o.Direction = c.Direction
+			o.Quantity = c.Quantity
+			if c.Quote != nil {
+				o.Contract = c.Quote.Symbol
+				o.Strike = c.Quote.Strike
+				o.Expiry = c.Quote.Expiry
+				o.Premium = c.Quote.Bid
+			}
+		}
+		orders = append(orders, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("wheelstore: list pending orders: %w", err)
+	}
+	return orders, nil
+}
+
 // QuerySignalsSince returns signals with id > afterID in id order (the
 // Telegram push loop's cursor query; action filters when non-empty).
 func (s *Store) QuerySignalsSince(ctx context.Context, action string, afterID int64, limit int) ([]SignalRecord, error) {

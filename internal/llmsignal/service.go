@@ -50,6 +50,11 @@ type Context struct {
 	CashAvailable   *float64
 	Inventory       wheelstore.InventorySnapshot
 	ObservedOptions map[string]ObservedOption
+	// PendingOrders is the symbol's confirmed-but-unfilled orders. It is a
+	// required declaration: nil means "not queried" and is rejected, an empty
+	// slice means "queried, none open" (老板指令 2026-08-13: 未成交订单必须
+	// 传入策略与审核综合考虑;未明确传入时拒绝)。
+	PendingOrders []wheelstore.PendingOrder
 }
 
 type ObservedOption struct {
@@ -136,7 +141,7 @@ func (s *Service) Submit(ctx context.Context, d Decision, account Context, polic
 			Signal:         decision, Positions: account.Positions, CashAvailable: account.CashAvailable,
 			CurrentPrice: normalized.CurrentPrice, RulesText: rules, Symbol: normalized.Symbol,
 			Inventory: account.Inventory, ObservedOptions: account.ObservedOptions,
-			AsOf: s.now().UTC().Format(time.RFC3339),
+			PendingOrders: account.PendingOrders, AsOf: s.now().UTC().Format(time.RFC3339),
 		},
 		Summary: map[string]any{"signal_id": id, "decision": decision},
 	})
@@ -216,6 +221,17 @@ func Normalize(d Decision) (Decision, error) {
 func (s *Service) validate(ctx context.Context, d Decision, account Context, p Policy) error {
 	if account.Inventory.CurrentPrice == nil || account.Inventory.ActualInventory == nil || account.Inventory.OptionDeltaStock == nil || account.Inventory.EffectiveInventory == nil || account.Inventory.TargetInventory == nil || account.Inventory.InventoryGap == nil {
 		return reject("complete inventory snapshot is required")
+	}
+	// 挂单声明是强制输入(老板指令 2026-08-13):nil 表示调用方未查询未成交
+	// 订单——即使此刻没有挂单也必须显式传空切片,审核才可能综合判断;同
+	// 合约已有挂单时新决策构成确定性重复动作,无需交给模型。
+	if account.PendingOrders == nil {
+		return reject("pending orders snapshot is required")
+	}
+	for _, po := range account.PendingOrders {
+		if po.Contract != "" && po.Contract == d.Contract {
+			return reject("contract %q already has a pending order", d.Contract)
+		}
 	}
 	if d.Quantity < 1 {
 		return reject("quantity must be >= 1")
@@ -416,8 +432,12 @@ func optionPrefix(symbol string) string {
 
 const optionRules = `审核 LLM 期权决策。确定性代码已检查数量、正价格、合约/到期日/行权价、Delta、资金和库存；你仍须从经济理由、数据一致性和系统性风险独立复核。仅全部通过时 APPROVE。
 
+未成交订单(2026-08-13 老板指令):pending_orders 是本标的确认未成交的挂单列表,空数组表示明确无挂单;若该字段缺失(未提供)必须 REJECT。存在挂单时,必须综合评估新决策是否与挂单构成重复敞口、方向叠加或冲突(如同合约重复动作、同方向叠加仓位),并核对其合约/数量/权利金;认为新决策会放大未成交订单风险时必须 REJECT。确定性代码已拒绝同合约重复挂单,你仍须检查不同合约间的叠加风险。
+
 数据范围(缺失即不存在,不得因缺字段拒绝):current_date 是审核基准时间,到期日 DTE 按它计算;signal 与 observed_options 只提供 strike/expiry/premium(=last 成交参考)/delta/iv/open_interest,无 bid/ask/volume/theta;llm 策略参数范围见 strategy_config.policy(数量上限与 lot),无 max_inventory/DTE 硬参数,合约范围由快照过滤保证;inventory 提供 effective/target/gap 可复核库存一致性。signal.direction 语义:PUT/CALL 即卖出对应期权(期权只卖不买),BUY/SELL 为正股买卖。inventory 的 target 是当前库存快照镜像(target=effective,gap=0),不是策略目标参数,不构成硬约束;方向一致性检查针对与现有持仓相反或造成裸露的动作,不得仅因交易偏离 target 拒绝(2026-08-13 信号 674:备兑卖出 CALL 被以"制造库存缺口"误拒)。`
 
 const stockRules = `审核 LLM 正股决策。确定性代码已检查数量、正限价、现金或库存覆盖；你仍须从经济理由、价格一致性和系统性风险独立复核。仅全部通过时 APPROVE。
+
+未成交订单(2026-08-13 老板指令):pending_orders 是本标的确认未成交的挂单列表,空数组表示明确无挂单;若该字段缺失(未提供)必须 REJECT。存在挂单时,必须综合评估新决策是否与挂单构成重复敞口、方向叠加或冲突,并核对其方向/数量/限价;认为新决策会放大未成交订单风险时必须 REJECT。确定性代码已拒绝同合约重复挂单,你仍须检查不同方向间的叠加风险。
 
 数据范围(缺失即不存在,不得因缺字段拒绝):current_date 是审核基准时间;strategy_config.policy 是 llm 策略全部参数(数量上限),无 max_inventory/DTE 硬参数;inventory 提供 effective/target/gap 可复核库存一致性。inventory 的 target 是当前库存快照镜像(target=effective,gap=0),不是策略目标参数,不构成硬约束;方向一致性检查针对与现有持仓相反或造成裸露的动作,不得仅因交易偏离 target 拒绝。`
