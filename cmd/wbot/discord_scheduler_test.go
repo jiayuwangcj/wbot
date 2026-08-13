@@ -28,10 +28,11 @@ const testChannelID = "chan-1"
 // fakeDCSchedulerServer records channel message payloads and webhook deletes
 // (test fixture: fake bot token, no real Discord).
 type fakeDCSchedulerServer struct {
-	mu      sync.Mutex
-	sends   []map[string]any
-	deletes []string
-	authErr string
+	mu         sync.Mutex
+	sends      []map[string]any
+	deletes    []string
+	authErr    string
+	failCreate int // remaining create-message failures to inject
 }
 
 func (f *fakeDCSchedulerServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -45,6 +46,11 @@ func (f *fakeDCSchedulerServer) ServeHTTP(w http.ResponseWriter, r *http.Request
 	if r.Method == http.MethodDelete {
 		f.deletes = append(f.deletes, r.URL.Path)
 		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if f.failCreate > 0 {
+		f.failCreate--
+		http.Error(w, "simulated create-message failure", http.StatusInternalServerError)
 		return
 	}
 	var p map[string]any
@@ -557,6 +563,110 @@ func TestDiscordPushRetriesMissingReview(t *testing.T) {
 	}
 	if len(fake.sends) != 0 {
 		t.Fatalf("signal pushed without review; sends = %d", len(fake.sends))
+	}
+}
+
+// TestDiscordPushRetriesOnCreateMessageFailure: 769 实测根因回归——APPROVE 卡
+// 片推送瞬时失败(create message: request failed)不得永久丢卡,必须保持游标
+// 下轮重推;API 恢复后卡片送达且不再 retry。
+func TestDiscordPushRetriesOnCreateMessageFailure(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	fake.failCreate = 1 // first push attempt hits a transient API failure
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(7, "US.AAPL", now)
+	store.reviews[7] = &wheelstore.ActionRecord{Details: map[string]any{"verdict": "APPROVE"}}
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); !retry {
+		t.Fatal("pushSignalDiscord must retry (hold cursor) when create message fails")
+	}
+	if fake.sendCount() != 0 {
+		t.Fatalf("failed attempt recorded a send; sends = %d", fake.sendCount())
+	}
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("pushSignalDiscord must not retry after the push succeeds")
+	}
+	if fake.sendCount() != 1 {
+		t.Fatalf("successful sends = %d; want 1", fake.sendCount())
+	}
+}
+
+// TestDiscordPushRetriesOnRejectedCardFailure: REJECTED 卡推送失败同样不得
+// 静默丢弃(REJECTED 结论是 permanent,但卡片送达必须重试)。
+func TestDiscordPushRetriesOnRejectedCardFailure(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	fake.failCreate = 1
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(10, "US.AAPL", now)
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 10, Action: "REJECTED", Actor: "llm:test",
+		Details: map[string]any{"verdict": "REJECT", "reasons": []any{"risk limit"}},
+	})
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); !retry {
+		t.Fatal("rejected card push failure must retry, not skip permanently")
+	}
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("rejected card must not retry once delivered")
+	}
+	if fake.sendCount() != 1 {
+		t.Fatalf("successful sends = %d; want 1", fake.sendCount())
+	}
+}
+
+func TestDiscordPushSkipsDismissedSignal(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	store.dismissed["US.AAPL|2026-08-12"] = true
+	sig := signalFixture(12, "US.AAPL", now)
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("dismissed signal must skip permanently")
+	}
+	if fake.sendCount() != 0 {
+		t.Fatalf("dismissed signal pushed; sends = %d", fake.sendCount())
+	}
+}
+
+func TestDiscordPushSkipsStaleMissingReview(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	old := now.Add(-2 * signalFreshWindow)
+	store := newFakeTGStore()
+	sig := signalFixture(13, "US.AAPL", old)
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("stale signal without review must skip permanently")
+	}
+	if fake.sendCount() != 0 {
+		t.Fatalf("stale signal pushed; sends = %d", fake.sendCount())
+	}
+}
+
+// TestDiscordRunPushHeartbeatLogsIdleState: 循环存活可观测性(2026-08-14 实
+// 测 discord 推送静默 3.5 分钟零日志,「无信号」与「循环卡死」不可区分)。
+// 空转时每 5 个 tick 必须打一行带 cursor/pending/signals 的心跳日志。
+func TestDiscordRunPushHeartbeatLogsIdleState(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	store := newFakeTGStore()
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, time.Now())
+	logs := &discordLogRecorder{}
+	s.logf = logs.logf
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.runDiscordPush(ctx, time.Millisecond) }()
+
+	waitFor(t, func() bool { return logs.contains("push: heartbeat") }, "heartbeat log")
+	if !logs.contains("push: heartbeat", "pending=false") || !logs.contains("push: heartbeat", "cursor=0") {
+		t.Fatalf("heartbeat missing cursor/pending state:\n%s", logs.joined())
 	}
 }
 

@@ -272,6 +272,9 @@ func openTelegramConfig() (*config.Store, error) {
 func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration) error {
 	var cursor int64
 	handled := make(map[int64]struct{})
+	// sentChats 记录每个重试中 signal 的已送达 chat(评审 P1-1):某 chat
+	// 推送失败时重试只补发失败 chat,健康 chat 绝不重复收到带按钮的卡。
+	sentChats := make(map[int64]map[int64]bool)
 	for {
 		var err error
 		cursor, err = s.store.MaxSignalID(ctx)
@@ -287,6 +290,7 @@ func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration)
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	tick := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -306,9 +310,15 @@ func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration)
 			_, alreadyHandled := handled[sig.ID]
 			retry := false
 			if !alreadyHandled {
-				retry = s.pushSignal(ctx, sig)
+				delivered := sentChats[sig.ID]
+				if delivered == nil {
+					delivered = make(map[int64]bool)
+					sentChats[sig.ID] = delivered
+				}
+				retry = s.pushSignal(ctx, sig, delivered)
 				if !retry {
 					handled[sig.ID] = struct{}{}
+					delete(sentChats, sig.ID)
 				}
 			}
 			if retry {
@@ -324,18 +334,34 @@ func (s *telegramScheduler) runPush(ctx context.Context, interval time.Duration)
 				delete(handled, id)
 			}
 		}
+		for id := range sentChats {
+			if id <= cursor {
+				delete(sentChats, id)
+			}
+		}
+		// 循环存活心跳:空转时段无事件日志,「静默=无信号」与「循环死/卡」
+		// 不可区分(2026-08-14 实测 discord 推送静默 3.5 分钟零日志);每 5
+		// 个 tick 打一行状态,卡死时心跳消失,serve 日志一眼可辨。
+		if tick%5 == 0 {
+			s.logf("push: heartbeat cursor=%d pending=%v signals=%d", cursor, pending, len(signals))
+		}
+		tick++
 	}
 }
 
 // pushSignal sends one ALERT to every whitelisted chat when it survives the
-// dismissal and LLM-approval gates; skips are logged with the reason. It
-// returns retry=true when the signal may become pushable on a later pass (its
-// LLM review has not landed yet — the review runs after AppendSignal inside
-// the POST handler, so the first push pass can race it); the caller then holds
-// the cursor back so the signal is not lost. Signals that are permanently
+// dismissal and LLM-approval gates; skips are logged with the reason. delivered
+// is the per-signal set of chats that already received the card (owned by the
+// push loop across passes): a partial push failure re-sends only to the
+// missing chats, so a healthy chat never receives a duplicate actionable card
+// (评审 P1-1). It returns retry=true when the signal may become pushable on a
+// later pass (its LLM review has not landed yet — the review runs after
+// AppendSignal inside the POST handler, so the first push pass can race it —
+// or a SendMessage call failed transiently, 769); the caller then holds the
+// cursor back so the signal is not lost. Signals that are permanently
 // unpushable (REJECTED review, dismissed, no review after the retry window)
 // return false so the cursor advances past them.
-func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.SignalRecord) (retry bool) {
+func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.SignalRecord, delivered map[int64]bool) (retry bool) {
 	if dismissed, err := s.store.IsDismissed(ctx, sig.Symbol, utcDate(s.now())); err != nil {
 		s.logf("push: %s signal=%d: dismissed check: %v", sig.Symbol, sig.ID, err)
 		return true
@@ -403,11 +429,19 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 		{Text: "⚠️ Dismiss", Data: fmt.Sprintf("wheel:%d:dismiss", sig.ID)},
 	}
 	for chatID := range s.chatIDs {
+		if delivered[chatID] {
+			continue // 已送达:重试只补发失败 chat,不重复推卡(评审 P1-1)
+		}
 		if err := s.tg.SendMessage(ctx, strconv.FormatInt(chatID, 10), text, buttons); err != nil {
 			s.logf("push: %s signal=%d chat=%d: %v", sig.Symbol, sig.ID, chatID, err)
+			retry = true
+			continue
+		}
+		if delivered != nil {
+			delivered[chatID] = true
 		}
 	}
-	return false
+	return retry
 }
 
 // pushRejectedSignal reports a fail-closed LLM disposition using the same
