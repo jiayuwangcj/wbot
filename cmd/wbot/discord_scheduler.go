@@ -328,10 +328,14 @@ func signalDiscordEmbeds(sig *wheelstore.SignalRecord, underlying string, reason
 	common := func(description string) discord.Embed {
 		return discord.Embed{Description: description, Color: discord.ColorApprove}
 	}
+	replaceLine := ""
+	if sig.Replace != nil && sig.Replace.Contract != "" {
+		replaceLine = fmt.Sprintf("\n↻ 改单:撤销挂单 `%s`(%s),改挂候选", discordInlineCode(sig.Replace.Contract), sig.Replace.OrderID)
+	}
 	embeds := []discord.Embed{{
 		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
 		Title:       fmt.Sprintf("🔴 模拟盘 · 📌 信号 #%d · %s · %s · %s", sig.ID, sig.Symbol, directionLabel(c.Direction), strategyBadge(sig.Strategy)),
-		Description: fmt.Sprintf("LLM 审核 ✅ APPROVE — 候选 `%s` 已就绪,缺口方向一致", discordInlineCode(c.Code)),
+		Description: fmt.Sprintf("LLM 审核 ✅ APPROVE — 候选 `%s` 已就绪,缺口方向一致%s", discordInlineCode(c.Code), replaceLine),
 		Color:       discord.ColorApprove,
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d · %s", sig.ConfigVersion, sig.ID, created)},
 		Timestamp:   sentAt.UTC().Format(time.RFC3339),
@@ -746,6 +750,20 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 		s.rejectDiscord(ctx, in, signalID, "already confirmed")
 		return
 	}
+	// 改单(老板指令 2026-08-13: 允许策略调整未成交订单,改单同样需 LLM
+	// 审核——已由上面 LatestLLMReview APPROVE 把关)。先撤销旧挂单再下
+	// 新单;撤单失败 = 不执行新单(旧单仍在,再下单即重复敞口),拒绝并
+	// 留痕让用户人工处理。
+	replaced := ""
+	if sig.Replace != nil && sig.Replace.OrderID != "" {
+		if cerr := s.orders.CancelOrder(ctx, sig.Symbol, sig.Replace.OrderID); cerr != nil {
+			s.logf("interaction %s: cancel pending order %s: %v", in.ID, sig.Replace.OrderID, cerr)
+			s.rejectDiscord(ctx, in, signalID, "cancel pending order failed")
+			return
+		}
+		replaced = sig.Replace.OrderID
+		s.logf("interaction %s: cancelled pending order %s before replace signal #%d", in.ID, replaced, signalID)
+	}
 	orderIDEx, orderID, err := s.orders.PlaceOrder(ctx, cand.Code, cand.Side, float64(cand.Quantity), price)
 	if err != nil {
 		reason := "place order failed"
@@ -770,9 +788,13 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 	if cand.Side == "sell" {
 		sideName = "卖出"
 	}
+	replaceLine := ""
+	if replaced != "" {
+		replaceLine = fmt.Sprintf("\n↻ 改单:已撤旧挂单 `%s`", replaced)
+	}
 	s.noticeDiscord(ctx, "✅ 已下单", fmt.Sprintf(
-		"信号 #%d\n%s %s %s %d 股 @ 限价 %.2f\n订单号 `%s`(%d)\n时间 %s",
-		signalID, sideName, cand.Code, cand.Side, cand.Quantity, price, orderIDEx, orderID,
+		"信号 #%d\n%s %s %s %d 股 @ 限价 %.2f\n订单号 `%s`(%d)%s\n时间 %s",
+		signalID, sideName, cand.Code, cand.Side, cand.Quantity, price, orderIDEx, orderID, replaceLine,
 		s.now().Format("2006-01-02 15:04:05"),
 	))
 	go s.watchFillDiscord(ctx, signalID, cand.Code, cand.Side, float64(cand.Quantity), price, orderIDEx)

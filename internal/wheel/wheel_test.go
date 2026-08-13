@@ -245,6 +245,88 @@ func TestEvaluatePendingOrderExclusion(t *testing.T) {
 	}
 }
 
+// TestEvaluateReplaceOrder: 改单语义——同方向存在恰一张未成交挂单且首选
+// 候选是不同合约时,信号携带 replace(撤旧挂新)。同样需要 LLM 审核(审核
+// 规则 7 把关),改单不绕过任何闸门(老板指令 2026-08-13)。
+func TestEvaluateReplaceOrder(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))  // P-4,首选
+	put2 := testQuote(string(Put), 500, asOf.AddDate(0, 0, 7)) // P-5
+	cfg := testConfig(StateNormal)
+	base := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
+
+	// 首选 P-4 与挂单合约 P-5 不同 → 改单信号。
+	withPending := base
+	withPending.Pending = []PendingOrder{{Contract: put2.Symbol, Direction: string(Put), OrderID: "206158430256"}}
+	sig, err := Evaluate(cfg, withPending)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("replace signal = %+v err=%v; want ALERT", sig, err)
+	}
+	if sig.Replace == nil {
+		t.Fatalf("replace signal missing Replace; want 撤 %s 换 %s", put2.Symbol, put.Symbol)
+	}
+	if sig.Replace.OrderID != "206158430256" || sig.Replace.Contract != put2.Symbol {
+		t.Fatalf("Replace = %+v; want order 206158430256 on %s", sig.Replace, put2.Symbol)
+	}
+	if sig.Quote == nil || sig.Quote.Symbol != put.Symbol {
+		t.Fatalf("chosen = %+v; want %s", sig.Quote, put.Symbol)
+	}
+	if !strings.Contains(sig.Reason, "replace pending") {
+		t.Fatalf("reason = %q; want replace mention", sig.Reason)
+	}
+
+	// 挂单合约 = 首选 → 排除,无 replace(不重复不下改单)。
+	sameContract := base
+	sameContract.Pending = []PendingOrder{{Contract: put.Symbol, Direction: string(Put), OrderID: "1"}}
+	sig, err = Evaluate(cfg, sameContract)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("same-contract signal = %+v err=%v; want ALERT on next contract", sig, err)
+	}
+	if sig.Replace != nil {
+		t.Fatalf("same-contract signal must not carry Replace: %+v", sig.Replace)
+	}
+	if sig.Quote == nil || sig.Quote.Symbol != put2.Symbol {
+		t.Fatalf("same-contract chosen = %+v; want %s", sig.Quote, put2.Symbol)
+	}
+
+	// 多张同方向挂单 → 不触发改单(不确定替换哪张,留给人工)。
+	multi := base
+	multi.Pending = []PendingOrder{{Contract: put2.Symbol, Direction: string(Put), OrderID: "1"}, {Contract: "P-6", Direction: string(Put), OrderID: "2"}}
+	sig, err = Evaluate(cfg, multi)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("multi-pending signal = %+v err=%v; want ALERT", sig, err)
+	}
+	if sig.Replace != nil {
+		t.Fatalf("multi-pending must not carry Replace: %+v", sig.Replace)
+	}
+
+	// rest 单合约已不在报价(过期/失效)→ 视为陈旧挂单,允许改单换新候选。
+	stale := base
+	stale.Pending = []PendingOrder{{Contract: "P-9-expired", Direction: string(Put), OrderID: "999"}}
+	sig, err = Evaluate(cfg, stale)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("stale-pending signal = %+v err=%v; want ALERT", sig, err)
+	}
+	if sig.Replace == nil || sig.Replace.OrderID != "999" || sig.Replace.Contract != "P-9-expired" {
+		t.Fatalf("stale-pending Replace = %+v; want 撤 P-9-expired(999) 换 %s", sig.Replace, put.Symbol)
+	}
+
+	// 挂单候选失效(DTE 3 < 5,仍被报价但过不了结构校验)→ 允许改单。
+	soon := testQuote(string(Put), 400, asOf.AddDate(0, 0, 3))
+	bad := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{soon, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
+	bad.Pending = []PendingOrder{{Contract: soon.Symbol, Direction: string(Put), OrderID: "100"}}
+	sig, err = Evaluate(cfg, bad)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("invalid-pending signal = %+v err=%v; want ALERT", sig, err)
+	}
+	if sig.Replace == nil || sig.Replace.Contract != soon.Symbol {
+		t.Fatalf("invalid-pending Replace = %+v; want 撤失效的 %s", sig.Replace, soon.Symbol)
+	}
+	if sig.Quote == nil || sig.Quote.Symbol != put2.Symbol {
+		t.Fatalf("invalid-pending chosen = %+v; want %s", sig.Quote, put2.Symbol)
+	}
+}
+
 func TestEvaluateTacticalGates(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))

@@ -384,6 +384,65 @@ func TestCallbackYesPlacesSimOrder(t *testing.T) {
 	}
 }
 
+func TestCallbackYesReplaceCancelsThenPlaces(t *testing.T) {
+	// 改单(老板指令 2026-08-13):确认信号携带 replace 时,先撤旧挂单再下
+	// 新单;成功消息标注改单。撤单与新单顺序由 placer 记录验证。
+	fake, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.signals[7].Replace = &wheelstore.ReplaceRecord{OrderID: "206158430256", Contract: "US.AAPL260815C240000"}
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{orderID: 12345, orderIDEx: "ord-12345"}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	if placer.cancelCalls != 1 || placer.cancelID != "206158430256" {
+		t.Fatalf("CancelOrder calls=%d id=%q; want 1/206158430256", placer.cancelCalls, placer.cancelID)
+	}
+	if placer.calls != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want 1 after cancel", placer.calls)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "CONFIRM" || act.Details["order_id"] != uint64(12345) {
+		t.Fatalf("action = %+v; want CONFIRM order 12345", act)
+	}
+	// 改单行随推送消息(卡片)发出,toast 仅简短文。
+	msg := fake.lastSend(t)
+	text, _ := msg["text"].(string)
+	if !strings.Contains(text, "改单") || !strings.Contains(text, "206158430256") {
+		t.Fatalf("push = %q; want 改单 + 旧单号", text)
+	}
+}
+
+func TestCallbackYesReplaceCancelFailureRefuses(t *testing.T) {
+	// 撤旧挂单失败 = 不执行新单:旧单仍在,再下单即重复敞口(JD 747-752
+	// 重复暴露教训)。拒绝并留痕,由用户人工处理旧挂单。
+	fake, server := startFakeTG(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.signals[7].Replace = &wheelstore.ReplaceRecord{OrderID: "206158430256", Contract: "US.AAPL260815C240000"}
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{cancelErr: errors.New("sim cancel failed")}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	if placer.cancelCalls != 1 {
+		t.Fatalf("CancelOrder calls = %d; want 1", placer.cancelCalls)
+	}
+	if placer.calls != 0 {
+		t.Fatalf("PlaceOrder calls = %d; want 0 (cancel failed, no new order)", placer.calls)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "REJECTED" || act.Note != "cancel pending order failed" {
+		t.Fatalf("action = %+v; want REJECTED cancel pending order failed", act)
+	}
+	if toast := fake.lastToast(t); !strings.Contains(toast, "撤单失败") {
+		t.Fatalf("toast = %q; want 撤单失败", toast)
+	}
+}
+
 func TestCallbackYesRealEnvRejected(t *testing.T) {
 	fake, server := startFakeTG(t)
 	now := time.Now()

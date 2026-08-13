@@ -587,6 +587,59 @@ func TestDiscordConfirmPlacesLimitOrder(t *testing.T) {
 	}
 }
 
+func TestDiscordConfirmReplaceCancelsThenPlaces(t *testing.T) {
+	// 改单:确认信号携带 replace 时先撤旧挂单再下新单,成功消息标注改单。
+	fake, _ := startFakeDC(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.signals[7].Replace = &wheelstore.ReplaceRecord{OrderID: "206158430256", Contract: "US.AAPL260815C240000"}
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{orderID: 12345, orderIDEx: "ord-12345"}
+	s, _ := newTestDiscordScheduler(t, fake, store, placer, now)
+
+	s.confirmOrderDiscord(context.Background(), dcInteraction("42", "wheel:7:yes"), 7)
+	if placer.cancelCalls != 1 || placer.cancelID != "206158430256" {
+		t.Fatalf("CancelOrder calls=%d id=%q; want 1/206158430256", placer.cancelCalls, placer.cancelID)
+	}
+	if placer.calls != 1 {
+		t.Fatalf("PlaceOrder calls = %d; want 1 after cancel", placer.calls)
+	}
+	if act := store.lastAppended(t); act.Action != "CONFIRM" {
+		t.Fatalf("action = %+v; want CONFIRM", act)
+	}
+	embed := lastEmbed(t, fake)
+	desc, _ := embed["description"].(string)
+	for _, want := range []string{"改单", "206158430256"} {
+		if !strings.Contains(desc, want) {
+			t.Fatalf("confirm push missing %q: %s", want, desc)
+		}
+	}
+}
+
+func TestDiscordConfirmReplaceCancelFailureRefuses(t *testing.T) {
+	// 撤旧挂单失败 = 不执行新单(旧单仍在,再下单即重复敞口)。
+	fake, _ := startFakeDC(t)
+	now := time.Now()
+	store := newFakeTGStore()
+	store.signals[7] = signalFixture(7, "US.AAPL", now)
+	store.signals[7].Replace = &wheelstore.ReplaceRecord{OrderID: "206158430256", Contract: "US.AAPL260815C240000"}
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{cancelErr: errors.New("sim cancel failed")}
+	s, _ := newTestDiscordScheduler(t, fake, store, placer, now)
+
+	s.confirmOrderDiscord(context.Background(), dcInteraction("42", "wheel:7:yes"), 7)
+	if placer.cancelCalls != 1 {
+		t.Fatalf("CancelOrder calls = %d; want 1", placer.cancelCalls)
+	}
+	if placer.calls != 0 {
+		t.Fatalf("PlaceOrder calls = %d; want 0 (cancel failed, no new order)", placer.calls)
+	}
+	if act := store.lastAppended(t); act.Action != "REJECTED" || act.Note != "cancel pending order failed" {
+		t.Fatalf("action = %+v; want REJECTED cancel pending order failed", act)
+	}
+}
+
 func TestDiscordConfirmExpiredRejected(t *testing.T) {
 	fake, _ := startFakeDC(t)
 	now := time.Now()

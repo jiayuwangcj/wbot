@@ -515,6 +515,20 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 		s.reject(ctx, cq, signalID, "already confirmed", "该信号已被确认,请勿重复确认")
 		return
 	}
+	// 改单(老板指令 2026-08-13: 允许策略调整未成交订单,改单同样需 LLM
+	// 审核——已由上面 LatestLLMReview APPROVE 把关)。先撤销旧挂单再下
+	// 新单;撤单失败 = 不执行新单(旧单仍在,再下单即重复敞口),拒绝并
+	// 留痕让用户人工处理。
+	replaced := ""
+	if sig.Replace != nil && sig.Replace.OrderID != "" {
+		if cerr := s.orders.CancelOrder(ctx, sig.Symbol, sig.Replace.OrderID); cerr != nil {
+			s.logf("callback %s: cancel pending order %s: %v", cq.ID, sig.Replace.OrderID, cerr)
+			s.reject(ctx, cq, signalID, "cancel pending order failed", "撤单失败,未下单(请人工处理旧挂单)")
+			return
+		}
+		replaced = sig.Replace.OrderID
+		s.logf("callback %s: cancelled pending order %s before replace signal #%d", cq.ID, replaced, signalID)
+	}
 	orderIDEx, orderID, err := s.orders.PlaceOrder(ctx, cand.Code, cand.Side, float64(cand.Quantity), price)
 	if err != nil {
 		reason := "place order failed"
@@ -545,9 +559,13 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 	if cand.Side == "sell" {
 		sideName = "卖出"
 	}
+	replaceLine := ""
+	if replaced != "" {
+		replaceLine = fmt.Sprintf("\n↻ 改单:已撤旧挂单 <code>%s</code>", replaced)
+	}
 	s.sendToChats(ctx, fmt.Sprintf(
-		"✅ <b>已下单</b> · 信号 #%d\n%s %s %s %d 股 @ 限价 %.2f\n订单号 <code>%s</code>(%d)\n时间 %s",
-		signalID, sideName, cand.Code, cand.Side, cand.Quantity, price, orderIDEx, orderID,
+		"✅ <b>已下单</b> · 信号 #%d\n%s %s %s %d 股 @ 限价 %.2f\n订单号 <code>%s</code>(%d)%s\n时间 %s",
+		signalID, sideName, cand.Code, cand.Side, cand.Quantity, price, orderIDEx, orderID, replaceLine,
 		s.now().Format("2006-01-02 15:04:05"),
 	))
 	// 成交监控:轮询订单状态,成交/撤单/超时都推送结果。
@@ -791,11 +809,18 @@ func alertCard(sig *wheelstore.SignalRecord, underlying string, verdictLabel str
 	// 正股信号(BUY/SELL)渲染标的侧信息;期权信号渲染行权/到期/希腊。
 	// 标题带信号编号与策略来源(老板指令 2026-08-12: 推送必须带编号以区分订单;
 	// 2026-08-13: 单子须标明是大模型策略还是固化策略生成的)。
+	replaceLine := ""
+	if sig.Replace != nil && sig.Replace.Contract != "" {
+		replaceLine = alertRow("改单", fmt.Sprintf("撤 <code>%s</code>(%s) 换此候选", html.EscapeString(sig.Replace.Contract), sig.Replace.OrderID))
+	}
 	lines := []string{
 		fmt.Sprintf("<b>📌 %s · %s · 信号 #%d · %s</b>", html.EscapeString(sig.Symbol), directionLabel(c.Direction), sig.ID, strategyBadge(sig.Strategy)),
 		alertOuterRule,
 		"🎯 <b>订单</b>",
 		alertRow("候选", fmt.Sprintf("<b><code>%s</code></b>", html.EscapeString(c.Code))),
+	}
+	if replaceLine != "" {
+		lines = append(lines, replaceLine)
 	}
 	if isStockDirection(c.Direction) {
 		lines = append(lines,

@@ -115,7 +115,8 @@ const wheelReviewRules = `仅审核 wheel 区间策略；信号只能是 ALERT �
 3. 数据质量：报价必须完整且新鲜，Bid/Ask 正数且未倒挂，IV/Delta/Theta 合理，Volume/OI 非零；不得用缺失 Greeks 或过期、拼接数据作判断。
 4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量和交易后有效库存；策略不设每日提醒次数上限。
 5. 系统性错误：排查闭市或停牌误判、同一合约重复动作、与现有持仓或历史动作矛盾、合约类型/到期日/乘数错误及 Greeks 缺失。
-6. 数据不足：capability_status 为 DATA_BLOCKED、blocked_by 非空，或任一关键字段不足时必须 REJECT；不得以 expected_gain 补偿或放宽任何校验。`
+6. 数据不足：capability_status 为 DATA_BLOCKED、blocked_by 非空，或任一关键字段不足时必须 REJECT；不得以 expected_gain 补偿或放宽任何校验。
+7. 改单（signal.replace 非空，硬性项）：改单=撤销 pending_orders 中旧挂单（replace.order_id/replace.contract）改挂首选候选，是写操作、同样需要审核。必须核对：a) 新合约必须明显优于旧合约（更高权利金/更好质量/更近到期且风险不增），差异微小或无依据必须 REJECT；b) 旧挂单确在 pending_orders 中且方向一致；c) 改单后库存偏差不增大；d) 频繁改单（同标的短时多次）必须 REJECT——避免反复撤换浪费与不确定性。`
 
 // RunOnce evaluates every wheel binding once. A per-symbol failure is logged
 // and does not stop the remaining symbols; the returned error (nil when all
@@ -467,6 +468,9 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 		RejectionReasons: sig.RejectReasons,
 		Reason:           sig.Reason,
 	}
+	if sig.Replace != nil {
+		record.Replace = &wheelstore.ReplaceRecord{OrderID: sig.Replace.OrderID, Contract: sig.Replace.Contract}
+	}
 	status, reason := watchlist.StatusReady, ""
 	if capStatus != wheel.CapabilityReady {
 		status = watchlist.StatusDataBlocked
@@ -477,15 +481,15 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 	return record, status, reason
 }
 
-// mapPending converts store pending-order rows to the strategy's minimal
-// duplicate-detection footprint (contract + direction only).
+// mapPending converts store pending-order rows to the strategy's
+// duplicate-detection / 改单 footprint (contract + direction + order id).
 func mapPending(rows []wheelstore.PendingOrder) []wheel.PendingOrder {
 	if len(rows) == 0 {
 		return nil
 	}
 	out := make([]wheel.PendingOrder, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, wheel.PendingOrder{Contract: r.Contract, Direction: r.Direction})
+		out = append(out, wheel.PendingOrder{Contract: r.Contract, Direction: r.Direction, OrderID: r.OrderID})
 	}
 	return out
 }

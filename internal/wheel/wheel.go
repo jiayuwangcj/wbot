@@ -530,6 +530,16 @@ type DecisionInput struct {
 type PendingOrder struct {
 	Contract  string
 	Direction string
+	OrderID   string
+}
+
+// ReplaceOrder marks a signal as a modify (改单): the previously confirmed
+// unfilled order should be cancelled and this signal's candidate placed in
+// its stead. It never bypasses review or confirm — the gate and the operator
+// decide as with a fresh order (老板指令 2026-08-13).
+type ReplaceOrder struct {
+	OrderID  string `json:"order_id"`
+	Contract string `json:"contract"`
 }
 
 type CandidateEvaluation struct {
@@ -576,8 +586,13 @@ type Signal struct {
 	RejectReasons       []string              `json:"reject_reasons,omitempty"`
 	Candidates          []CandidateEvaluation `json:"candidates,omitempty"`
 	StockSuggestion     *StockSuggestion      `json:"stock_suggestion,omitempty"`
-	CapabilityStatus    string                `json:"capability_status"`
-	BlockedBy           []string              `json:"blocked_by,omitempty"`
+	// Replace marks this ALERT as a 改单: replace the pending order (same
+	// direction, different contract) with the chosen candidate. Set only
+	// when exactly one same-direction pending order exists and the chosen
+	// contract differs from it; multiple pendings are left alone.
+	Replace          *ReplaceOrder `json:"replace,omitempty"`
+	CapabilityStatus string        `json:"capability_status"`
+	BlockedBy        []string      `json:"blocked_by,omitempty"`
 }
 
 type Decision = Signal
@@ -654,6 +669,11 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	validDirectionQuoteCount := 0
 	dependencyBlocked := false
 	pendingExcluded := 0
+	// 改单资格记录:循环中首个带挂单的候选保留其合约与有效性,供选中候选
+	// 后按选择排序判定「撤旧挂新」是否真的更优(避免把更优挂单换成更差合约)。
+	pendingContract := ""
+	var pendingCandidate CandidateEvaluation
+	pendingValid := false
 	for _, q := range in.Quotes {
 		// A signal remains one human-reviewed contract suggestion. Removing the
 		// daily cap means later valid evaluations are not suppressed; it does not
@@ -667,6 +687,15 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			candidate.Reasons = append(candidate.Reasons, "wheel: contract already has an unfilled pending order")
 			pendingExcluded++
 			validDirectionQuoteCount++
+			// 记录首个挂单候选的选择排序要素与有效性,供改单判定
+			// (见下方选中分支)。仅首个即可:改单只对唯一同方向挂单生效。
+			if pendingContract == "" {
+				signed := -float64(1)
+				postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(q.LotSize)
+				pendingCandidate = CandidateEvaluation{Quote: q, Direction: direction, Quantity: 1, SignedContracts: -1, Quality: QualityScore(q), PostTradeEffective: EffectiveInventory(inv.ActualInventory, postDelta)}
+				pendingValid = q.Validate(in.AsOf, cfg) == nil
+				pendingContract = q.Symbol
+			}
 		} else if err := q.Validate(in.AsOf, cfg); err != nil {
 			candidate.Reasons = append(candidate.Reasons, err.Error())
 		} else {
@@ -741,32 +770,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 		}
 		return hold("no quote passed validation and risk checks", base), nil
 	}
-	sort.SliceStable(accepted, func(i, j int) bool {
-		iDist, jDist := math.Abs(target-accepted[i].PostTradeEffective), math.Abs(target-accepted[j].PostTradeEffective)
-		if iDist != jDist {
-			return iDist < jDist
-		}
-		// In CAUTION, lower-strike puts are the safer increase-inventory
-		// choice. This preference is applied only after post-trade risk is
-		// equal, preserving the primary inventory objective.
-		if cfg.StrategicState == StateCaution && direction == DirectionPut && accepted[i].Quote.Strike != accepted[j].Quote.Strike {
-			return accepted[i].Quote.Strike < accepted[j].Quote.Strike
-		}
-		if accepted[i].Quality != accepted[j].Quality {
-			return accepted[i].Quality > accepted[j].Quality
-		}
-		iSpread, jSpread := accepted[i].Quote.Spread()/accepted[i].Quote.Mid(), accepted[j].Quote.Spread()/accepted[j].Quote.Mid()
-		if iSpread != jSpread {
-			return iSpread < jSpread
-		}
-		if !accepted[i].Quote.Expiry.Equal(accepted[j].Quote.Expiry) {
-			return accepted[i].Quote.Expiry.Before(accepted[j].Quote.Expiry)
-		}
-		if accepted[i].Quote.Strike != accepted[j].Quote.Strike {
-			return accepted[i].Quote.Strike < accepted[j].Quote.Strike
-		}
-		return accepted[i].Quote.name() < accepted[j].Quote.name()
-	})
+	sort.SliceStable(accepted, func(i, j int) bool { return betterCandidate(accepted[i], accepted[j], cfg, target, direction) })
 	chosen := accepted[0]
 	base.Action, base.Quantity, base.SignedContracts, base.Quality = ActionAlert, chosen.Quantity, chosen.SignedContracts, chosen.Quality
 	base.ExpectedGain = expectedGain(chosen.Quote, chosen.Quantity)
@@ -774,7 +778,65 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	base.PostTradeEffective, base.AssignmentInventory = chosen.PostTradeEffective, chosen.AssignmentInventory
 	base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds trade gap %.2f", direction, gap, cfg.TradeGap)
 	base.Reasons = []string{base.Reason}
+	if replace := pendingReplaceTarget(in.Pending, direction, chosen.Quote.Symbol); replace != nil {
+		// 改单闸门:rest 单已不在报价(过期/失效)、已不满足结构校验、或新
+		// 候选严格按选择排序优于 rest 单时才撤旧挂新。更优合约上的 rest
+		// 单(被排除的 natural top)绝不换成次优候选,避免策略空转改单。
+		if pendingContract == "" || !pendingValid || betterCandidate(chosen, pendingCandidate, cfg, target, direction) {
+			base.Replace = replace
+			base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds trade gap %.2f; replace pending %s with %s", direction, gap, cfg.TradeGap, replace.Contract, chosen.Quote.Symbol)
+		}
+	}
 	return base, nil
+}
+
+// betterCandidate reports whether candidate a strictly outranks b in
+// selection: smaller distance to target, then (CAUTION) lower put strike,
+// higher quality, tighter relative spread, earlier expiry, lower strike,
+// name. Shared by the selection sort and the 改单 gate so one ordering
+// governs both.
+func betterCandidate(a, b CandidateEvaluation, cfg Config, target float64, direction Direction) bool {
+	aDist, bDist := math.Abs(target-a.PostTradeEffective), math.Abs(target-b.PostTradeEffective)
+	if aDist != bDist {
+		return aDist < bDist
+	}
+	// In CAUTION, lower-strike puts are the safer increase-inventory
+	// choice. This preference is applied only after post-trade risk is
+	// equal, preserving the primary inventory objective.
+	if cfg.StrategicState == StateCaution && direction == DirectionPut && a.Quote.Strike != b.Quote.Strike {
+		return a.Quote.Strike < b.Quote.Strike
+	}
+	if a.Quality != b.Quality {
+		return a.Quality > b.Quality
+	}
+	aSpread, bSpread := a.Quote.Spread()/a.Quote.Mid(), b.Quote.Spread()/b.Quote.Mid()
+	if aSpread != bSpread {
+		return aSpread < bSpread
+	}
+	if !a.Quote.Expiry.Equal(b.Quote.Expiry) {
+		return a.Quote.Expiry.Before(b.Quote.Expiry)
+	}
+	if a.Quote.Strike != b.Quote.Strike {
+		return a.Quote.Strike < b.Quote.Strike
+	}
+	return a.Quote.name() < b.Quote.name()
+}
+
+// pendingReplaceTarget returns the single same-direction pending order that a
+// better candidate should replace (改单), or nil. Multiple same-direction
+// pendings or a pending for the very contract chosen are left alone — the
+// former is ambiguous, the latter is already covered (and excluded above).
+func pendingReplaceTarget(pending []PendingOrder, direction, chosenContract string) *ReplaceOrder {
+	var same []PendingOrder
+	for _, p := range pending {
+		if strings.EqualFold(p.Direction, direction) {
+			same = append(same, p)
+		}
+	}
+	if len(same) != 1 || same[0].Contract == chosenContract || same[0].OrderID == "" {
+		return nil
+	}
+	return &ReplaceOrder{OrderID: same[0].OrderID, Contract: same[0].Contract}
 }
 
 // hasPendingContract reports whether an unfilled order for the same contract
