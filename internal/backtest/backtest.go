@@ -43,22 +43,28 @@ type UnfilledStats struct {
 // when the strategy exposes a Wheel signal. Inventory fields are duplicated
 // explicitly so the trace remains useful without decoding domain JSON.
 type SignalTrace struct {
-	Ts                 time.Time  `json:"ts"`
-	Action             string     `json:"action"`
-	Direction          string     `json:"direction"`
-	Reason             string     `json:"reason"`
-	CapabilityStatus   string     `json:"capability_status"`
-	BlockedBy          []string   `json:"blocked_by"`
-	SnapshotKey        string     `json:"snapshot_key,omitempty"`
-	SnapshotObservedAt *time.Time `json:"snapshot_observed_at,omitempty"`
-	ActualInventory    float64    `json:"actual_inventory"`
-	EffectiveInventory float64    `json:"effective_inventory"`
-	OptionDeltaStock   float64    `json:"option_delta_stock"`
-	Inventory          float64    `json:"inventory"`
-	CandidateCode      string     `json:"candidate_code,omitempty"`
-	Candidate          string     `json:"candidate,omitempty"`
-	Candidates         []string   `json:"candidates,omitempty"`
-	Quantity           float64    `json:"quantity"`
+	Ts                 time.Time                   `json:"ts"`
+	Action             string                      `json:"action"`
+	Direction          string                      `json:"direction"`
+	Reason             string                      `json:"reason"`
+	CapabilityStatus   string                      `json:"capability_status"`
+	BlockedBy          []string                    `json:"blocked_by"`
+	SnapshotKey        string                      `json:"snapshot_key,omitempty"`
+	SnapshotObservedAt *time.Time                  `json:"snapshot_observed_at,omitempty"`
+	ActualInventory    float64                     `json:"actual_inventory"`
+	EffectiveInventory float64                     `json:"effective_inventory"`
+	OptionDeltaStock   float64                     `json:"option_delta_stock"`
+	Inventory          float64                     `json:"inventory"`
+	CandidateCode      string                      `json:"candidate_code,omitempty"`
+	Candidate          string                      `json:"candidate,omitempty"`
+	Candidates         []string                    `json:"candidates,omitempty"`
+	Quantity           float64                     `json:"quantity"`
+	UnderlyingPrice    float64                     `json:"underlying_price"`
+	CashBefore         float64                     `json:"cash_before"`
+	CashAfter          float64                     `json:"cash_after"`
+	TargetInventory    float64                     `json:"target_inventory"`
+	InventoryGap       float64                     `json:"inventory_gap"`
+	CandidateDetails   []wheel.CandidateEvaluation `json:"candidate_details,omitempty"`
 }
 
 // EquityPoint is one bar's portfolio equity at the bar timestamp.
@@ -150,6 +156,7 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 			st.ObservedAt, st.SnapshotKey = st.QuoteBatch.ObservedAt, st.QuoteBatch.SnapshotKey
 		}
 		markOptions(st, b.Ts)
+		cashBefore := st.Cash
 		act, size, err := s.OnBar(ctx, b, st)
 		if err != nil {
 			return nil, fmt.Errorf("backtest: bar %d: strategy: %w", i, err)
@@ -157,7 +164,7 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		if err := settleAction(st, act, size, b, feePerTrade, seed, &trades); err != nil {
 			return nil, fmt.Errorf("backtest: bar %d: %w", i, err)
 		}
-		signals = append(signals, makeSignalTrace(b.Ts, s, st, act, size))
+		signals = append(signals, makeSignalTrace(b.Ts, s, st, act, size, cashBefore))
 		settleExpired(st, b.Ts, &trades)
 		eq := st.Equity(b.Close)
 		curve = append(curve, EquityPoint{Ts: b.Ts, Equity: eq})
@@ -219,8 +226,8 @@ func latestQuoteBatch(opts *OptionsData, ts time.Time) *QuoteSnapshotBatch {
 
 type signalProvider interface{ Signal() wheel.Signal }
 
-func makeSignalTrace(ts time.Time, s Strategy, st *State, act Action, size float64) SignalTrace {
-	t := SignalTrace{Ts: ts, Action: act.String(), Direction: wheel.DirectionHold, CapabilityStatus: wheel.CapabilityReady, BlockedBy: []string{}, Quantity: size, ActualInventory: st.Position, EffectiveInventory: st.Position, Inventory: st.Position, SnapshotKey: st.SnapshotKey}
+func makeSignalTrace(ts time.Time, s Strategy, st *State, act Action, size, cashBefore float64) SignalTrace {
+	t := SignalTrace{Ts: ts, Action: act.String(), Direction: wheel.DirectionHold, CapabilityStatus: wheel.CapabilityReady, BlockedBy: []string{}, Quantity: size, ActualInventory: st.Position, EffectiveInventory: st.Position, Inventory: st.Position, SnapshotKey: st.SnapshotKey, UnderlyingPrice: st.Price, CashBefore: cashBefore, CashAfter: st.Cash}
 	if !st.ObservedAt.IsZero() {
 		observedAt := st.ObservedAt
 		t.SnapshotObservedAt = &observedAt
@@ -233,6 +240,8 @@ func makeSignalTrace(ts time.Time, s Strategy, st *State, act Action, size float
 		}
 		t.BlockedBy = append([]string{}, sig.BlockedBy...)
 		t.ActualInventory, t.EffectiveInventory, t.OptionDeltaStock = sig.ActualInventory, sig.EffectiveInventory, sig.OptionDeltaStock
+		t.TargetInventory, t.InventoryGap = sig.TargetInventory, sig.InventoryGap
+		t.CandidateDetails = append([]wheel.CandidateEvaluation(nil), sig.Candidates...)
 		t.Inventory = sig.EffectiveInventory
 		t.Quantity = float64(sig.Quantity)
 		for _, c := range sig.Candidates {

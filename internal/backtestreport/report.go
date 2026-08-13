@@ -38,10 +38,17 @@ type Identity struct {
 	ConfigVersion    int          `json:"config_version"`
 	CodeVersion      string       `json:"code_version"`
 	DataWindow       Window       `json:"data_window"`
+	Windows          *Windows     `json:"windows,omitempty"`
 	CapabilityStatus string       `json:"capability_status"`
 	BlockedBy        []string     `json:"blocked_by"`
 	RunSeed          int64        `json:"run_seed"`
 	Config           ReportConfig `json:"config"`
+}
+
+type Windows struct {
+	Train Window `json:"train"`
+	Valid Window `json:"valid"`
+	Test  Window `json:"test"`
 }
 
 type ReportConfig struct {
@@ -92,6 +99,28 @@ type Audit struct {
 	InputSnapshotHash       string                 `json:"input_snapshot_hash"`
 	ParamsDictionaryVersion string                 `json:"params_dictionary_version"`
 	StrategyParamsSnapshot  StrategyParamsSnapshot `json:"strategy_params_snapshot"`
+	Reward                  *RewardAudit           `json:"reward,omitempty"`
+	SearchSpace             map[string]SearchBound `json:"search_space,omitempty"`
+	BaselineChanges         []string               `json:"baseline_changes,omitempty"`
+}
+
+type RewardAudit struct {
+	FunctionVersion     string        `json:"function_version"`
+	Weights             RewardWeights `json:"weights"`
+	HardFailureHandling string        `json:"hard_failure_handling"`
+}
+
+type RewardWeights struct {
+	LambdaDD       float64 `json:"lambda_dd"`
+	LambdaTail     float64 `json:"lambda_tail"`
+	LambdaTurnover float64 `json:"lambda_turnover"`
+}
+
+type SearchBound struct {
+	Min         float64 `json:"min"`
+	Max         float64 `json:"max"`
+	Unit        string  `json:"unit"`
+	HitBoundary bool    `json:"hit_boundary"`
 }
 
 type StrategyParamsSnapshot struct {
@@ -100,13 +129,80 @@ type StrategyParamsSnapshot struct {
 }
 
 type Report struct {
-	SchemaVersion string      `json:"schema_version"`
-	ReportID      string      `json:"report_id"`
-	ReportKind    string      `json:"report_kind"`
-	Identity      Identity    `json:"identity"`
-	Result        MoneyResult `json:"result"`
-	Audit         Audit       `json:"audit"`
-	Risk          []string    `json:"risk"`
+	SchemaVersion string           `json:"schema_version"`
+	ReportID      string           `json:"report_id"`
+	ReportKind    string           `json:"report_kind"`
+	Identity      Identity         `json:"identity"`
+	Train         *Train           `json:"train,omitempty"`
+	Result        MoneyResult      `json:"result"`
+	Generations   []Generation     `json:"generations,omitempty"`
+	Candidates    []Candidate      `json:"candidates"`
+	Audit         Audit            `json:"audit"`
+	Risk          []string         `json:"risk"`
+	Trajectory    []TrajectoryStep `json:"trajectory,omitempty"`
+}
+
+type Train struct {
+	Algorithm          string  `json:"algorithm"`
+	AlgorithmVersion   string  `json:"algorithm_version"`
+	GenerationCount    int     `json:"generation_count"`
+	PopulationSize     int     `json:"population_size"`
+	EvaluationCount    int     `json:"evaluation_count"`
+	Seeds              []int64 `json:"seeds"`
+	StopReason         string  `json:"stop_reason"`
+	StopDetail         string  `json:"stop_detail"`
+	DurationSec        float64 `json:"duration_sec"`
+	EvaluationEstimate string  `json:"evaluation_estimate"`
+}
+
+type Generation struct {
+	Generation           int      `json:"generation"`
+	EvaluationCount      int      `json:"evaluation_count"`
+	TrainBestReturnPct   float64  `json:"train_best_return_pct"`
+	TrainMeanReturnPct   float64  `json:"train_mean_return_pct"`
+	TrainMedianReturnPct float64  `json:"train_median_return_pct"`
+	TrainStdReturnPct    float64  `json:"train_std_return_pct"`
+	HistoryBestReturnPct float64  `json:"history_best_return_pct"`
+	ValidBestReturnPct   float64  `json:"valid_best_return_pct"`
+	MaxDrawdownPct       float64  `json:"max_drawdown_pct"`
+	UnfilledRatio        *float64 `json:"unfilled_ratio"`
+	EffectiveTrades      int      `json:"effective_trades"`
+	PopulationDispersion float64  `json:"population_dispersion"`
+	MutationScale        float64  `json:"mutation_scale"`
+	DurationSec          float64  `json:"duration_sec"`
+}
+
+type Candidate struct {
+	Rank          int             `json:"rank"`
+	Params        map[string]any  `json:"params"`
+	Stats         CandidateStats  `json:"stats"`
+	BoundaryHits  map[string]bool `json:"boundary_hits"`
+	VsBaselinePct float64         `json:"vs_baseline_pct"`
+}
+
+type CandidateStats struct {
+	MedianReturnPct      float64  `json:"median_return_pct"`
+	P10ReturnPct         float64  `json:"p10_return_pct"`
+	P90ReturnPct         float64  `json:"p90_return_pct"`
+	MedianMaxDrawdownPct float64  `json:"median_max_drawdown_pct"`
+	MedianUnfilledRatio  *float64 `json:"median_unfilled_ratio"`
+}
+
+// TrajectoryStep is the frozen RL-ready envelope. Payloads remain structured
+// JSON because the state/candidate feature set evolves independently of the
+// report projection while these required semantic slots stay stable.
+type TrajectoryStep struct {
+	Step         int              `json:"step"`
+	DecisionTime string           `json:"decision_time"`
+	BarTS        string           `json:"bar_ts"`
+	StateBefore  map[string]any   `json:"state_before"`
+	Candidates   []map[string]any `json:"candidates"`
+	Action       map[string]any   `json:"action"`
+	Fill         map[string]any   `json:"fill"`
+	StateAfter   map[string]any   `json:"state_after"`
+	RewardAtoms  map[string]any   `json:"reward_atoms"`
+	Termination  any              `json:"termination"`
+	Versions     map[string]any   `json:"versions"`
 }
 
 // Input contains the CLI inputs that cannot be recovered from Result. Params
@@ -241,6 +337,9 @@ func HTML(r *Report) ([]byte, error) {
 		return nil, err
 	}
 	data := htmlData{Report: r, Details: string(details), Unfilled: "N/A", StopReason: "单次回测完成"}
+	if r.Train != nil {
+		data.StopReason = r.Train.StopReason
+	}
 	if r.Result.UnfilledRatio != nil {
 		data.Unfilled = percent(*r.Result.UnfilledRatio)
 	}

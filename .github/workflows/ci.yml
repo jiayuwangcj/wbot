@@ -226,6 +226,7 @@ jobs:
           scripts/accept-paper.sh
           scripts/accept-agent-federation.sh
           scripts/accept-backtest-report.sh
+          scripts/accept-backtest-train.sh
 
   # PostgreSQL integration (Linux only; see internal/db WBOT_PG_DSN).
   db-integration:

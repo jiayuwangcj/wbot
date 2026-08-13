@@ -454,6 +454,12 @@ func runBacktest(prog string, argv []string) int {
 	seed := fs.Int64("seed", 42, "seed for the unfilled-attempt draw (same seed, same trace; 0 = default 42)")
 	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
 	params := fs.String("params", "", `Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md`)
+	train := fs.String("train", "", `ES tactical search ranges as JSON, for example {"move_interval_pct":["0.005","0.03"]}`)
+	population := fs.Int("population", 20, "ES population size (16..24; with -train)")
+	maxGenerations := fs.Int("max-generations", 40, "maximum ES generations (with -train)")
+	budget := fs.Int("budget", 840, "total backtest evaluation budget including held-out tests (with -train)")
+	earlyStopPatience := fs.Int("early-stop-patience", 8, "validation generations without material improvement before stopping")
+	trainTimeout := fs.Duration("train-timeout", 10*time.Minute, "ES wall-clock timeout (with -train)")
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
@@ -469,6 +475,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
+		fmt.Fprintf(os.Stderr, "With -train JSON, runs deterministic ES over tactical Wheel parameters only; strategic parameters remain fixed from -params.\n")
 		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
@@ -579,6 +586,16 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -report produces report_kind=single_run and is not supported for multi-symbol runs\n")
 		return 2
 	}
+	if strings.TrimSpace(*train) != "" {
+		if fp != "" || multi || stratName != "wheel" || *save {
+			fmt.Fprintf(os.Stderr, "backtest: -train requires one -dsn symbol, -strategy wheel, and does not support -file/-symbols/-save\n")
+			return 2
+		}
+		if *population < 16 || *population > 24 || *maxGenerations <= 0 || *budget <= 0 || *earlyStopPatience <= 0 || *trainTimeout <= 0 {
+			fmt.Fprintf(os.Stderr, "backtest: invalid ES controls (population 16..24; generations/budget/patience/timeout must be positive)\n")
+			return 2
+		}
+	}
 
 	btSym := strings.TrimSpace(*symbol)
 	if len(symList) == 1 {
@@ -596,6 +613,9 @@ func runBacktest(prog string, argv []string) int {
 		Cash:      *cash,
 		Fee:       *fee,
 		Seed:      *seed,
+	}
+	if strings.TrimSpace(*train) != "" {
+		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir})
 	}
 
 	var (

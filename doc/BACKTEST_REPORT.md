@@ -177,7 +177,7 @@
   "reward": {
     "function_version": "reward-1.0",
     "weights": { "lambda_dd": 0.3, "lambda_tail": 0.15, "lambda_turnover": 0.1 },
-    "hard_failure_handling": "不软惩罚,直接失败;未成交已含于净收益,不重复计罚"
+    "hard_failure_handling": "策略层候选 mask 预防硬失败,违规候选不进入评估;未成交已含于净收益,不重复计罚"
   },
   "search_space": {
     "move_interval_pct": { "min": 0.5, "max": 3.0, "unit": "%", "hit_boundary": false },
@@ -277,6 +277,12 @@
 - 同一 JSON 重复渲染必须一致;关键汇总可由明细复算(验收脚本对账)。
 
 ## 10. 版本与演进
+
+### `es_train` 构造约定（S5）
+
+S5 在不改动 `single_run` 字段的前提下启用顶层 `train`、`generations`、`candidates` 与 `trajectory`。逐代收益字段保持原始净收益率口径；ES 选择使用版本化奖励 score，原子净收益、回撤、尾损和成交成本权重保存在 `audit.reward`，样本外原始收益分布保存在 `candidates.stats`。`identity.windows` 使用连续、无重叠的时间顺序窗口，`train.seeds` 顺序为训练、验证和至少 5 个测试 seed，训练 seed 不得与测试 seed 相同。
+
+搜索审计只允许七个战术键（DTE 两键由一个“最短值 + 非负跨度”约束维表达），战略键不得出现在 `candidates.params`。`audit.search_space` 同时保留范围、中文单位和撞边界标记；没有候选在全部封存 seed 稳定超过基线时，`candidates` 为空，表示“无可推荐参数”，不得回写线上配置。
 
 - `schema_version` 变更 = 破坏性契约变更,走评审 + 双版本兼容期(读旧写新)。
 - 所有报告产物带 `report_id`;`-push`/`-cache` 为显式动作,重复执行同 ID 幂等。
