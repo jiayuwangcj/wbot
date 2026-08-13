@@ -67,3 +67,25 @@ LLM 策略按固定节奏定时运行:每 5 分钟对 watchlist 标的生成策�
 - **拒绝卡与通过卡式样统一(b0c3696)**:老板指令「拒绝单和通过单式样不统一,以审核成功的单子为准,只是底部LLM审核区内容不一并且没有按钮」。alertCard 统一(✅ APPROVE/❌ REJECT/⚠️ 审核失败标签),拒绝卡无按钮;Discord 理由移至**最后一条 embed**(IM 注意力在末尾,老板指令)。
 - **策略来源徽标(af2a88e)**:老板指令「单子未标明是大模型策略还是固化策略生成的」。wheel_signals 加 strategy 列(migration 010,默认 wheel);llmsignal 写 'llm'、wheelrun 写 'wheel';telegram/discord 卡片标题加徽标(🤖 LLM 策略 / ⚙️ 固化策略)。历史数据回填:有 LLM_REVIEW/REJECTED 动作且 details#>>'{input_summary,decision}' 存在 = llmsignal(13 条);wheelrun HOLD/ALERT 保持 wheel。回填键与 wheelrun 审核请求结构区分(Summary 无 decision 键)。
 - **孤儿 ALERT 观察项**:审核在 Submit 内联执行,容器重建会打断 → 无重试机制(654 模式)。本次重建前均等待审核落库。backlog:审核失败重试机制。
+
+## 挂单传入 + 审核 fail-closed(2026-08-13 晚,8ed7c1a)
+
+老板指令(三条):
+1. 「单子未标明是大模型策略还是固化策略生成的」→ 策略来源徽标(前节已完成,af2a88e)。
+2. 「已下单未成交的情况下,策略没有考虑,又给了我一单」→ 挂单必须被策略考虑。
+3. 「策略运行还需传入当前未成交订单,并且LLM审核也需要,因为未成交订单需要综合考虑是否合理」+「未明确传入说明还生效订单情况应该拒绝」→ **挂单传入 agent 生成 + LLM 审核,fail-closed**。
+
+实现:
+- `Store.ListPendingOrders(symbol)`:LATERAL JOIN 取最近一次 CONFIRM 的 `details->>'order_id'`,排除已 FILL / NO / REJECTED;方向/数量/合约从 GetSignal candidates 取;Premium=candidates[0].Quote.Bid。`SignalRepository` 接口新增(所有 fake 补实现)。
+- **agent 生成**(llmstrategy):`Snapshot.PendingOrders` 注入初始消息(JSON `pending_orders` 键),generationPrompt 加「未成交订单」章节——避免重复敞口与方向叠加,风险大时 quantity=0 并在 notes 说明。
+- **审核闸门**(llmsignal/llmreview):`Context.PendingOrders` 三态语义——nil=未查询**必须拒绝**(确定性层直接 reject);空切片=已查询无挂单允许;同合约挂单确定性 reject;不同合约交 LLM 综合判断。`ReviewRequest.PendingOrders` 进 userContent `pending_orders` 键,systemPrompt 检查项 6「缺失必须 REJECT,存在挂单须评估叠加」。
+- **httpapi 端点**:Submit 前 5s 超时查挂单,查询失败 503 fail-closed。
+- **撤单路径**(前轮,随本提交):❌ 对已确认单=撤模拟盘挂单(futuOrderPlacer.CancelOrder)+记录 NO 解除挂单声明;撤单失败显式告知手动撤。
+- **测试**:wheelstore/llmstrategy/llmsignal/llmreview/httpapi/wheelrun -race 全绿;cmd/wbot 107.5s 全绿(含撤单成功/失败两分支);**真实 PG 集成测试**(WBOT_PG_DSN=serve.env)断言 CONFIRM 后 ListPendingOrders 1 条 order_id "12345"、FILL 后 0 条;verify.sh `verify: ok`。
+
+## Next(更新)
+
+1. 重建 serve 容器部署,验证新 tick:`pending_orders` 声明进 agent 输入与审核输入(今日配额已满,仅观察 rejected 日志中的输入构成)。
+2. 明日实盘:存在挂单时新单被综合判断(同合约确定性拒/不同合约 LLM 评);对已确认挂单按 ❌ 可撤单并解除挂单声明。
+3. 挂单查询失败路径(503/生成 skip)在真实故障下的表现观察。
+4. 孤儿 ALERT 重试机制(654)仍 backlog。

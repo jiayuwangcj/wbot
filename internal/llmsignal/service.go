@@ -224,12 +224,14 @@ func (s *Service) validate(ctx context.Context, d Decision, account Context, p P
 	}
 	// 挂单声明是强制输入(老板指令 2026-08-13):nil 表示调用方未查询未成交
 	// 订单——即使此刻没有挂单也必须显式传空切片,审核才可能综合判断;同
-	// 合约已有挂单时新决策构成确定性重复动作,无需交给模型。
+	// 合约同方向已有挂单时新决策构成确定性重复动作,无需交给模型。
+	// 方向不同(如挂单 BUY 与决策 SELL)必须留给 LLM 综合判断——正股方向
+	// contract 规范化为 symbol,只看合约会把反向决策误判为重复(272 教训)。
 	if account.PendingOrders == nil {
 		return reject("pending orders snapshot is required")
 	}
 	for _, po := range account.PendingOrders {
-		if po.Contract != "" && po.Contract == d.Contract {
+		if po.Contract != "" && po.Contract == d.Contract && po.Direction == d.Direction {
 			return reject("contract %q already has a pending order", d.Contract)
 		}
 	}

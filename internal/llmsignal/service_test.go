@@ -180,6 +180,48 @@ func TestSubmitDifferentContractPendingOrderPassesDeterministicGate(t *testing.T
 	}
 }
 
+func TestSubmitOppositeDirectionPendingOrderPassesDeterministicGate(t *testing.T) {
+	// 正股方向 contract 规范化为 symbol:挂单 BUY HK.00700 与决策 SELL
+	// HK.00700 同合约但方向相反——确定性层不得拒绝,必须留给 LLM 综合
+	// 判断(272 教训:BUY 挂单曾误拒所有正股决策,2026-08-13)。
+	store := &testStore{}
+	reviewer := &capturingReviewer{}
+	svc := &Service{Store: store, Reviewer: reviewer, Model: "review", Now: func() time.Time { return time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC) }}
+	account := validContext()
+	account.PendingOrders = []wheelstore.PendingOrder{{SignalID: 272, OrderID: "2321117552605278971", Direction: "BUY", Quantity: 100, Contract: "HK.00700"}}
+	decision := validDecision()
+	decision.Direction = "SELL"
+	decision.Contract = "HK.00700"
+	decision.Quantity = 100
+	decision.Premium = 459 // 正股限价 = 现价,过 premium/现价比率校验
+	if _, err := svc.Submit(context.Background(), decision, account, Policy{}); err != nil {
+		t.Fatal(err)
+	}
+	pending, ok := reviewer.req.PendingOrders.([]wheelstore.PendingOrder)
+	if !ok || len(pending) != 1 || pending[0].Contract != "HK.00700" {
+		t.Fatalf("review request pending orders = %+v (type %T)", reviewer.req.PendingOrders, reviewer.req.PendingOrders)
+	}
+}
+
+func TestSubmitSameDirectionStockPendingOrderRejected(t *testing.T) {
+	// 同合约同方向(挂单 BUY + 决策 BUY)才是确定性重复动作。
+	store := &testStore{}
+	svc := &Service{Store: store, Now: func() time.Time { return time.Date(2026, 8, 13, 0, 0, 0, 0, time.UTC) }}
+	account := validContext()
+	account.PendingOrders = []wheelstore.PendingOrder{{SignalID: 272, OrderID: "2321117552605278971", Direction: "BUY", Quantity: 100, Contract: "HK.00700"}}
+	decision := validDecision()
+	decision.Direction = "BUY"
+	decision.Contract = "HK.00700"
+	decision.Quantity = 100
+	_, err := svc.Submit(context.Background(), decision, account, Policy{})
+	if !errors.Is(err, ErrRejected) || !strings.Contains(err.Error(), "already has a pending order") {
+		t.Fatalf("err=%v", err)
+	}
+	if len(store.signals) != 0 {
+		t.Fatalf("rejected decision appended %+v", store.signals)
+	}
+}
+
 func TestSubmitDailyLimitCountsOnlyApprovedAlerts(t *testing.T) {
 	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
 	today := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
