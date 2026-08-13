@@ -68,6 +68,14 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 		return 1
 	}
+	barTimes := make([]time.Time, len(baseOutcome.Result.EquityCurve))
+	for i, point := range baseOutcome.Result.EquityCurve {
+		barTimes[i] = point.Ts
+	}
+	if err := backtestes.ValidateWindowBars(windows, barTimes); err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 1
+	}
 
 	evaluator := func(ctx context.Context, params map[string]any, window backtestes.Window, seed int64) (backtestes.Metrics, error) {
 		runOpts := opts
@@ -185,7 +193,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 			EvaluationCount: search.EvaluationCount + reserved, Seeds: allSeeds, StopReason: search.StopReason, StopDetail: search.StopDetail, DurationSec: duration, EvaluationEstimate: estimate},
 		Generations: gens, Candidates: reportCandidates, Reward: backtestreport.RewardAudit{FunctionVersion: backtestes.RewardVersion,
 			Weights:             backtestreport.RewardWeights{LambdaDD: cfg.Weights.LambdaDD, LambdaTail: cfg.Weights.LambdaTail, LambdaTurnover: cfg.Weights.LambdaTurnover},
-			HardFailureHandling: "不软惩罚,直接失败;未成交已含于净收益,不重复计罚"}, SearchSpace: searchAudit,
+			HardFailureHandling: "策略层候选 mask 预防硬失败,违规候选不进入评估;未成交已含于净收益,不重复计罚"}, SearchSpace: searchAudit,
 		Trajectory: buildTrajectory(selectedOutcome.Result, selected.candidate.Params, opts.Symbol, version, selectedOutcome.SourceHash, opts.Fee), TailLossPct: selected.metrics[medianIndex].TailLoss,
 	})
 	if err != nil {

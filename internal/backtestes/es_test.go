@@ -43,6 +43,34 @@ func TestSplitWindowsIsChronologicalWithoutLeakage(t *testing.T) {
 	}
 }
 
+func TestValidateWindowBarsRejectsEmptyWindow(t *testing.T) {
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	w, err := SplitWindows(from, from.Add(10*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	barTimes := []time.Time{
+		from, from.Add(time.Hour), from.Add(2 * time.Hour),
+		from.Add(3 * time.Hour), from.Add(10 * time.Hour),
+	}
+	err = ValidateWindowBars(w, barTimes)
+	if err == nil || !strings.Contains(err.Error(), "数据不足以 60/20/20 切分,需 ≥5 根 bar") || !strings.Contains(err.Error(), "valid=0") {
+		t.Fatalf("empty-window error = %v", err)
+	}
+}
+
+func TestValidateWindowBarsRejectsFewerThanMinimum(t *testing.T) {
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	w, err := SplitWindows(from, from.Add(10*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	barTimes := []time.Time{from, from.Add(7 * time.Hour), from.Add(10 * time.Hour)}
+	if err := ValidateWindowBars(w, barTimes); err == nil || !strings.Contains(err.Error(), "total=3") {
+		t.Fatalf("short-input error = %v", err)
+	}
+}
+
 func TestSearchDeterminismBestAtLeastPopulationMeanAndDistinctSeeds(t *testing.T) {
 	s, err := ParseSpace(`{"move_interval_pct":[0,1],"trade_gap":[0,20],"min_dte":[5,9],"max_dte":[5,10]}`, baseParams())
 	if err != nil {

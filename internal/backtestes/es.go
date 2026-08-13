@@ -124,6 +124,8 @@ type Windows struct {
 
 type Window struct{ From, To time.Time }
 
+const MinSplitBars = 5
+
 // SplitWindows makes a chronological 60/20/20 split. Boundaries are
 // half-open in evaluators ([from,to)), except the final test end.
 func SplitWindows(from, to time.Time) (Windows, error) {
@@ -134,6 +136,28 @@ func SplitWindows(from, to time.Time) (Windows, error) {
 	a := from.Add(d * 3 / 5)
 	b := from.Add(d * 4 / 5)
 	return Windows{Train: Window{from, a}, Valid: Window{a, b}, Test: Window{b, to}}, nil
+}
+
+// ValidateWindowBars ensures the time-based 60/20/20 split has enough input
+// to evaluate every window. Train and validation are half-open; the final test
+// window includes its end, matching the CLI evaluators.
+func ValidateWindowBars(windows Windows, barTimes []time.Time) error {
+	counts := [3]int{}
+	for _, ts := range barTimes {
+		switch {
+		case !ts.Before(windows.Train.From) && ts.Before(windows.Train.To):
+			counts[0]++
+		case !ts.Before(windows.Valid.From) && ts.Before(windows.Valid.To):
+			counts[1]++
+		case !ts.Before(windows.Test.From) && !ts.After(windows.Test.To):
+			counts[2]++
+		}
+	}
+	if len(barTimes) < MinSplitBars || counts[0] == 0 || counts[1] == 0 || counts[2] == 0 {
+		return fmt.Errorf("train windows: 数据不足以 60/20/20 切分,需 ≥%d 根 bar 且每个窗口至少 1 根 (当前 total=%d, train=%d, valid=%d, test=%d)",
+			MinSplitBars, len(barTimes), counts[0], counts[1], counts[2])
+	}
+	return nil
 }
 
 type RewardWeights struct{ LambdaDD, LambdaTail, LambdaTurnover float64 }

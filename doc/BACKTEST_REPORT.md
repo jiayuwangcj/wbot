@@ -177,7 +177,7 @@
   "reward": {
     "function_version": "reward-1.0",
     "weights": { "lambda_dd": 0.3, "lambda_tail": 0.15, "lambda_turnover": 0.1 },
-    "hard_failure_handling": "不软惩罚,直接失败;未成交已含于净收益,不重复计罚"
+    "hard_failure_handling": "策略层候选 mask 预防硬失败,违规候选不进入评估;未成交已含于净收益,不重复计罚"
   },
   "search_space": {
     "move_interval_pct": { "min": 0.5, "max": 3.0, "unit": "%", "hit_boundary": false },
