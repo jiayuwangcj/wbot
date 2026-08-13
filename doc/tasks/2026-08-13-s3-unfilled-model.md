@@ -1,7 +1,6 @@
 # S3 未成交模拟与基础指标
 
-**State**: 评审通过(有条件合入,2026-08-13)→ P1 修复完成(2026-08-13,Claude coder)→ 复核后合入
-**分支/worktree**: feat/s3-unfilled-model @ .claude/worktrees/s3-unfilled-model(main 基线 3fd2fba)
+**State**: 已合入 main(merge 3f5f781,2026-08-13;feature 待合批发布)
 **分支/worktree**: feat/s3-unfilled-model @ .claude/worktrees/s3-unfilled-model(main 基线 3fd2fba)
 
 ## Goal
@@ -58,5 +57,5 @@
 
 ## Next
 
-- reviewer 复核 P1 修复(commit 后于 1ee47c2)→ 合入 main
-- S4(报告数据面)依赖 S3 的 Result 未成交字段 + P2⑤ 映射观察
+- ~~reviewer 复核 P1 修复 → 合入 main~~ 已完成(3f5f781)
+- S4(报告数据面)依赖 S3 的 Result 未成交字段 + P2⑤ 映射观察;P2 清单并入 S4 排期
