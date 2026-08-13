@@ -296,14 +296,25 @@ func (s *Service) validate(ctx context.Context, d Decision, account Context, p P
 			return reject("CALL is not covered by stock inventory")
 		}
 	}
+	// Daily quota counts only ALERTs that passed the LLM gate: a rejected
+	// ALERT never places an order, so it must not consume the quota (same
+	// semantics as wheelrun.dailyOrders; 2026-08-13: 5 rejected ALERTs
+	// exhausted the day's quota and blocked a valid generated decision).
 	start := time.Date(s.now().UTC().Year(), s.now().UTC().Month(), s.now().UTC().Day(), 0, 0, 0, 0, time.UTC)
-	signals, err := s.Store.ListSignals(ctx, d.Symbol, "ALERT", "", p.MaxDailySignals+1)
+	signals, err := s.Store.ListSignals(ctx, d.Symbol, "ALERT", "", 1000)
 	if err != nil {
 		return reject("daily limit check failed: %v", err)
 	}
 	n := 0
 	for _, sig := range signals {
-		if !sig.CreatedAt.Before(start) {
+		if sig.CreatedAt.Before(start) {
+			continue
+		}
+		approved, err := s.Store.HasAction(ctx, sig.ID, "LLM_REVIEW")
+		if err != nil {
+			continue // best-effort: store failure skips the signal, count stays conservative
+		}
+		if approved {
 			n++
 		}
 	}

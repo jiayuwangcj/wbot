@@ -38,7 +38,14 @@ func (s *testStore) LatestLLMReview(context.Context, int64) (*wheelstore.ActionR
 func (s *testStore) LatestAction(context.Context, int64, string) (*wheelstore.ActionRecord, error) {
 	return nil, wheelstore.ErrNotFound
 }
-func (s *testStore) HasAction(context.Context, int64, string) (bool, error) { return false, nil }
+func (s *testStore) HasAction(_ context.Context, signalID int64, action string) (bool, error) {
+	for _, a := range s.actions {
+		if a.SignalID == signalID && a.Action == action {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 func (s *testStore) QuerySignalsSince(context.Context, string, int64, int) ([]wheelstore.SignalRecord, error) {
 	return nil, nil
 }
@@ -103,6 +110,41 @@ func TestSubmitRejectsHardConstraintsWithoutAlert(t *testing.T) {
 			}
 			if len(store.signals) != 0 {
 				t.Fatalf("rejected decision appended %+v", store.signals)
+			}
+		})
+	}
+}
+
+func TestSubmitDailyLimitCountsOnlyApprovedAlerts(t *testing.T) {
+	now := time.Date(2026, 8, 13, 12, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 8, 13, 9, 0, 0, 0, time.UTC)
+	alert := func(id int64) wheelstore.SignalRecord {
+		return wheelstore.SignalRecord{ID: id, Symbol: "HK.00700", Action: "ALERT", CreatedAt: today}
+	}
+	rejected := func(id int64) wheelstore.ActionRecord {
+		return wheelstore.ActionRecord{SignalID: id, Action: "REJECTED", Actor: "llm:review"}
+	}
+	approved := func(id int64) wheelstore.ActionRecord {
+		return wheelstore.ActionRecord{SignalID: id, Action: "LLM_REVIEW", Actor: "llm:review"}
+	}
+	cases := []struct {
+		name         string
+		alerts       []wheelstore.SignalRecord
+		actions      []wheelstore.ActionRecord
+		wantRejected bool
+	}{
+		{"five approved block", []wheelstore.SignalRecord{alert(1), alert(2), alert(3), alert(4), alert(5)}, []wheelstore.ActionRecord{approved(1), approved(2), approved(3), approved(4), approved(5)}, true},
+		{"five rejected do not block", []wheelstore.SignalRecord{alert(1), alert(2), alert(3), alert(4), alert(5)}, []wheelstore.ActionRecord{rejected(1), rejected(2), rejected(3), rejected(4), rejected(5)}, false},
+		{"mixed three approved pass", []wheelstore.SignalRecord{alert(1), alert(2), alert(3), alert(4)}, []wheelstore.ActionRecord{approved(1), approved(2), approved(3), rejected(4)}, false},
+		{"yesterday approved does not count", []wheelstore.SignalRecord{{ID: 9, Symbol: "HK.00700", Action: "ALERT", CreatedAt: time.Date(2026, 8, 12, 9, 0, 0, 0, time.UTC)}, alert(1), alert(2)}, []wheelstore.ActionRecord{approved(9), approved(1), approved(2)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &testStore{signals: tc.alerts, actions: tc.actions}
+			svc := &Service{Store: store, Reviewer: approve{}, Model: "m", Now: func() time.Time { return now }}
+			_, err := svc.Submit(context.Background(), validDecision(), validContext(), Policy{MaxDailySignals: 5})
+			if tc.wantRejected != errors.Is(err, ErrRejected) {
+				t.Fatalf("wantRejected=%v err=%v", tc.wantRejected, err)
 			}
 		})
 	}
