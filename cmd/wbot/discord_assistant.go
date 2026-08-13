@@ -46,7 +46,9 @@ func (a *claudeAssistant) Ask(ctx context.Context, prompt string) (string, error
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	cmd := exec.CommandContext(callCtx, a.cliPath, "-p", prompt)
+	// --max-turns:真实问题需要工具调用(读文件等),默认回合数不足会
+	// Reached max turns(实测「0700在关注列表吗」3 回合即报错)。
+	cmd := exec.CommandContext(callCtx, a.cliPath, "-p", prompt, "--max-turns", "20")
 	cmd.Env = os.Environ()
 	if a.apiKey != "" {
 		for i := len(cmd.Env) - 1; i >= 0; i-- {

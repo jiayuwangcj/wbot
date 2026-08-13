@@ -13,7 +13,12 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/wbot ./cmd/wbot
 FROM alpine:3.21
 RUN apk add --no-cache ca-certificates nodejs npm \
     && npm install --global @anthropic-ai/claude-code@2.1.229 \
-    && npm cache clean --force
+    && npm cache clean --force \
+    # assistant 非交互 -p:工具权限白名单放行读文件等常用工具,
+    # 否则模型需要工具时卡在审批等待直到超时(实测 0700 问题卡死);
+    # --dangerously-skip-permissions 在 root 下被 CLI 拒绝,故用白名单。
+    && mkdir -p /root/.claude \
+    && printf '%s\n' '{"permissions":{"allow":["Read","Grep","Glob","Bash","Write","Edit","WebFetch","WebSearch","NotebookEdit","TodoWrite"]}}' > /root/.claude/settings.json
 WORKDIR /app
 COPY --from=build /out/wbot /app/wbot
 # root 运行:HOME=/root,~/.wbot 由 compose 挂载到 /root/.wbot(wbot.conf 读取
