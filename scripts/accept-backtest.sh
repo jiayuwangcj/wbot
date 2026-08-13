@@ -32,7 +32,7 @@ out="$( "$bin" backtest -dsn "$dsn" -symbol "$symbol" -strategy wheel -params "$
 rc=$?
 check "CLI backtest -dsn 运行 exit 0 (got $rc)" 0 "$rc"
 check "CLI summary 形状 final_equity/total_return/max_drawdown/bars" \
-  1 "$(echo "$out" | grep -cE '^final_equity=.+ total_return=.+ max_drawdown=.+ bars=[0-9]+$')"
+  1 "$(echo "$out" | grep -cE '^final_equity=.+ total_return=.+ max_drawdown=.+ bars=[0-9]+( 未成交.*)?$')"
 
 # 2. CLI -save: 落库并打印 result id。
 out="$( "$bin" backtest -dsn "$dsn" -symbol "$symbol" -strategy wheel -params "$params" -save 2>&1 | strip_ansi )"

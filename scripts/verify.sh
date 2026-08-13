@@ -61,4 +61,5 @@ tools/config-to-env.sh "$tmp/config.yaml" >/dev/null
 # paper + agent federation 无外部依赖,本地验收即远程验收。
 scripts/accept-paper.sh >/dev/null
 scripts/accept-agent-federation.sh >/dev/null
+scripts/accept-backtest-report.sh "$bin" >/dev/null
 echo "verify: ok"

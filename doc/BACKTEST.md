@@ -38,8 +38,10 @@ wbot backtest \
 | `-strategy` | `hold` | CLI 实际默认是内部 `hold` 基准；显式 `-strategy wheel` 才运行 Wheel。产品 API/watchlist 只接受 `wheel` |
 | `-params` | — | `wheel` 新配置必须提供 `full_position_price`、`zero_position_price` 与 `max_inventory`；百分比用小数；旧曲线仅兼容读取；内部 `hold`/`buy-hold` 不接参数 |
 | `-fee` | 0 | 回测费用占位；不改变提醒契约 |
+| `-seed` | 42 | 未成交启发式抽样种子；同输入同 seed 产生同一成交 trace，`0` 等价于默认 42 |
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
+| `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.0 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
 | `-export` / `-format` | 0 / `csv` | 导出已保存结果，格式为 `csv` 或 `json` |
 
 `hold`/`buy-hold` 由 CLI 底层运行器保留为内部 benchmark；CLI 默认就是 `hold`，但它们不是 Wheel 策略，不出现在 `/v1/strategies` 或 `/v1/watchlist`，产品 API 也拒绝它们。旧策略名称只在迁移审计中保留，不得作为新配置或新 watchlist 请求。
@@ -85,6 +87,10 @@ wbot backtest \
 ## 指标与 trace
 
 事件回测完成后，若数据闸门已启用，至少报告：总收益、最大回撤、指派率、Call 被行权机会成本、订单/提醒频率、库存偏差和最大库存违规数。trace 至少区分：信号、未执行信号、人工确认、人工回填成交、到期和指派；系统不生成 broker order id，也不调用交易 API。
+
+当前确定性运行结果的 `Result.Unfilled` 记录期权卖出成交尝试口径：`AttemptCount = FillCount + UnfilledCount`，`UnfilledRatio = UnfilledCount / AttemptCount`；没有成交尝试时比例为 `null`，CLI 显示“未成交 N/A”，不得解释为 0%。`Trade.Filled=false` 表示一次由 `Trade.UnfilledModel` 标识的模拟未成交卖出尝试，不入账、不改变现金或持仓；成交的期权交易为 `Filled=true`。正股交易、HOLD 与 DATA_BLOCKED 不进入该尝试分母。
+
+`-report` 以 [[BACKTEST_REPORT]] schema 1.0 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。
 
 参数研究只允许在离线数据上改变 DTE、候选映射、质量门槛、频率和覆盖率（100%、固定覆盖、随机漏 30%/50%，随机种子可复现）。曲线、最大库存、战略状态和资产配置不参与优化。
 
