@@ -332,14 +332,12 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 	return false
 }
 
-// pushRejectedSignal reports a fail-closed LLM disposition. REJECTED is the
-// persisted action for LLM rejects, so its Details.reasons are the source of
-// truth when LatestLLMReview has no row.
+// pushRejectedSignal reports a fail-closed LLM disposition using the same
+// signal card as an approval, only the LLM review section shows the rejection
+// and there are no action buttons (老板指令 2026-08-13: 拒绝单与通过单式样统一).
+// REJECTED is the persisted action for LLM rejects, so its Details.reasons
+// are the source of truth when LatestLLMReview has no row.
 func (s *telegramScheduler) pushRejectedSignal(ctx context.Context, sig wheelstore.SignalRecord, rejection *wheelstore.ActionRecord) {
-	verdict := verdictOf(rejection)
-	if verdict == "" {
-		verdict = "REJECT"
-	}
 	reasons := reviewReasons(rejection)
 	if len(reasons) == 0 && rejection != nil && strings.TrimSpace(rejection.Note) != "" {
 		reasons = []string{rejection.Note}
@@ -348,22 +346,27 @@ func (s *telegramScheduler) pushRejectedSignal(ctx context.Context, sig wheelsto
 	// verdict: the fail-closed disposition carries an "error" detail, and the
 	// user should see 审核失败 rather than 被拒绝 (2026-08-13: signal 453 was
 	// REJECTED for a client timeout but displayed as a model rejection).
-	title := fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s", sig.ID, s.now().Format("2006-01-02 15:04:05"))
+	label := "❌ REJECT"
 	if rejection != nil {
 		if e, ok := rejection.Details["error"]; ok && e != nil {
-			title = fmt.Sprintf("⚠️ <b>信号 #%d LLM 审核失败</b> · %s", sig.ID, s.now().Format("2006-01-02 15:04:05"))
+			label = "⚠️ 审核失败"
 		}
 	}
-	lines := []string{
-		title,
-		fmt.Sprintf("%s · <code>%s</code>", html.EscapeString(sig.Symbol), html.EscapeString(verdict)),
-	}
-	for _, reason := range reasons {
-		if reason = strings.TrimSpace(reason); reason != "" {
-			lines = append(lines, "• "+html.EscapeString(reason))
+	text, err := alertCard(&sig, label, reasons...)
+	if err != nil {
+		// A rejection card cannot be built (missing candidate etc.): fall back
+		// to the minimal fail-closed notice so the disposition is never lost.
+		s.logf("push: %s signal=%d: reject card fallback: %v", sig.Symbol, sig.ID, err)
+		title := fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s", sig.ID, s.now().Format("2006-01-02 15:04:05"))
+		lines := []string{title, fmt.Sprintf("%s · <code>%s</code>", html.EscapeString(sig.Symbol), html.EscapeString(label))}
+		for _, reason := range reasons {
+			if reason = strings.TrimSpace(reason); reason != "" {
+				lines = append(lines, "• "+html.EscapeString(reason))
+			}
 		}
+		text = strings.Join(lines, "\n")
 	}
-	s.sendToChats(ctx, strings.Join(lines, "\n"))
+	s.sendToChats(ctx, text)
 }
 
 // handleCallback routes one inline-button press. from.id must be in the chat
@@ -681,7 +684,16 @@ const (
 
 // alertMessage renders the v20 Telegram HTML layout. Review reasons are
 // variadic so callers that only need a structural preview may omit them.
+// alertMessage renders the approved signal card with the LLM review section
+// showing APPROVE.
 func alertMessage(sig *wheelstore.SignalRecord, reasons ...string) (string, error) {
+	return alertCard(sig, "✅ APPROVE", reasons...)
+}
+
+// alertCard renders the full signal card shared by approved and rejected
+// pushes (老板指令 2026-08-13: 拒绝单与通过单式样统一,只变底部 LLM 审核区,
+// 拒绝单无按钮): only the LLM review section label and reasons differ.
+func alertCard(sig *wheelstore.SignalRecord, verdictLabel string, reasons ...string) (string, error) {
 	c, err := firstCandidate(sig)
 	if err != nil {
 		return "", err
@@ -746,7 +758,7 @@ func alertMessage(sig *wheelstore.SignalRecord, reasons ...string) (string, erro
 		alertRow("目标持仓", fmt.Sprintf("<code>%s</code> 股", target)),
 		alertRow("库存缺口", fmt.Sprintf("<b><code>%s</code></b> 股", gap)),
 		alertInnerRule,
-		"💡 <b>下单原因</b> · LLM 审核 <b>✅ APPROVE</b>",
+		fmt.Sprintf("💡 <b>下单原因</b> · LLM 审核 <b>%s</b>", verdictLabel),
 	)
 	for _, reason := range reasons {
 		if reason = strings.TrimSpace(reason); reason != "" {

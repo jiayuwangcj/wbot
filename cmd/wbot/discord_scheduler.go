@@ -447,7 +447,13 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 			title = fmt.Sprintf("⚠️ 模拟盘 · 信号 #%d LLM 审核失败", sig.ID)
 		}
 	}
-	description := fmt.Sprintf("**%s · %s**\n%s", sig.Symbol, verdict, discordReasonBullets(reasons))
+	// 与通过单同式样:标题 embed 只声明结论,信息块随后,理由放最后一条
+	// embed(老板指令 2026-08-13: IM 注意力在末尾,最重要的审核结论与理由
+	// 必须在消息最底部;拒绝单无按钮 = 无需人工处置,但提示单信息完整可查)。
+	description := "LLM 审核 ❌ REJECT — 审核未通过"
+	if c, err := firstCandidate(&sig); err == nil {
+		description = fmt.Sprintf("LLM 审核 ❌ REJECT — 候选 `%s` 已就绪,审核未通过", discordInlineCode(c.Code))
+	}
 	embeds := []discord.Embed{{
 		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
 		Title:       title,
@@ -456,8 +462,6 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d", sig.ConfigVersion, sig.ID)},
 		Timestamp:   s.now().UTC().Format(time.RFC3339),
 	}}
-	// 拒绝的单同样推送完整提示单(候选/缺口信息),只是不带按钮
-	// (2026-08-13 老板指令:无按钮 = 无需人工处置,但提示单信息完整可查)。
 	if blocks, err := signalInfoBlocks(&sig); err == nil {
 		for _, block := range blocks {
 			embeds = append(embeds, discord.Embed{Description: discordCodeBlock(block...), Color: discord.ColorRejected})
@@ -465,6 +469,7 @@ func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelsto
 	} else {
 		s.logf("push: %s signal=%d: reject card without info blocks: %v", sig.Symbol, sig.ID, err)
 	}
+	embeds = append(embeds, discord.Embed{Description: discordReasonBullets(reasons), Color: discord.ColorRejected})
 	_ = s.pushEmbedDiscord(ctx, discord.Message{Embeds: embeds})
 }
 
