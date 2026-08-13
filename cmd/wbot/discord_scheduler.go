@@ -662,13 +662,6 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 		s.rejectDiscord(ctx, in, signalID, "llm review not approved")
 		return
 	}
-	if confirmed, err := s.store.HasAction(ctx, signalID, "CONFIRM"); err != nil {
-		s.rejectDiscord(ctx, in, signalID, "confirm check failed")
-		return
-	} else if confirmed {
-		s.rejectDiscord(ctx, in, signalID, "already confirmed")
-		return
-	}
 	if s.orders == nil {
 		s.rejectDiscord(ctx, in, signalID, "order placer unavailable")
 		return
@@ -683,6 +676,20 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 		s.rejectDiscord(ctx, in, signalID, "no usable limit price")
 		return
 	}
+	claims, ok := s.store.(wheelstore.OrderClaimRepository)
+	if !ok {
+		s.rejectDiscord(ctx, in, signalID, "confirm claim unavailable")
+		return
+	}
+	claimed, err := claims.ClaimOrder(ctx, signalID, discordActor(in))
+	if err != nil {
+		s.rejectDiscord(ctx, in, signalID, "confirm claim failed")
+		return
+	}
+	if !claimed {
+		s.rejectDiscord(ctx, in, signalID, "already confirmed")
+		return
+	}
 	orderIDEx, orderID, err := s.orders.PlaceOrder(ctx, cand.Code, cand.Side, float64(cand.Quantity), price)
 	if err != nil {
 		reason := "place order failed"
@@ -693,9 +700,13 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 		s.rejectDiscord(ctx, in, signalID, reason)
 		return
 	}
+	details := map[string]any{"order_id": orderID, "order_id_ex": orderIDEx, "symbol": cand.Code, "side": cand.Side, "qty": cand.Quantity}
+	if err := claims.CompleteOrderClaim(ctx, signalID, orderID, orderIDEx, details); err != nil {
+		s.logf("interaction %s: complete order claim: %v", in.ID, err)
+	}
 	if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
 		SignalID: signalID, Action: "CONFIRM", Actor: discordActor(in),
-		Details: map[string]any{"order_id": orderID, "order_id_ex": orderIDEx, "symbol": cand.Code, "side": cand.Side, "qty": cand.Quantity},
+		Details: details,
 	}); err != nil {
 		s.logf("interaction %s: confirm record: %v", in.ID, err)
 	}

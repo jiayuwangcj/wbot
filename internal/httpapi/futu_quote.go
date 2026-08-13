@@ -22,12 +22,22 @@ type FutuQuoter interface {
 	Quote(ctx context.Context, symbol string) (json.RawMessage, error)
 }
 
+// LLMOptionQuoter is the richer live option surface used only when assembling
+// the complete inventory snapshot for an LLM signal.
+type LLMOptionQuoter interface {
+	OptionQuotes(ctx context.Context, symbols []string) (map[string]futu.OptionQuoteEx, error)
+}
+
 type futuQuoter struct {
 	client *futu.Client
 }
 
 func (q futuQuoter) Quote(ctx context.Context, symbol string) (json.RawMessage, error) {
 	return q.client.Quote(ctx, symbol)
+}
+
+func (q futuQuoter) OptionQuotes(ctx context.Context, symbols []string) (map[string]futu.OptionQuoteEx, error) {
+	return q.client.OptionQuotes(ctx, symbols)
 }
 
 // FutuGatewayURL returns the gateway REST base URL: $FUTU_GATEWAY_URL or the

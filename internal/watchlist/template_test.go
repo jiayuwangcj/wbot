@@ -26,6 +26,18 @@ func TestValidateWheel(t *testing.T) {
 	}
 }
 
+func TestValidateLLM(t *testing.T) {
+	if err := Validate("llm", map[string]any{}); err != nil {
+		t.Fatalf("Validate(llm defaults) = %v", err)
+	}
+	if err := Validate("llm", map[string]any{"min_dte": 10.0, "max_dte": 5.0}); err == nil || !strings.Contains(err.Error(), "min_dte") {
+		t.Fatalf("invalid llm DTE = %v", err)
+	}
+	if err := Validate("llm", map[string]any{"option_max_quantity": 6.0}); err == nil || !strings.Contains(err.Error(), "option_max_quantity") {
+		t.Fatalf("invalid llm quantity = %v", err)
+	}
+}
+
 func TestValidateWheelRejectsMissingOrInvalidParams(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

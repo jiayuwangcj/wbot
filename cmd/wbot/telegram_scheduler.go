@@ -45,8 +45,8 @@ type wheelOrderPlacer interface {
 }
 
 // futuOrderPlacer adapts the proto TradeClient to wheelOrderPlacer: it opens
-// the gateway per order, resolves the env account and submits a market order
-// (price 0). Real-env placement is refused with errLiveEnvNotAllowed (the
+// the gateway per order, resolves the env account and submits a limit order.
+// Real-env placement is refused with errLiveEnvNotAllowed (the
 // wheel confirm path is sim-only by design).
 type futuOrderPlacer struct {
 	addr string
@@ -398,7 +398,7 @@ func (s *telegramScheduler) handleCallback(ctx context.Context, cq *telegram.Cal
 }
 
 // confirmOrder is the yes path: re-verify the signal is fresh and its latest
-// LLM review is APPROVE, then place a sim-env market order and record
+// LLM review is APPROVE, then place a sim-env limit order and record
 // CONFIRM. Any refusal is recorded as REJECTED and answered with a toast.
 func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.CallbackQuery, signalID int64) {
 	sig, err := s.store.GetSignal(ctx, signalID)
@@ -413,15 +413,6 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 	review, err := s.store.LatestLLMReview(ctx, signalID)
 	if err != nil || verdictOf(review) != "APPROVE" {
 		s.reject(ctx, cq, signalID, "llm review not approved", "LLM 审核未通过")
-		return
-	}
-	// Dedup: a second chat or a double-press in the same freshness window
-	// must not place a second order on the same signal.
-	if confirmed, err := s.store.HasAction(ctx, signalID, "CONFIRM"); err != nil {
-		s.reject(ctx, cq, signalID, "confirm check failed", "下单状态检查失败")
-		return
-	} else if confirmed {
-		s.reject(ctx, cq, signalID, "already confirmed", "该信号已下单,请勿重复确认")
 		return
 	}
 	if s.orders == nil {
@@ -440,6 +431,20 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 		s.reject(ctx, cq, signalID, "no usable limit price", "候选无可用限价,拒绝下单")
 		return
 	}
+	claims, ok := s.store.(wheelstore.OrderClaimRepository)
+	if !ok {
+		s.reject(ctx, cq, signalID, "confirm claim unavailable", "下单幂等保护未配置")
+		return
+	}
+	claimed, err := claims.ClaimOrder(ctx, signalID, telegramActor(cq))
+	if err != nil {
+		s.reject(ctx, cq, signalID, "confirm claim failed", "下单状态检查失败")
+		return
+	}
+	if !claimed {
+		s.reject(ctx, cq, signalID, "already confirmed", "该信号已被确认,请勿重复确认")
+		return
+	}
 	orderIDEx, orderID, err := s.orders.PlaceOrder(ctx, cand.Code, cand.Side, float64(cand.Quantity), price)
 	if err != nil {
 		reason := "place order failed"
@@ -452,9 +457,15 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 		s.reject(ctx, cq, signalID, reason, toast)
 		return
 	}
+	details := map[string]any{"order_id": orderID, "order_id_ex": orderIDEx, "symbol": cand.Code, "side": cand.Side, "qty": cand.Quantity}
+	if err := claims.CompleteOrderClaim(ctx, signalID, orderID, orderIDEx, details); err != nil {
+		// The durable pre-broker claim is retained.  Retrying is forbidden even
+		// when this enrichment write fails because the broker already accepted.
+		s.logf("callback %s: complete order claim: %v", cq.ID, err)
+	}
 	if _, err := s.store.AppendAction(ctx, wheelstore.ActionRecord{
 		SignalID: signalID, Action: "CONFIRM", Actor: telegramActor(cq),
-		Details: map[string]any{"order_id": orderID, "order_id_ex": orderIDEx, "symbol": cand.Code, "side": cand.Side, "qty": cand.Quantity},
+		Details: details,
 	}); err != nil {
 		s.logf("callback %s: confirm record: %v", cq.ID, err)
 	}

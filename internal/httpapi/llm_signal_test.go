@@ -205,13 +205,13 @@ func TestLLMSignalOK(t *testing.T) {
 
 func TestLLMSignalSyntheticContract(t *testing.T) {
 	// No contract → synthetic code from strike+expiry (HK.TCH260821P460000).
-	body := `{"symbol":"HK.00700","direction":"CALL","quantity":2,"strike":470,"expiry":"2026-08-21T00:00:00Z","current_price":459}`
+	body := `{"symbol":"HK.00700","direction":"PUT","quantity":1,"strike":450,"expiry":"2026-08-21T00:00:00Z","current_price":459,"premium":8.5,"delta":-0.35,"iv":0.4,"open_interest":100,"reason":"行权价低于现价并收取权利金"}`
 	rec, resp := postLLMSignal(t, body)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if resp["contract"] != "HK.TCH260821C470000" {
-		t.Errorf("contract = %v, want HK.TCH260821C470000", resp["contract"])
+	if resp["contract"] != "HK.TCH260821P450000" {
+		t.Errorf("contract = %v, want HK.TCH260821P450000", resp["contract"])
 	}
 }
 
@@ -251,7 +251,7 @@ func TestLLMSignalMethodNotAllowed(t *testing.T) {
 func TestLLMSignalFailClosed(t *testing.T) {
 	store := &fakeLLMStore{}
 	h := LLMSignalHandler(store, nil, "", &stubAccounter{cash: 50000})
-	body := `{"symbol":"HK.00700","direction":"PUT","quantity":1,"contract":"HK.TCH260821P460000"}`
+	body := `{"symbol":"HK.00700","direction":"PUT","quantity":1,"contract":"HK.TCH260821P460000","current_price":459,"premium":11.45,"delta":-0.47,"iv":0.404,"open_interest":249,"reason":"行权价接近现价并收取权利金"}`
 	req := httptest.NewRequest(http.MethodPost, LLMSignalPath, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

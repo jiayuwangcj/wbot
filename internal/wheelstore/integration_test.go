@@ -31,6 +31,11 @@ func openIntegrationDB(t *testing.T) *sql.DB {
 func cleanIntegrationWheel(t *testing.T, database *sql.DB, symbol string) {
 	t.Helper()
 	if _, err := database.Exec(`
+DELETE FROM wheel_order_claims
+WHERE signal_id IN (SELECT id FROM wheel_signals WHERE symbol = $1)`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
 DELETE FROM wheel_signal_actions
 WHERE signal_id IN (SELECT id FROM wheel_signals WHERE symbol = $1)`, symbol); err != nil {
 		t.Fatal(err)
@@ -112,6 +117,20 @@ func TestWheelStoreIntegration(t *testing.T) {
 	})
 	if err != nil || holdID <= 0 {
 		t.Fatalf("AppendSignal HOLD id=%d err=%v", holdID, err)
+	}
+	if pending, err := store.HasRecentUndisposedSignal(ctx, symbol, time.Now().Add(-time.Hour)); err != nil || !pending {
+		t.Fatalf("HasRecentUndisposedSignal = %v, %v; want true", pending, err)
+	}
+	claimed, err := store.ClaimOrder(ctx, alertID, "telegram:42")
+	if err != nil || !claimed {
+		t.Fatalf("ClaimOrder first = %v, %v; want true", claimed, err)
+	}
+	claimed, err = store.ClaimOrder(ctx, alertID, "discord:42")
+	if err != nil || claimed {
+		t.Fatalf("ClaimOrder second channel = %v, %v; want false", claimed, err)
+	}
+	if err := store.CompleteOrderClaim(ctx, alertID, 12345, "order-12345", map[string]any{"limit_price": 1.25}); err != nil {
+		t.Fatalf("CompleteOrderClaim: %v", err)
 	}
 	gotAlert, err := store.GetSignal(ctx, alertID)
 	if err != nil || gotAlert.Action != "ALERT" || len(gotAlert.Candidates) != 1 {

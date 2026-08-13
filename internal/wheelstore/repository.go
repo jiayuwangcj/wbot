@@ -24,3 +24,20 @@ type SignalRepository interface {
 }
 
 var _ SignalRepository = (*Store)(nil)
+
+// OrderClaimRepository is the DB-backed cross-channel idempotency boundary.
+// It is intentionally separate from SignalRepository so producers/reviewers
+// do not acquire order-placement capabilities.
+type OrderClaimRepository interface {
+	ClaimOrder(context.Context, int64, string) (bool, error)
+	CompleteOrderClaim(context.Context, int64, uint64, string, map[string]any) error
+}
+
+// SchedulerRepository is the persistent dedupe read needed by periodic LLM
+// generation.  Store implements it with a DB query, never an in-memory map.
+type SchedulerRepository interface {
+	HasRecentUndisposedSignal(context.Context, string, time.Time) (bool, error)
+}
+
+var _ OrderClaimRepository = (*Store)(nil)
+var _ SchedulerRepository = (*Store)(nil)
