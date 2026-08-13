@@ -1007,6 +1007,74 @@ func TestPushSignalSkipsStaleMissingReview(t *testing.T) {
 	}
 }
 
+// TestPushSignalGateRetryWindowHoldsCursor: 772 实测回归——LLM gate 失败后
+// runner 窗口内同步重试(sleep 3s + 300s http.Client 超时),重试成功会落正常
+// 审核记录;FAILED 新鲜(窗口内)时推送器必须保持游标(return true),不能 skip
+// 推进游标导致重试成功也丢卡(2026-08-14: 772 17:11:57 skip → 17:14:25 重试
+// 成功落 REJECTED,卡片不推)。
+func TestPushSignalGateRetryWindowHoldsCursor(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(14, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 14, Action: "LLM_REVIEW_FAILED", Actor: "llm:test",
+		CreatedAt: now.Add(-time.Minute),
+	})
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig, nil); !retry {
+		t.Fatal("fresh FAILED must hold the cursor (gate retry in progress)")
+	}
+	if len(fake.sends) != 0 {
+		t.Fatalf("FAILED signal pushed; sends = %d", len(fake.sends))
+	}
+}
+
+// TestPushSignalGateRetryWindowExpiredSkips: FAILED 超过重试窗口(6 分钟)仍无
+// 审核记录 → 重试不可能再成功,与旧语义一致永久跳过(游标推进)。
+func TestPushSignalGateRetryWindowExpiredSkips(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(15, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 15, Action: "LLM_REVIEW_FAILED", Actor: "llm:test",
+		CreatedAt: now.Add(-7 * time.Minute),
+	})
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
+		t.Fatal("stale FAILED beyond the gate retry window must skip permanently")
+	}
+	if len(fake.sends) != 0 {
+		t.Fatalf("stale FAILED signal pushed; sends = %d", len(fake.sends))
+	}
+}
+
+// TestPushSignalGateRetrySuccessPushes: 重试成功落 LLM_REVIEW 记录后,
+// LatestLLMReview 判断在 FAILED 之前 → 走正常 APPROVE 推送路径,卡片必须送达
+// (772 丢卡实况的修复验收)。
+func TestPushSignalGateRetrySuccessPushes(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 13, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(16, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 16, Action: "LLM_REVIEW_FAILED", Actor: "llm:test",
+		CreatedAt: now.Add(-time.Minute),
+	})
+	store.reviews[16] = approvedReview()
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
+		t.Fatal("signal with a recorded review after gate retry must push, not retry")
+	}
+	if len(fake.sends) != 1 {
+		t.Fatalf("sends = %d; want 1 (review won over FAILED)", len(fake.sends))
+	}
+}
+
 func TestFirstCandidateOrderFacts(t *testing.T) {
 	sig := signalFixture(1, "US.AAPL", time.Now())
 	c, err := firstCandidate(sig)

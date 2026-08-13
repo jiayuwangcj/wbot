@@ -228,8 +228,9 @@ func (s *discordScheduler) runDiscordPush(ctx context.Context, interval time.Dur
 // survives the dismissal and LLM-approval gates. Retry semantics mirror the
 // telegram loop: a review not yet recorded or a transient push failure holds
 // the cursor back for the next pass (769: a failed create message was
-// previously skipped permanently and the card was lost); REJECTED and
-// dismissed signals skip permanently once their card is delivered.
+// previously skipped permanently and the card was lost); REJECTED, dismissed
+// and FAILED-beyond-the-gate-retry-window signals skip permanently once their
+// card is delivered.
 func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore.SignalRecord) (retry bool) {
 	if dismissed, err := s.store.IsDismissed(ctx, sig.Symbol, utcDate(s.now())); err != nil {
 		s.logf("push: %s signal=%d: dismissed check: %v", sig.Symbol, sig.ID, err)
@@ -257,12 +258,25 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 		}
 		// LLM_REVIEW_FAILED: 审核请求失败(网络/DNS/超时)而非模型裁决,不得
 		// 当「模型拒绝」推卡片(2026-08-13: signal 741 DNS 超时曾被冒充
-		// REJECTED),跳过推送并推进游标;失败原因在 DB 审计可查。
+		// REJECTED;失败原因在 DB 审计可查)。runner 失败后 sleep 3s 同步重试
+		// 一次(300s http.Client 超时, internal/llmreview/llmreview.go:78):
+		// 重试成功会落正常 LLM_REVIEW 记录,FAILED 直接 skip 推进游标则重试
+		// 成功也丢卡(2026-08-14: 772/764 实锤)。
+		// 故窗口内保持游标等下轮复查,窗口外仍无审核记录才永久跳过。
 		if failed, ferr := s.store.HasAction(ctx, sig.ID, "LLM_REVIEW_FAILED"); ferr != nil {
 			s.logf("push: %s signal=%d: failed check: %v", sig.Symbol, sig.ID, ferr)
 			return true
 		} else if failed {
-			s.logf("push: %s signal=%d: LLM review failed (transient); skip push", sig.Symbol, sig.ID)
+			failedAt, aerr := s.store.LatestAction(ctx, sig.ID, "LLM_REVIEW_FAILED")
+			if aerr != nil {
+				s.logf("push: %s signal=%d: failed action lookup: %v", sig.Symbol, sig.ID, aerr)
+				return true
+			}
+			if s.now().Sub(failedAt.CreatedAt) < llmReviewRetryWindow {
+				s.logf("push: %s signal=%d: LLM review failed; gate retry window open, will re-check", sig.Symbol, sig.ID)
+				return true
+			}
+			s.logf("push: %s signal=%d: LLM review failed beyond retry window; skip push", sig.Symbol, sig.ID)
 			return false
 		}
 		if s.now().Sub(sig.CreatedAt) > signalFreshWindow {
