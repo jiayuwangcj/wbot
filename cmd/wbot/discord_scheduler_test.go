@@ -498,7 +498,9 @@ func TestDiscordPushApprovedStockSignalOmitsOptionEmbed(t *testing.T) {
 	}
 }
 
-func TestDiscordPushRejectedReviewPushesGrayEmbed(t *testing.T) {
+// TestDiscordPushRejectedActionSilentlySkips: REJECTED 已落库(无 LLM_REVIEW 行)
+// 时静默推进游标不推卡(2026-08-14 老板指令:LLM 审核决定是否推送)。
+func TestDiscordPushRejectedActionSilentlySkips(t *testing.T) {
 	fake, _ := startFakeDC(t)
 	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
 	store := newFakeTGStore()
@@ -510,44 +512,31 @@ func TestDiscordPushRejectedReviewPushesGrayEmbed(t *testing.T) {
 	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
 
 	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
-		t.Fatal("rejected signal must not retry")
+		t.Fatal("rejected signal must not retry (cursor advances)")
 	}
-	payload := fake.lastSend(t)
-	embeds, _ := payload["embeds"].([]any)
-	embed, _ := embeds[0].(map[string]any)
-	if embed["color"] != float64(discord.ColorRejected) {
-		t.Fatalf("embed color = %v; want rejection gray", embed["color"])
+	if fake.sendCount() != 0 {
+		t.Fatalf("rejected signal sends = %d, want 0 (silent skip)", fake.sendCount())
 	}
-	author, _ := embed["author"].(map[string]any)
-	if author["name"] != "🤖 Wheel Bot" || embed["title"] != "🔴 模拟盘 · ❌ 信号 #10 被 LLM 审核拒绝 · ⚙️ 固化策略" {
-		t.Fatalf("rejection author/title = %#v / %#v", author, embed["title"])
+}
+
+// TestDiscordPushRejectedVerdictSilentlySkips: LLM_REVIEW 已落库但裁决非 APPROVE
+// 时同样静默推进游标(verdictOf != "APPROVE" 分支)。
+func TestDiscordPushRejectedVerdictSilentlySkips(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(11, "US.AAPL", now)
+	store.reviews[11] = &wheelstore.ActionRecord{Details: map[string]any{
+		"verdict": "REJECT",
+		"reasons": []any{"risk limit"},
+	}}
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("non-APPROVE review must not retry (cursor advances)")
 	}
-	desc, _ := embed["description"].(string)
-	// 首条 embed 只声明结论(2026-08-13 老板指令:IM 注意力在末尾,理由在
-	// 最后一条 embed),候选代码与结论必须在首条。
-	if !strings.Contains(desc, "LLM 审核 ❌ REJECT") || !strings.Contains(desc, "US.AAPL260815C250000") {
-		t.Fatalf("rejection embed = %#v", embed)
-	}
-	// 拒绝的单也要推送完整提示单(候选/缺口信息块),只是不带按钮
-	// (2026-08-13 老板指令)。
-	if len(embeds) < 3 {
-		t.Fatalf("reject card embeds = %d; want status + info blocks", len(embeds))
-	}
-	var joined string
-	for _, e := range embeds {
-		if m, ok := e.(map[string]any); ok {
-			if d, ok := m["description"].(string); ok {
-				joined += d
-			}
-		}
-	}
-	for _, want := range []string{"候选", "现价", "缺口", "risk limit"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("reject card missing %q in info blocks: %s", want, joined)
-		}
-	}
-	if _, ok := payload["components"]; ok {
-		t.Fatalf("reject card must not carry buttons: %#v", payload["components"])
+	if fake.sendCount() != 0 {
+		t.Fatalf("non-APPROVE signal sends = %d, want 0 (silent skip)", fake.sendCount())
 	}
 }
 
@@ -586,31 +575,6 @@ func TestDiscordPushRetriesOnCreateMessageFailure(t *testing.T) {
 	}
 	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
 		t.Fatal("pushSignalDiscord must not retry after the push succeeds")
-	}
-	if fake.sendCount() != 1 {
-		t.Fatalf("successful sends = %d; want 1", fake.sendCount())
-	}
-}
-
-// TestDiscordPushRetriesOnRejectedCardFailure: REJECTED 卡推送失败同样不得
-// 静默丢弃(REJECTED 结论是 permanent,但卡片送达必须重试)。
-func TestDiscordPushRetriesOnRejectedCardFailure(t *testing.T) {
-	fake, _ := startFakeDC(t)
-	fake.failCreate = 1
-	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.UTC)
-	store := newFakeTGStore()
-	sig := signalFixture(10, "US.AAPL", now)
-	store.appended = append(store.appended, wheelstore.ActionRecord{
-		SignalID: 10, Action: "REJECTED", Actor: "llm:test",
-		Details: map[string]any{"verdict": "REJECT", "reasons": []any{"risk limit"}},
-	})
-	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
-
-	if retry := s.pushSignalDiscord(context.Background(), *sig); !retry {
-		t.Fatal("rejected card push failure must retry, not skip permanently")
-	}
-	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
-		t.Fatal("rejected card must not retry once delivered")
 	}
 	if fake.sendCount() != 1 {
 		t.Fatalf("successful sends = %d; want 1", fake.sendCount())

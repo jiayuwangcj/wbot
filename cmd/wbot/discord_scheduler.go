@@ -228,9 +228,9 @@ func (s *discordScheduler) runDiscordPush(ctx context.Context, interval time.Dur
 // survives the dismissal and LLM-approval gates. Retry semantics mirror the
 // telegram loop: a review not yet recorded or a transient push failure holds
 // the cursor back for the next pass (769: a failed create message was
-// previously skipped permanently and the card was lost); REJECTED, dismissed
-// and FAILED-beyond-the-gate-retry-window signals skip permanently once their
-// card is delivered.
+// previously skipped permanently and the card was lost); REJECTED and
+// dismissed signals skip silently (2026-08-14 老板指令:LLM 审核决定是否推送),
+// and FAILED reviews beyond the gate retry window skip permanently.
 func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore.SignalRecord) (retry bool) {
 	if dismissed, err := s.store.IsDismissed(ctx, sig.Symbol, utcDate(s.now())); err != nil {
 		s.logf("push: %s signal=%d: dismissed check: %v", sig.Symbol, sig.ID, err)
@@ -249,12 +249,9 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 			s.logf("push: %s signal=%d: rejected check: %v", sig.Symbol, sig.ID, herr)
 			return true
 		} else if rejected {
-			rejection, rerr := s.store.LatestAction(ctx, sig.ID, "REJECTED")
-			if rerr != nil {
-				s.logf("push: %s signal=%d: rejected action lookup: %v", sig.Symbol, sig.ID, rerr)
-				return true
-			}
-			return s.pushRejectedDiscord(ctx, sig, rejection)
+			// 2026-08-14 老板指令:LLM 审核决定是否推送,REJECTED 静默不推卡(审计已落库)。
+			s.logf("push: %s signal=%d: LLM review REJECTED; silent skip", sig.Symbol, sig.ID)
+			return false
 		}
 		// LLM_REVIEW_FAILED: 审核请求失败(网络/DNS/超时)而非模型裁决,不得
 		// 当「模型拒绝」推卡片(2026-08-13: signal 741 DNS 超时曾被冒充
@@ -287,8 +284,9 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 		return true
 	}
 	if verdictOf(review) != "APPROVE" {
-		s.logf("push: %s signal=%d: LLM review %s; pushing reasons", sig.Symbol, sig.ID, verdictOf(review))
-		return s.pushRejectedDiscord(ctx, sig, review)
+		// 2026-08-14 老板指令:LLM 审核决定是否推送,非 APPROVE 静默推进游标。
+		s.logf("push: %s signal=%d: LLM review %s; silent skip", sig.Symbol, sig.ID, verdictOf(review))
+		return false
 	}
 	embeds, err := signalDiscordEmbeds(&sig, underlyingName(ctx, s.quoter, sig.Symbol), reviewReasons(review), s.now())
 	if err != nil {
@@ -312,11 +310,10 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 
 const discordCodeLabelWidth = 6
 
-// signalInfoBlocks renders the candidate/quote/inventory detail lines shared
-// by the APPROVE and REJECT cards (老板指令 2026-08-13: 拒绝的单也要显示完整
-// 提示单,只是不带按钮,一眼可辨哪个单已处理)。无可用候选时返回 err,调用方
-// 降级为只推状态卡。与 signalDiscordEmbeds 共享 firstCandidate/isStockDirection
-// 语义,保证显示与下单执行一致。
+// signalInfoBlocks renders the candidate/quote/inventory detail lines of the
+// APPROVE card (2026-08-14 起推送仅 APPROVE 使用)。无可用候选时返回 err,
+// 调用方降级为只推状态卡。与 signalDiscordEmbeds 共享
+// firstCandidate/isStockDirection 语义,保证显示与下单执行一致。
 func signalInfoBlocks(sig *wheelstore.SignalRecord, underlying string) ([][]string, error) {
 	c, err := firstCandidate(sig)
 	if err != nil {
@@ -475,60 +472,6 @@ func discordReasonBullets(reasons []string) string {
 		return "• —"
 	}
 	return strings.Join(bullets, "\n")
-}
-
-// pushRejectedDiscord reports a fail-closed LLM disposition (gray embed; the
-// REJECTED action's Details.reasons are the source of truth). It returns
-// retry=true when the card could not be sent so the push loop holds the cursor
-// instead of silently dropping the rejection (769-adjacent: a lost card is
-// never acceptable on the 资金安全 path).
-func (s *discordScheduler) pushRejectedDiscord(ctx context.Context, sig wheelstore.SignalRecord, rejection *wheelstore.ActionRecord) (retry bool) {
-	verdict := verdictOf(rejection)
-	if verdict == "" {
-		verdict = "REJECT"
-	}
-	reasons := reviewReasons(rejection)
-	if len(reasons) == 0 && rejection != nil && strings.TrimSpace(rejection.Note) != "" {
-		reasons = []string{rejection.Note}
-	}
-	// A review pipeline failure (timeout, upstream error) is not a model
-	// verdict: the fail-closed disposition carries an "error" detail, and the
-	// user should see 审核失败 rather than 被拒绝 (2026-08-13: signal 453 was
-	// REJECTED for a client timeout but displayed as a model rejection).
-	title := fmt.Sprintf("🔴 模拟盘 · ❌ 信号 #%d 被 LLM 审核拒绝 · %s", sig.ID, strategyBadge(sig.Strategy))
-	if rejection != nil {
-		if e, ok := rejection.Details["error"]; ok && e != nil {
-			title = fmt.Sprintf("⚠️ 模拟盘 · 信号 #%d LLM 审核失败 · %s", sig.ID, strategyBadge(sig.Strategy))
-		}
-	}
-	// 与通过单同式样:标题 embed 只声明结论,信息块随后,理由放最后一条
-	// embed(老板指令 2026-08-13: IM 注意力在末尾,最重要的审核结论与理由
-	// 必须在消息最底部;拒绝单无按钮 = 无需人工处置,但提示单信息完整可查)。
-	description := "LLM 审核 ❌ REJECT — 审核未通过"
-	if c, err := firstCandidate(&sig); err == nil {
-		description = fmt.Sprintf("LLM 审核 ❌ REJECT — 候选 `%s` 已就绪,审核未通过", discordInlineCode(c.Code))
-	}
-	embeds := []discord.Embed{{
-		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
-		Title:       title,
-		Description: description,
-		Color:       discord.ColorRejected,
-		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d", sig.ConfigVersion, sig.ID)},
-		Timestamp:   s.now().UTC().Format(time.RFC3339),
-	}}
-	if blocks, err := signalInfoBlocks(&sig, underlyingName(ctx, s.quoter, sig.Symbol)); err == nil {
-		for _, block := range blocks {
-			embeds = append(embeds, discord.Embed{Description: discordCodeBlock(block...), Color: discord.ColorRejected})
-		}
-	} else {
-		s.logf("push: %s signal=%d: reject card without info blocks: %v", sig.Symbol, sig.ID, err)
-	}
-	embeds = append(embeds, discord.Embed{Description: discordReasonBullets(reasons), Color: discord.ColorRejected})
-	if err := s.pushEmbedDiscord(ctx, discord.Message{Embeds: embeds}); err != nil {
-		s.logf("push: %s signal=%d: reject card: %v", sig.Symbol, sig.ID, err)
-		return true
-	}
-	return false
 }
 
 // pushEmbedDiscord sends one message to the configured channel.
