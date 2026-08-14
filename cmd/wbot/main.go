@@ -460,11 +460,15 @@ func runBacktest(prog string, argv []string) int {
 	fs.Var(&params, "params", `Wheel configuration as JSON; repeat for fixed-parameter sensitivity runs, or pass a JSON array`)
 	fromWatchlist := fs.Bool("from-watchlist", false, "load exact Wheel params and config_version for -symbol from the database watchlist")
 	train := fs.String("train", "", `ES tactical search ranges as JSON, for example {"move_interval_pct":["0.005","0.03"]}`)
-	population := fs.Int("population", 20, "ES population size (16..24; with -train)")
-	maxGenerations := fs.Int("max-generations", 40, "maximum ES generations (with -train)")
-	budget := fs.Int("budget", 840, "total backtest evaluation budget including held-out tests (with -train)")
+	tune := fs.String("tune", "", `multi-space tune spec JSON: {"spaces":[{range},{range}],"seeds":[42,7]}`)
+	tunePrune := fs.Bool("tune-prune", true, "racing pruning of hopeless spaces (with -tune)")
+	tunePruneWindow := fs.Int("tune-prune-window", 4, "generations observed before a space can be pruned (with -tune)")
+	tunePruneFactor := fs.Float64("tune-prune-factor", 0.5, "prune when history-best reward < max(baseline, global_best*factor) (with -tune)")
+	population := fs.Int("population", 20, "ES population size (16..24; with -train/-tune)")
+	maxGenerations := fs.Int("max-generations", 40, "maximum ES generations (with -train/-tune)")
+	budget := fs.Int("budget", 840, "total backtest evaluation budget including held-out tests, per search group (with -train/-tune)")
 	earlyStopPatience := fs.Int("early-stop-patience", 8, "validation generations without material improvement before stopping")
-	trainTimeout := fs.Duration("train-timeout", 10*time.Minute, "ES wall-clock timeout (with -train)")
+	trainTimeout := fs.Duration("train-timeout", 10*time.Minute, "ES wall-clock timeout (with -train/-tune)")
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
@@ -483,6 +487,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
 		fmt.Fprintf(os.Stderr, "With -train JSON, runs deterministic ES over tactical Wheel parameters only; strategic parameters remain fixed from -params.\n")
+		fmt.Fprintf(os.Stderr, "With -tune JSON, runs multi-space x multi-seed ES tuning in one command (each space/seed group runs like -train), then reruns the global best params over the full window and writes that final report only; -push sends only this final report. Spaces use the -train range format; racing pruning stops hopeless groups early (defaults: window=4 generations, factor=0.5).\n")
 		fmt.Fprintf(os.Stderr, "Repeat -params for one fixed-parameter sensitivity run, or pass -params '[{...},{...}]'; results share one prepared snapshot and use 8 workers.\n")
 		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
 		fmt.Fprintf(os.Stderr, "With -push, explicitly sends the generated report as a Discord embed using bot_token/channel_id from ~/.wbot/wbot.conf; successful report IDs are not sent twice.\n")
@@ -679,6 +684,10 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintln(os.Stderr, "backtest: multiple -params groups require one symbol")
 		return 2
 	}
+	if strings.TrimSpace(*train) != "" && strings.TrimSpace(*tune) != "" {
+		fmt.Fprintln(os.Stderr, "backtest: -tune and -train are mutually exclusive")
+		return 2
+	}
 	if strings.TrimSpace(*train) != "" {
 		if len(paramsGroups) > 1 {
 			fmt.Fprintf(os.Stderr, "backtest: -train accepts one fixed -params group; use repeated -params without -train for sensitivity analysis\n")
@@ -690,6 +699,32 @@ func runBacktest(prog string, argv []string) int {
 		}
 		if *population < 16 || *population > 24 || *maxGenerations <= 0 || *budget <= 0 || *earlyStopPatience <= 0 || *trainTimeout <= 0 {
 			fmt.Fprintf(os.Stderr, "backtest: invalid ES controls (population 16..24; generations/budget/patience/timeout must be positive)\n")
+			return 2
+		}
+	}
+	if strings.TrimSpace(*tune) != "" {
+		if len(paramsGroups) > 1 {
+			fmt.Fprintln(os.Stderr, "backtest: -tune accepts one fixed -params group")
+			return 2
+		}
+		if fp != "" || multi || stratName != "wheel" || *save {
+			fmt.Fprintln(os.Stderr, "backtest: -tune requires one -dsn symbol, -strategy wheel, and does not support -file/-symbols/-save")
+			return 2
+		}
+		if *cache {
+			fmt.Fprintln(os.Stderr, "backtest: -cache is not supported with -tune (最终报告即交付物;缓存走 -train 或单次 -report)")
+			return 2
+		}
+		if *population < 16 || *population > 24 || *maxGenerations <= 0 || *budget <= 0 || *earlyStopPatience <= 0 || *trainTimeout <= 0 {
+			fmt.Fprintf(os.Stderr, "backtest: invalid ES controls (population 16..24; generations/budget/patience/timeout must be positive)\n")
+			return 2
+		}
+		if *tunePrune && *tunePruneWindow < 1 {
+			fmt.Fprintln(os.Stderr, "backtest: -tune-prune-window must be >= 1")
+			return 2
+		}
+		if *tunePruneFactor < 0 || *tunePruneFactor > 1 {
+			fmt.Fprintln(os.Stderr, "backtest: -tune-prune-factor must be in [0,1]")
 			return 2
 		}
 	}
@@ -711,6 +746,9 @@ func runBacktest(prog string, argv []string) int {
 	}
 	if strings.TrimSpace(*train) != "" {
 		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Push: *push, Cache: *cache})
+	}
+	if strings.TrimSpace(*tune) != "" {
+		return runBacktestTune(d, strings.TrimSpace(*tune), btOpts, backtestTuneFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Prune: *tunePrune, PruneWindow: *tunePruneWindow, PruneFactor: *tunePruneFactor, Report: *report, ReportDir: *reportDir, Push: *push})
 	}
 	if len(paramsGroups) > 1 {
 		return runBacktestBatch(d, fp, btSym, stratName, paramsGroups, btOpts, backtestBatchFlags{

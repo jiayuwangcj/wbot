@@ -40,9 +40,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 	}
 	cfg := backtestes.DefaultConfig(opts.Seed)
 	cfg.Population, cfg.MaxGenerations, cfg.Budget, cfg.Patience, cfg.Timeout = flags.Population, flags.MaxGenerations, flags.Budget, flags.Patience, flags.Timeout
-	const candidateCount = 3
-	const testSeedCount = 5
-	reserved := candidateCount * testSeedCount
+	reserved := sampleOutCandidateCount * sampleOutSeedCount
 	if cfg.Budget <= reserved+cfg.Population {
 		fmt.Fprintf(os.Stderr, "backtest: -budget must exceed population + %d sample-out evaluations\n", reserved)
 		return 2
@@ -132,90 +130,23 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		return 1
 	}
 
-	testSeeds := make([]int64, testSeedCount)
-	for i := range testSeeds {
-		testSeeds[i] = backtestes.DeriveSeed(search.TestSeed, fmt.Sprintf("sample-out-%d", i))
-	}
-	if len(search.Candidates) < candidateCount {
+	if len(search.Candidates) < sampleOutCandidateCount {
 		fmt.Fprintln(os.Stderr, "backtest: train: fewer than three ES candidates")
 		return 1
 	}
-	type testedCandidate struct {
-		candidate   backtestes.Candidate
-		metrics     []backtestes.Metrics
-		outcomes    []*backtestexec.Outcome
-		medianScore float64
-	}
-	type sampleEvaluation struct {
-		outcome *backtestexec.Outcome
-		metrics backtestes.Metrics
-	}
-	sampleTasks := make([]func(context.Context) (sampleEvaluation, error), 0, candidateCount*testSeedCount)
-	for _, candidate := range search.Candidates[:candidateCount] {
-		for _, testSeed := range testSeeds {
-			candidateParams, seed, p := candidate.Params, testSeed, prepared[windows.Test]
-			sampleTasks = append(sampleTasks, func(ctx context.Context) (sampleEvaluation, error) {
-				runOpts := opts
-				runOpts.Params, runOpts.Seed, runOpts.From = candidateParams, seed, windows.Test.From
-				runOpts.To = windows.Test.To
-				out, err := p.RunPrepared(ctx, runOpts)
-				if err != nil {
-					return sampleEvaluation{}, err
-				}
-				return sampleEvaluation{outcome: out, metrics: trainMetrics(out.Result, opts.Cash)}, nil
-			})
-		}
-	}
-	sampleResults, err := backtestes.ParallelMap(context.Background(), sampleTasks)
+	tested, testSeeds, err := sampleOutTestCandidates(context.Background(), prepared, opts, 0, search.Candidates[:sampleOutCandidateCount], search.TestSeed, windows, cfg.Weights)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: sample-out evaluation: %v\n", err)
 		return 1
 	}
-	tested := make([]testedCandidate, 0, candidateCount)
-	for candidateIndex, candidate := range search.Candidates[:candidateCount] {
-		tc := testedCandidate{candidate: candidate}
-		start := candidateIndex * testSeedCount
-		for _, sample := range sampleResults[start : start+testSeedCount] {
-			tc.outcomes = append(tc.outcomes, sample.outcome)
-			tc.metrics = append(tc.metrics, sample.metrics)
-		}
-		scores := make([]float64, len(tc.metrics))
-		for i, m := range tc.metrics {
-			scores[i] = m.Score(cfg.Weights)
-		}
-		tc.medianScore = quantile(scores, .5)
-		tested = append(tested, tc)
-	}
-	sort.SliceStable(tested, func(i, j int) bool { return tested[i].medianScore > tested[j].medianScore })
 	selected := tested[0]
 	medianIndex := medianOutcomeIndex(selected.metrics)
 	selectedOutcome := selected.outcomes[medianIndex]
 	baseline := selectedOutcome.BaselineReturnPct
 
-	reportCandidates := make([]backtestreport.Candidate, 0, candidateCount)
-	for _, tc := range tested {
-		returns, drawdowns, ratios := make([]float64, len(tc.metrics)), make([]float64, len(tc.metrics)), []float64{}
-		for i, m := range tc.metrics {
-			returns[i], drawdowns[i] = m.NetReturn, m.MaxDrawdown
-			if m.UnfilledRatio != nil {
-				ratios = append(ratios, *m.UnfilledRatio)
-			}
-		}
-		// A candidate is recommendable only when every held-out seed has an
-		// effective fill and all five returns beat buy-hold. Otherwise a zero
-		// return cannot masquerade as improvement in a negative-baseline window.
-		if !recommendableCandidate(tc.metrics, baseline) {
-			continue
-		}
-		params := tacticalParams(tc.candidate.Params, space)
-		hits := boundaryHits(space, params)
-		var ratio *float64
-		if len(ratios) > 0 {
-			v := quantile(ratios, .5)
-			ratio = &v
-		}
-		reportCandidates = append(reportCandidates, backtestreport.Candidate{Rank: len(reportCandidates) + 1, Params: params, BoundaryHits: hits, VsBaselinePct: quantile(returns, .5) - baseline,
-			Stats: backtestreport.CandidateStats{MedianReturnPct: quantile(returns, .5), P10ReturnPct: quantile(returns, .1), P90ReturnPct: quantile(returns, .9), MedianMaxDrawdownPct: quantile(drawdowns, .5), MedianUnfilledRatio: ratio}})
+	reportCandidates := reportCandidatesList(tested, []backtestes.Space{space}, baseline)
+	for i := range reportCandidates {
+		reportCandidates[i].Rank = i + 1
 	}
 	if len(reportCandidates) == 0 {
 		fmt.Println("无可推荐参数: 样本外多 seed 未稳定胜出 buy-hold 基线")

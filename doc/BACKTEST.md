@@ -60,8 +60,12 @@ wbot backtest \
 | `-push` | false | 显式把本次 `-report` 作为 Discord embed 推送；从 `~/.wbot/wbot.conf` 读取 `credentials.discord.bot_token/channel_id`，同一 `report_id` 成功后不重复发送 |
 | `-cache` | false | 显式把本次 `-report` 证据按 symbol 幂等写入 `strategy_cache`；要求单标的 `-dsn -strategy wheel -from-watchlist -report`，初始状态固定为 `RESEARCH_CANDIDATE` |
 | `-train` | 空 | 对 JSON 指定的战术参数范围运行 ES；只支持单标的 `-dsn -strategy wheel`，战略参数仍由 `-params` 固定 |
-| `-population` / `-max-generations` | 20 / 40 | ES 种群（16–24）与最大代数 |
-| `-budget` / `-train-timeout` | 840 / 10m | 总回测评估预算（含样本外测试）与墙钟超时；启动连接数据源前打印预计评估次数 |
+| `-tune` | 空 | 多空间×多种子批量自动寻优（JSON spec，见「多空间自动寻优」节）；与 `-train` 互斥，同样只支持单标的 `-dsn -strategy wheel` |
+| `-tune-prune` | true | racing 剪枝开关：历史最优 reward 显著落后（低于基线或全局最优×因子）的空间提前终止 |
+| `-tune-prune-window` | 4 | 剪枝观察窗口（代数）：每组空间先跑满该代数才开始判定 |
+| `-tune-prune-factor` | 0.5 | 剪枝阈值因子：`floor = max(基线, 全局最优 × factor)`，组历史最优 reward < floor 即剪 |
+| `-population` / `-max-generations` | 20 / 40 | ES 种群（16–24）与最大代数（`-train`/`-tune` 每组共用） |
+| `-budget` / `-train-timeout` | 840 / 10m | 每组的回测评估预算（含样本外测试）与墙钟超时；启动连接数据源前打印预计评估次数 |
 | `-early-stop-patience` | 8 | 验证集连续未达绝对及相对改善阈值后的早停代数 |
 | `-export` / `-format` | 0 / `csv` | 导出已保存结果，格式为 `csv` 或 `json` |
 
@@ -155,6 +159,25 @@ wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00883 -strategy wheel \
 ES 启动搜索前先跑一次全窗口数据探针；有效覆盖率为 0 或有效成交数为 0 时，以 `ErrNoOptionData` 语义立即退出，不消耗种群评估预算。候选只有在每个封存测试 seed 都至少有一笔有效成交且全部收益超过基线时才可推荐，负收益基线不能让零成交/零收益候选进入推荐列表。
 
 `-cache` 是与训练解耦的显式动作，单次回测和 `-train` 都可使用。缓存 payload 版本为 `strategy-cache-1.0`，只保存最优参数、收益指标、置信区间、能力状态、报告引用和三道批准闸门；不保存或注入逐代轨迹。首次写入即使数据闸门和样本外门槛通过，也因尚无人工批准而保持 `RESEARCH_CANDIDATE`。只有数据闸门、报告结果的样本外门槛和人工批准全部通过，缓存自身才可标为 `APPROVED_CANDIDATE` 并注入 LLM Snapshot；空缓存、超过 30 天、版本不匹配或状态不合格均跳过。该状态只表示研究候选资格，不会写入 `watchlist` 或 `wheel_configs`，产物始终是 `RESEARCH_ONLY`，不等于配置发布。
+
+## 多空间自动寻优(-tune)
+
+一次命令完成「多搜索空间 × 多种子」的自动寻优:每组(空间 × 种子)按 `-train` 同款流程跑 ES(组内 8-worker 并行),汇总后取**全局最优**,对最优参数在全窗口重跑生成**最终报告**(schema 1.2,含 initial_cash/年化/损耗/仓位占比),`-push` 只推送这一份最终报告;单次训练的中间结果只有调试输出,不产生报告、不推送。
+
+```bash
+wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00700 -strategy wheel \
+  -params '{"full_position_price":48,"zero_position_price":55,"max_inventory":22000}' \
+  -tune '{"spaces":[{"move_interval_pct":["0.005","0.03"]},{"move_interval_pct":["0.005","0.03"],"min_option_profit":[100,300]}],"seeds":[42,7]}' \
+  -report -push
+```
+
+- **spec 形态**:`{"spaces":[{范围1},{范围2},...],"seeds":[种子...]}`;每个空间与 `-train` 的范围 JSON 同格式(同键白名单/整数离散步长/DTE 约束);种子去重校验(0 等价于 42)。
+- **执行顺序与确定性**:组按「空间下标 × seeds 输入顺序」串行执行(组内并行),剪枝判定只依赖已完成的代,因此同输入(空间/种子/数据/剪枝参数)逐位同输出;墙钟字段(`dur_s`、报告 `duration_sec`)除外。
+- **剪枝(racing)**:每组先跑 `-tune-prune-window`(默认 4)代观察趋势;此后每代判定,该组历史最优 reward(ES train 侧最优得分,`reward-1.0` 口径)低于 `floor = max(买入持有基线, 全局当前最优 × -tune-prune-factor)`(默认 0.5)→ 提前终止,`StopReason=pruned`。**全局最优仍低于基线时全部组都不剪**(无望窗口也跑完,取最不差组兜底),好组(当前最优)不会被误杀。剪枝释放的墙钟预算自然流向后续组;每组预算独立(默认 840 次评估/组),不做跨组预算转移。
+- **汇总表(stdout,调优排错用,格式即契约)**:每空间×种子一行 `tune_group space=N seed=N status=ok|pruned reward=<train历史最优reward> sample_out=<样本外中位reward> ret_pct=<样本外中位净收益> dd_pct=<中位回撤> unfilled_pct=<中位未成交率> gens=<代数> converged=<最后改善验证集最优的代,1-based> evals=<评估次数> dur_s=<耗时> pruned_at=<剪枝代数,-表示未剪>`;末尾一行 `tune_best space=... seed=...` 为全局最优组。收敛代数 = 验证集最优得分最后一次严格改善的 1-based 代数。
+- **全局最优**:各组按「样本外 5 封存 seed 中位 reward」排序,取最高者(同分取先出现组);其候选进入最终报告的 candidates 列表(全部组可推荐候选全局排序,`P10 > 样本外基线` 才可推荐,沿用 `-train` 候选推荐逻辑)。
+- **最终报告**:最优参数在全窗重跑,`report_kind=es_train`(Train 元数据为胜出组搜索,Windows 为 60/20/20 切分审计);candidates 的 `vs_baseline_pct` 相对样本外(test 窗)基线,报告的 `baseline_return_pct` 为全窗买入持有,两者窗口不同属预期口径。
+- 与 `-train` 共用 ES 控制 flag(`-population/-max-generations/-budget/-train-timeout/-early-stop-patience`);`-cache` 暂不支持 `-tune`(最终报告即交付物)。
 
 ## CLI/API 一致性与导出
 
