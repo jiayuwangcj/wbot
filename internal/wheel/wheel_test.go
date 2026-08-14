@@ -73,6 +73,7 @@ func TestConfigValidateTable(t *testing.T) {
 		{"fractional max inventory", func(c *Config) { c.MaxInventory = 1200.5 }, true},
 		{"DTE outside wheel window", func(c *Config) { c.MinDTE = 4 }, true},
 		{"quality outside bounds", func(c *Config) { c.MinOptionQuality = 1.1 }, true},
+		{"negative option profit", func(c *Config) { c.MinOptionProfit = -1 }, true},
 		{"negative move interval", func(c *Config) { c.MoveIntervalPct = -0.01 }, true},
 		{"curve target above max inventory", func(c *Config) {
 			c.PricePositionCurve = []PricePoint{{Price: 100, TargetInventory: 1201}, {Price: 110, TargetInventory: 0}}
@@ -224,6 +225,30 @@ func TestEvaluateAlertIncludesExpectedGain(t *testing.T) {
 	}
 	if got, want := signal.ExpectedGain, 400.0; got != want {
 		t.Fatalf("ExpectedGain = %v; want %v", got, want)
+	}
+}
+
+func TestEvaluateFiltersBelowMinimumOptionProfit(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	put.Bid = 1.5
+	put.Ask = 1.6
+	cfg := testConfig(StateNormal)
+	cfg.MinPremiumPerShare = 1
+	cfg.MinOptionProfit = 200
+	in := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 1_000_000}
+	signal, err := Evaluate(cfg, in)
+	if err != nil || signal.Action != ActionHold || len(signal.Candidates) != 1 {
+		t.Fatalf("signal = %+v err=%v; want one filtered candidate and HOLD", signal, err)
+	}
+	candidate := signal.Candidates[0]
+	if candidate.ExpectedGain != 150 || candidate.Accepted || !strings.Contains(strings.Join(candidate.Reasons, " "), "expected option profit") {
+		t.Fatalf("candidate = %+v; want min_option_profit rejection", candidate)
+	}
+	cfg.MinOptionProfit = 150
+	signal, err = Evaluate(cfg, in)
+	if err != nil || signal.Action != ActionAlert || signal.Quote == nil || signal.Quote.Symbol != put.Symbol {
+		t.Fatalf("equal-threshold signal = %+v err=%v; want accepted ALERT", signal, err)
 	}
 }
 

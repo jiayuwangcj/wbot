@@ -247,6 +247,68 @@ func TestFilledOptionTradeDeductsConfiguredFee(t *testing.T) {
 	}
 }
 
+func TestTypedFeeModelChargesOptionRollAndExerciseDelivery(t *testing.T) {
+	chain := map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5)}}
+	roll := &scriptStrategy{
+		actions: []Action{ActionSellCall, ActionBuyCall},
+		sizes:   []float64{1, 1},
+		pending: []*OptionPosition{
+			{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2},
+			{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(5), Lot: 100, AvgPremium: 2},
+		},
+	}
+	model := HKFeeModel(21, 70, 100)
+	rollOpts := mkOptionsData(chain, map[string][]float64{"C105": {2, 2}})
+	rollOpts.RunSeed = 1
+	rollResult, err := RunOptionsWithFeeModel(context.Background(), mkBars(100, 100), 10000, model, roll, rollOpts)
+	if err != nil {
+		t.Fatalf("roll run error: %v", err)
+	}
+	if math.Abs(rollResult.Equity-9958) > 1e-9 || rollResult.Fees.TotalAmount != 42 || rollResult.Fees.OptionAmount != 42 || rollResult.Fees.OptionContracts != 2 || rollResult.Fees.OptionTradeCount != 2 {
+		t.Fatalf("roll result = %+v; want two option fees totaling 42", rollResult)
+	}
+
+	assignment := &scriptStrategy{
+		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
+		sizes:   []float64{100, 1, 0},
+		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
+	}
+	assignmentOpts := mkOptionsData(map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}, map[string][]float64{"C105": {2, 2}})
+	assignmentOpts.RunSeed = 1
+	assignmentResult, err := RunOptionsWithFeeModel(context.Background(), mkBars(100, 110, 120), 11000, model, assignment, assignmentOpts)
+	if err != nil {
+		t.Fatalf("assignment run error: %v", err)
+	}
+	if math.Abs(assignmentResult.Equity-11539) > 1e-9 || assignmentResult.Fees.TotalAmount != 161 || assignmentResult.Fees.StockAmount != 140 || assignmentResult.Fees.OptionAmount != 21 || assignmentResult.Fees.ExerciseDeliveryAmount != 70 || assignmentResult.Fees.ExerciseDeliveryLots != 1 || assignmentResult.Fees.ExerciseDeliveryTradeCount != 1 {
+		t.Fatalf("assignment result = %+v; want stock 70 + option 21 + delivery 70", assignmentResult)
+	}
+	if len(assignmentResult.Trades) != 3 || assignmentResult.Trades[2].Action != "exercise-call" || assignmentResult.Trades[2].Fee != 70 {
+		t.Fatalf("assignment trades = %+v; want charged exercise delivery event", assignmentResult.Trades)
+	}
+	second, err := RunOptionsWithFeeModel(context.Background(), mkBars(100, 110, 120), 11000, model, &scriptStrategy{
+		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
+		sizes:   []float64{100, 1, 0},
+		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
+	}, assignmentOpts)
+	if err != nil || second.Equity != assignmentResult.Equity || second.Fees != assignmentResult.Fees {
+		t.Fatalf("typed fee replay is not deterministic: first=%+v second=%+v err=%v", assignmentResult.Fees, second, err)
+	}
+}
+
+func TestTypedFeeModelChargesStockByLots(t *testing.T) {
+	result, err := RunWithFeeModel(context.Background(), mkBars(100, 100), 100000, HKFeeModel(21, 70, 100), &scriptStrategy{
+		actions: []Action{ActionBuy, ActionSell},
+		sizes:   []float64{500, 500},
+		pending: []*OptionPosition{nil, nil},
+	})
+	if err != nil {
+		t.Fatalf("stock lot run error: %v", err)
+	}
+	if math.Abs(result.Equity-99300) > 1e-9 || result.Fees.TotalAmount != 700 || result.Fees.StockAmount != 700 || result.Fees.StockLots != 10 || result.Fees.StockTradeCount != 2 {
+		t.Fatalf("stock lot result = %+v; want 5 lots per side at 70", result)
+	}
+}
+
 func TestUnfilledOptionTradeDoesNotChargeFee(t *testing.T) {
 	chain := map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
 	sc := &scriptStrategy{

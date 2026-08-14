@@ -1,4 +1,4 @@
-# 回测报告数据面契约(schema_version 1.1,更新 2026-08-14)
+# 回测报告数据面契约(schema_version 1.2,更新 2026-08-14)
 
 本文是回测/ES 训练报告 JSON 的**唯一事实源**。JSON 是单一事实源,HTML 与 Discord 只做确定性投影(Go html/template / embed 字段直出,**禁止 LLM 发挥**)。任何切片的轨迹/报告结构不得自行发明,一律复用本 schema。变更需更新 `schema_version` 并走评审。
 
@@ -8,9 +8,10 @@
 
 ```json
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "report_id": "bt-{symbol}-{run_seed}-{short-hash}",
   "report_kind": "single_run | es_train",
+  "initial_cash": 1000000.0,
   "identity": { ... },
   "train": { ... },
   "result": { ... },
@@ -81,6 +82,16 @@
   "return_status": "not_applicable_data_blocked",
   "net_return_pct": null,
   "net_return_amount": null,
+  "final_equity_amount": 996320.0,
+  "annualized_return_pct": null,
+  "gross_return_pct": null,
+  "gross_return_amount": null,
+  "stock_market_value_pct": 0.42,
+  "option_market_value_pct": -0.00023,
+  "holdings_market_value_pct": 0.419,
+  "final_equity_pct": 0.99632,
+  "max_stock_market_value_pct": 0.45,
+  "max_position_pct": 0.45,
   "window_mark_to_market_return_pct": 0.0123,
   "window_mark_to_market_amount": 123.45,
   "baseline_return_pct": 0.008,
@@ -104,16 +115,39 @@
   },
   "cost_model": {
     "fees_included": true,
-    "fee_per_trade": 3.0,
-    "total_fees_amount": 288.0,
+    "legacy": false,
+    "fee_per_trade": 0.0,
+    "option_fee_per_contract": 21.0,
+    "stock_fee_per_lot": 70.0,
+    "lot_size": 100,
+    "total_fees_amount": 273.0,
     "stock_fees_amount": 0.0,
-    "option_fees_amount": 288.0,
-    "charged_trade_count": 96,
+    "option_fees_amount": 273.0,
+    "exercise_delivery_fees_amount": 0.0,
+    "option_contracts": 13,
+    "stock_lots": 0,
+    "exercise_delivery_lots": 0,
+    "option_trade_count": 13,
+    "stock_trade_count": 0,
+    "exercise_delivery_trade_count": 0,
+    "charged_trade_count": 13,
+    "option": {"fee_per_contract": 21.0, "contracts": 13, "amount": 273.0, "trade_count": 13},
+    "stock": {"fee_per_lot": 70.0, "lot_size": 100, "lots": 0, "amount": 0.0, "trade_count": 0},
+    "exercise_delivery": {"fee_per_lot": 70.0, "lot_size": 100, "lots": 0, "amount": 0.0, "trade_count": 0},
     "slippage_included": false,
     "taxes_included": false,
-    "assignment_included": false,
-    "description": "费用计入;滑点/税费/指派模型未接入"
+    "assignment_included": true,
+    "description": "期权按张、正股及行权交割按手扣费;未成交/HOLD/OTM到期事件不收费;滑点/税费未接入"
   },
+  "cost_drag": {
+    "total_fees_amount": 273.0,
+    "cost_drag_pct": 0.000273,
+    "cost_drag_return_pct": 0.000273,
+    "gross_return_pct": null,
+    "gross_return_amount": null
+  },
+  "cost_drag_pct": 0.000273,
+  "cost_drag_return_pct": 0.000273,
   "manual_not_executed_count": 0,
   "hard_violations": 0,
   "stock_assignment_rate": null
@@ -125,7 +159,10 @@
 - `unfilled_ratio = unfilled_count / attempt_count`;`attempt_count` **只计真正发出成交尝试的期权动作**;正股建议/HOLD/DATA_BLOCKED/候选淘汰不入分母;分母为 0 时 `unfilled_ratio = null`(返回 `not_applicable`,不得报 0%)。
 - Wheel 能力为 `DATA_BLOCKED` 时，`net_return_pct`、`net_return_amount` 与 `excess_return_pct` 必须为 `null`，`return_status=not_applicable_data_blocked`。同一 HKEX 合约从 DTE ≥10 覆盖到 DTE ≤1、存在可用 bar 且终局估值完整时，能力为 `RESEARCH_ONLY`，净结果字段可写机械模拟数值，但 `return_status=research_only`；它不代表可执行历史收益。`window_mark_to_market_*` 始终只是窗口末账面估值变动。
 - `fill_count` 可由 `attempt_count - unfilled_count` 推导,但两者同时输出计数,防舍入/口径不一致。
-- `cost_model.total_fees_amount` 必须等于成交明细 `fee` 之和；固定 `fee_per_trade` 对正股和期权实际成交逐笔从现金扣除，未成交、HOLD 和机械到期事件不收费。`fees_included` 只在该扣账路径真实启用时为 `true`。
+- `cost_model.total_fees_amount` 必须等于成交明细 `fee` 之和。类型费率模式下，期权主动买/卖按张计费，正股主动买/卖及 ITM 行权/指派产生的正股交割按手计费；期权行权事件本身不再额外收期权费。`exercise_delivery_fees_amount` 必须包含行权/指派交割费。未成交、HOLD 和 OTM 机械到期事件不收费。旧 `fee_per_trade` 模式仍保留，`legacy=true` 表示向后兼容的固定主动成交费。
+- `cost_drag_pct = total_fees_amount / initial_cash`，`cost_drag_return_pct` 是从毛收益率到净收益率的同额拖累；可得到完整净收益时 `gross_return_amount = net_return_amount + total_fees_amount`、`gross_return_pct = net_return_pct + cost_drag_return_pct`。
+- `annualized_return_pct` 只对完整净收益计算，使用 `data_window` 的自然日秒数，不把交易日数当分母。
+- `stock_market_value_pct`、`option_market_value_pct`、`holdings_market_value_pct`、`final_equity_pct` 和最大仓位百分比统一以顶层 `initial_cash` 为分母；对应金额仍保留在 `terminal` 或 `result.final_equity_amount`。
 - `manual_not_executed_count`:模拟成交但人工未执行的条数(与模拟未成交区分)。
 - `hard_violations`:最大库存违规/裸 Call/资金不足/未来泄漏计数;>0 时报告必须显著警示。
 
@@ -228,6 +265,7 @@
   "params": {
     "move_interval_pct": 1.8,
     "min_premium_per_share": 0.42,
+    "min_option_profit": 200,
     "stock_switch_pct": 6.5,
     "trade_gap": 60,
     "min_option_quality": 0.62,
@@ -263,6 +301,7 @@
   "search_space": {
     "move_interval_pct": { "min": 0.5, "max": 3.0, "unit": "%", "hit_boundary": false },
     "min_premium_per_share": { "min": 0, "max": 1.0, "unit": "HKD/股", "hit_boundary": true },
+    "min_option_profit": { "min": 100, "max": 500, "unit": "HKD/笔", "hit_boundary": false },
     "stock_switch_pct": { "min": 3.0, "max": 15.0, "unit": "%", "hit_boundary": false },
     "trade_gap": { "min": 0, "max": 200, "unit": "股", "hit_boundary": false },
     "min_option_quality": { "min": 0.5, "max": 0.8, "unit": "[0,1]", "hit_boundary": false },
@@ -364,8 +403,8 @@
 
 S5 在不改动 `single_run` 字段的前提下启用顶层 `train`、`generations`、`candidates` 与 `trajectory`。逐代收益字段保持原始净收益率口径；ES 选择使用版本化奖励 score，原子净收益、回撤、尾损和成交成本权重保存在 `audit.reward`，样本外原始收益分布保存在 `candidates.stats`。`identity.windows` 使用连续、无重叠的时间顺序窗口，`train.seeds` 顺序为训练、验证和至少 5 个测试 seed，训练 seed 不得与测试 seed 相同。
 
-搜索审计只允许七个战术键（DTE 两键由一个“最短值 + 非负跨度”约束维表达），战略键不得出现在 `candidates.params`。`audit.search_space` 同时保留范围、中文单位和撞边界标记；没有候选在全部封存 seed 稳定超过基线时，`candidates` 为空，表示“无可推荐参数”，不得回写线上配置。
+搜索审计只允许八个战术键（含 `min_option_profit`；DTE 两键由一个“最短值 + 非负跨度”约束维表达），战略键不得出现在 `candidates.params`。`audit.search_space` 同时保留范围、中文单位和撞边界标记；没有候选在全部封存 seed 稳定超过基线时，`candidates` 为空，表示“无可推荐参数”，不得回写线上配置。
 
-- `schema_version` 变更 = 破坏性契约变更,走评审 + 双版本兼容期(读旧写新)。
+- `schema_version` 1.2 在 1.1 基础上新增本金、期末权益、年化、仓位占比、结构化类型费率和交易损耗字段；新增字段必现，旧消费者应忽略未知键。后续 schema 变更仍需走评审 + 双版本兼容期(读旧写新)。
 - 所有报告产物带 `report_id`;`-push`/`-cache` 为显式动作,重复执行同 ID 幂等。
 - `-push` 仅在 Discord 成功响应后落 sent 标记；失败保留 JSON/HTML 且同 ID 可重试。Discord 请求同时携带由 `report_id` 派生的固定 enforced nonce，缩小“服务端已收、客户端未收响应”窗口的重复风险。

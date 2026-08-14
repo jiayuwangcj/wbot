@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	SchemaVersion           = "1.1"
+	SchemaVersion           = "1.2"
 	ParamsDictionaryVersion = "params-1.0"
 	orderAssumption         = "卖出期权,按 Bid 价尝试成交,有效时长=bar 内"
 )
@@ -59,6 +59,16 @@ type MoneyResult struct {
 	ReturnStatus                string        `json:"return_status"`
 	NetReturnPct                *float64      `json:"net_return_pct"`
 	NetReturnAmount             *float64      `json:"net_return_amount"`
+	FinalEquityAmount           *float64      `json:"final_equity_amount"`
+	AnnualizedReturnPct         *float64      `json:"annualized_return_pct"`
+	GrossReturnPct              *float64      `json:"gross_return_pct"`
+	GrossReturnAmount           *float64      `json:"gross_return_amount"`
+	StockMarketValuePct         *float64      `json:"stock_market_value_pct"`
+	OptionMarketValuePct        *float64      `json:"option_market_value_pct"`
+	HoldingsMarketValuePct      *float64      `json:"holdings_market_value_pct"`
+	FinalEquityPct              *float64      `json:"final_equity_pct"`
+	MaxStockMarketValuePct      *float64      `json:"max_stock_market_value_pct"`
+	MaxPositionPct              *float64      `json:"max_position_pct"`
 	WindowMarkToMarketReturnPct *float64      `json:"window_mark_to_market_return_pct"`
 	WindowMarkToMarketAmount    *float64      `json:"window_mark_to_market_amount"`
 	BaselineReturnPct           float64       `json:"baseline_return_pct"`
@@ -72,6 +82,9 @@ type MoneyResult struct {
 	UnfilledRatio               *float64      `json:"unfilled_ratio"`
 	UnfilledModel               UnfilledModel `json:"unfilled_model"`
 	CostModel                   CostModel     `json:"cost_model"`
+	CostDrag                    CostDrag      `json:"cost_drag"`
+	CostDragPct                 float64       `json:"cost_drag_pct"`
+	CostDragReturnPct           float64       `json:"cost_drag_return_pct"`
 	ManualNotExecutedCount      int64         `json:"manual_not_executed_count"`
 	HardViolations              int64         `json:"hard_violations"`
 	StockAssignmentRate         *float64      `json:"stock_assignment_rate"`
@@ -91,16 +104,59 @@ type UnfilledComponents struct {
 }
 
 type CostModel struct {
-	FeesIncluded       bool    `json:"fees_included"`
-	FeePerTrade        float64 `json:"fee_per_trade"`
-	TotalFeesAmount    float64 `json:"total_fees_amount"`
-	StockFeesAmount    float64 `json:"stock_fees_amount"`
-	OptionFeesAmount   float64 `json:"option_fees_amount"`
-	ChargedTradeCount  int64   `json:"charged_trade_count"`
-	SlippageIncluded   bool    `json:"slippage_included"`
-	TaxesIncluded      bool    `json:"taxes_included"`
-	AssignmentIncluded bool    `json:"assignment_included"`
-	Description        string  `json:"description"`
+	FeesIncluded               bool                `json:"fees_included"`
+	Legacy                     bool                `json:"legacy"`
+	FeePerTrade                float64             `json:"fee_per_trade"`
+	OptionFeePerContract       float64             `json:"option_fee_per_contract"`
+	StockFeePerLot             float64             `json:"stock_fee_per_lot"`
+	LotSize                    int                 `json:"lot_size"`
+	TotalFeesAmount            float64             `json:"total_fees_amount"`
+	StockFeesAmount            float64             `json:"stock_fees_amount"`
+	OptionFeesAmount           float64             `json:"option_fees_amount"`
+	ExerciseDeliveryFeesAmount float64             `json:"exercise_delivery_fees_amount"`
+	OptionContracts            float64             `json:"option_contracts"`
+	StockLots                  float64             `json:"stock_lots"`
+	ExerciseDeliveryLots       float64             `json:"exercise_delivery_lots"`
+	OptionTradeCount           int64               `json:"option_trade_count"`
+	StockTradeCount            int64               `json:"stock_trade_count"`
+	ExerciseDeliveryTradeCount int64               `json:"exercise_delivery_trade_count"`
+	ChargedTradeCount          int64               `json:"charged_trade_count"`
+	Option                     OptionCostBreakdown `json:"option"`
+	Stock                      StockCostBreakdown  `json:"stock"`
+	ExerciseDelivery           StockCostBreakdown  `json:"exercise_delivery"`
+	SlippageIncluded           bool                `json:"slippage_included"`
+	TaxesIncluded              bool                `json:"taxes_included"`
+	AssignmentIncluded         bool                `json:"assignment_included"`
+	Description                string              `json:"description"`
+}
+
+// OptionCostBreakdown is the structured per-contract option fee ledger.
+type OptionCostBreakdown struct {
+	FeePerContract float64 `json:"fee_per_contract"`
+	Contracts      float64 `json:"contracts"`
+	Amount         float64 `json:"amount"`
+	TradeCount     int64   `json:"trade_count"`
+}
+
+// StockCostBreakdown is the structured per-lot stock fee ledger. Exercise and
+// assignment delivery use the same shape and rate as active stock trades.
+type StockCostBreakdown struct {
+	FeePerLot  float64 `json:"fee_per_lot"`
+	LotSize    int     `json:"lot_size"`
+	Lots       float64 `json:"lots"`
+	Amount     float64 `json:"amount"`
+	TradeCount int64   `json:"trade_count"`
+}
+
+// CostDrag keeps transaction loss auditable next to the net and gross return.
+// ReturnPct is the rate loss against initial_cash; gross return is nil when
+// the report cannot establish a complete terminal valuation.
+type CostDrag struct {
+	TotalFeesAmount   float64  `json:"total_fees_amount"`
+	CostDragPct       float64  `json:"cost_drag_pct"`
+	CostDragReturnPct float64  `json:"cost_drag_return_pct"`
+	GrossReturnPct    *float64 `json:"gross_return_pct"`
+	GrossReturnAmount *float64 `json:"gross_return_amount"`
 }
 
 type Audit struct {
@@ -140,6 +196,7 @@ type Report struct {
 	SchemaVersion string                      `json:"schema_version"`
 	ReportID      string                      `json:"report_id"`
 	ReportKind    string                      `json:"report_kind"`
+	InitialCash   float64                     `json:"initial_cash"`
 	Identity      Identity                    `json:"identity"`
 	Train         *Train                      `json:"train,omitempty"`
 	Result        MoneyResult                 `json:"result"`
@@ -298,10 +355,15 @@ func Build(in Input) (*Report, error) {
 		RunSeed       int64          `json:"run_seed"`
 		InitialCash   float64        `json:"initial_cash"`
 		Fee           float64        `json:"fee"`
+		FeeLegacy     bool           `json:"fee_legacy"`
+		FeeOption     float64        `json:"fee_option_per_contract"`
+		FeeStock      float64        `json:"fee_stock_per_lot"`
+		LotSize       int            `json:"lot_size"`
 		Start         string         `json:"start"`
 		End           string         `json:"end"`
 		SourceHash    string         `json:"source_hash,omitempty"`
 	}{in.Symbol, in.Strategy, in.Params, in.ConfigVersion, effectiveSeed(in.RunSeed), in.InitialCash, in.FeePerTrade,
+		in.Result.Fees.Legacy, in.Result.Fees.OptionPerContract, in.Result.Fees.StockPerLot, in.Result.Fees.LotSize,
 		rfc3339(in.Start), rfc3339(in.End), in.SourceHash}
 	snapshotJSON, err := json.Marshal(snapshot)
 	if err != nil {
@@ -325,10 +387,39 @@ func Build(in Input) (*Report, error) {
 		excess := *windowReturnPct - in.BaselineReturnPct
 		excessReturnPct = &excess
 	}
+	finalEquityAmount := terminal.FinalEquityAmount
+	finalEquityPct := ratioPtr(finalEquityAmount, in.InitialCash)
+	stockMarketValuePct := ratioValuePtr(terminal.StockMarketValueAmount, in.InitialCash)
+	optionMarketValuePct := ratioPtr(terminal.OptionMarketValueAmount, in.InitialCash)
+	holdingsMarketValuePct := ratioPtr(terminal.HoldingsMarketValueAmount, in.InitialCash)
+	maxStockMarketValue := in.Result.MaxStockMarketValueAmount
+	if maxStockMarketValue == 0 {
+		maxStockMarketValue = math.Abs(terminal.StockMarketValueAmount)
+	}
+	maxPositionAmount := maxStockMarketValue
+	if maxInventory, ok := nonNegativeNumber(in.Params["max_inventory"]); ok && finite(terminal.UnderlyingPrice) && terminal.UnderlyingPrice != 0 {
+		// Keep the actual observed maximum separately, while max_position_pct
+		// follows the product contract: configured maximum inventory at the
+		// terminal market price, all divided by initial_cash.
+		maxPositionAmount = maxInventory * math.Abs(terminal.UnderlyingPrice)
+	}
+	maxStockMarketValuePct := ratioValuePtr(maxStockMarketValue, in.InitialCash)
+	maxPositionPct := ratioValuePtr(maxPositionAmount, in.InitialCash)
+	costDragPct := in.Result.Fees.TotalAmount / in.InitialCash
+	costDragReturnPct := costDragPct
+	var grossReturnAmount, grossReturnPct *float64
+	if netReturnAmount != nil && netReturnPct != nil {
+		grossAmount := *netReturnAmount + in.Result.Fees.TotalAmount
+		grossPct := *netReturnPct + costDragReturnPct
+		grossReturnAmount, grossReturnPct = &grossAmount, &grossPct
+	}
+	annualizedReturnPct := annualizedReturn(in.Start, in.End, netReturnPct)
+	costDrag := CostDrag{TotalFeesAmount: in.Result.Fees.TotalAmount, CostDragPct: costDragPct, CostDragReturnPct: costDragReturnPct, GrossReturnPct: grossReturnPct, GrossReturnAmount: grossReturnAmount}
 	r := &Report{
 		SchemaVersion: SchemaVersion,
 		ReportID:      fmt.Sprintf("bt-%s-%d-%s", in.Symbol, effectiveSeed(in.RunSeed), hash[:8]),
 		ReportKind:    "single_run",
+		InitialCash:   in.InitialCash,
 		Identity: Identity{
 			Symbol: in.Symbol, Market: market, Currency: currency,
 			ConfigVersion: in.ConfigVersion, CodeVersion: in.CodeVersion,
@@ -338,6 +429,10 @@ func Build(in Input) (*Report, error) {
 		},
 		Result: MoneyResult{
 			ReturnStatus: returnStatus, NetReturnPct: netReturnPct, NetReturnAmount: netReturnAmount,
+			FinalEquityAmount: finalEquityAmount, AnnualizedReturnPct: annualizedReturnPct,
+			GrossReturnPct: grossReturnPct, GrossReturnAmount: grossReturnAmount,
+			StockMarketValuePct: stockMarketValuePct, OptionMarketValuePct: optionMarketValuePct, HoldingsMarketValuePct: holdingsMarketValuePct,
+			FinalEquityPct: finalEquityPct, MaxStockMarketValuePct: maxStockMarketValuePct, MaxPositionPct: maxPositionPct,
 			WindowMarkToMarketReturnPct: windowReturnPct, WindowMarkToMarketAmount: windowReturnAmount,
 			BaselineReturnPct: in.BaselineReturnPct, BaselineName: "buy-hold",
 			ExcessReturnPct: excessReturnPct,
@@ -350,11 +445,21 @@ func Build(in Input) (*Report, error) {
 				Components:      UnfilledComponents{SpreadWeight: backtest.UnfilledSpreadWeight, VolumeWeight: backtest.UnfilledVolumeWeight, OIWeight: backtest.UnfilledOIWeight},
 			},
 			CostModel: CostModel{
-				FeesIncluded: in.Result.Fees.Included, FeePerTrade: in.Result.Fees.PerTrade,
+				FeesIncluded: in.Result.Fees.Included, Legacy: in.Result.Fees.Legacy, FeePerTrade: in.Result.Fees.PerTrade,
+				OptionFeePerContract: in.Result.Fees.OptionPerContract, StockFeePerLot: in.Result.Fees.StockPerLot, LotSize: in.Result.Fees.LotSize,
 				TotalFeesAmount: in.Result.Fees.TotalAmount, StockFeesAmount: in.Result.Fees.StockAmount,
-				OptionFeesAmount: in.Result.Fees.OptionAmount, ChargedTradeCount: in.Result.Fees.ChargedTradeCount,
-				Description: feeDescription(in.Result.Fees.Included),
+				OptionFeesAmount: in.Result.Fees.OptionAmount, ExerciseDeliveryFeesAmount: in.Result.Fees.ExerciseDeliveryAmount,
+				OptionContracts: in.Result.Fees.OptionContracts, StockLots: in.Result.Fees.StockLots,
+				ExerciseDeliveryLots: in.Result.Fees.ExerciseDeliveryLots,
+				OptionTradeCount:     in.Result.Fees.OptionTradeCount, StockTradeCount: in.Result.Fees.StockTradeCount,
+				ExerciseDeliveryTradeCount: in.Result.Fees.ExerciseDeliveryTradeCount, ChargedTradeCount: in.Result.Fees.ChargedTradeCount,
+				Option:             OptionCostBreakdown{FeePerContract: in.Result.Fees.OptionPerContract, Contracts: in.Result.Fees.OptionContracts, Amount: in.Result.Fees.OptionAmount, TradeCount: in.Result.Fees.OptionTradeCount},
+				Stock:              StockCostBreakdown{FeePerLot: in.Result.Fees.StockPerLot, LotSize: in.Result.Fees.LotSize, Lots: in.Result.Fees.StockLots, Amount: in.Result.Fees.StockAmount - in.Result.Fees.ExerciseDeliveryAmount, TradeCount: in.Result.Fees.StockTradeCount},
+				ExerciseDelivery:   StockCostBreakdown{FeePerLot: in.Result.Fees.StockPerLot, LotSize: in.Result.Fees.LotSize, Lots: in.Result.Fees.ExerciseDeliveryLots, Amount: in.Result.Fees.ExerciseDeliveryAmount, TradeCount: in.Result.Fees.ExerciseDeliveryTradeCount},
+				AssignmentIncluded: !in.Result.Fees.Legacy,
+				Description:        feeDescription(in.Result.Fees.Included, in.Result.Fees.Legacy),
 			},
+			CostDrag: costDrag, CostDragPct: costDragPct, CostDragReturnPct: costDragReturnPct,
 		},
 		Terminal:    terminal,
 		DataQuality: quality,
@@ -497,12 +602,70 @@ func sortedSet(set map[string]struct{}) []string {
 	return out
 }
 
-func feeDescription(included bool) string {
+func feeDescription(included, legacy bool) string {
 	if included {
-		return "固定费用已从每笔成交扣除;未成交/HOLD/到期事件不收费;滑点/税费/指派费用模型未接入"
+		if legacy {
+			return "兼容固定费用已从每笔主动成交扣除;未成交/HOLD/机械到期事件不收费;滑点/税费/行权交割费未接入"
+		}
+		return "期权按张、正股及行权交割按手扣费;未成交/HOLD/OTM到期事件不收费;滑点/税费未接入"
 	}
-	return "费用未计入;滑点/税费/指派费用模型未接入"
+	return "费用未计入;滑点/税费/行权交割费用模型未接入"
 }
+
+func ratioPtr(value *float64, denominator float64) *float64 {
+	if value == nil {
+		return nil
+	}
+	return ratioValuePtr(*value, denominator)
+}
+
+func ratioValuePtr(value, denominator float64) *float64 {
+	if denominator <= 0 {
+		return nil
+	}
+	ratio := value / denominator
+	return &ratio
+}
+
+func nonNegativeNumber(value any) (float64, bool) {
+	var number float64
+	switch typed := value.(type) {
+	case float64:
+		number = typed
+	case float32:
+		number = float64(typed)
+	case int:
+		number = float64(typed)
+	case int64:
+		number = float64(typed)
+	case json.Number:
+		parsed, err := typed.Float64()
+		if err != nil {
+			return 0, false
+		}
+		number = parsed
+	default:
+		return 0, false
+	}
+	return number, finite(number) && number >= 0
+}
+
+func annualizedReturn(start, end time.Time, returnPct *float64) *float64 {
+	if returnPct == nil || !end.After(start) || !finite(*returnPct) || 1+*returnPct <= 0 {
+		return nil
+	}
+	days := end.Sub(start).Hours() / 24
+	if days <= 0 {
+		return nil
+	}
+	annualized := math.Pow(1+*returnPct, 365/days) - 1
+	if !finite(annualized) {
+		return nil
+	}
+	return &annualized
+}
+
+func finite(value float64) bool { return !math.IsNaN(value) && !math.IsInf(value, 0) }
 
 func JSON(r *Report) ([]byte, error) {
 	b, err := json.MarshalIndent(r, "", "  ")

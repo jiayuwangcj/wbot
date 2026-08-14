@@ -62,7 +62,8 @@ func TestContractSchemaRequiredAndDefaults(t *testing.T) {
 	}
 	defaults := map[string]any{
 		"move_interval_pct": 0.0, "min_premium_per_share": 0.0,
-		"stock_switch_pct": 0.0, "trade_gap": 50.0,
+		"min_option_profit": 200.0,
+		"stock_switch_pct":  0.0, "trade_gap": 50.0,
 		"min_dte": 5.0, "max_dte": 10.0, "min_option_quality": 0.6,
 		"max_quote_age_seconds": 86400.0, "strategic_state": wheel.StateNormal,
 	}
@@ -89,9 +90,21 @@ func TestParseConfigRequiresStrategicInputs(t *testing.T) {
 		t.Fatalf("ParseConfig(defaults) error: %v", err)
 	}
 	if cfg.MoveIntervalPct != 0 || cfg.MinPremiumPerShare != 0 || cfg.StockSwitchPct != 0 || cfg.TradeGap != 50 ||
-		cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 || cfg.MaxQuoteAgeSeconds != 86400 ||
+		cfg.MinOptionProfit != 200 || cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 || cfg.MaxQuoteAgeSeconds != 86400 ||
 		cfg.StrategicState != wheel.StateNormal {
 		t.Fatalf("defaults = %+v", cfg)
+	}
+}
+
+func TestParseConfigMinOptionProfitCanBeOverridden(t *testing.T) {
+	params := validParams()
+	params["min_option_profit"] = 75.0
+	cfg, err := ParseConfig(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.MinOptionProfit != 75 {
+		t.Fatalf("MinOptionProfit = %v; want explicit 75", cfg.MinOptionProfit)
 	}
 }
 

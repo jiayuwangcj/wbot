@@ -450,7 +450,10 @@ func runBacktest(prog string, argv []string) int {
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
-	fee := fs.Float64("fee", 0, "fixed fee deducted from every filled stock/option trade")
+	fee := fs.Float64("fee", 0, "legacy fixed fee deducted from every filled stock/option trade")
+	feeOption := fs.Float64("fee-option-per-contract", backtest.DefaultOptionFeePerContract, "option fee per contract (type-specific fee model)")
+	feeStock := fs.Float64("fee-stock-per-lot", backtest.DefaultStockFeePerLot, "stock fee per lot (type-specific fee model)")
+	lotSize := fs.Int("lot-size", backtest.DefaultLotSize, "stock shares per lot (type-specific fee model)")
 	seed := fs.Int64("seed", 42, "seed for the unfilled-attempt draw (same seed, same trace; 0 = default 42)")
 	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
 	var params repeatedStringFlag
@@ -466,7 +469,7 @@ func runBacktest(prog string, argv []string) int {
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
 	format := fs.String("format", "csv", "export format with -export: csv or json (same output as GET /v1/backtests/{id}/export)")
-	report := fs.Bool("report", false, "write a deterministic schema 1.1 JSON report and HTML projection")
+	report := fs.Bool("report", false, "write a deterministic schema 1.2 JSON report and HTML projection")
 	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
 	push := fs.Bool("push", false, "push the generated report to the configured Discord channel exactly once per report ID (requires -report)")
 	cache := fs.Bool("cache", false, "upsert report evidence into strategy_cache (requires -dsn -strategy wheel -from-watchlist -report)")
@@ -476,7 +479,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file (-file) or directly from the\n")
 		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
 		fmt.Fprintf(os.Stderr, "The wheel strategy reads quote snapshots and contract metadata, so it requires -dsn input.\n")
-		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
+		fmt.Fprintf(os.Stderr, "Type-specific fees default to %.0f per option contract and %.0f per stock lot (lot size %d). Legacy -fee remains a fixed per-trade compatibility mode; when both are supplied, type-specific flags win.\n", backtest.DefaultOptionFeePerContract, backtest.DefaultStockFeePerLot, backtest.DefaultLotSize)
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
 		fmt.Fprintf(os.Stderr, "With -train JSON, runs deterministic ES over tactical Wheel parameters only; strategic parameters remain fixed from -params.\n")
@@ -518,6 +521,22 @@ func runBacktest(prog string, argv []string) int {
 	if *maxDrawdown < 0 || *maxDrawdown > 1 {
 		fmt.Fprintf(os.Stderr, "backtest: -max-drawdown must be in [0, 1]\n")
 		return 2
+	}
+	typeSpecificFees := flagWasSet(fs, "fee-option-per-contract") || flagWasSet(fs, "fee-stock-per-lot") || flagWasSet(fs, "lot-size")
+	legacyFee := flagWasSet(fs, "fee")
+	var feeModel *backtest.FeeModel
+	if typeSpecificFees {
+		if *lotSize <= 0 {
+			fmt.Fprintf(os.Stderr, "backtest: -lot-size must be > 0\n")
+			return 2
+		}
+		model := backtest.HKFeeModel(*feeOption, *feeStock, *lotSize)
+		feeModel = &model
+	} else if legacyFee || !typeSpecificFees {
+		// Keep nil so the shared executor selects the historical fixed-fee path.
+		// This includes an explicitly supplied -fee 0 and the historical no-flag
+		// default. Type-specific flags opt into the real HK schedule above.
+		feeModel = nil
 	}
 
 	fp := strings.TrimSpace(*file)
@@ -684,6 +703,7 @@ func runBacktest(prog string, argv []string) int {
 		Limit:         *limit,
 		Cash:          *cash,
 		Fee:           *fee,
+		FeeModel:      feeModel,
 		Seed:          *seed,
 	}
 	if strings.TrimSpace(*train) != "" {
@@ -717,7 +737,7 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
-		res, err = backtest.RunOptions(context.Background(), bars, *cash, *fee, s, &backtest.OptionsData{RunSeed: *seed})
+		res, err = backtestexec.RunBars(context.Background(), bars, btOpts, s, &backtest.OptionsData{RunSeed: *seed})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
@@ -1907,6 +1927,16 @@ func parseRangeTime(flagName, s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("%s: invalid RFC3339 time %q", flagName, s)
 	}
 	return t, nil
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 func ingestRepeatCtx(every time.Duration) (context.Context, context.CancelFunc) {

@@ -87,6 +87,8 @@ export function toRerunWheelParams(value: unknown): Partial<WheelParams> | null 
   if (moveInterval !== null) result.move_interval_pct = moveInterval;
   const minPremium = asNumber(source.min_premium_per_share);
   if (minPremium !== null) result.min_premium_per_share = minPremium;
+  const minOptionProfit = asNumber(source.min_option_profit);
+  if (minOptionProfit !== null) result.min_option_profit = minOptionProfit;
   const stockSwitch = asNumber(source.stock_switch_pct);
   if (stockSwitch !== null) result.stock_switch_pct = stockSwitch;
   const tradeGap = firstOf([asNumber(source.trade_gap), asNumber(source.no_trade_gap)]);

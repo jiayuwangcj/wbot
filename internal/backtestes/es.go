@@ -22,7 +22,7 @@ const (
 	RewardVersion    = "reward-1.0"
 )
 
-var tacticalOrder = []string{"move_interval_pct", "min_premium_per_share", "stock_switch_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
+var tacticalOrder = []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
 
 type Bound struct {
 	Min      float64 `json:"min"`
@@ -47,7 +47,7 @@ func ParseSpace(data string, base map[string]any) (Space, error) {
 		return Space{}, errors.New("train search space: at least one tactical range is required")
 	}
 	allowed := map[string]Bound{
-		"move_interval_pct": {Unit: "%"}, "min_premium_per_share": {Unit: "币种/股"},
+		"move_interval_pct": {Unit: "%"}, "min_premium_per_share": {Unit: "币种/股"}, "min_option_profit": {Unit: "币种/笔"},
 		"stock_switch_pct": {Unit: "%"}, "trade_gap": {Unit: "股", Discrete: true},
 		"min_option_quality": {Unit: "[0,1]"}, "min_dte": {Unit: "自然日", Discrete: true},
 		"max_dte": {Unit: "自然日", Discrete: true},

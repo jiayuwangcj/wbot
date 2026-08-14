@@ -233,6 +233,9 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		if name == "min_premium_per_share" {
 			unit = reportCurrency(opts.Symbol) + "/股"
 		}
+		if name == "min_option_profit" {
+			unit = reportCurrency(opts.Symbol) + "/笔"
+		}
 		searchAudit[name] = backtestreport.SearchBound{Min: b.Min, Max: b.Max, Unit: unit, HitBoundary: selectedHits[name]}
 	}
 	allSeeds := append([]int64{search.TrainSeed, search.ValidSeed}, testSeeds...)
@@ -375,7 +378,7 @@ func medianOutcomeIndex(ms []backtestes.Metrics) int {
 	return best
 }
 func tacticalParams(all map[string]any) map[string]any {
-	keys := []string{"move_interval_pct", "min_premium_per_share", "stock_switch_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
+	keys := []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
 	out := map[string]any{}
 	for _, k := range keys {
 		if v, ok := all[k]; ok {

@@ -133,7 +133,7 @@ func runBacktestBatch(dsn, file, symbol, strategyName string, groups []map[strin
 				if err != nil {
 					return fixedBacktestResult{}, err
 				}
-				res, err := backtest.RunOptions(taskCtx, parsed, baseOpts.Cash, baseOpts.Fee, s, &backtest.OptionsData{RunSeed: baseOpts.Seed})
+				res, err := backtestexec.RunBars(taskCtx, parsed, baseOpts, s, &backtest.OptionsData{RunSeed: baseOpts.Seed})
 				if err != nil {
 					return fixedBacktestResult{}, err
 				}

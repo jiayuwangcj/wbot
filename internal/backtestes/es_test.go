@@ -12,7 +12,7 @@ import (
 
 func baseParams() map[string]any {
 	return map[string]any{"full_position_price": 48.0, "zero_position_price": 55.0, "max_inventory": 22000.0,
-		"move_interval_pct": .01, "min_premium_per_share": .2, "stock_switch_pct": .05,
+		"move_interval_pct": .01, "min_premium_per_share": .2, "min_option_profit": 200.0, "stock_switch_pct": .05,
 		"trade_gap": 50.0, "min_option_quality": .6, "min_dte": 5.0, "max_dte": 10.0}
 }
 
@@ -30,6 +30,20 @@ func TestParseSpaceOnlyTacticalAndConstrainedDTE(t *testing.T) {
 	}
 	if p["trade_gap"].(float64) != 102 || p["max_dte"].(int) < p["min_dte"].(int) {
 		t.Fatalf("decoded params = %#v", p)
+	}
+}
+
+func TestParseSpaceIncludesMinimumOptionProfit(t *testing.T) {
+	s, err := ParseSpace(`{"min_option_profit":[100,300]}`, baseParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Bounds["min_option_profit"]; got.Unit != "币种/笔" || got.Min != 100 || got.Max != 300 {
+		t.Fatalf("min_option_profit bound = %+v", got)
+	}
+	decoded := s.decode(orderedNames(s.Bounds), []float64{0.5})
+	if decoded["min_option_profit"] != 200.0 {
+		t.Fatalf("decoded min_option_profit = %#v; want 200", decoded["min_option_profit"])
 	}
 }
 

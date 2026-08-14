@@ -107,6 +107,21 @@ func TestSaveParams(t *testing.T) {
 	}
 }
 
+func TestSaveParamsIncludesTypedFeeModel(t *testing.T) {
+	model := backtest.HKFeeModel(21, 70, 100)
+	got := SaveParams(Options{Cash: 1_000_000, Fee: 3, FeeModel: &model})
+	for key, want := range map[string]any{
+		"fee":                     3.0,
+		"fee_option_per_contract": 21.0,
+		"fee_stock_per_lot":       70.0,
+		"lot_size":                100,
+	} {
+		if got[key] != want {
+			t.Fatalf("SaveParams[%q] = %#v; want %#v (all=%v)", key, got[key], want, got)
+		}
+	}
+}
+
 func TestSaveParamsIncludesOnlyRealConfigVersion(t *testing.T) {
 	version := 2
 	got := SaveParams(Options{Cash: 10000, ConfigVersion: &version})

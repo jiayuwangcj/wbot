@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | 单测 + 静态 | `scripts/verify.sh`（= CI `test` job） | 全部 Go 包单测、gofmt、契约测试 + 零依赖 accept（paper/agent-federation） | 每次提交前；CI 自动 |
 | 本地全链冒烟 | `scripts/dev-up.sh`（25 项） | `wbot serve` 全部 DB 本地 HTTP 端点（health/datacheck/runs/bars/account/snapshots/admin·status/config/watchlist/wheel·audit 等）+ CLI ingest file/url/status/bars 三维补漏 | 每次 dev 环境启动 |
-| 逐端点 e2e | `scripts/accept-*.sh`（20 个，235 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
+| 逐端点 e2e | `scripts/accept-*.sh`（20 个，238 项） | 各子系统 CLI/HTTP 真实契约（含真实网关/真实 PG） | 每个闭环提交前，连跑两遍；**零依赖对与 PG 依赖对已在 CI 自动跑**（#52/#53/#56/#57） |
 
 **原则**：dev-up 只冒烟不逐端点验收；accept 脚本只覆盖不冒烟的部分（如 futu 系依赖网关，刻意不入 dev-up，由 accept 覆盖）。CLI 面按「verify.sh 有无冒烟 + dev-up 有无覆盖 + accept 有无脚本」三维对账（#47/#49/#50 经验）。
 
@@ -25,7 +25,7 @@
 | `accept-account-snapshot.sh` | `wbot ingest account` 快照落库（sim/real 双 env + `-every` 循环优雅退出） | 15 | 网关 OpenD + PG。`scripts/accept-account-snapshot.sh [bin] [dsn] [proto-addr]` |
 | `accept-account-snapshots-api.sh` | GET /v1/account/snapshots（契约/400/real 通道/快照增长） | 7 | serve + PG + 网关。`scripts/accept-account-snapshots-api.sh [base-url] [bin] [dsn] [proto-addr]` |
 | `accept-backtest.sh` | backtest 双面（CLI -dsn/-save/-export + GET detail/export；四条字节一致等价 + from_watchlist） | 21 | serve + PG + 种子 bars。`scripts/accept-backtest.sh [base-url] [bin] [dsn] [symbol]` | ✅ db-integration |
-| `accept-backtest-report.sh` | 单次回测 schema 1.1 JSON、终局/数据质量卡、确定性 HTML、汇总/未成交口径与同 ID 覆盖 | 11 | 无 PG 无网关。`scripts/accept-backtest-report.sh [bin]` | ✅ test job |
+| `accept-backtest-report.sh` | 单次回测 schema 1.2 JSON、本金/终局/年化/损耗/数据质量卡、类型费率 CLI/旧 `-fee` 兼容、确定性 HTML、汇总/未成交口径与同 ID 覆盖 | 14 | 无 PG 无网关。`scripts/accept-backtest-report.sh [bin]` | ✅ test job |
 | `accept-backtest-push.sh` | Discord embed 7 核心字段/完整风险、故障保留报告、同 ID 重试、enforced nonce 与成功后本地幂等 | 13 | 本地假 Discord Bot API，无 PG/外网/真实凭证。`scripts/accept-backtest-push.sh [bin]` | ✅ test job |
 | `accept-backtest-train.sh` | ES 战术范围/种群轨迹、时序窗口、预算/早停与零数据错误契约 | 8 | 无 PG 无网关。`scripts/accept-backtest-train.sh [bin]` | ✅ test job |
 | `accept-cache-llm.sh` | strategy_cache payload/批准闸门与 LLM 摘要注入/过期跳过 | 5 | Go 单测驱动，无 PG/网关。`scripts/accept-cache-llm.sh` | ✅ test job |
@@ -44,7 +44,7 @@
 | serve | — | dev-up 25 + 各 accept | DB 本地端点 dev-up 冒烟；futu 系 accept-futu-data |
 | ingest | accept-bars-refill / accept-tencent-datafill / accept-hkex-datafill / accept-options-ingest / accept-account-snapshot | bars/futu-option/account 含 HTTP；Tencent/HKEX 为专用 CLI | 含 `-every` 循环、Tencent 一次性回填与 HKEX 双表幂等研究投影 |
 | futu | accept-futu-cli 21 | accept-futu-data 15 | order 只测 -dry-run 与校验/红线拒绝路径，**绝不下真单**（写操作 + 账户状态变更，刻意无自动脚本） |
-| backtest | accept-backtest 21 + report 11 + push 13 + train 8 | 同上（GET detail/export） | 四条字节一致等价 + from_watchlist + 版本化报告/Discord 幂等推送/ES 实测 |
+| backtest | accept-backtest 21 + report 14 + push 13 + train 8 | 同上（GET detail/export） | 四条字节一致等价 + from_watchlist + 版本化报告/Discord 幂等推送/ES 实测 |
 | 策略缓存 / LLM | accept-cache-llm 5 | — | 缓存证据批准闸门、合格摘要注入与过期跳过 |
 | paper | accept-paper 12 | — | 纯本地无网络 |
 | watchlist | accept-watchlist 16 | dev-up（PUT/GET /v1/watchlist）+ 联动断言 | 独立 symbol 不留痕 |
@@ -55,4 +55,4 @@
 
 **对账纪律**（每轮 AUTO_ADVANCE 巡检）：① 端点清单 grep 二进制全部 HTTP 面（含独立子命令）对照 API.md；② CLI 子命令按 verify.sh/dev-up/accept 三维核对；③ 验收脚本断言 vs 真实数据分支找零覆盖分支（「验收覆盖扩展」引擎）；④ 总表计数由矩阵行求和派生——先逐脚本 `grep -c 'check "'` 实计、再矩阵求和、最后改总表，**不许手算增量**（#79 曾 126+9=135 误写，实为 126+(15-10)+(7-4)=134，#84 修正）。经验与盲区案例见各闭环归档（#40-#50）。
 
-本次对账实计：20 个 `accept-*.sh`，检查项为 `7+15+11+13+11+21+8+4+5+21+15+10+6+2+4+12+8+16+22+24=235`；其中各脚本检查数由 `grep -c 'check "'` 实计。
+本次对账实计：20 个 `accept-*.sh`，检查项为 `7+15+11+13+14+21+8+4+5+21+15+10+6+2+4+12+8+16+22+24=238`；其中各脚本检查数由 `grep -c 'check "'` 实计。

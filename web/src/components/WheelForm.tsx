@@ -9,6 +9,7 @@ export interface WheelFormValues {
   max_inventory: number | null;
   move_interval_pct: number | null;
   min_premium_per_share: number | null;
+  min_option_profit: number | null;
   stock_switch_pct: number | null;
   trade_gap: number | null;
   min_dte: number | null;
@@ -25,6 +26,7 @@ export const DEFAULT_WHEEL_VALUES: WheelFormValues = {
   max_inventory: null,
   move_interval_pct: 0,
   min_premium_per_share: 0,
+  min_option_profit: 200,
   stock_switch_pct: 0,
   trade_gap: 50,
   min_dte: 5,
@@ -48,6 +50,7 @@ export function validateWheelParams(values: WheelFormValues): WheelParams {
   const maxInventory = finiteNumber(values.max_inventory, "最大库存");
   const moveIntervalPct = finiteNumber(values.move_interval_pct, "再次出手价差");
   const minPremium = finiteNumber(values.min_premium_per_share, "最低每股权利金");
+  const minOptionProfit = finiteNumber(values.min_option_profit, "最低期权收益");
   const stockSwitchPct = finiteNumber(values.stock_switch_pct, "正股切换阈值");
   const tradeGap = finiteNumber(values.trade_gap, "免交易库存差");
   const minDte = finiteNumber(values.min_dte, "最小 DTE");
@@ -58,6 +61,7 @@ export function validateWheelParams(values: WheelFormValues): WheelParams {
   if (maxInventory <= 0 || !Number.isInteger(maxInventory)) throw new Error("最大库存必须是正整数");
   if (moveIntervalPct < 0) throw new Error("再次出手价差必须不小于 0");
   if (minPremium < 0) throw new Error("最低每股权利金必须不小于 0");
+  if (minOptionProfit < 0) throw new Error("最低期权收益必须不小于 0");
   if (stockSwitchPct < 0) throw new Error("正股切换阈值必须不小于 0");
   if (tradeGap < 0) throw new Error("免交易库存差必须不小于 0");
   if (minDte < 5 || maxDte > 10 || !Number.isInteger(minDte) || maxDte < minDte || !Number.isInteger(maxDte)) {
@@ -71,6 +75,7 @@ export function validateWheelParams(values: WheelFormValues): WheelParams {
     max_inventory: maxInventory,
     move_interval_pct: decimalPercent(moveIntervalPct),
     min_premium_per_share: minPremium,
+    min_option_profit: minOptionProfit,
     stock_switch_pct: decimalPercent(stockSwitchPct),
     trade_gap: tradeGap,
     min_dte: minDte,
@@ -87,6 +92,7 @@ function formValues(values?: Partial<WheelParams>): WheelFormValues {
     max_inventory: values?.max_inventory ?? DEFAULT_WHEEL_VALUES.max_inventory,
     move_interval_pct: values?.move_interval_pct === undefined ? DEFAULT_WHEEL_VALUES.move_interval_pct : values.move_interval_pct * 100,
     min_premium_per_share: values?.min_premium_per_share ?? DEFAULT_WHEEL_VALUES.min_premium_per_share,
+    min_option_profit: values?.min_option_profit ?? DEFAULT_WHEEL_VALUES.min_option_profit,
     stock_switch_pct: values?.stock_switch_pct === undefined ? DEFAULT_WHEEL_VALUES.stock_switch_pct : values.stock_switch_pct * 100,
     trade_gap: values?.trade_gap ?? DEFAULT_WHEEL_VALUES.trade_gap,
     min_dte: values?.min_dte ?? DEFAULT_WHEEL_VALUES.min_dte,
@@ -132,6 +138,7 @@ export function WheelForm({ initialValues, onSubmit, submitLabel = "保存", for
           <Col xs={24} sm={12} lg={8}><Form.Item label="最大库存" name="max_inventory"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="再次出手价差 (%)" name="move_interval_pct"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="最低每股权利金" name="min_premium_per_share"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={8}><Form.Item label="最低期权收益（HKD/笔）" name="min_option_profit"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="正股切换阈值 (%)" name="stock_switch_pct"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="免交易库存差" name="trade_gap"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="最小 DTE" name="min_dte"><InputNumber min={5} max={10} step={1} style={{ width: "100%" }} /></Form.Item></Col>

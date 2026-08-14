@@ -46,6 +46,10 @@ type Options struct {
 	Limit         int
 	Cash          float64
 	Fee           float64
+	// FeeModel selects the type-specific fee schedule. nil preserves the
+	// historical fixed Fee behavior, which is required for API and saved-run
+	// compatibility.
+	FeeModel *backtest.FeeModel
 	// Seed seeds the unfilled-attempt draws (0 = backtest default 42).
 	Seed int64
 }
@@ -55,6 +59,11 @@ type Options struct {
 // under strategy_params so a saved run can be reproduced and audited.
 func SaveParams(o Options) map[string]any {
 	out := map[string]any{"cash": o.Cash, "fee": o.Fee, "timeframe": o.Timeframe, "adjust": o.Adjust}
+	if o.FeeModel != nil {
+		out["fee_option_per_contract"] = o.FeeModel.OptionPerContract
+		out["fee_stock_per_lot"] = o.FeeModel.StockPerLot
+		out["lot_size"] = o.FeeModel.LotSize
+	}
 	if len(o.Params) > 0 {
 		params := o.Params
 		if o.Strategy == "wheel" {
@@ -179,7 +188,7 @@ func (p *Prepared) RunPrepared(ctx context.Context, o Options) (*Outcome, error)
 		copy.RunSeed = o.Seed
 		opts = &copy
 	}
-	res, err := backtest.RunOptions(ctx, p.bars, o.Cash, o.Fee, s, opts)
+	res, err := RunBars(ctx, p.bars, o, s, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +199,16 @@ func (p *Prepared) RunPrepared(ctx context.Context, o Options) (*Outcome, error)
 		BaselineReturnPct: p.bars[len(p.bars)-1].Close/p.bars[0].Close - 1,
 		SourceHash:        p.sourceHash,
 	}, nil
+}
+
+// RunBars executes already-loaded bars with the same fee selection used by
+// the DB-backed runner. File-backed CLI runs use this helper too, keeping the
+// fee path deterministic across CLI, batch, ES and API callers.
+func RunBars(ctx context.Context, bars []ingest.Bar, o Options, s backtest.Strategy, opts *backtest.OptionsData) (*backtest.Result, error) {
+	if o.FeeModel != nil {
+		return backtest.RunOptionsWithFeeModel(ctx, bars, o.Cash, *o.FeeModel, s, opts)
+	}
+	return backtest.RunOptions(ctx, bars, o.Cash, o.Fee, s, opts)
 }
 
 // Run preserves the public DB-backed execution contract for API and CLI
@@ -300,12 +319,19 @@ func RunMulti(ctx context.Context, db *sql.DB, o Options, symbols []string) (*Mu
 		}
 		series = append(series, backtest.SymbolBars{Symbol: sym, Bars: bars})
 	}
-	res, err := backtest.RunMulti(ctx, series, o.Cash, o.Fee, func() (backtest.Strategy, error) {
+	var runErr error
+	var res *backtest.MultiResult
+	factory := func() (backtest.Strategy, error) {
 		s, _, err := Build(o.Strategy, o.Params)
 		return s, err
-	})
-	if err != nil {
-		return nil, err
+	}
+	if o.FeeModel != nil {
+		res, runErr = backtest.RunMultiWithFeeModel(ctx, series, o.Cash, *o.FeeModel, factory)
+	} else {
+		res, runErr = backtest.RunMulti(ctx, series, o.Cash, o.Fee, factory)
+	}
+	if runErr != nil {
+		return nil, runErr
 	}
 	return &MultiOutcome{Result: res, StartTs: res.EquityCurve[0].Ts, EndTs: res.EquityCurve[len(res.EquityCurve)-1].Ts}, nil
 }

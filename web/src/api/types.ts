@@ -23,6 +23,7 @@ export interface WheelParams {
   max_inventory: number;
   move_interval_pct?: number;
   min_premium_per_share?: number;
+  min_option_profit?: number;
   stock_switch_pct?: number;
   trade_gap?: number;
   min_dte?: number;

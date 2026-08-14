@@ -48,6 +48,9 @@ const (
 	// their live contract_size and are never allowed to fall back (a missing
 	// lot on a quote is a data defect and DATA_BLOCKs the candidate).
 	DefaultLotSize = 100
+	// DefaultMinOptionProfit is the gross premium floor for one candidate
+	// option trade. It is a total premium amount, not a per-share threshold.
+	DefaultMinOptionProfit = 200.0
 )
 
 // DTE validation failures are hot-path, expected candidate rejections. Keep
@@ -114,6 +117,7 @@ type Config struct {
 	MaxInventory           float64         `json:"max_inventory" yaml:"max_inventory"`
 	MoveIntervalPct        float64         `json:"move_interval_pct" yaml:"move_interval_pct"`
 	MinPremiumPerShare     float64         `json:"min_premium_per_share" yaml:"min_premium_per_share"`
+	MinOptionProfit        float64         `json:"min_option_profit" yaml:"min_option_profit"`
 	StockSwitchPct         float64         `json:"stock_switch_pct" yaml:"stock_switch_pct"`
 	TradeGap               float64         `json:"trade_gap" yaml:"trade_gap"`
 	MinOptionQuality       float64         `json:"min_option_quality" yaml:"min_option_quality"`
@@ -160,6 +164,9 @@ func (c Config) Validate() error {
 	}
 	if !finite(c.MinPremiumPerShare) || c.MinPremiumPerShare < 0 {
 		return fmt.Errorf("wheel: min_premium_per_share must be non-negative")
+	}
+	if !finite(c.MinOptionProfit) || c.MinOptionProfit < 0 {
+		return fmt.Errorf("wheel: min_option_profit must be non-negative")
 	}
 	if !finite(c.StockSwitchPct) || c.StockSwitchPct < 0 {
 		return fmt.Errorf("wheel: stock_switch_pct must be non-negative")
@@ -607,6 +614,7 @@ type CandidateEvaluation struct {
 	Quantity            int         `json:"quantity"`
 	SignedContracts     int         `json:"signed_contracts"`
 	Quality             float64     `json:"quality"`
+	ExpectedGain        float64     `json:"expected_gain,omitempty"`
 	PostTradeEffective  float64     `json:"post_trade_effective_inventory"`
 	AssignmentInventory float64     `json:"assignment_inventory"`
 	Accepted            bool        `json:"accepted"`
@@ -739,7 +747,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 		// daily cap means later valid evaluations are not suppressed; it does not
 		// turn one reminder into an unbounded multi-contract order.
 		qty := 1
-		candidate := CandidateEvaluation{Quote: q, Direction: direction, Quantity: qty, SignedContracts: -qty, Quality: QualityScore(q)}
+		candidate := CandidateEvaluation{Quote: q, Direction: direction, Quantity: qty, SignedContracts: -qty, Quality: QualityScore(q), ExpectedGain: expectedGain(q, qty)}
 		if hasPendingContract(in.Pending, q.Symbol, string(direction)) {
 			// Pending matches imply direction agreement, so the quote still
 			// counts as direction-valid: all-candidates-pending must read as
@@ -773,6 +781,9 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			}
 			if len(candidate.Reasons) == 0 && q.Bid < cfg.MinPremiumPerShare {
 				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: premium per share %.4f below minimum %.4f", q.Bid, cfg.MinPremiumPerShare))
+			}
+			if len(candidate.Reasons) == 0 && candidate.ExpectedGain < cfg.MinOptionProfit {
+				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: expected option profit %.2f below minimum %.2f", candidate.ExpectedGain, cfg.MinOptionProfit))
 			}
 		}
 		if len(candidate.Reasons) == 0 {

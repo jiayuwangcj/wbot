@@ -43,14 +43,20 @@ type StrategyFactory func() (Strategy, error)
 // via RunOptions with its own strategy instance. The combined equity curve is
 // the pointwise sum over the aligned timeline. details: doc/BACKTEST.md
 func RunMulti(ctx context.Context, series []SymbolBars, initialCash float64, feePerTrade float64, factory StrategyFactory) (*MultiResult, error) {
+	return RunMultiWithFeeModel(ctx, series, initialCash, LegacyFeeModel(feePerTrade), factory)
+}
+
+// RunMultiWithFeeModel is the fee-aware multi-symbol entry point. The legacy
+// RunMulti signature remains the fixed-fee compatibility surface.
+func RunMultiWithFeeModel(ctx context.Context, series []SymbolBars, initialCash float64, feeModel FeeModel, factory StrategyFactory) (*MultiResult, error) {
 	if len(series) == 0 {
 		return nil, errors.New("backtest: multi: empty symbol series")
 	}
 	if initialCash <= 0 {
 		return nil, errors.New("backtest: multi: initial cash must be > 0")
 	}
-	if feePerTrade < 0 {
-		return nil, errors.New("backtest: multi: negative fee")
+	if err := feeModel.validate(); err != nil {
+		return nil, fmt.Errorf("backtest: multi: %w", err)
 	}
 	if factory == nil {
 		return nil, errors.New("backtest: multi: nil strategy factory")
@@ -82,7 +88,7 @@ func RunMulti(ctx context.Context, series []SymbolBars, initialCash float64, fee
 		if err != nil {
 			return nil, fmt.Errorf("backtest: multi: symbol %s: strategy: %w", sb.Symbol, err)
 		}
-		res, err := RunOptions(ctx, sb.Bars, cash, feePerTrade, s, nil)
+		res, err := RunOptionsWithFeeModel(ctx, sb.Bars, cash, feeModel, s, nil)
 		if err != nil {
 			return nil, fmt.Errorf("backtest: multi: symbol %s: %w", sb.Symbol, err)
 		}

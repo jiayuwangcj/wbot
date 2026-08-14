@@ -58,6 +58,7 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
       {"name":"max_inventory","type":"number","required":true},
       {"name":"move_interval_pct","type":"number","default":0},
       {"name":"min_premium_per_share","type":"number","default":0},
+      {"name":"min_option_profit","type":"number","default":200},
       {"name":"stock_switch_pct","type":"number","default":0},
       {"name":"trade_gap","type":"number","default":50},
       {"name":"min_dte","type":"number","default":5},
@@ -86,6 +87,7 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
       "max_inventory":1200,
       "move_interval_pct":0.018,
       "min_premium_per_share":1.2,
+      "min_option_profit":200,
       "stock_switch_pct":0.03,
       "trade_gap":50,
       "min_dte":5,
@@ -108,7 +110,7 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 ```bash
 curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
   -H 'Content-Type: application/json' \
-  -d '{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200,"move_interval_pct":0.018,"min_premium_per_share":1.2,"stock_switch_pct":0.03,"trade_gap":50,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"strategic_state":"NORMAL"}}'
+  -d '{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200,"move_interval_pct":0.018,"min_premium_per_share":1.2,"min_option_profit":200,"stock_switch_pct":0.03,"trade_gap":50,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"strategic_state":"NORMAL"}}'
 ```
 
 成功返回 `200` 和存储后的 watchlist 行。`400 invalid_request` 覆盖缺 symbol/strategy、strategy 不是 `wheel`、缺 required 字段、非法曲线、未知字段、类型/范围错误或非 JSON body；`405` 表示方法不允许。`DELETE /v1/watchlist/{symbol}` 只删除关注绑定，不删除配置/快照/信号审计；不存在返回 `404`。

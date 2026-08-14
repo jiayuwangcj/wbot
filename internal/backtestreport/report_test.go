@@ -3,6 +3,7 @@ package backtestreport
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -52,7 +53,7 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.SchemaVersion != "1.1" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
+	if r.SchemaVersion != "1.2" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
 		t.Fatalf("identity = %+v", r)
 	}
 	if r.Identity.DataWindow.From != "2024-01-01T00:00:00Z" || r.Identity.DataWindow.To != "2024-01-02T00:00:00Z" {
@@ -134,6 +135,53 @@ func TestBuildCompleteHKEXResearchExposesNonNullReturn(t *testing.T) {
 	}
 	if !containsStringFold(r.Risk, "HKEX EOD:日终结算价投影不是可执行 bid/ask,Delta/Theta 为模型派生") {
 		t.Fatalf("risk = %v; want explicit HKEX EOD projection warning", r.Risk)
+	}
+}
+
+func TestBuildAnnualizedReturnCostDragAndPositionPercents(t *testing.T) {
+	in := testInput(3, 2, 1)
+	complete := true
+	coverage := 1.0
+	in.Result.DataQuality.Status = "RESEARCH_ONLY"
+	in.Result.DataQuality.ReadyBarCount = 2
+	in.Result.DataQuality.BlockedBarCount = 0
+	in.Result.DataQuality.TotalBarCount = 2
+	in.Result.DataQuality.ValidCoverageRatio = &coverage
+	in.Result.DataQuality.HistoricalOptionCycleComplete = &complete
+	in.Result.Fees = backtest.FeeSummary{
+		Included: true, OptionPerContract: 21, StockPerLot: 70, LotSize: 100,
+		TotalAmount: 161, StockAmount: 140, OptionAmount: 21,
+		ExerciseDeliveryAmount: 70, OptionContracts: 1, StockLots: 1,
+		ExerciseDeliveryLots: 1, OptionTradeCount: 1, StockTradeCount: 1,
+		ExerciseDeliveryTradeCount: 1, ChargedTradeCount: 3,
+	}
+	stockValue := 123.0
+	in.Result.Terminal.StockMarketValueAmount = stockValue
+	in.Result.Terminal.UnderlyingPrice = 50
+	in.Result.MaxStockMarketValueAmount = 123
+	r, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.InitialCash != 10000 || r.Result.FinalEquityAmount == nil || *r.Result.FinalEquityAmount != 10123 {
+		t.Fatalf("cash/equity = %v / %v", r.InitialCash, r.Result.FinalEquityAmount)
+	}
+	wantAnnualized := math.Pow(1.0123, 365) - 1
+	if r.Result.AnnualizedReturnPct == nil || math.Abs(*r.Result.AnnualizedReturnPct-wantAnnualized) > 1e-12 {
+		t.Fatalf("annualized return = %v; want %v", r.Result.AnnualizedReturnPct, wantAnnualized)
+	}
+	if r.Result.CostDrag.TotalFeesAmount != 161 || r.Result.CostDrag.CostDragPct != 0.0161 || r.Result.CostDrag.CostDragReturnPct != 0.0161 {
+		t.Fatalf("cost drag = %+v", r.Result.CostDrag)
+	}
+	if r.Result.GrossReturnAmount == nil || *r.Result.GrossReturnAmount != 284 || r.Result.GrossReturnPct == nil || *r.Result.GrossReturnPct != 0.0284 {
+		t.Fatalf("gross return = %v / %v", r.Result.GrossReturnAmount, r.Result.GrossReturnPct)
+	}
+	if r.Result.StockMarketValuePct == nil || *r.Result.StockMarketValuePct != 0.0123 || r.Result.OptionMarketValuePct == nil || *r.Result.OptionMarketValuePct != 0 || r.Result.MaxStockMarketValuePct == nil || *r.Result.MaxStockMarketValuePct != 0.0123 || r.Result.MaxPositionPct == nil || *r.Result.MaxPositionPct != 110 {
+		t.Fatalf("position percentages = %v / %v", r.Result.StockMarketValuePct, r.Result.MaxPositionPct)
+	}
+	model := r.Result.CostModel
+	if model.OptionFeePerContract != 21 || model.StockFeePerLot != 70 || model.LotSize != 100 || model.ExerciseDeliveryFeesAmount != 70 || model.Option.Contracts != 1 || model.Stock.Amount != 70 || model.ExerciseDelivery.Amount != 70 {
+		t.Fatalf("structured cost model = %+v", model)
 	}
 }
 

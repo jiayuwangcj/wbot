@@ -64,6 +64,7 @@ var templates = []Template{
 			{Name: "max_inventory", Type: "number", Required: true, Min: 0, Max: math.MaxFloat64, Help: "允许的最大实际库存"},
 			{Name: "move_interval_pct", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "距上次有效成交价的最小绝对变动比例（小数）"},
 			{Name: "min_premium_per_share", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "最低每股权利金"},
+			{Name: "min_option_profit", Type: "number", Default: wheel.DefaultMinOptionProfit, Min: 0, Max: math.MaxFloat64, Help: "单笔候选期权预期收益总额最低门槛（权利金×张数）"},
 			{Name: "stock_switch_pct", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "切换为正股建议的价格变动比例（小数）"},
 			{Name: "trade_gap", Type: "number", Default: 50.0, Min: 0, Max: math.MaxFloat64, Help: "库存缺口不超过此值时不交易"},
 			{Name: "min_dte", Type: "number", Default: 5.0, Min: 5, Max: 10, Help: "最小到期天数（DTE）"},
@@ -142,6 +143,10 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param min_premium_per_share: %w", err)
 	}
+	minOptionProfit, err := asNumber(values["min_option_profit"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param min_option_profit: %w", err)
+	}
 	stockSwitch, err := asNumber(values["stock_switch_pct"])
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param stock_switch_pct: %w", err)
@@ -179,6 +184,7 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 		MaxInventory:           maxInventory,
 		MoveIntervalPct:        moveInterval,
 		MinPremiumPerShare:     minPremium,
+		MinOptionProfit:        minOptionProfit,
 		StockSwitchPct:         stockSwitch,
 		TradeGap:               tradeGap,
 		MinDTE:                 minDTE,

@@ -98,6 +98,12 @@ func Message(report *backtestreport.Report) (discord.Message, error) {
 	if report.Result.NetReturnPct != nil {
 		result = percent(*report.Result.NetReturnPct)
 	}
+	if report.Result.AnnualizedReturnPct != nil {
+		result += " · 年化 " + percent(*report.Result.AnnualizedReturnPct)
+	}
+	if report.Result.GrossReturnPct != nil {
+		result += " · 毛 " + percent(*report.Result.GrossReturnPct)
+	}
 	coverage := "N/A"
 	if report.DataQuality.ValidCoverageRatio != nil {
 		coverage = fmt.Sprintf("%s · %d/%d bars", percent(*report.DataQuality.ValidCoverageRatio), report.DataQuality.ReadyBarCount, report.DataQuality.TotalBarCount)
@@ -121,10 +127,10 @@ func Message(report *backtestreport.Report) (discord.Message, error) {
 	}
 	fields := []discord.EmbedField{
 		{Name: "标的", Value: report.Identity.Symbol, Inline: true},
-		{Name: "数据窗口", Value: report.Identity.DataWindow.From + " — " + report.Identity.DataWindow.To},
+		{Name: "数据窗口", Value: report.Identity.DataWindow.From + " — " + report.Identity.DataWindow.To + fmt.Sprintf(" · 本金 %.2f · 期末 %.2f", report.InitialCash, valueOrZero(report.Result.FinalEquityAmount))},
 		{Name: "净收益 / 能力状态", Value: result, Inline: true},
 		{Name: "有效覆盖率", Value: coverage, Inline: true},
-		{Name: "费用", Value: fmt.Sprintf("%s %.2f · %s", report.Identity.Currency, report.Result.CostModel.TotalFeesAmount, feeStatus), Inline: true},
+		{Name: "费用", Value: fmt.Sprintf("%s %.2f · 损耗 %.2f%% · %s", report.Identity.Currency, report.Result.CostModel.TotalFeesAmount, report.Result.CostDragPct*100, feeStatus), Inline: true},
 		{Name: "最大回撤", Value: percent(report.Result.MaxDrawdownPct), Inline: true},
 		{Name: "停止原因", Value: stopReason},
 	}
@@ -154,6 +160,13 @@ func Message(report *backtestreport.Report) (discord.Message, error) {
 		}},
 		Nonce: nonce(report.ReportID), EnforceNonce: true,
 	}, nil
+}
+
+func valueOrZero(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
 }
 
 func nonce(reportID string) string {

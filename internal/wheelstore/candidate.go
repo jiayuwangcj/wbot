@@ -55,6 +55,7 @@ type Candidate struct {
 	Quantity            int      `json:"quantity"`
 	SignedContracts     int      `json:"signed_contracts"`
 	Quality             float64  `json:"quality"`
+	ExpectedGain        float64  `json:"expected_gain,omitempty"`
 	PostTradeEffective  float64  `json:"post_trade_effective_inventory"`
 	AssignmentInventory float64  `json:"assignment_inventory"`
 	Accepted            bool     `json:"accepted"`
@@ -235,6 +236,7 @@ type fullCandidateJSON struct {
 	Quantity            int      `json:"quantity"`
 	SignedContracts     int      `json:"signed_contracts"`
 	Quality             float64  `json:"quality"`
+	ExpectedGain        float64  `json:"expected_gain,omitempty"`
 	PostTradeEffective  float64  `json:"post_trade_effective_inventory"`
 	AssignmentInventory float64  `json:"assignment_inventory"`
 	Accepted            bool     `json:"accepted"`
@@ -252,7 +254,7 @@ func (c Candidate) MarshalJSON() ([]byte, error) {
 		return json.Marshal(fullCandidateJSON{
 			Symbol: c.Symbol, QuoteSnapshotID: c.QuoteSnapshotID, Quote: c.Quote,
 			Direction: c.Direction, Quantity: c.Quantity, SignedContracts: c.SignedContracts,
-			Quality: c.Quality, PostTradeEffective: c.PostTradeEffective,
+			Quality: c.Quality, ExpectedGain: c.ExpectedGain, PostTradeEffective: c.PostTradeEffective,
 			AssignmentInventory: c.AssignmentInventory, Accepted: c.Accepted, Reasons: c.Reasons,
 		})
 	default:
@@ -276,7 +278,7 @@ func (c *Candidate) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
-	if hasAny(fields, "signed_contracts", "quality", "post_trade_effective_inventory", "assignment_inventory") {
+	if hasAny(fields, "signed_contracts", "quality", "expected_gain", "post_trade_effective_inventory", "assignment_inventory") {
 		c.wireMode = wireFull
 	} else if hasAny(fields, "direction", "quantity", "accepted", "quote") {
 		c.wireMode = wireCompact
