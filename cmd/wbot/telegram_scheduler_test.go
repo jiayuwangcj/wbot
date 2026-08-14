@@ -78,6 +78,15 @@ func (f *fakeTGServer) sendCountTo(chatID string) int {
 	return n
 }
 
+// sendCount reports the total sendMessage count under lock. waitFor
+// conditions must not read f.sends directly: ServeHTTP appends from another
+// goroutine and the race detector fails CI (observed 2026-08-14).
+func (f *fakeTGServer) sendCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sends)
+}
+
 func (f *fakeTGServer) lastSend(t *testing.T) map[string]any {
 	t.Helper()
 	f.mu.Lock()
@@ -654,7 +663,7 @@ func TestCallbackNoConfirmedCancelsOrder(t *testing.T) {
 	if id := placer.cancelIDValue(); id != "12345" {
 		t.Fatalf("CancelOrder id=%q; want 12345", id)
 	}
-	waitFor(t, func() bool { return len(fake.sends) > 0 }, "sendMessage never received")
+	waitFor(t, func() bool { return fake.sendCount() > 0 }, "sendMessage never received")
 	act := store.lastAppended(t)
 	if act.Action != "NO" || act.Note != "撤单成功 订单号 12345" {
 		t.Fatalf("action = %+v; want NO 撤单成功", act)
@@ -680,7 +689,7 @@ func TestCallbackNoCancelFailureTellsManual(t *testing.T) {
 
 	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
 	waitFor(t, func() bool { return placer.cancelCallsCount() == 1 }, "CancelOrder never happened")
-	waitFor(t, func() bool { return len(fake.sends) > 0 }, "sendMessage never received")
+	waitFor(t, func() bool { return fake.sendCount() > 0 }, "sendMessage never received")
 	act := store.lastAppended(t)
 	if act.Action != "NO" || !strings.Contains(act.Note, "请手动在模拟盘撤单") {
 		t.Fatalf("action = %+v; want NO with manual-cancel note", act)
