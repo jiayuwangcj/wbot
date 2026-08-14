@@ -46,6 +46,15 @@
 - 费用:-fee-option-per-contract 21 -fee-stock-per-lot 70(真实,不用 -fee 3)
 - 搜索:6 维战术参数(老板 2026-08-13 裁决全量):move_interval_pct/min_premium_per_share/stock_switch_pct/trade_gap/min_option_quality/min_dte~max_dte
 - 战略参数:-params {full_position_price:400, zero_position_price:600, max_inventory:1200}(人工,不变)
+- **6 维边界(2026-08-14 数据探针定标)**:HK.00700 put bid(DTE 5–45)P05=0.01/P25=0.39/P50=4.68/P75=24.23(15,336 行);DTE P10=8/P50=84/P90=304(全量);StockSwitchPct 语义=相对上次有效成交价变动≥阈值仅出正股建议(wheel.go:720-730),量级应高于 move_interval
+  | 维 | 范围 | 依据 |
+  | --- | --- | --- |
+  | move_interval_pct | [0.005, 0.03] | 上次训练同区间,00700 日波动 ~1–2% |
+  | min_premium_per_share | [0, 5] | put bid P05..P50 |
+  | stock_switch_pct | [0.03, 0.15] | 急涨急跌 3%–15% |
+  | trade_gap | [0, 200] | 股,离散;max_inventory 1200 的 0–17% |
+  | min_option_quality | [0.5, 0.8] | 上次训练同区间 |
+  | min_dte | [5, 30] | 离散;max_dte 固定 45(params 给)
 
 ## State
 
