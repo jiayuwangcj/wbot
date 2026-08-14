@@ -243,7 +243,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 	estimate := fmt.Sprintf("启动前输出:预计最多 %d 次回测", min(searchBudget, backtestes.EstimatedEvaluations(cfg)+reserved))
 	rep, err := backtestreport.BuildES(backtestreport.ESInput{
 		Run: backtestreport.Input{Symbol: opts.Symbol, Strategy: opts.Strategy, Params: selected.candidate.Params, ConfigVersion: opts.ConfigVersion, CodeVersion: version, RunSeed: opts.Seed,
-			InitialCash: opts.Cash, FeePerTrade: opts.Fee, Start: baseOutcome.StartTs, End: baseOutcome.EndTs, BaselineReturnPct: baseline, SourceHash: selectedOutcome.SourceHash, Result: selectedOutcome.Result},
+			InitialCash: opts.Cash, FeePerTrade: opts.Fee, Start: selectedOutcome.StartTs, End: selectedOutcome.EndTs, BaselineReturnPct: baseline, SourceHash: selectedOutcome.SourceHash, Result: selectedOutcome.Result},
 		Windows: reportWindows(windows), Train: backtestreport.Train{Algorithm: "ES", AlgorithmVersion: backtestes.AlgorithmVersion, GenerationCount: len(search.Generations), PopulationSize: cfg.Population,
 			EvaluationCount: search.EvaluationCount + reserved, Seeds: allSeeds, StopReason: search.StopReason, StopDetail: search.StopDetail, DurationSec: duration, EvaluationEstimate: estimate},
 		Generations: gens, Candidates: reportCandidates, Reward: backtestreport.RewardAudit{FunctionVersion: backtestes.RewardVersion,
