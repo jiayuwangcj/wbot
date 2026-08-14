@@ -18,7 +18,9 @@ const minIVRankObservations = 20
 
 // attachIVRanks computes each batch's underlying IV rank in place: the
 // percentile of the batch's median IV within the same underlying's trailing
-// one-year history (rank = fraction of window observations ≤ today's IV).
+// one-year history (rank = fraction of window observations strictly below
+// today's IV). Strict comparison keeps a flat IV plateau at rank 0 instead of
+// 1.0 — a constant low-IV regime must not sail through a min_iv_rank gate.
 // batches must be sorted ascending by ObservedAt. Deterministic: medians and
 // ranks depend only on the input rows.
 func attachIVRanks(batches []QuoteSnapshotBatch) {
@@ -45,7 +47,7 @@ func attachIVRanks(batches []QuoteSnapshotBatch) {
 					continue
 				}
 				window++
-				if medians[j] <= medians[i] {
+				if medians[j] < medians[i] {
 					below++
 				}
 			}

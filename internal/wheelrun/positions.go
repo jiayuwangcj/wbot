@@ -85,6 +85,41 @@ func filterPositions(symbol string, positions []Position, contractSymbols []stri
 	return matched, unassignedOptions
 }
 
+// closePositionLegs extracts short option legs held outside the option chain
+// window (the final min_dte days before expiry) for profit_take_pct exit
+// evaluation only. The wheel legs go to DecisionInput.ClosePositions — which
+// the domain layer excludes from inventory math — and the original broker
+// positions come back for LLM review visibility (审核必须能核对「合约确为
+// 持仓空腿」). Legs of other underlyings are harmless: they never match a
+// quote of the evaluated symbol. Long legs and unknown-side positions are
+// skipped (they can never be profit-take exits).
+func closePositionLegs(unassigned []Position) (legs []wheel.OptionPosition, review []Position) {
+	for _, p := range unassigned {
+		code := p.Code
+		if code == "" {
+			code = p.Symbol
+		}
+		if code == "" {
+			continue
+		}
+		strike, _, typ, err := parseOptionCode(code)
+		if err != nil {
+			continue
+		}
+		signed, err := signedQty(p)
+		if err != nil || signed >= 0 {
+			continue
+		}
+		sym := p.Symbol
+		if sym == "" {
+			sym = code
+		}
+		legs = append(legs, wheel.OptionPosition{Symbol: sym, SignedContracts: signed, Strike: strike, OptionType: typ, AvgPremium: p.AvgCost})
+		review = append(review, p)
+	}
+	return legs, review
+}
+
 func optionCodeInChain(p Position, chainCodes map[string]struct{}) bool {
 	for _, candidate := range []string{p.Code, p.Symbol} {
 		if candidate == "" {

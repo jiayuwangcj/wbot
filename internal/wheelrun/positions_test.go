@@ -175,6 +175,51 @@ func TestPositionsInputUnsupportedOptionShape(t *testing.T) {
 	}
 }
 
+func TestClosePositionLegs(t *testing.T) {
+	unassigned := []Position{
+		// 链外(到期前最后 min_dte 天)的空腿:平仓评估候选,进 ClosePositions。
+		{Symbol: "HK.TCH260901P600000", Code: "TCH260901P600000", Qty: 2, Side: SideShort, AvgCost: 12.5},
+		// 长腿永远不是 profit-take 平仓,跳过。
+		{Symbol: "HK.TCH260901C650000", Code: "TCH260901C650000", Qty: 1, Side: SideLong, AvgCost: 9},
+		// unknown side 无法确定符号,跳过(不静默当空腿)。
+		{Symbol: "HK.TCH260901C700000", Code: "TCH260901C700000", Qty: 1, Side: -1},
+		// 股票代码解析失败,跳过。
+		{Symbol: "HK.00700", Code: "00700", Qty: 500, Side: SideLong},
+		// 其他标的的空腿也提取(无害:报价永不匹配本标的,域层按 Symbol 去重)。
+		{Symbol: "US.JD260901C300000", Code: "JD260901C300000", Qty: 1, Side: SideShort, AvgCost: 4},
+	}
+	legs, review := closePositionLegs(unassigned)
+	if len(legs) != 2 {
+		t.Fatalf("legs = %+v; want 2 short legs", legs)
+	}
+	first := legs[0]
+	if first.Symbol != "HK.TCH260901P600000" || first.Strike != 600 || first.OptionType != wheel.Put ||
+		first.SignedContracts != -2 || first.AvgPremium != 12.5 {
+		t.Fatalf("first leg = %+v; want short 2 × 600 put with premium 12.5", first)
+	}
+	second := legs[1]
+	if second.Symbol != "US.JD260901C300000" || second.OptionType != wheel.Call || second.SignedContracts != -1 {
+		t.Fatalf("second leg = %+v; want short 1 × JD 300 call", second)
+	}
+	// review 回传原始持仓,LLM 审核据此核对「合约确为持仓空腿」。
+	if len(review) != 2 || review[0].Code != "TCH260901P600000" || review[1].AvgCost != 4 {
+		t.Fatalf("review = %+v; want the two original short positions", review)
+	}
+}
+
+func TestClosePositionLegsCodeOnlyAndUnparseable(t *testing.T) {
+	// Code-only position: symbol falls back to the code.
+	legs, review := closePositionLegs([]Position{{Code: "TCH260901P600000", Qty: 1, Side: SideShort, AvgCost: 7}})
+	if len(legs) != 1 || legs[0].Symbol != "TCH260901P600000" || legs[0].AvgPremium != 7 || len(review) != 1 {
+		t.Fatalf("code-only legs = %+v, review %+v; want extracted leg", legs, review)
+	}
+	// 空 code/symbol 与未知 side 都静默跳过。
+	legs, review = closePositionLegs([]Position{{Qty: 1, Side: SideShort}, {Symbol: "HK.00700", Code: "00700", Qty: 1, Side: SideShort}})
+	if len(legs) != 0 || len(review) != 0 {
+		t.Fatalf("unparseable legs = %+v, review %+v; want none", legs, review)
+	}
+}
+
 // compile-time check that a fake position source satisfies the interface.
 var _ TradePositions = fakePositions(nil)
 

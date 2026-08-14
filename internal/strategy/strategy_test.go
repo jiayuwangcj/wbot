@@ -66,6 +66,8 @@ func TestContractSchemaRequiredAndDefaults(t *testing.T) {
 		"stock_switch_pct":  0.0, "covered_call_pct": wheel.DefaultCoveredCallPct, "trade_gap": 50.0,
 		"min_dte": 5.0, "max_dte": 10.0, "min_option_quality": 0.6,
 		"max_quote_age_seconds": 86400.0, "strategic_state": wheel.StateNormal,
+		// 收益提升三参数与 delta 上限默认全部 = 现行为(0),存量配置缺键不改变行为。
+		"profit_take_pct": 0.0, "put_delta_max": 0.0, "call_delta_max": 0.0, "min_iv_rank": 0.0,
 	}
 	for name, want := range defaults {
 		if got := byName[name].Default; got != want {
@@ -91,7 +93,8 @@ func TestParseConfigRequiresStrategicInputs(t *testing.T) {
 	}
 	if cfg.MoveIntervalPct != 0 || cfg.MinPremiumPerShare != 0 || cfg.StockSwitchPct != 0 || cfg.CoveredCallPct != wheel.DefaultCoveredCallPct || cfg.TradeGap != 50 ||
 		cfg.MinOptionProfit != 200 || cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 || cfg.MaxQuoteAgeSeconds != 86400 ||
-		cfg.StrategicState != wheel.StateNormal {
+		cfg.StrategicState != wheel.StateNormal ||
+		cfg.ProfitTakePct != 0 || cfg.PutDeltaMax != 0 || cfg.CallDeltaMax != 0 || cfg.MinIVRank != 0 {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 }

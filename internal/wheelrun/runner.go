@@ -220,7 +220,8 @@ const wheelReviewRules = `仅审核 wheel 区间策略；信号只能是 ALERT �
 4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量和交易后有效库存；策略不设每日提醒次数上限。
 5. 系统性错误：排查闭市或停牌误判、同一合约重复动作、与现有持仓或历史动作矛盾、合约类型/到期日/乘数错误及 Greeks 缺失。
 6. 数据不足：capability_status 为 DATA_BLOCKED、blocked_by 非空，或任一关键字段不足时必须 REJECT；不得以 expected_gain 补偿或放宽任何校验。
-7. 改单（signal.replace 非空，硬性项）：改单=撤销 pending_orders 中旧挂单（replace.order_id/replace.contract）改挂首选候选，是写操作、同样需要审核。必须核对：a) 新合约不要求严格优于旧合约：允许价格稍差的调整（如权利金略低、质量相当），若理由合理——更快成交、流动性更好、更接近目标库存——应予批准；但新合约明显劣化（质量/流动性显著更差、风险显著增大）或调整无任何依据时必须 REJECT；b) 旧挂单确在 pending_orders 中且方向一致；c) 改单后库存偏差不增大；d) 频繁改单（同标的短时多次）必须 REJECT——避免反复撤换浪费与不确定性。`
+7. 改单（signal.replace 非空，硬性项）：改单=撤销 pending_orders 中旧挂单（replace.order_id/replace.contract）改挂首选候选，是写操作、同样需要审核。必须核对：a) 新合约不要求严格优于旧合约：允许价格稍差的调整（如权利金略低、质量相当），若理由合理——更快成交、流动性更好、更接近目标库存——应予批准；但新合约明显劣化（质量/流动性显著更差、风险显著增大）或调整无任何依据时必须 REJECT；b) 旧挂单确在 pending_orders 中且方向一致；c) 改单后库存偏差不增大；d) 频繁改单（同标的短时多次）必须 REJECT——避免反复撤换浪费与不确定性。
+8. 平仓（signal.close_position 为真，硬性项）：平仓=买回已持空腿以兑现已收权利金（profit_take_pct 达到阈值），属风险降低动作，方向与库存缺口相反是其固有特征，不受第 1 条方向反转规则约束。必须核对：a) 合约确为当前持仓空腿（positions 中该合约数量为负），且平仓数量 ≤ 持仓数量；b) 报价合理（Bid/Ask 正数且未倒挂、非陈旧），平仓价显著高于持仓成本或明显不合理时必须 REJECT；c) 买回成本 ≤ 可用现金/保证金（不足时必须 REJECT）；d) 平仓后不遗留反向裸仓（不得把平仓当成反手开新仓）。`
 
 // RunOnce evaluates every wheel binding once. A per-symbol failure is logged
 // and does not stop the remaining symbols; the returned error (nil when all
@@ -319,6 +320,13 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		return fmt.Errorf("positions: %w", err)
 	}
 	filteredPositions, unassignedOptions := filterPositions(symbol, positions, contractSymbols)
+	// Legs outside the chain window (final min_dte days before expiry) cannot
+	// enter the inventory — but they must stay closable: profit_take_pct buys
+	// them back at theta's steepest decay. They ride in ClosePositions (exit
+	// evaluation only) and in the review input (审核核对持仓空腿).
+	closeLegs, closeReviewPositions := closePositionLegs(unassignedOptions)
+	reviewPositions := append([]Position{}, filteredPositions...)
+	reviewPositions = append(reviewPositions, closeReviewPositions...)
 	for _, p := range unassignedOptions {
 		positionCode := p.Code
 		if positionCode == "" {
@@ -342,7 +350,7 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 	// the inventory gap never closed after the fill). The directional
 	// fetch may have skipped a held contract of the opposite direction,
 	// so pull those individually.
-	for _, p := range opts {
+	for _, p := range append(append([]wheel.OptionPosition{}, opts...), closeLegs...) {
 		if _, ok := quotes[p.Symbol]; ok {
 			continue
 		}
@@ -361,6 +369,14 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 			opts[i].Delta = q.Delta
 			if opts[i].LotSize <= 0 && q.LotSize > 0 {
 				opts[i].LotSize = q.LotSize
+			}
+		}
+	}
+	for i := range closeLegs {
+		if q, ok := quotes[closeLegs[i].Symbol]; ok {
+			closeLegs[i].Delta = q.Delta
+			if closeLegs[i].LotSize <= 0 && q.LotSize > 0 {
+				closeLegs[i].LotSize = q.LotSize
 			}
 		}
 	}
@@ -388,6 +404,9 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		// running process, so min_iv_rank > 0 makes live evaluation HOLD
 		// (fail-closed) until a rank data source lands.
 		IVRank: 0,
+		// 链外持仓仅用于平仓评估,不进库存口径(与回测对称:到期前最后
+		// min_dte 天仍可平仓)。
+		ClosePositions: closeLegs,
 	}
 	if r.deps.Funds != nil {
 		if cash, err := r.deps.Funds(ctx); err == nil {
@@ -416,7 +435,7 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		// 基线在信号落库成功后才写:落库失败的 ALERT 从未发生,不应进入
 		// 抑制窗口(否则下一 pass 会被静默降 HOLD)。
 		r.commitAlertBaseline(symbol, sig, now)
-		r.enqueueReview(ctx, symbol, id, rec.Version, cfg, sig, record, filteredPositions, price, in.CashAvailable, in.HasCashAvailable)
+		r.enqueueReview(ctx, symbol, id, rec.Version, cfg, sig, record, reviewPositions, price, in.CashAvailable, in.HasCashAvailable)
 	}
 	if err := r.deps.Watchlist.SetExecutionStatus(ctx, symbol, status, reason); err != nil {
 		return fmt.Errorf("signal %d stored, watchlist status sync: %w", id, err)
@@ -498,6 +517,11 @@ func (r *Runner) enqueueReview(ctx context.Context, symbol string, signalID int6
 // the store; suppressed rounds do not extend it, so the candidate alerts
 // again once the window expires. sig.Quote must be non-nil for ALERTs.
 func (r *Runner) suppressRepeatAlert(symbol string, sig wheel.Signal, now time.Time) bool {
+	// 平仓是风险降低动作:每 pass 权利金回落都值得提示,不受 30 分钟重复
+	// 抑制窗约束(与卖向候选的「同一合约重复 ALERT」性质不同)。
+	if sig.ClosePosition {
+		return false
+	}
 	if sig.Quote == nil {
 		return false
 	}

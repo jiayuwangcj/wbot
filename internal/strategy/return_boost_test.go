@@ -172,7 +172,8 @@ func TestWheelBacktestIVRankGate(t *testing.T) {
 	if s := res.Signals[19]; s.Action != wheel.ActionAlert {
 		t.Fatalf("high-IV day signal = %+v; want ALERT (rank 1.0 ≥ 0.5)", s)
 	}
-	if s := res.Signals[20]; s.Action != wheel.ActionHold || !strings.Contains(s.Reason, "below min_iv_rank") {
-		t.Fatalf("low-IV day signal = %+v; want HOLD below min_iv_rank", s)
+	if s := res.Signals[20]; s.Action != wheel.ActionHold || !strings.Contains(s.Reason, "IV rank") {
+		// 严格小于百分位:rank=0(已知但最低)或 unavailable 均走 IV 闸门 HOLD。
+		t.Fatalf("low-IV day signal = %+v; want HOLD with IV rank gate reason", s)
 	}
 }

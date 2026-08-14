@@ -98,6 +98,41 @@ func TestTakeProfitSkipsLongLegsWithoutBasisAndExpired(t *testing.T) {
 	}
 }
 
+func TestTakeProfitClosePositionsOutsideInventory(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	cfg := testConfig(StateNormal)
+	cfg.ProfitTakePct = 0.5
+	// The held leg sits outside the DTE window (final min_dte days before
+	// expiry): it appears only in ClosePositions, never in Positions, so the
+	// effective inventory must stay unchanged while the exit still triggers.
+	outside := heldShortPut("P-EXP", 4.00, asOf)
+	outside.Symbol = "P-OUT"
+	q := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
+	q.Symbol, q.Ask = "P-OUT", 1.50
+	s, err := Evaluate(cfg, DecisionInput{
+		CurrentPrice: 400, AsOf: asOf,
+		ClosePositions: []OptionPosition{outside},
+		Quotes:         []OptionQuote{q},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.ClosePosition || s.Quote == nil || s.Quote.Symbol != "P-OUT" || s.Quantity != 1 {
+		t.Fatalf("signal = %+v; want close of P-OUT qty 1", s)
+	}
+	if s.EffectiveInventory != 0 || s.ActualInventory != 0 {
+		t.Fatalf("inventory = %v/%v; want 0/0 (ClosePositions must not enter inventory)", s.EffectiveInventory, s.ActualInventory)
+	}
+	// Without ClosePositions the same leg is invisible: no close signal.
+	s2, err := Evaluate(cfg, DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{q}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.ClosePosition {
+		t.Fatalf("signal = %+v; want no close without ClosePositions", s2)
+	}
+}
+
 func TestTakeProfitRunsBeforeEntryGatesAndIVRank(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig(StateNormal)

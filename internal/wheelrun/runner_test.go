@@ -826,6 +826,29 @@ func TestRepeatAlertSuppression(t *testing.T) {
 	}
 }
 
+// TestSuppressRepeatAlertExemptsClosePosition: 平仓 ALERT 是风险降低动作,
+// 窗口内重复候选不被降 HOLD——每 pass 权利金回落都值得提示;卖向候选仍受
+// 30 分钟抑制窗约束(P3,2026-08-15 评审条件 3 顺手做)。
+func TestSuppressRepeatAlertExemptsClosePosition(t *testing.T) {
+	const symbol = "HK.00700"
+	now := time.Now()
+	contract := "HK.TCH260901P600000"
+	r := &Runner{lastAlert: map[string]lastAlertInfo{}}
+	r.commitAlertBaseline(symbol, wheel.Signal{Quote: &wheel.OptionQuote{Symbol: contract}}, now)
+	closeSig := wheel.Signal{ClosePosition: true, Quote: &wheel.OptionQuote{Symbol: contract}}
+	if r.suppressRepeatAlert(symbol, closeSig, now.Add(time.Minute)) {
+		t.Fatal("suppressRepeatAlert(close_position in window) = true; want false (exempt)")
+	}
+	sellSig := wheel.Signal{Quote: &wheel.OptionQuote{Symbol: contract}}
+	if !r.suppressRepeatAlert(symbol, sellSig, now.Add(time.Minute)) {
+		t.Fatal("suppressRepeatAlert(sell candidate in window) = false; want true (suppressed)")
+	}
+	// 窗口过期后卖向候选恢复 ALERT。
+	if r.suppressRepeatAlert(symbol, sellSig, now.Add(repeatAlertWindow+time.Minute)) {
+		t.Fatal("suppressRepeatAlert(sell candidate after window) = true; want false (expired)")
+	}
+}
+
 // TestReviewFailureClearsSuppression: an audit that fails on the
 // infrastructure side (reviewer error) must not leave the repeat-candidate
 // baseline in place — the next pass re-alerts the same contract and

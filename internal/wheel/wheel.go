@@ -54,12 +54,6 @@ const (
 	// DefaultCoveredCallPct keeps covered calls meaningfully out of the money
 	// while old persisted configs (which omit the new field) remain usable.
 	DefaultCoveredCallPct = 0.05
-	// DefaultPutDeltaMax/DefaultCallDeltaMax cap the sell-side delta at the
-	// industry 25-30Δ sweet spot (ApexVol: 30Δ+ accelerates assignment, 10Δ
-	// starves premium). Setting a large value (e.g. 1) is equivalent to no
-	// limit for callers that want the pre-delta-filter behavior.
-	DefaultPutDeltaMax  = 0.30
-	DefaultCallDeltaMax = 0.30
 	// MinWheelDTE/MaxWheelDTE bound the DTE window the wheel may trade.
 	// The upper bound was widened 10 → 45 on 2026-08-14: the historical 5..10
 	// window was a structural handicap (thin premiums, sparse candidates,
@@ -643,6 +637,12 @@ type DecisionInput struct {
 	// [0,1]. Zero means unknown (no history source wired); with min_iv_rank
 	// > 0 an unknown rank masks every candidate (fail-closed HOLD).
 	IVRank float64
+	// ClosePositions extends the short-leg set considered for profit_take_pct
+	// buybacks only. It is deliberately excluded from the inventory math:
+	// positions held outside the DTE window (final min_dte days before expiry)
+	// must stay closable live, yet must not change the effective inventory.
+	// nil preserves the Positions-only behavior.
+	ClosePositions []OptionPosition
 	// Pending lists unfilled orders already resting for this symbol.
 	// Candidates whose contract+direction match an entry are excluded:
 	// re-alerting the same contract while a prior order is unfilled would
@@ -1014,7 +1014,20 @@ func takeProfitSignal(cfg Config, in DecisionInput, base Signal) (Signal, bool) 
 		ratio     float64
 	}
 	var best *candidate
+	// ClosePositions augments Positions for exits only (held legs outside the
+	// DTE window stay closable); same-symbol entries collapse to one leg.
+	closeSet := make(map[string]OptionPosition, len(in.Positions)+len(in.ClosePositions))
 	for _, p := range in.Positions {
+		if p.Symbol != "" {
+			closeSet[p.Symbol] = p
+		}
+	}
+	for _, p := range in.ClosePositions {
+		if p.Symbol != "" {
+			closeSet[p.Symbol] = p
+		}
+	}
+	for _, p := range closeSet {
 		contracts := p.SignedContracts
 		if contracts == 0 {
 			contracts = p.Contracts
