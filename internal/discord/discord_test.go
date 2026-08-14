@@ -72,6 +72,7 @@ func TestCreateMessagePostsEmbedAndButtons(t *testing.T) {
 			Author: &EmbedAuthor{Name: "Wheel Bot"}, Title: "信号 #7", Description: "**test**", Color: ColorApprove,
 			Footer: &EmbedFooter{Text: "配置 v1"},
 		}},
+		Nonce: "report-nonce", EnforceNonce: true,
 		Components: [][]Button{{
 			{Type: 2, Style: 3, Label: "✅ 下单", CustomID: "wheel:7:yes"},
 			{Type: 2, Style: 4, Label: "❌ 拒绝", CustomID: "wheel:7:no"},
@@ -103,6 +104,9 @@ func TestCreateMessagePostsEmbedAndButtons(t *testing.T) {
 	}
 	if fake.authErr != "" {
 		t.Fatalf("authorization = %q; want Bot token", fake.authErr)
+	}
+	if payload["nonce"] != "report-nonce" || payload["enforce_nonce"] != true {
+		t.Fatalf("nonce fields = %#v / %#v", payload["nonce"], payload["enforce_nonce"])
 	}
 }
 

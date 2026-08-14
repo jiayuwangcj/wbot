@@ -57,9 +57,11 @@ type Embed struct {
 
 // Message is one channel message (create-message payload).
 type Message struct {
-	Content    string     `json:"content,omitempty"`
-	Embeds     []Embed    `json:"embeds,omitempty"`
-	Components [][]Button `json:"components,omitempty"`
+	Content      string     `json:"content,omitempty"`
+	Embeds       []Embed    `json:"embeds,omitempty"`
+	Components   [][]Button `json:"components,omitempty"`
+	Nonce        string     `json:"nonce,omitempty"`
+	EnforceNonce bool       `json:"enforce_nonce,omitempty"`
 }
 
 // ApplicationCommand describes a global CHAT_INPUT command.
@@ -89,11 +91,13 @@ type actionRow struct {
 // without an explicit component type default to type 2 (button).
 func (m Message) MarshalJSON() ([]byte, error) {
 	type messageJSON struct {
-		Content    string      `json:"content,omitempty"`
-		Embeds     []Embed     `json:"embeds,omitempty"`
-		Components []actionRow `json:"components,omitempty"`
+		Content      string      `json:"content,omitempty"`
+		Embeds       []Embed     `json:"embeds,omitempty"`
+		Components   []actionRow `json:"components,omitempty"`
+		Nonce        string      `json:"nonce,omitempty"`
+		EnforceNonce bool        `json:"enforce_nonce,omitempty"`
 	}
-	wire := messageJSON{Content: m.Content, Embeds: m.Embeds}
+	wire := messageJSON{Content: m.Content, Embeds: m.Embeds, Nonce: m.Nonce, EnforceNonce: m.EnforceNonce}
 	for _, row := range m.Components {
 		buttons := append([]Button(nil), row...)
 		for i := range buttons {
