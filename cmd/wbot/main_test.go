@@ -210,7 +210,7 @@ VALUES ('CLIO95P', $1, 'PUT', 95, $2, 'fixture', $3, $4, -0.30, $5, $6, 0.30, -0
 	// Day 0 sells one P95 for 300. Existing assignment commitment consumes the
 	// max inventory, so later snapshots cannot open another. Final bid mark is 1.
 	out := captureRunOutput(t, argv)
-	for _, want := range []string{"final_equity=10200", "total_return=0.02", "bars=5"} {
+	for _, want := range []string{"final_equity=10200", "mark_return=0.02", "bars=5"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q; want containing %q", out, want)
 		}
@@ -270,8 +270,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	out := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", dsn, "-symbol", symbol, "-timeframe", "1d",
 		"-adjust", "none", "-strategy", "buy-hold", "-save"})
 	var id int64
-	if _, err := fmt.Sscanf(out, "final_equity=%g total_return=%g max_drawdown=%g bars=%d 未成交 N/A(无成交尝试)\nsaved result id=%d",
-		new(float64), new(float64), new(float64), new(int), &id); err != nil || id == 0 {
+	if _, err := fmt.Sscanf(out, "final_equity=%g realized_return=%g premium_net_return=%g mark_return=%g max_drawdown=%g bars=%d fees=%g 未成交 N/A(无成交尝试)\nsaved result id=%d",
+		new(float64), new(float64), new(float64), new(float64), new(float64), new(int), new(float64), &id); err != nil || id == 0 {
 		t.Fatalf("output %q; want saved result id=N (err %v)", out, err)
 	}
 	idStr := strconv.FormatInt(id, 10)
@@ -425,7 +425,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(start+i
 	// A: 5000 @110 -> 5000*133.1/110 = 6050; B: 5000 @200 -> 5000*242/200 = 6050.
 	out := captureRunOutput(t, argv)
 	for _, want := range []string{
-		"final_equity=12100", "total_return=0.21", "bars=3 symbols=2",
+		"final_equity=12100", "mark_return=0.21", "bars=3 symbols=2",
 		symA + ": final_equity=6050", symB + ": final_equity=6050",
 	} {
 		if !strings.Contains(out, want) {
@@ -442,7 +442,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(start+i
 	if strings.Contains(outSingle, "symbols=") {
 		t.Fatalf("single-symbol -symbols output %q; want single-symbol summary", outSingle)
 	}
-	for _, want := range []string{"final_equity=13310", "total_return=0.331", "bars=4"} {
+	for _, want := range []string{"final_equity=13310", "mark_return=0.331", "bars=4"} {
 		if !strings.Contains(outSingle, want) {
 			t.Fatalf("single output %q; want containing %q", outSingle, want)
 		}

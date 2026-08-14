@@ -541,15 +541,18 @@ func runBacktest(prog string, argv []string) int {
 
 	fp := strings.TrimSpace(*file)
 	d := strings.TrimSpace(*dsn)
-	if d == "" {
+	// Explicit flags are mutually exclusive; WBOT_PG_DSN is only a default
+	// for the -dsn flag, so a -file run must not trip the conflict when the
+	// environment happens to carry a DSN (CI sets WBOT_PG_DSN globally).
+	if fp != "" && d != "" {
+		fmt.Fprintf(os.Stderr, "backtest: -file and -dsn are mutually exclusive\n")
+		return 2
+	}
+	if d == "" && fp == "" {
 		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
 	}
 	if fp == "" && d == "" {
 		fmt.Fprintf(os.Stderr, "backtest: set -file or -dsn (or WBOT_PG_DSN)\n")
-		return 2
-	}
-	if fp != "" && d != "" {
-		fmt.Fprintf(os.Stderr, "backtest: -file and -dsn are mutually exclusive\n")
 		return 2
 	}
 	if *push && !*report {
