@@ -158,8 +158,9 @@ func (p futuPositions) Positions(ctx context.Context, _ any) ([]wheelrun.Positio
 		}
 		for _, pos := range positions {
 			out = append(out, wheelrun.Position{
-				Symbol: qualifySymbol(pos.GetSecMarket(), pos.GetCode()),
-				Code:   pos.GetCode(),
+				Symbol:  qualifySymbol(pos.GetSecMarket(), pos.GetCode()),
+				Code:    pos.GetCode(),
+				AvgCost: pos.GetCostPrice(),
 				// GetQty is already signed by the gateway (short = negative);
 				// wheelrun.Position wants a positive qty with Side carrying
 				// the sign (2026-08-13: the sold 450P came back qty=-1 side=1

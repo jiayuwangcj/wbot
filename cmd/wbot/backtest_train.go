@@ -381,7 +381,7 @@ func medianOutcomeIndex(ms []backtestes.Metrics) int {
 	return best
 }
 func tacticalParams(all map[string]any) map[string]any {
-	keys := []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
+	keys := []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "covered_call_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
 	out := map[string]any{}
 	for _, k := range keys {
 		if v, ok := all[k]; ok {

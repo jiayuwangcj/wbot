@@ -25,10 +25,11 @@ const (
 // Position is one broker position in the futu-neutral shape. Qty is always
 // positive; the side gives the sign (short positions are negative on input).
 type Position struct {
-	Symbol string  // market-qualified, e.g. HK.TCH260807C335000
-	Code   string  // bare code, e.g. TCH260807C335000 or 00700
-	Qty    float64 // shares (stocks) or contracts (options)
-	Side   int     // PositionSide: 0 long, 1 short, -1 unknown
+	Symbol  string  // market-qualified, e.g. HK.TCH260807C335000
+	Code    string  // bare code, e.g. TCH260807C335000 or 00700
+	Qty     float64 // shares (stocks) or contracts (options)
+	Side    int     // PositionSide: 0 long, 1 short, -1 unknown
+	AvgCost float64 // broker-reported stock acquisition basis; options ignore it
 }
 
 // TradePositions is the injectable position source for the runner (fakes in
@@ -185,6 +186,28 @@ func PositionsInput(positions []Position) (stockShares float64, opts []wheel.Opt
 		stockShares += signed
 	}
 	return stockShares, opts, nil
+}
+
+// StockAverageCost returns the quantity-weighted basis of long stock
+// positions. Option rows are ignored. A zero result means no usable basis was
+// supplied (or no long stock is held).
+func StockAverageCost(positions []Position) float64 {
+	var shares, amount float64
+	for _, p := range positions {
+		code := p.Code
+		if code == "" {
+			code = p.Symbol
+		}
+		if _, _, _, err := parseOptionCode(code); err == nil || p.Side != SideLong || p.Qty <= 0 || p.AvgCost <= 0 {
+			continue
+		}
+		shares += p.Qty
+		amount += p.Qty * p.AvgCost
+	}
+	if shares == 0 {
+		return 0
+	}
+	return amount / shares
 }
 
 // signedQty applies the PositionSide sign (long +, short −); an unknown side

@@ -2,6 +2,7 @@ package strategy
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -131,6 +132,27 @@ func TestWheelBacktestStockSwitchSuggestionExecutesStockTrade(t *testing.T) {
 	// 急涨卖出:建议量 100 含 30 期权 delta 折算,实际持仓 70 → 只卖 70(不裸卖)。
 	if res.Trades[2].Size != 70 || res.Terminal.StockShares != 0 {
 		t.Fatalf("sell size = %v, terminal shares = %v; want 70 / 0 (clamped, no naked short)", res.Trades[2].Size, res.Terminal.StockShares)
+	}
+}
+
+func TestWheelBacktestStockSwitchKeepsStockBelowCost(t *testing.T) {
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	bid := 2.0
+	row := snapshotRow(ts, &bid)
+	underlying := 100.0
+	row.UnderlyingPrice = &underlying
+	data, err := backtest.OptionsDataFromQuoteSnapshots([]wheelstore.QuoteSnapshotRecord{row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := wheelBacktestConfig()
+	cfg.FullPositionPrice, cfg.ZeroPositionPrice, cfg.MaxInventory, cfg.TradeGap = 50, 90, 100, 0
+	cfg.StockSwitchPct = 0.05
+	strategy := &WheelStrategy{Config: cfg, lastFillPrice: 110}
+	state := &backtest.State{Cash: 10000, Position: 100, StockAverageCost: 120, Options: map[string]backtest.OptionPosition{}, QuoteBatch: &data.QuoteBatches[0]}
+	action, size, err := strategy.OnBar(context.Background(), testBar(ts), state)
+	if err != nil || action != backtest.ActionHold || size != 0 || !strings.Contains(strategy.LastSignal.Reason, "below average cost") {
+		t.Fatalf("action=%v size=%v signal=%+v err=%v; want protected HOLD", action, size, strategy.LastSignal, err)
 	}
 }
 

@@ -29,7 +29,7 @@ ReviewRequest 字段说明：
 
 必须独立逐项审核并预防系统性错误：
 1. 方向反转（硬性项）：signal.direction 必须与当前持仓、effective_inventory、inventory_gap、target_inventory 和满仓/清仓价格锚点一致；核对 Put/Call、买卖符号及交易后库存变化，任何反向或矛盾一律 REJECT。
-2. 策略参数：full_position_price/zero_position_price、max_inventory、move_interval_pct、min_premium_per_share、stock_switch_pct、trade_gap、min_option_quality、min_dte/max_dte、strategic_state、数量和合约参数必须符合配置。
+2. 策略参数：full_position_price/zero_position_price、max_inventory、move_interval_pct、min_premium_per_share、stock_switch_pct、covered_call_pct、trade_gap、min_option_quality、min_dte/max_dte、strategic_state、数量和合约参数必须符合配置；卖 Put 必须 OTM，卖 Call 必须 OTM 且满足 covered call 价外幅度与持股成本下限。
 3. 数据质量：报价时效，Bid/Ask 非零且未倒挂，IV、Delta、Theta 合理，Volume/OI 非零，关键 Greeks 不缺失；以 user 消息 rules 声明的数据范围为界，rules 声明不提供的字段(如 llm 策略只有 strike/expiry/premium/delta/iv/open_interest,无 bid/ask/volume/theta)不得作为拒绝理由。
 4. 资金与库存：现金/保证金预算、最大库存、Put 指派风险、Call 备兑覆盖、交易后库存均不得超限。
 5. 一致性：排查闭市/停牌误判、同一合约重复动作、与当前持仓或历史动作矛盾、合约类型/到期日/乘数错误。

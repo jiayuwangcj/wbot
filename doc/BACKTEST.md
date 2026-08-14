@@ -56,7 +56,7 @@ wbot backtest \
 | `-seed` | 42 | 未成交启发式抽样种子；同输入同 seed 产生同一成交 trace，`0` 等价于默认 42 |
 | `-max-drawdown` | 0 | 结果约束（0..1）；超限退出 1 |
 | `-save` | false | 保存 metrics、完整 `strategy_params`、equity/trades/signals trace；要求 `-dsn` |
-| `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.2 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
+| `-report` / `-report-dir` | false / `./reports` | 单标的运行输出 schema 1.5 的 `{report_id}.json` 与确定性 HTML；目录自动创建，同 ID 重跑覆盖 |
 | `-push` | false | 显式把本次 `-report` 作为 Discord embed 推送；从 `~/.wbot/wbot.conf` 读取 `credentials.discord.bot_token/channel_id`，同一 `report_id` 成功后不重复发送 |
 | `-cache` | false | 显式把本次 `-report` 证据按 symbol 幂等写入 `strategy_cache`；要求单标的 `-dsn -strategy wheel -from-watchlist -report`，初始状态固定为 `RESEARCH_CANDIDATE` |
 | `-train` | 空 | 对 JSON 指定的战术参数范围运行 ES；只支持单标的 `-dsn -strategy wheel`，战略参数仍由 `-params` 固定 |
@@ -121,7 +121,7 @@ wbot backtest \
 
 当前确定性运行结果的 `Result.Unfilled` 记录期权卖出成交尝试口径：`AttemptCount = FillCount + UnfilledCount`，`UnfilledRatio = UnfilledCount / AttemptCount`；没有成交尝试时比例为 `null`，CLI 显示“未成交 N/A”，不得解释为 0%。`Trade.Filled=false` 表示一次由 `Trade.UnfilledModel` 标识的模拟未成交卖出尝试，不入账、不改变现金或持仓；成交的期权交易为 `Filled=true`。正股交易、HOLD 与 DATA_BLOCKED 不进入该尝试分母。
 
-`-report` 以 [[BACKTEST_REPORT]] schema 1.2 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。顶层 `initial_cash` 明确本金，`result.final_equity_amount` 明确期末权益；期末正股/期权/持仓/最大仓位百分比均以 `initial_cash` 为分母。`result.annualized_return_pct` 使用窗口自然日天数 `days=(to-from)/86400`，按 `(1+net_return_pct)^(365/days)-1` 计算；无法得到净收益或窗口无正天数时为 `null`。`result.cost_drag` 同时给出总费用、占本金比例、收益率拖累和毛收益（净收益 = 毛收益 - 损耗）。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。Wheel 能力为 `DATA_BLOCKED` 时，`net_return_*` 和超额字段为 `null`；HKEX 完整周期的 `RESEARCH_ONLY` 报告可输出机械模拟数值，但 `return_status=research_only`，不得解释为可执行收益。`data_quality` 分开记录实际消费的标的 bars `{source,adjusted,bar_count}` 与 `option_snapshot_sources`，例如腾讯正股回填显示 `tencent/qfq`，HKEX 期权投影单独显示 `hkex`。
+`-report` 以 [[BACKTEST_REPORT]] schema 1.5 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。顶层 `initial_cash` 明确本金，`result.final_equity_amount` 明确期末权益；期末正股/期权/持仓/最大仓位百分比均以 `initial_cash` 为分母。Wheel 报告并列权利金净额与全量已实现两种收益及各自年化；年化使用窗口自然日天数 `days=(to-from)/86400`，按 `(1+return_pct)^(365/days)-1` 计算，无法得到对应收益或窗口无正天数时为 `null`。`result.cost_drag` 同时给出总费用、占本金比例、收益率拖累和毛收益（净收益 = 毛收益 - 损耗）。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。Wheel 能力为 `DATA_BLOCKED` 时，两种收益和超额字段为 `null`；HKEX 完整周期的 `RESEARCH_ONLY` 报告可输出机械模拟数值，但 `return_status=research_only`，不得解释为可执行收益。`data_quality` 分开记录实际消费的标的 bars `{source,adjusted,bar_count}` 与 `option_snapshot_sources`，例如腾讯正股回填显示 `tencent/qfq`，HKEX 期权投影单独显示 `hkex`。
 
 `-push` 必须与 `-report` 同用，推送发生在 JSON/HTML 成功落盘之后。embed 由同一内存报告确定性投影 7 个核心字段（标的、窗口、净收益/能力状态、覆盖率、费用、回撤、停止原因），并逐条保留完整 `risk`；超出 Discord 限额时报错，不截断风险状态。每个 `report_id` 派生固定 25 字符 nonce 并请求 Discord 去重；成功后再在 `~/.wbot/backtest-push/discord/` 写本地 sent 标记。Discord 请求失败时 CLI 返回 1、报告仍可查看且不写 sent 标记，原命令重跑会用同一 ID/nonce 重试；成功后的再次执行输出 `push_status=already_sent` 且不发网络请求。未配置 token/channel 时 stderr 给出 `wbot.conf` 设置项，凭证不写报告或日志。测试可用 `DISCORD_API_BASE_URL` 指向本地假 Bot API，生产保持默认 Discord API。
 
@@ -131,7 +131,7 @@ wbot backtest \
 
 ### ES 战术参数训练
 
-`-train` 的键只允许 `move_interval_pct`、`min_premium_per_share`、`min_option_profit`、`stock_switch_pct`、`trade_gap`、`min_option_quality`、`min_dte`、`max_dte`。范围端点可写 JSON 数字或十进制字符串；`trade_gap` 与 DTE 使用整数离散步长，DTE 内部按“最短 DTE + 非负跨度”解码，始终满足 `min_dte <= max_dte`。例如：
+`-train` 的键只允许 `move_interval_pct`、`min_premium_per_share`、`min_option_profit`、`stock_switch_pct`、`covered_call_pct`、`trade_gap`、`min_option_quality`、`min_dte`、`max_dte`。`covered_call_pct` 按标的自身尺度训练，建议范围 `[0.01,0.15]`，不得把一个标的的训练值直接复制给另一个标的。范围端点可写 JSON 数字或十进制字符串；`trade_gap` 与 DTE 使用整数离散步长，DTE 内部按“最短 DTE + 非负跨度”解码，始终满足 `min_dte <= max_dte`。例如：
 
 ```bash
 wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00883 -strategy wheel \

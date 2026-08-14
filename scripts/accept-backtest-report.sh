@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acceptance: deterministic schema 1.4 single-run JSON + HTML report.
+# Acceptance: deterministic schema 1.5 single-run JSON + HTML report.
 # Usage: scripts/accept-backtest-report.sh [wbot-bin]
 set -uo pipefail
 
@@ -22,7 +22,7 @@ json_path="$(find "$tmp/reports" -maxdepth 1 -name '*.json' -print -quit)"
 html_path="${json_path%.json}.html"
 check "JSON 与 HTML 文件存在" 1 "$([[ -f "$json_path" && -f "$html_path" ]] && echo 1 || echo 0)"
 
-json_ok="$(node -e 'const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[1])); const top=["schema_version","report_id","report_kind","initial_cash","identity","result","terminal","data_quality","audit","risk"]; process.stdout.write(String(top.every(k=>Object.hasOwn(r,k)) && r.schema_version==="1.4" && r.report_kind==="single_run"));' "$json_path")"
+json_ok="$(node -e 'const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[1])); const top=["schema_version","report_id","report_kind","initial_cash","identity","result","terminal","data_quality","audit","risk"],dual=["realized_return_pct","realized_return_amount","realized_annualized_return_pct"]; process.stdout.write(String(top.every(k=>Object.hasOwn(r,k)) && dual.every(k=>Object.hasOwn(r.result,k)) && r.schema_version==="1.5" && r.report_kind==="single_run"));' "$json_path")"
 check "JSON schema 顶层键齐全" true "$json_ok"
 field_ok="$(node -e 'const r=require(process.argv[1]),x=r.result;const ok=r.initial_cash===10000&&x.final_equity_amount===10000&&x.annualized_return_pct===0&&x.cost_drag.total_fees_amount===0&&x.cost_drag.cost_drag_pct===0&&x.cost_drag_return_pct===0;process.stdout.write(String(ok));' "$json_path")"
 check "本金/期末权益/年化/损耗字段可复算" true "$field_ok"

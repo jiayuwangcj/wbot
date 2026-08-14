@@ -56,7 +56,7 @@ func TestRunOnceATMQuotesOnlyExpandUntilTwoQualityCandidates(t *testing.T) {
 	const symbol = "US.JD"
 	now := time.Now()
 	expiry := now.AddDate(0, 0, 7)
-	strikes := []float64{590, 600, 610, 620}
+	strikes := []float64{590, 600, 630, 640}
 	contracts := make([]futu.OptionContract, 0, len(strikes)*2)
 	options := make(map[string]futu.OptionQuoteEx)
 	for _, strike := range strikes {
@@ -65,7 +65,7 @@ func TestRunOnceATMQuotesOnlyExpandUntilTwoQualityCandidates(t *testing.T) {
 		put.Symbol = "US.JD260901P" + formatStrike(strike)
 		put.OptionType = "put"
 		contracts = append(contracts, call, put)
-		if strike == 600 || strike == 610 {
+		if strike == 630 || strike == 640 {
 			options[call.Symbol] = fullCallQuote(call.Symbol, strike, expiry, now)
 		}
 	}
@@ -75,7 +75,7 @@ func TestRunOnceATMQuotesOnlyExpandUntilTwoQualityCandidates(t *testing.T) {
 	}
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
 	r := testRunner(t, Dependencies{
-		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "JD", Qty: 500, Side: SideLong}},
+		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "JD", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain: fakeChain{contracts: contracts}, Store: store,
 		Watchlist: &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
 	})
@@ -83,8 +83,8 @@ func TestRunOnceATMQuotesOnlyExpandUntilTwoQualityCandidates(t *testing.T) {
 	if err := r.RunOnce(context.Background()); err != nil {
 		t.Fatalf("RunOnce() error: %v", err)
 	}
-	if got := len(quoter.optionCalls); got != 3 {
-		t.Fatalf("OptionQuotes calls = %d; want ATM, lower, upper only", got)
+	if got := len(quoter.optionCalls); got != 4 {
+		t.Fatalf("OptionQuotes calls = %d; want expansion through two protected OTM calls", got)
 	}
 	// Only the required direction is fetched: the opposite leg is rejected by
 	// Evaluate anyway and every contract costs a rate-limited greeks request.
@@ -94,8 +94,11 @@ func TestRunOnceATMQuotesOnlyExpandUntilTwoQualityCandidates(t *testing.T) {
 	if got := quoter.optionCalls[1]; len(got) != 1 || got[0] != "US.JD260901C590000" {
 		t.Fatalf("lower symbols = %v; want 590 call only", got)
 	}
-	if got := quoter.optionCalls[2]; len(got) != 1 || got[0] != "US.JD260901C610000" {
-		t.Fatalf("upper symbols = %v; want 610 call only", got)
+	if got := quoter.optionCalls[2]; len(got) != 1 || got[0] != "US.JD260901C630000" {
+		t.Fatalf("first protected OTM symbols = %v; want 630 call only", got)
+	}
+	if got := quoter.optionCalls[3]; len(got) != 1 || got[0] != "US.JD260901C640000" {
+		t.Fatalf("second protected OTM symbols = %v; want 640 call only", got)
 	}
 	if len(store.signals) != 1 || store.signals[0].Action != "ALERT" {
 		t.Fatalf("signals = %+v; want one ALERT", store.signals)
@@ -182,15 +185,15 @@ func (r *blockingSnapshotRecorder) AppendQuoteSnapshot(_ context.Context, record
 func TestQuoteSnapshotRecordingIsAsynchronousAndBounded(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	quoter := &fakeQuoter{
 		prices: map[string]float64{symbol: 600},
-		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now)},
 	}
 	recorder := &blockingSnapshotRecorder{started: make(chan struct{}), unblock: make(chan struct{})}
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
 	r := testRunner(t, Dependencies{
-		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain: fakeChain{contracts: []futu.OptionContract{contract}}, Store: store,
 		SnapshotRecorder: recorder, SnapshotQueueSize: 1,
 		Watchlist: &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},

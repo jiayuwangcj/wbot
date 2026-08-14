@@ -25,8 +25,8 @@
 | `accept-account-snapshot.sh` | `wbot ingest account` 快照落库（sim/real 双 env + `-every` 循环优雅退出） | 15 | 网关 OpenD + PG。`scripts/accept-account-snapshot.sh [bin] [dsn] [proto-addr]` |
 | `accept-account-snapshots-api.sh` | GET /v1/account/snapshots（契约/400/real 通道/快照增长） | 7 | serve + PG + 网关。`scripts/accept-account-snapshots-api.sh [base-url] [bin] [dsn] [proto-addr]` |
 | `accept-backtest.sh` | backtest 双面（CLI -dsn/-save/-export + GET detail/export；四条字节一致等价 + from_watchlist） | 21 | serve + PG + 种子 bars。`scripts/accept-backtest.sh [base-url] [bin] [dsn] [symbol]` | ✅ db-integration |
-| `accept-backtest-report.sh` | 单次回测 schema 1.2 JSON、本金/终局/年化/损耗/数据质量卡、类型费率 CLI/旧 `-fee` 兼容、确定性 HTML、汇总/未成交口径与同 ID 覆盖 | 14 | 无 PG 无网关。`scripts/accept-backtest-report.sh [bin]` | ✅ test job |
-| `accept-backtest-push.sh` | Discord embed 7 核心字段/完整风险、故障保留报告、同 ID 重试、enforced nonce 与成功后本地幂等 | 13 | 本地假 Discord Bot API，无 PG/外网/真实凭证。`scripts/accept-backtest-push.sh [bin]` | ✅ test job |
+| `accept-backtest-report.sh` | 单次回测 schema 1.5 JSON、权利金/已实现双口径、本金/终局/年化/损耗/数据质量卡、类型费率 CLI/旧 `-fee` 兼容、确定性 HTML、汇总/未成交口径与同 ID 覆盖 | 14 | 无 PG 无网关。`scripts/accept-backtest-report.sh [bin]` | ✅ test job |
+| `accept-backtest-push.sh` | Discord embed 权利金/已实现双口径等 8 核心字段/完整风险、故障保留报告、同 ID 重试、enforced nonce 与成功后本地幂等 | 13 | 本地假 Discord Bot API，无 PG/外网/真实凭证。`scripts/accept-backtest-push.sh [bin]` | ✅ test job |
 | `accept-backtest-train.sh` | ES 战术范围/种群轨迹、时序窗口、预算/早停与零数据错误契约 | 8 | 无 PG 无网关。`scripts/accept-backtest-train.sh [bin]` | ✅ test job |
 | `accept-cache-llm.sh` | strategy_cache payload/批准闸门与 LLM 摘要注入/过期跳过 | 5 | Go 单测驱动，无 PG/网关。`scripts/accept-cache-llm.sh` | ✅ test job |
 | `accept-watchlist.sh` | `wbot watchlist` CLI（add/remove/list + buy-hold + 写面→读面联动） | 16 | serve + PG。`scripts/accept-watchlist.sh [bin] [dsn] [base-url]` | ✅ db-integration |

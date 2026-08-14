@@ -398,17 +398,17 @@ func TestCandidateRecordsPreserveWheelJSON(t *testing.T) {
 func TestRunOnceAlertReady(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	quoter := &fakeQuoter{
 		prices: map[string]float64{symbol: 600},
 		opts: map[string]futu.OptionQuoteEx{
-			contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now),
+			contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now),
 		},
 	}
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
 	wl := &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}}
 	r := testRunner(t, Dependencies{
-		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain: fakeChain{contracts: []futu.OptionContract{contract}}, Store: store, Watchlist: wl,
 	})
 
@@ -448,7 +448,7 @@ func TestRunOnceInventoryIsolatedPerSymbol(t *testing.T) {
 	const hkSymbol = "HK.00700"
 	const usSymbol = "US.JD"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", hkSymbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", hkSymbol, 650, now.AddDate(0, 0, 7))
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{
 		hkSymbol: configRecord(hkSymbol),
 		usSymbol: configRecord(usSymbol),
@@ -456,7 +456,7 @@ func TestRunOnceInventoryIsolatedPerSymbol(t *testing.T) {
 	r := testRunner(t, Dependencies{
 		Quoter: &fakeQuoter{
 			prices: map[string]float64{hkSymbol: 600, usSymbol: 600},
-			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now)},
 		},
 		Positions: fakePositions{
 			{Symbol: hkSymbol, Code: "00700", Qty: 200, Side: SideLong},
@@ -491,16 +491,16 @@ func TestRunOnceInventoryIsolatedPerSymbol(t *testing.T) {
 func TestRunOnceAsOfAfterOptionQuotes(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	quoter := &fakeQuoter{
 		prices:               map[string]float64{symbol: 600},
-		opts:                 map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		opts:                 map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now)},
 		optionDelay:          5 * time.Millisecond,
 		stampOptionQuoteTime: true,
 	}
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
 	r := testRunner(t, Dependencies{
-		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Quoter: quoter, Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:     fakeChain{contracts: []futu.OptionContract{contract}},
 		Store:     store,
 		Watchlist: &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
@@ -521,10 +521,10 @@ func TestRunOnceLLMGateStates(t *testing.T) {
 	const approved, rejected, failed, after = "HK.00710", "HK.00711", "HK.00712", "HK.00713"
 	symbols := []string{approved, rejected, failed, after}
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", approved, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", approved, 650, now.AddDate(0, 0, 7))
 	quoter := &fakeQuoter{
 		prices: map[string]float64{approved: 600, rejected: 600, failed: 600, after: 600},
-		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now)},
 	}
 	configs := map[string]*wheelstore.ConfigRecord{}
 	items := make([]watchlist.Item, 0, len(symbols))
@@ -532,7 +532,7 @@ func TestRunOnceLLMGateStates(t *testing.T) {
 	for _, symbol := range symbols {
 		configs[symbol] = configRecord(symbol)
 		items = append(items, wheelItem(symbol))
-		positions = append(positions, Position{Symbol: symbol, Code: symbol[3:], Qty: 500, Side: SideLong})
+		positions = append(positions, Position{Symbol: symbol, Code: symbol[3:], Qty: 500, Side: SideLong, AvgCost: 500})
 	}
 	store := &fakeStore{configs: configs}
 	reviewer := &fakeReviewer{
@@ -674,15 +674,15 @@ func (b *blockingReviewer) callCount() int {
 func TestRunOnceAlertReviewDoesNotBlock(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	ctx, cancel := context.WithCancel(context.Background())
 	reviewer := &blockingReviewer{started: make(chan struct{}, 1)}
 	r := testRunner(t, Dependencies{
 		Quoter: &fakeQuoter{
 			prices: map[string]float64{symbol: 600},
-			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now)},
 		},
-		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:       fakeChain{contracts: []futu.OptionContract{contract}},
 		Store:       &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}},
 		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
@@ -716,15 +716,15 @@ func TestRunOnceAlertReviewDoesNotBlock(t *testing.T) {
 func TestReviewInFlightDedup(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
-	contractA := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contractA := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	ctx, cancel := context.WithCancel(context.Background())
 	reviewer := &blockingReviewer{started: make(chan struct{}, 1)}
 	r := testRunner(t, Dependencies{
 		Quoter: &fakeQuoter{
 			prices: map[string]float64{symbol: 600},
-			opts:   map[string]futu.OptionQuoteEx{contractA.Symbol: fullCallQuote(contractA.Symbol, 335, contractA.Expiry, now)},
+			opts:   map[string]futu.OptionQuoteEx{contractA.Symbol: fullCallQuote(contractA.Symbol, 650, contractA.Expiry, now)},
 		},
-		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:       fakeChain{contracts: []futu.OptionContract{contractA}},
 		Store:       &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}},
 		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
@@ -742,11 +742,11 @@ func TestReviewInFlightDedup(t *testing.T) {
 	}
 	// second pass with a different contract: not suppressed (candidate
 	// differs) but the in-flight audit dedupes it.
-	contractB := callContract("HK.TCH260901C345000", symbol, 345, now.AddDate(0, 0, 7))
+	contractB := callContract("HK.TCH260901C660000", symbol, 660, now.AddDate(0, 0, 7))
 	r.deps.Chain = fakeChain{contracts: []futu.OptionContract{contractB}}
 	r.deps.Quoter = &fakeQuoter{
 		prices: map[string]float64{symbol: 600},
-		opts:   map[string]futu.OptionQuoteEx{contractB.Symbol: fullCallQuote(contractB.Symbol, 345, contractB.Expiry, now)},
+		opts:   map[string]futu.OptionQuoteEx{contractB.Symbol: fullCallQuote(contractB.Symbol, 660, contractB.Expiry, now)},
 	}
 	if err := r.RunOnce(ctx); err != nil {
 		t.Fatalf("second RunOnce: %v", err)
@@ -768,15 +768,15 @@ func TestReviewInFlightDedup(t *testing.T) {
 func TestRepeatAlertSuppression(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	quoter := &fakeQuoter{
 		prices: map[string]float64{symbol: 600},
-		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now)},
 	}
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
 	r := testRunner(t, Dependencies{
 		Quoter:    quoter,
-		Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:     fakeChain{contracts: []futu.OptionContract{contract}},
 		Store:     store,
 		Watchlist: &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
@@ -802,11 +802,11 @@ func TestRepeatAlertSuppression(t *testing.T) {
 		t.Fatalf("signals after pass 2 = %+v; want HOLD (repeat candidate)", store.signals)
 	}
 	// a different contract is not suppressed.
-	contractB := callContract("HK.TCH260901C345000", symbol, 345, now.AddDate(0, 0, 7))
+	contractB := callContract("HK.TCH260901C660000", symbol, 660, now.AddDate(0, 0, 7))
 	r.deps.Chain = fakeChain{contracts: []futu.OptionContract{contractB}}
 	r.deps.Quoter = &fakeQuoter{
 		prices: map[string]float64{symbol: 600},
-		opts:   map[string]futu.OptionQuoteEx{contractB.Symbol: fullCallQuote(contractB.Symbol, 345, contractB.Expiry, now)},
+		opts:   map[string]futu.OptionQuoteEx{contractB.Symbol: fullCallQuote(contractB.Symbol, 660, contractB.Expiry, now)},
 	}
 	if err := run(); err != nil {
 		t.Fatalf("pass 3: %v", err)
@@ -835,16 +835,16 @@ func TestRepeatAlertSuppression(t *testing.T) {
 func TestReviewFailureClearsSuppression(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	quoter := &fakeQuoter{
 		prices: map[string]float64{symbol: 600},
-		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now)},
 	}
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
 	reviewer := &fakeReviewer{errors: map[string]error{symbol: errors.New("llm unreachable")}}
 	r := testRunner(t, Dependencies{
 		Quoter:      quoter,
-		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:       fakeChain{contracts: []futu.OptionContract{contract}},
 		Store:       store,
 		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
@@ -883,17 +883,17 @@ func TestReviewFailureClearsSuppression(t *testing.T) {
 func TestRunOnceNoPricePersistsDataBlocked(t *testing.T) {
 	const bad, good = "HK.00001", "HK.00002"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", good, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", good, 650, now.AddDate(0, 0, 7))
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{bad: configRecord(bad), good: configRecord(good)}}
 	wl := &fakeWatchlist{items: []watchlist.Item{wheelItem(bad), wheelItem(good)}}
 	r := testRunner(t, Dependencies{
 		Quoter: &fakeQuoter{
 			prices: map[string]float64{good: 600},
 			opts: map[string]futu.OptionQuoteEx{
-				contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now),
+				contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now),
 			},
 		},
-		Positions: fakePositions{{Symbol: good, Code: "00002", Qty: 500, Side: SideLong}},
+		Positions: fakePositions{{Symbol: good, Code: "00002", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:     fakeChain{contracts: []futu.OptionContract{contract}},
 		Store:     store, Watchlist: wl,
 	})
@@ -920,7 +920,7 @@ func TestRunOnceNoPricePersistsDataBlocked(t *testing.T) {
 func TestRunOnceHoldDataBlocked(t *testing.T) {
 	const symbol = "HK.00700"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
 	wl := &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}}
 	r := testRunner(t, Dependencies{
@@ -928,7 +928,7 @@ func TestRunOnceHoldDataBlocked(t *testing.T) {
 			prices: map[string]float64{symbol: 600},
 			opts:   map[string]futu.OptionQuoteEx{}, // chain contract has no live quote
 		},
-		Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:     fakeChain{contracts: []futu.OptionContract{contract}},
 		Store:     store, Watchlist: wl,
 	})
@@ -957,17 +957,17 @@ func TestRunOnceHoldDataBlocked(t *testing.T) {
 func TestRunOnceSymbolFailureContinues(t *testing.T) {
 	const bad, good = "HK.00003", "HK.00004"
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", good, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", good, 650, now.AddDate(0, 0, 7))
 	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{good: configRecord(good)}}
 	wl := &fakeWatchlist{items: []watchlist.Item{wheelItem(bad), wheelItem(good)}}
 	r := testRunner(t, Dependencies{
 		Quoter: &fakeQuoter{
 			prices: map[string]float64{good: 600},
 			opts: map[string]futu.OptionQuoteEx{
-				contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now),
+				contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now),
 			},
 		},
-		Positions: fakePositions{{Symbol: good, Code: "00004", Qty: 500, Side: SideLong}},
+		Positions: fakePositions{{Symbol: good, Code: "00004", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:     fakeChain{contracts: []futu.OptionContract{contract}},
 		Store:     store, Watchlist: wl,
 	})
@@ -1057,7 +1057,7 @@ func TestRunOnceLLMReviewVisibleToLatestLLMReview(t *testing.T) {
 		t.Fatalf("AppendConfig: %v", err)
 	}
 	now := time.Now()
-	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	contract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
 			http.NotFound(w, r)
@@ -1074,9 +1074,9 @@ func TestRunOnceLLMReviewVisibleToLatestLLMReview(t *testing.T) {
 	r := testRunner(t, Dependencies{
 		Quoter: &fakeQuoter{
 			prices: map[string]float64{symbol: 600},
-			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 650, contract.Expiry, now)},
 		},
-		Positions:   fakePositions{{Symbol: symbol, Code: "LLM", Qty: 500, Side: SideLong}},
+		Positions:   fakePositions{{Symbol: symbol, Code: "LLM", Qty: 500, Side: SideLong, AvgCost: 500}},
 		Chain:       fakeChain{contracts: []futu.OptionContract{contract}},
 		Store:       store,
 		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},

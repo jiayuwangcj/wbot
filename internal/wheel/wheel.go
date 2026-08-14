@@ -51,6 +51,9 @@ const (
 	// DefaultMinOptionProfit is the gross premium floor for one candidate
 	// option trade. It is a total premium amount, not a per-share threshold.
 	DefaultMinOptionProfit = 200.0
+	// DefaultCoveredCallPct keeps covered calls meaningfully out of the money
+	// while old persisted configs (which omit the new field) remain usable.
+	DefaultCoveredCallPct = 0.05
 	// MinWheelDTE/MaxWheelDTE bound the DTE window the wheel may trade.
 	// The upper bound was widened 10 → 45 on 2026-08-14: the historical 5..10
 	// window was a structural handicap (thin premiums, sparse candidates,
@@ -125,6 +128,7 @@ type Config struct {
 	MinPremiumPerShare     float64         `json:"min_premium_per_share" yaml:"min_premium_per_share"`
 	MinOptionProfit        float64         `json:"min_option_profit" yaml:"min_option_profit"`
 	StockSwitchPct         float64         `json:"stock_switch_pct" yaml:"stock_switch_pct"`
+	CoveredCallPct         float64         `json:"covered_call_pct" yaml:"covered_call_pct"`
 	TradeGap               float64         `json:"trade_gap" yaml:"trade_gap"`
 	MinOptionQuality       float64         `json:"min_option_quality" yaml:"min_option_quality"`
 	MinDTE                 int             `json:"min_dte" yaml:"min_dte"`
@@ -176,6 +180,9 @@ func (c Config) Validate() error {
 	}
 	if !finite(c.StockSwitchPct) || c.StockSwitchPct < 0 {
 		return fmt.Errorf("wheel: stock_switch_pct must be non-negative")
+	}
+	if !finite(c.CoveredCallPct) || c.CoveredCallPct < 0 || c.CoveredCallPct > 1 {
+		return fmt.Errorf("wheel: covered_call_pct must be in [0,1]")
 	}
 	if !finite(c.TradeGap) || c.TradeGap < 0 {
 		return fmt.Errorf("wheel: trade_gap must be non-negative")
@@ -578,9 +585,14 @@ func PutAssignmentCash(positions []OptionPosition, lotSize int) float64 {
 }
 
 type DecisionInput struct {
-	CurrentPrice            float64
-	AsOf                    time.Time
-	StockShares             float64
+	CurrentPrice float64
+	AsOf         time.Time
+	StockShares  float64
+	// StockAverageCost is the running acquisition basis of held stock. A
+	// positive value protects direct stock sales and covered-call strikes from
+	// realizing a stock loss. Zero preserves compatibility for callers with no
+	// stock basis (and is irrelevant when StockShares is zero).
+	StockAverageCost        float64
 	FuturesEquivalentShares float64
 	Positions               []OptionPosition
 	Quotes                  []OptionQuote
@@ -724,6 +736,14 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			if gap < 0 {
 				side = "SELL"
 			}
+			if side == "SELL" && in.StockShares > 0 && in.StockAverageCost <= 0 {
+				base.CapabilityStatus = CapabilityDataBlocked
+				base.BlockedBy = append(base.BlockedBy, "stock_average_cost")
+				return hold("stock_switch_pct reached but stock average cost is unavailable; cannot sell safely", base), nil
+			}
+			if side == "SELL" && in.StockAverageCost > 0 && in.CurrentPrice+1e-9 < in.StockAverageCost {
+				return hold("stock_switch_pct reached but stock price is below average cost; keep stock until recovery", base), nil
+			}
 			base.StockSuggestion = &StockSuggestion{Side: side, Shares: math.Abs(gap)}
 			return hold("stock_switch_pct reached; stock suggestion only", base), nil
 		}
@@ -741,6 +761,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	}
 	validDirectionQuoteCount := 0
 	dependencyBlocked := false
+	stockCostBlocked := false
 	pendingExcluded := 0
 	// 改单资格记录:循环中首个带挂单的候选保留其合约与有效性,供选中候选
 	// 后按选择排序判定「撤旧挂新」是否真的更优(避免把更优挂单换成更差合约)。
@@ -753,7 +774,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 		// daily cap means later valid evaluations are not suppressed; it does not
 		// turn one reminder into an unbounded multi-contract order.
 		qty := 1
-		candidate := CandidateEvaluation{Quote: q, Direction: direction, Quantity: qty, SignedContracts: -qty, Quality: QualityScore(q), ExpectedGain: expectedGain(q, qty)}
+		candidate := CandidateEvaluation{Quote: q, Direction: direction, Quantity: qty, SignedContracts: -qty}
 		if hasPendingContract(in.Pending, q.Symbol, string(direction)) {
 			// Pending matches imply direction agreement, so the quote still
 			// counts as direction-valid: all-candidates-pending must read as
@@ -781,6 +802,34 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 				candidate.Reasons = append(candidate.Reasons, "wheel: quote direction does not match inventory gap")
 			} else {
 				validDirectionQuoteCount++
+			}
+			// Moneyness and covered-call basis are hard masks. Apply them before
+			// quality/premium scoring: ITM contracts otherwise win naturally on
+			// their large intrinsic-value premium.
+			if len(candidate.Reasons) == 0 && direction == DirectionPut && q.Strike >= in.CurrentPrice {
+				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: sell put must be OTM (strike %.4f < underlying %.4f)", q.Strike, in.CurrentPrice))
+			}
+			if len(candidate.Reasons) == 0 && direction == DirectionCall && q.Strike <= in.CurrentPrice {
+				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: sell call must be OTM (strike %.4f > underlying %.4f)", q.Strike, in.CurrentPrice))
+			}
+			if len(candidate.Reasons) == 0 && direction == DirectionCall {
+				if in.StockShares > 0 && in.StockAverageCost <= 0 {
+					candidate.Reasons = append(candidate.Reasons, "wheel: stock average cost is unavailable; covered call cannot guarantee loss protection")
+					stockCostBlocked = true
+				}
+			}
+			if len(candidate.Reasons) == 0 && direction == DirectionCall {
+				minimumStrike := in.CurrentPrice * (1 + cfg.CoveredCallPct)
+				if in.StockAverageCost > minimumStrike {
+					minimumStrike = in.StockAverageCost
+				}
+				if q.Strike+1e-9 < minimumStrike {
+					candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: covered call strike %.4f below protected minimum %.4f", q.Strike, minimumStrike))
+				}
+			}
+			if len(candidate.Reasons) == 0 {
+				candidate.Quality = QualityScore(q)
+				candidate.ExpectedGain = expectedGain(q, qty)
 			}
 			if len(candidate.Reasons) == 0 && candidate.Quality < cfg.MinOptionQuality {
 				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: option quality %.4f below minimum %.4f", candidate.Quality, cfg.MinOptionQuality))
@@ -842,6 +891,10 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 		if dependencyBlocked {
 			base.CapabilityStatus = CapabilityDataBlocked
 			base.BlockedBy = append(base.BlockedBy, "cash_available")
+		}
+		if stockCostBlocked {
+			base.CapabilityStatus = CapabilityDataBlocked
+			base.BlockedBy = append(base.BlockedBy, "stock_average_cost")
 		}
 		if pendingExcluded > 0 && validDirectionQuoteCount == pendingExcluded {
 			// Every direction-valid quote is already covered by an unfilled

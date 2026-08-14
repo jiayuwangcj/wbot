@@ -54,7 +54,7 @@ func TestMessageCarriesCoreFieldsAndFullRisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(message.Embeds) != 1 || len(message.Embeds[0].Fields) != 7 {
+	if len(message.Embeds) != 1 || len(message.Embeds[0].Fields) != 8 {
 		t.Fatalf("embed shape = %#v", message.Embeds)
 	}
 	embed := message.Embeds[0]
@@ -67,16 +67,38 @@ func TestMessageCarriesCoreFieldsAndFullRisk(t *testing.T) {
 	for _, field := range embed.Fields {
 		values[field.Name] = field.Value
 	}
-	for _, name := range []string{"标的", "数据窗口", "净收益 / 能力状态", "有效覆盖率", "费用", "最大回撤", "停止原因"} {
+	for _, name := range []string{"标的", "数据窗口", "权利金净额口径", "已实现口径", "有效覆盖率", "费用", "最大回撤", "停止原因"} {
 		if values[name] == "" {
 			t.Errorf("missing field %q in %#v", name, values)
 		}
 	}
-	if !strings.Contains(values["净收益 / 能力状态"], "DATA_BLOCKED") || !strings.Contains(values["净收益 / 能力状态"], "N/A") {
-		t.Fatalf("blocked return = %q", values["净收益 / 能力状态"])
+	if !strings.Contains(values["权利金净额口径"], "DATA_BLOCKED") || !strings.Contains(values["权利金净额口径"], "N/A") || !strings.Contains(values["已实现口径"], "N/A") {
+		t.Fatalf("blocked dual returns = %q / %q", values["权利金净额口径"], values["已实现口径"])
 	}
 	if len(message.Nonce) != 25 || !message.EnforceNonce {
 		t.Fatalf("nonce = %q enforce=%v", message.Nonce, message.EnforceNonce)
+	}
+}
+
+func TestMessageRendersDualReturnMetrics(t *testing.T) {
+	report := reportFixture()
+	premium, premiumAnnualized := 0.12, 0.18
+	realized, realizedAnnualized := 0.03, 0.04
+	report.Identity.CapabilityStatus = "RESEARCH_ONLY"
+	report.Result.NetReturnPct = &premium
+	report.Result.AnnualizedReturnPct = &premiumAnnualized
+	report.Result.RealizedReturnPct = &realized
+	report.Result.RealizedAnnualizedReturnPct = &realizedAnnualized
+	message, err := Message(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := map[string]string{}
+	for _, field := range message.Embeds[0].Fields {
+		fields[field.Name] = field.Value
+	}
+	if !strings.Contains(fields["权利金净额口径"], "12.00%") || !strings.Contains(fields["权利金净额口径"], "年化 18.00%") || !strings.Contains(fields["已实现口径"], "3.00%") || !strings.Contains(fields["已实现口径"], "年化 4.00%") {
+		t.Fatalf("dual return fields = %#v", fields)
 	}
 }
 

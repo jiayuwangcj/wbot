@@ -11,6 +11,7 @@ export interface WheelFormValues {
   min_premium_per_share: number | null;
   min_option_profit: number | null;
   stock_switch_pct: number | null;
+  covered_call_pct: number | null;
   trade_gap: number | null;
   min_dte: number | null;
   max_dte: number | null;
@@ -28,6 +29,7 @@ export const DEFAULT_WHEEL_VALUES: WheelFormValues = {
   min_premium_per_share: 0,
   min_option_profit: 200,
   stock_switch_pct: 0,
+  covered_call_pct: 5,
   trade_gap: 50,
   min_dte: 5,
   max_dte: 10,
@@ -52,6 +54,7 @@ export function validateWheelParams(values: WheelFormValues): WheelParams {
   const minPremium = finiteNumber(values.min_premium_per_share, "最低每股权利金");
   const minOptionProfit = finiteNumber(values.min_option_profit, "最低期权收益");
   const stockSwitchPct = finiteNumber(values.stock_switch_pct, "正股切换阈值");
+  const coveredCallPct = finiteNumber(values.covered_call_pct, "covered call 价外幅度");
   const tradeGap = finiteNumber(values.trade_gap, "免交易库存差");
   const minDte = finiteNumber(values.min_dte, "最小 DTE");
   const maxDte = finiteNumber(values.max_dte, "最大 DTE");
@@ -63,6 +66,7 @@ export function validateWheelParams(values: WheelFormValues): WheelParams {
   if (minPremium < 0) throw new Error("最低每股权利金必须不小于 0");
   if (minOptionProfit < 0) throw new Error("最低期权收益必须不小于 0");
   if (stockSwitchPct < 0) throw new Error("正股切换阈值必须不小于 0");
+  if (coveredCallPct < 0 || coveredCallPct > 100) throw new Error("covered call 价外幅度必须在 0% 到 100% 之间");
   if (tradeGap < 0) throw new Error("免交易库存差必须不小于 0");
   if (minDte < 5 || maxDte > 10 || !Number.isInteger(minDte) || maxDte < minDte || !Number.isInteger(maxDte)) {
     throw new Error("DTE 必须是 5 到 10 之间的有效范围");
@@ -77,6 +81,7 @@ export function validateWheelParams(values: WheelFormValues): WheelParams {
     min_premium_per_share: minPremium,
     min_option_profit: minOptionProfit,
     stock_switch_pct: decimalPercent(stockSwitchPct),
+    covered_call_pct: decimalPercent(coveredCallPct),
     trade_gap: tradeGap,
     min_dte: minDte,
     max_dte: maxDte,
@@ -94,6 +99,7 @@ function formValues(values?: Partial<WheelParams>): WheelFormValues {
     min_premium_per_share: values?.min_premium_per_share ?? DEFAULT_WHEEL_VALUES.min_premium_per_share,
     min_option_profit: values?.min_option_profit ?? DEFAULT_WHEEL_VALUES.min_option_profit,
     stock_switch_pct: values?.stock_switch_pct === undefined ? DEFAULT_WHEEL_VALUES.stock_switch_pct : values.stock_switch_pct * 100,
+    covered_call_pct: values?.covered_call_pct === undefined ? DEFAULT_WHEEL_VALUES.covered_call_pct : values.covered_call_pct * 100,
     trade_gap: values?.trade_gap ?? DEFAULT_WHEEL_VALUES.trade_gap,
     min_dte: values?.min_dte ?? DEFAULT_WHEEL_VALUES.min_dte,
     max_dte: values?.max_dte ?? DEFAULT_WHEEL_VALUES.max_dte,
@@ -140,6 +146,7 @@ export function WheelForm({ initialValues, onSubmit, submitLabel = "保存", for
           <Col xs={24} sm={12} lg={8}><Form.Item label="最低每股权利金" name="min_premium_per_share"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="最低期权收益（HKD/笔）" name="min_option_profit"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="正股切换阈值 (%)" name="stock_switch_pct"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={8}><Form.Item label="covered call 价外幅度 (%)" name="covered_call_pct"><InputNumber min={0} max={100} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="免交易库存差" name="trade_gap"><InputNumber min={0} step="any" style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="最小 DTE" name="min_dte"><InputNumber min={5} max={10} step={1} style={{ width: "100%" }} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={8}><Form.Item label="最大 DTE" name="max_dte"><InputNumber min={5} max={10} step={1} style={{ width: "100%" }} /></Form.Item></Col>

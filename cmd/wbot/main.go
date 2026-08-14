@@ -469,7 +469,7 @@ func runBacktest(prog string, argv []string) int {
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
 	format := fs.String("format", "csv", "export format with -export: csv or json (same output as GET /v1/backtests/{id}/export)")
-	report := fs.Bool("report", false, "write a deterministic schema 1.2 JSON report and HTML projection")
+	report := fs.Bool("report", false, "write a deterministic schema 1.5 JSON report and HTML projection")
 	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
 	push := fs.Bool("push", false, "push the generated report to the configured Discord channel exactly once per report ID (requires -report)")
 	cache := fs.Bool("cache", false, "upsert report evidence into strategy_cache (requires -dsn -strategy wheel -from-watchlist -report)")

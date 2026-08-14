@@ -94,15 +94,22 @@ func Message(report *backtestreport.Report) (discord.Message, error) {
 		return discord.Message{}, errors.New("backtest push: complete risk text exceeds Discord embed description limit")
 	}
 
-	result := report.Identity.CapabilityStatus + " · 净收益 N/A"
+	premiumResult := report.Identity.CapabilityStatus + " · N/A"
 	if report.Result.NetReturnPct != nil {
-		result = percent(*report.Result.NetReturnPct)
+		premiumResult = percent(*report.Result.NetReturnPct)
 	}
 	if report.Result.AnnualizedReturnPct != nil {
-		result += " · 年化 " + percent(*report.Result.AnnualizedReturnPct)
+		premiumResult += " · 年化 " + percent(*report.Result.AnnualizedReturnPct)
 	}
 	if report.Result.GrossReturnPct != nil {
-		result += " · 毛 " + percent(*report.Result.GrossReturnPct)
+		premiumResult += " · 毛 " + percent(*report.Result.GrossReturnPct)
+	}
+	realizedResult := report.Identity.CapabilityStatus + " · N/A"
+	if report.Result.RealizedReturnPct != nil {
+		realizedResult = percent(*report.Result.RealizedReturnPct)
+		if report.Result.RealizedAnnualizedReturnPct != nil {
+			realizedResult += " · 年化 " + percent(*report.Result.RealizedAnnualizedReturnPct)
+		}
 	}
 	coverage := "N/A"
 	if report.DataQuality.ValidCoverageRatio != nil {
@@ -128,7 +135,8 @@ func Message(report *backtestreport.Report) (discord.Message, error) {
 	fields := []discord.EmbedField{
 		{Name: "标的", Value: report.Identity.Symbol, Inline: true},
 		{Name: "数据窗口", Value: report.Identity.DataWindow.From + " — " + report.Identity.DataWindow.To + fmt.Sprintf(" · 本金 %.2f · 期末 %.2f", report.InitialCash, valueOrZero(report.Result.FinalEquityAmount))},
-		{Name: "净收益 / 能力状态", Value: result, Inline: true},
+		{Name: "权利金净额口径", Value: premiumResult, Inline: true},
+		{Name: "已实现口径", Value: realizedResult, Inline: true},
 		{Name: "有效覆盖率", Value: coverage, Inline: true},
 		{Name: "费用", Value: fmt.Sprintf("%s %.2f · 损耗 %.2f%% · %s", report.Identity.Currency, report.Result.CostModel.TotalFeesAmount, report.Result.CostDragPct*100, feeStatus), Inline: true},
 		{Name: "最大回撤", Value: percent(report.Result.MaxDrawdownPct), Inline: true},
