@@ -77,3 +77,10 @@
   | 旧 `-fee 3` | 1,019,997 | 1.999700% | 1.994182% | 3 | 0.000300% | legacy fixed/trade |
 
   分类型命令显式同时传入 `-fee 3` 与三项新 flag，验证新模型优先；买入 10,000 股按 100 手计费 7,000。相同 seed/params/data 重跑的 typed 报告保持同一 `report_id=bt-HK.00700-42-3ba5fbea`，JSON SHA-256=`5a5d664611cbec1ec0b06acbfc999afb101c6ff7b56625bcfe9b7756fd8d9a29`，HTML SHA-256=`6bd63eac7500ee97f14a6ad46b93dac6ba7ce87def3bb84416a674e4f755bd02`。
+
+## 评审(2026-08-14,主会话派 reviewer)
+
+- **结论:有条件合入;功能类型:feature**。核心验证通过:accept 14/14、typed/legacy 双费率实测、同输入报告字节一致(确定性)、费用口径逐项核对(21/张、70/手、roll=42、行权交割 70)。
+- **P1(合入前已修,6c851e5)**:ES 报告年化混窗口——backtest_train.go 原以全窗 Start/End 配测试窗 Result 算年化(数字被低估);已改用 `selectedOutcome.StartTs/EndTs`(测试窗),与 Result/data_window 一致。
+- **P2(排期)**:① 买入 size 现金校验不含 fee,现金可负 fee 额(实施者有意简化,补 BACKTEST.md 口径文档)② `stock_fees_amount`(含交割费)与 `CostModel.Stock.amount`(不含)口径不同,文档字段级注明 ③ HTML 核心指标卡「窗口收益」与「窗口末估值变动」同数值,删一留一 ④ 提交粒度:8a5f73d 单提交承载 A+B+C(不阻断,后续切片分步)
+- **P3(建议)**:NaN 费率报错文案;legacy exercise 0 费事件仍计 ChargedTradeCount;multi.go 错误前缀重复;help 文本补「未显式给分类型 flag 时仍为旧 -fee 语义」;补 BuildES 年化单测(评审建议 1);真实 PG 复跑后对账旧基准(216 元费用 → 真实量级)
