@@ -120,6 +120,10 @@ func runBacktestBatch(dsn, file, symbol, strategyName string, groups []map[strin
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
+		if len(parsed) == 0 {
+			fmt.Fprintln(os.Stderr, "backtest: empty bars")
+			return 1
+		}
 		startTs, endTs = parsed[0].Ts, parsed[len(parsed)-1].Ts
 		baselineReturnPct = parsed[len(parsed)-1].Close/parsed[0].Close - 1
 		for i, params := range groups {
