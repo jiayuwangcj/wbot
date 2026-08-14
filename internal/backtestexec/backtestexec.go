@@ -80,6 +80,16 @@ type Outcome struct {
 	SourceHash        string
 }
 
+// Prepared contains the immutable market input for one backtest window.
+// Strategies and run seeds are deliberately not part of the prepared value:
+// ES evaluates many parameter/seed combinations over the same window, while
+// the bars and quote snapshots are identical for all of them.
+type Prepared struct {
+	bars       []ingest.Bar
+	options    *backtest.OptionsData
+	sourceHash string
+}
+
 // Build validates a strategy name + params against the CLI/API contract and
 // returns the ready strategy; templ is nil for hold/buy-hold. It is the shared
 // validation surface: unknown strategy, params on hold/buy-hold, unknown
@@ -105,16 +115,13 @@ func Build(name string, params map[string]any) (backtest.Strategy, *strategy.Tem
 	return s, templ, nil
 }
 
-// Run loads bars (and option quotes when the strategy needs them) from the
-// database and runs the strategy — the same path as `wbot backtest -dsn`
-// (doc/BACKTEST.md). ErrNoBars reports missing underlying data; missing option
-// snapshots produce a DATA_BLOCKED result. ctx cancellation aborts the run.
-func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
-	if strings.TrimSpace(o.Symbol) == "" || strings.TrimSpace(o.Strategy) == "" {
-		return nil, errors.New("backtest: exec: symbol and strategy are required")
-	}
-	if db == nil {
-		return nil, errors.New("backtest: exec: nil db")
+// Prepare loads bars (and option quotes when the strategy needs them) from the
+// database once for one window. The returned value can be reused for many
+// parameter/seed evaluations without repeating the database queries or
+// OptionsData conversion.
+func Prepare(ctx context.Context, db *sql.DB, o Options) (*Prepared, error) {
+	if err := validateInputs(o, db); err != nil {
+		return nil, err
 	}
 	s, templ, err := Build(o.Strategy, o.Params)
 	if err != nil {
@@ -142,21 +149,67 @@ func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
 			return nil, err
 		}
 	}
-	res, err := backtest.RunOptions(ctx, bars, o.Cash, o.Fee, s, opts)
+	inputHash, err := sourceHash(bars, opts)
 	if err != nil {
 		return nil, err
 	}
-	inputHash, err := sourceHash(bars, opts)
+	return &Prepared{bars: bars, options: opts, sourceHash: inputHash}, nil
+}
+
+// RunPrepared executes one parameter/seed evaluation over data loaded by
+// Prepare. It intentionally creates a fresh strategy and backtest state for
+// every call; only immutable input data is shared.
+func (p *Prepared) RunPrepared(ctx context.Context, o Options) (*Outcome, error) {
+	if p == nil || len(p.bars) == 0 {
+		return nil, errors.New("backtest: exec: nil prepared data")
+	}
+	if strings.TrimSpace(o.Symbol) == "" || strings.TrimSpace(o.Strategy) == "" {
+		return nil, errors.New("backtest: exec: symbol and strategy are required")
+	}
+	s, _, err := Build(o.Strategy, o.Params)
+	if err != nil {
+		return nil, err
+	}
+	opts := p.options
+	if opts != nil {
+		// RunSeed is per evaluation. Copy the small wrapper instead of mutating
+		// the shared prepared value, so a future parallel evaluator cannot make
+		// one candidate's unfilled draws affect another candidate.
+		copy := *opts
+		copy.RunSeed = o.Seed
+		opts = &copy
+	}
+	res, err := backtest.RunOptions(ctx, p.bars, o.Cash, o.Fee, s, opts)
 	if err != nil {
 		return nil, err
 	}
 	return &Outcome{
 		Result:            res,
-		StartTs:           bars[0].Ts,
-		EndTs:             bars[len(bars)-1].Ts,
-		BaselineReturnPct: bars[len(bars)-1].Close/bars[0].Close - 1,
-		SourceHash:        inputHash,
+		StartTs:           p.bars[0].Ts,
+		EndTs:             p.bars[len(p.bars)-1].Ts,
+		BaselineReturnPct: p.bars[len(p.bars)-1].Close/p.bars[0].Close - 1,
+		SourceHash:        p.sourceHash,
 	}, nil
+}
+
+// Run preserves the public DB-backed execution contract for API and CLI
+// callers that only need one evaluation.
+func Run(ctx context.Context, db *sql.DB, o Options) (*Outcome, error) {
+	p, err := Prepare(ctx, db, o)
+	if err != nil {
+		return nil, err
+	}
+	return p.RunPrepared(ctx, o)
+}
+
+func validateInputs(o Options, db *sql.DB) error {
+	if strings.TrimSpace(o.Symbol) == "" || strings.TrimSpace(o.Strategy) == "" {
+		return errors.New("backtest: exec: symbol and strategy are required")
+	}
+	if db == nil {
+		return errors.New("backtest: exec: nil db")
+	}
+	return nil
 }
 
 func optionsDataForRun(rows []wheelstore.QuoteSnapshotRecord, seed int64) (*backtest.OptionsData, error) {

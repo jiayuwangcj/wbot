@@ -52,6 +52,17 @@ func OptionsDataFromQuoteSnapshots(rows []wheelstore.QuoteSnapshotRecord) (*Opti
 	out := make([]QuoteSnapshotBatch, 0, len(batches))
 	for _, b := range batches {
 		sort.SliceStable(b.Quotes, func(i, j int) bool { return quoteName(b.Quotes[i]) < quoteName(b.Quotes[j]) })
+		b.ExpiryOrder = make([]int, len(b.Quotes))
+		for i := range b.ExpiryOrder {
+			b.ExpiryOrder[i] = i
+		}
+		sort.SliceStable(b.ExpiryOrder, func(i, j int) bool {
+			left, right := b.Quotes[b.ExpiryOrder[i]], b.Quotes[b.ExpiryOrder[j]]
+			if !left.Expiry.Equal(right.Expiry) {
+				return left.Expiry.Before(right.Expiry)
+			}
+			return quoteName(left) < quoteName(right)
+		})
 		out = append(out, *b)
 	}
 	sort.SliceStable(out, func(i, j int) bool {

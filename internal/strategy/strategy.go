@@ -12,6 +12,8 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/ingest"
@@ -343,7 +345,10 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		return backtest.ActionHold, 0, nil
 	}
 
-	quotes := slices.Clone(batch.Quotes)
+	// Historical snapshots contain the full option universe. DTE is a cheap,
+	// deterministic loading-time gate, so avoid sending contracts outside this
+	// bar's configured expiry window through the hot candidate validator.
+	quotes := filterQuotesByExpiry(batch.Quotes, batch.ExpiryOrder, bar.Ts, s.Config)
 	quoteByCode := make(map[string]wheel.OptionQuote, len(quotes))
 	for _, q := range quotes {
 		code := q.Symbol
@@ -399,6 +404,7 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		s.LastSignal = signal
 		return backtest.ActionHold, 0, nil
 	}
+	restoreExpiryRejectedCandidates(&signal, batch.Quotes, quotes, bar.Ts, s.Config)
 	s.LastSignal = signal
 	if signal.Action != wheel.ActionAlert || signal.Quote == nil || signal.Quantity <= 0 {
 		return backtest.ActionHold, 0, nil
@@ -425,6 +431,207 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		st.Pending = nil
 		return backtest.ActionHold, 0, nil
 	}
+}
+
+func filterQuotesByExpiry(quotes []wheel.OptionQuote, expiryOrder []int, barTs time.Time, cfg wheel.Config) []wheel.OptionQuote {
+	if barTs.IsZero() {
+		return slices.Clone(quotes)
+	}
+	asOfDate := calendarDate(barTs)
+	minExpiryDate := asOfDate.AddDate(0, 0, cfg.MinDTE)
+	maxExpiryDate := asOfDate.AddDate(0, 0, cfg.MaxDTE)
+	if len(expiryOrder) == len(quotes) {
+		seen := make([]bool, len(quotes))
+		var previousExpiry time.Time
+		for _, index := range expiryOrder {
+			if index < 0 || index >= len(quotes) || seen[index] {
+				return filterQuotesByExpiryLinear(quotes, minExpiryDate, maxExpiryDate)
+			}
+			seen[index] = true
+			expiry := calendarDate(quotes[index].Expiry)
+			if !previousExpiry.IsZero() && expiry.Before(previousExpiry) {
+				return filterQuotesByExpiryLinear(quotes, minExpiryDate, maxExpiryDate)
+			}
+			previousExpiry = expiry
+		}
+		lo := sort.Search(len(expiryOrder), func(i int) bool {
+			return !calendarDate(quotes[expiryOrder[i]].Expiry).Before(minExpiryDate)
+		})
+		hi := sort.Search(len(expiryOrder), func(i int) bool {
+			return calendarDate(quotes[expiryOrder[i]].Expiry).After(maxExpiryDate)
+		})
+		included := make([]bool, len(quotes))
+		for _, index := range expiryOrder[lo:hi] {
+			included[index] = true
+		}
+		filtered := make([]wheel.OptionQuote, 0, hi-lo)
+		for i, q := range quotes {
+			if included[i] || q.Expiry.IsZero() {
+				filtered = append(filtered, q)
+			}
+		}
+		return filtered
+	}
+	return filterQuotesByExpiryLinear(quotes, minExpiryDate, maxExpiryDate)
+}
+
+func filterQuotesByExpiryLinear(quotes []wheel.OptionQuote, minExpiryDate, maxExpiryDate time.Time) []wheel.OptionQuote {
+	filtered := make([]wheel.OptionQuote, 0, len(quotes))
+	for _, q := range quotes {
+		if q.Expiry.IsZero() {
+			filtered = append(filtered, q)
+			continue
+		}
+		expiryDate := calendarDate(q.Expiry)
+		if expiryDate.Before(minExpiryDate) || expiryDate.After(maxExpiryDate) {
+			continue
+		}
+		filtered = append(filtered, q)
+	}
+	return filtered
+}
+
+// restoreExpiryRejectedCandidates keeps the signal/report contract identical
+// to the unpruned evaluator. Out-of-window quotes cannot affect selection, so
+// they are omitted from the hot validation loop and represented here as cheap
+// rejected details only when the signal is materialized.
+func restoreExpiryRejectedCandidates(signal *wheel.Signal, allQuotes, evaluatedQuotes []wheel.OptionQuote, barTs time.Time, cfg wheel.Config) {
+	if signal == nil {
+		return
+	}
+	direction := signal.Direction
+	if direction == wheel.DirectionHold && signal.Reason == "no quote passed validation and risk checks" {
+		// Evaluate changes Direction back to HOLD when every quote is
+		// rejected. The inventory gap still carries the direction that the
+		// unpruned evaluator used while constructing candidate diagnostics.
+		direction = wheel.DirectionPut
+		if signal.InventoryGap < 0 {
+			direction = wheel.DirectionCall
+		}
+	}
+	if direction != wheel.DirectionPut && direction != wheel.DirectionCall {
+		return
+	}
+	byName := make(map[string][]wheel.CandidateEvaluation, len(signal.Candidates))
+	for _, candidate := range signal.Candidates {
+		name := candidate.Quote.Symbol
+		if name == "" {
+			name = candidate.Quote.Code
+		}
+		byName[name] = append(byName[name], candidate)
+	}
+	seen := make(map[string]int, len(evaluatedQuotes))
+	merged := make([]wheel.CandidateEvaluation, 0, len(allQuotes))
+	asOfDate := calendarDate(barTs)
+	minExpiryDate := asOfDate.AddDate(0, 0, cfg.MinDTE)
+	maxExpiryDate := asOfDate.AddDate(0, 0, cfg.MaxDTE)
+	for _, quote := range allQuotes {
+		name := quote.Symbol
+		if name == "" {
+			name = quote.Code
+		}
+		index := seen[name]
+		candidates := byName[name]
+		if index < len(candidates) {
+			merged = append(merged, candidates[index])
+			seen[name] = index + 1
+			continue
+		}
+		if quote.Expiry.IsZero() || (!calendarDate(quote.Expiry).Before(minExpiryDate) && !calendarDate(quote.Expiry).After(maxExpiryDate)) {
+			continue
+		}
+		reason := rejectedExpiryQuoteReason(quote, barTs, cfg, asOfDate, minExpiryDate, maxExpiryDate)
+		merged = append(merged, wheel.CandidateEvaluation{
+			Quote: quote, Direction: direction, Quantity: 1, SignedContracts: -1,
+			Quality: wheel.QualityScore(quote), Reasons: []string{reason},
+		})
+	}
+	if len(merged) == 0 {
+		return
+	}
+	signal.Candidates = merged
+	signal.RejectReasons = nil
+	for _, candidate := range merged {
+		if !candidate.Accepted {
+			signal.RejectReasons = append(signal.RejectReasons, candidate.Reasons...)
+		}
+	}
+}
+
+// rejectedExpiryQuoteReason mirrors the validation order before DTE. It is
+// used only while materializing candidate diagnostics after the expiry gate;
+// the hot evaluator never formats these rejected-candidate reasons.
+func rejectedExpiryQuoteReason(q wheel.OptionQuote, asOf time.Time, cfg wheel.Config, asOfDate, minExpiryDate, maxExpiryDate time.Time) string {
+	delta := q.Delta
+	if delta == 0 {
+		delta = q.MarketDelta
+	}
+	typ := strings.ToLower(string(q.OptionType))
+	if typ == "" {
+		typ = strings.ToLower(string(q.Type))
+	}
+	iv := q.ImpliedVol
+	if iv == 0 {
+		iv = q.IV
+	}
+	oi := q.OpenInterest
+	if oi == 0 {
+		oi = q.OI
+	}
+	name := q.Symbol
+	if name == "" {
+		name = q.Code
+	}
+	if name == "" || strings.TrimSpace(q.Source) == "" || q.Expiry.IsZero() || !finiteNumber(delta) || delta < -1 || delta > 1 || !finiteNumber(q.Strike) || q.Strike <= 0 {
+		return "wheel: quote missing symbol, source, expiry, strike or delta"
+	}
+	if typ != string(wheel.Put) && typ != string(wheel.Call) {
+		return "wheel: quote has invalid option type"
+	}
+	if typ == string(wheel.Put) && delta >= 0 {
+		return "wheel: put delta must be negative"
+	}
+	if typ == string(wheel.Call) && delta <= 0 {
+		return "wheel: call delta must be positive"
+	}
+	if !finiteNumber(q.Bid) || !finiteNumber(q.Ask) || q.Bid <= 0 || q.Ask <= 0 || q.Ask < q.Bid {
+		return "wheel: quote has missing or inverted bid/ask"
+	}
+	if !finiteNumber(iv) || iv <= 0 || q.Theta == nil || !finiteNumber(*q.Theta) || q.Volume <= 0 || oi <= 0 || q.LotSize <= 0 {
+		return "wheel: quote missing IV, Theta, liquidity or lot size"
+	}
+	quoteTime := q.QuoteTime
+	if quoteTime.IsZero() {
+		quoteTime = q.CapturedAt
+	}
+	if quoteTime.IsZero() {
+		quoteTime = q.Timestamp
+	}
+	if quoteTime.IsZero() {
+		quoteTime = q.Ts
+	}
+	if !asOf.IsZero() && quoteTime.IsZero() {
+		return "wheel: quote timestamp is missing"
+	}
+	if !asOf.IsZero() && quoteTime.After(asOf) {
+		return "wheel: quote is from the future"
+	}
+	if !asOf.IsZero() && asOf.Sub(quoteTime) > cfg.QuoteMaxAge() {
+		return "wheel: quote is stale"
+	}
+	if !asOf.IsZero() && !q.Expiry.After(asOf) {
+		return "wheel: option has expired"
+	}
+	dte := int(calendarDate(q.Expiry).Sub(asOfDate) / (24 * time.Hour))
+	if calendarDate(q.Expiry).Before(minExpiryDate) || calendarDate(q.Expiry).After(maxExpiryDate) {
+		return fmt.Sprintf("wheel: DTE %d outside [%d,%d]", dte, cfg.MinDTE, cfg.MaxDTE)
+	}
+	return "wheel: option expiry is outside configured range"
+}
+
+func calendarDate(ts time.Time) time.Time {
+	utc := ts.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func unwrapParams(params map[string]any) (map[string]any, error) {

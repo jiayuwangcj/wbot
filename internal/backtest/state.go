@@ -80,6 +80,11 @@ type QuoteSnapshotBatch struct {
 	Underlying      string
 	UnderlyingPrice float64
 	Quotes          []wheel.OptionQuote
+	// ExpiryOrder is a loader-built index into Quotes. Keeping the canonical
+	// quote order untouched preserves report/trade determinism while allowing
+	// the backtest adapter to binary-search the per-bar DTE range. It is an
+	// execution index, not part of the semantic source snapshot.
+	ExpiryOrder []int `json:"-"`
 }
 
 // OptionQuoteBatch is a concise compatibility name for QuoteSnapshotBatch.
