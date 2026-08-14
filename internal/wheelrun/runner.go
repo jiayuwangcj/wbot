@@ -317,7 +317,18 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 	if price <= 0 {
 		return fmt.Errorf("current price %v is not positive", price)
 	}
-	contracts, err := r.deps.Chain.OptionChain(ctx, symbol, now.AddDate(0, 0, cfg.MinDTE), now.AddDate(0, 0, cfg.MaxDTE))
+	begin := now.AddDate(0, 0, cfg.MinDTE)
+	end := now.AddDate(0, 0, cfg.MaxDTE)
+	// futu gateway rejects option-chain windows wider than 30 days + 1h;
+	// clamp the far end so a trained min_dte..max_dte span (e.g. 13..45)
+	// cannot DATA_BLOCK the live loop (2026-08-14 JD 40d/00700 32d 实测).
+	if span := end.Sub(begin); span > 30*24*time.Hour {
+		clamped := begin.Add(30 * 24 * time.Hour)
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: option chain window %s..%s (%dd) exceeds futu 30d limit; clamped to %s\n",
+			symbol, begin.Format("2006-01-02"), end.Format("2006-01-02"), int(span.Hours()/24), clamped.Format("2006-01-02"))
+		end = clamped
+	}
+	contracts, err := r.deps.Chain.OptionChain(ctx, symbol, begin, end)
 	if err != nil {
 		return fmt.Errorf("option chain: %w", err)
 	}
