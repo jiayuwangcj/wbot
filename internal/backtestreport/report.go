@@ -316,8 +316,11 @@ func Build(in Input) (*Report, error) {
 	if windowReturnAmount == nil || windowReturnPct == nil {
 		returnStatus = "not_applicable_incomplete_valuation"
 	}
-	if in.Strategy != "wheel" && windowReturnAmount != nil && windowReturnPct != nil {
+	if windowReturnAmount != nil && windowReturnPct != nil && (in.Strategy != "wheel" || capability == "RESEARCH_ONLY") {
 		returnStatus = "complete"
+		if in.Strategy == "wheel" {
+			returnStatus = "research_only"
+		}
 		netReturnAmount, netReturnPct = windowReturnAmount, windowReturnPct
 		excess := *windowReturnPct - in.BaselineReturnPct
 		excessReturnPct = &excess
@@ -357,7 +360,7 @@ func Build(in Input) (*Report, error) {
 		DataQuality: quality,
 		Audit: Audit{InputSnapshotHash: "sha256-" + hash, ParamsDictionaryVersion: ParamsDictionaryVersion,
 			StrategyParamsSnapshot: StrategyParamsSnapshot{MigrationLossy: in.MigrationLossy, OriginalJSON: in.OriginalJSON}},
-		Risk: risks(),
+		Risk: risks(containsStringFold(quality.OptionSnapshotSources, "hkex")),
 	}
 	return r, nil
 }
@@ -404,12 +407,30 @@ func normalizeDataQuality(strategyName string, q backtest.DataQualitySummary, si
 		}
 		return q
 	}
-	q.Status = "DATA_BLOCKED"
 	q.OptionDataRequired = true
 	if q.HistoricalOptionCycleComplete == nil {
 		complete := false
 		q.HistoricalOptionCycleComplete = &complete
 	}
+	if *q.HistoricalOptionCycleComplete && q.ReadyBarCount > 0 {
+		q.Status = "RESEARCH_ONLY"
+		// Remove the legacy blanket blockers that predated the official HKEX
+		// EOD source. Per-bar gaps and any actual missing fields stay visible.
+		legacy := make(map[string]struct{}, len(historicalWheelBlockers)+1)
+		legacy["historical_option_cycle"] = struct{}{}
+		for _, blocker := range historicalWheelBlockers {
+			legacy[blocker] = struct{}{}
+		}
+		set := make(map[string]struct{}, len(q.BlockedBy))
+		for _, blocker := range q.BlockedBy {
+			if _, old := legacy[blocker]; blocker != "" && !old {
+				set[blocker] = struct{}{}
+			}
+		}
+		q.BlockedBy = sortedSet(set)
+		return q
+	}
+	q.Status = "DATA_BLOCKED"
 	set := make(map[string]struct{}, len(q.BlockedBy)+len(historicalWheelBlockers)+1)
 	for _, blocker := range q.BlockedBy {
 		if blocker != "" {
@@ -580,14 +601,15 @@ func marketCurrency(symbol string) (string, string) {
 
 func capability(strategyName string, signals []backtest.SignalTrace, quality backtest.DataQualitySummary) (string, []string) {
 	set := map[string]struct{}{}
-	blocked := strategyName == "wheel" || quality.Status == "DATA_BLOCKED"
+	completeResearch := strategyName == "wheel" && quality.HistoricalOptionCycleComplete != nil && *quality.HistoricalOptionCycleComplete && quality.ReadyBarCount > 0
+	blocked := quality.Status == "DATA_BLOCKED" || (strategyName == "wheel" && !completeResearch)
 	for _, reason := range quality.BlockedBy {
 		if reason != "" {
 			set[reason] = struct{}{}
 		}
 	}
 	for _, signal := range signals {
-		if signal.CapabilityStatus == "DATA_BLOCKED" {
+		if signal.CapabilityStatus == "DATA_BLOCKED" && !completeResearch {
 			blocked = true
 		}
 		for _, reason := range signal.BlockedBy {
@@ -607,9 +629,21 @@ func capability(strategyName string, signals []backtest.SignalTrace, quality bac
 	return "DATA_BLOCKED", out
 }
 
-func risks() []string {
+func risks(hkexProjection bool) []string {
 	out := []string{"RESEARCH_ONLY:历史事件数据未解锁,本结果只用于研究,不驱动提醒"}
+	if hkexProjection {
+		out = append(out, "HKEX EOD:日终结算价投影不是可执行 bid/ask,Delta/Theta 为模型派生")
+	}
 	out = append(out, "DATA_BLOCKED:成交/指派/人工处置事实缺失,未成交率为启发式估算")
 	out = append(out, "窗口末估值变动仅为机械账面 mark,不是可执行收益;真实券商到期/指派字段为 null")
 	return append(out, "bar-time replay:非事件级回放,不含逐 quote 成交时序")
+}
+
+func containsStringFold(values []string, want string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			return true
+		}
+	}
+	return false
 }

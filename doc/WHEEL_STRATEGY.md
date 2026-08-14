@@ -62,7 +62,7 @@ inventory_gap       = target_inventory - effective_inventory
 
 ## 4. 候选与风控
 
-候选快照必须包含 `expiry/strike/delta/bid/ask/implied_vol/theta/volume/open_interest/lot_size/observed_at/source`。缺字段、过期报价、倒挂盘口或零流动性的候选直接淘汰，不使用日线收盘价冒充实时盘口。
+候选快照必须包含 `expiry/strike/delta/bid/ask/implied_vol/theta/volume/open_interest/lot_size/observed_at/source`。缺字段、过期报价、倒挂盘口或零流动性的候选直接淘汰，不使用日线收盘价冒充实时盘口。HKEX 日终 `bid=ask=settlement` 投影只允许离线 `RESEARCH_ONLY` 回测，不进入本策略的实时提醒输入。
 
 质量分由价差、成交量、未平仓量、权利金/行权价、IV 和绝对 Theta 共同组成；Delta 通过“交易后有效库存距离”进入首要排序，避免重复计权。`min_option_quality` 是硬门槛。通过门槛后按以下稳定顺序排序：
 
@@ -88,6 +88,7 @@ inventory_gap       = target_inventory - effective_inventory
 
 - `wheel_configs`：版本化战略配置与状态。
 - `option_quote_snapshots`：盘口、Greeks、OI 与采集时间。
+- `option_quotes`：HKEX 官方日终 settlement/IV/成交事实；`source=hkex,adjust=none`，不等同实时 snapshot。
 - `wheel_signals`：包含 `ALERT/HOLD`、候选、库存快照、理由和配置版本。
 - `wheel_signal_actions`：LLM `LLM_REVIEW`、Telegram 人工确认/忽略/拒绝/成交或备注；系统自身不自动下单。
 - `wheel_signal_dismissals`：按 symbol 与 UTC 当日记录 Telegram 的“今日不再提醒”。
@@ -106,7 +107,7 @@ inventory_gap       = target_inventory - effective_inventory
 
 ## 6. 回测与验收
 
-当前回测不是逐事件状态机，而是确定性的 bar-time replay：按 bars 升序处理，每根 bar 只选择 `observed_at <= bar.ts` 的最新原子 snapshot（同一时点按 `snapshot_key` 稳定选择），然后运行 Wheel 并在 bar close 机械结算。loader 的 `limit` 按完整批次数而非合约行数计数，并向首根 bar 前回看一个 freshness 窗口，因此既不会截断多合约批次，也不会漏掉仍新鲜的前置快照。它不把不同 snapshot 拼接，也不把未来报价泄漏到当前 bar；没有所需 Put/Call 方向的完整新鲜 snapshot 时只能 `DATA_BLOCKED/HOLD`。这条路径可用于研究和契约验证，但不等价于事件驱动历史执行。
+当前回测不是逐事件状态机，而是确定性的 bar-time replay：按 bars 升序处理，每根 bar 只选择 `observed_at <= bar.ts` 的最新原子 snapshot；同一时点按 `futu` → `hkex` → 其他 source 字典序，再按 `snapshot_key`。loader 的 `limit` 按完整批次数而非合约行数计数，并向首根 bar 前回看一个 freshness 窗口，因此既不会截断多合约批次，也不会漏掉仍新鲜的前置快照。它不把不同 snapshot 拼接，也不把未来报价泄漏到当前 bar；没有所需 Put/Call 方向的完整新鲜 snapshot 时只能 `DATA_BLOCKED/HOLD`。HKEX 完整周期可输出带结算价投影风险标记的 `RESEARCH_ONLY` 模拟，但不等价于事件驱动历史执行。
 
 事件驱动回测仍为 `DATA_BLOCKED`，需要完整历史 quote/成交事件、到期/指派时序和人工回填事实。已落库 snapshot schema、bar-time signal trace、机械到期结算和 deterministic fixtures；解锁证据必须包括历史覆盖、字段映射、原子性/新鲜度回归、端到端可复现 trace 和最大库存违规为零。禁止用 OHLC、固定 Greeks、默认流动性、事后价格或 bar-time replay 冒充事件证据。
 
@@ -141,6 +142,7 @@ inventory_gap       = target_inventory - effective_inventory
 | 唯一 `wheel` 注册表、required schema、watchlist 校验 | `READY`（P0-B） | registry/watchlist 单测和 API 契约回归通过；旧名称明确拒绝 |
 | 版本配置、不可变 snapshot、signal/action repository | `READY`（P0-C） | migration、repository、fail-closed 测试及真实 PostgreSQL integration 已通过 |
 | bar-time 最新原子 snapshot 回放 | `READY`（研究/验证） | 同输入同 trace；每根 bar 取截至该时点的最新批次 |
+| HKEX 日终 Wheel 回测 | `RESEARCH_ONLY` | 官方 settlement/IV/成交/OI + 派生 Greeks；无真实历史 bid/ask/成交事件，永不驱动提醒 |
 | Web 结构化配置、只读信号和回测 trace | `READY` | Mac Chrome desktop/390px 与动态 DOM 断言通过；人工动作仍只读 |
 | 真实供应商 adapter 与实时 Put/Call 提醒 | `DATA_BLOCKED` | 尚无验收过的可信源能提供同一时点完整 Delta、bid/ask、IV、OI、Theta、volume、lot size 和 freshness |
 | 历史事件 Wheel 回测 | `DATA_BLOCKED` | 历史 snapshot/quote/成交事件覆盖不足，不能还原事件顺序 |

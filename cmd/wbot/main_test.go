@@ -140,6 +140,7 @@ func TestRunRequiresDSN(t *testing.T) {
 		{"ingest file no dsn", []string{"wbot", "ingest", "file", "-file", "/dev/null"}, 2},
 		{"ingest url no dsn", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json"}, 2},
 		{"ingest tencent no dsn", []string{"wbot", "ingest", "tencent", "-symbol", "HK.00700"}, 2},
+		{"ingest hkex no dsn", []string{"wbot", "ingest", "hkex", "-from", "2025-07-02", "-to", "2025-07-02"}, 2},
 		{"ingest futu no dsn", []string{"wbot", "ingest", "futu", "-symbol", "HK.00700", "-timeframe", "K_DAY"}, 2},
 		{"ingest futu-option no dsn", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700"}, 2},
 		{"ingest status no dsn", []string{"wbot", "ingest", "status"}, 2},

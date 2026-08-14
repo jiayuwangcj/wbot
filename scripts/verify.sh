@@ -52,6 +52,8 @@ go build -o "$bin" ./cmd/wbot
 "$bin" backtest -h >/dev/null 2>&1
 "$bin" ingest tencent -h >/dev/null 2>&1
 if "$bin" ingest tencent -count 0 >/dev/null 2>&1; then echo "verify: ingest tencent -count 0 should exit 2"; exit 1; else test "$?" -eq 2; fi
+"$bin" ingest hkex -h >/dev/null 2>&1
+if "$bin" ingest hkex -from nope >/dev/null 2>&1; then echo "verify: ingest hkex bad date should exit 2"; exit 1; else test "$?" -eq 2; fi
 # 与 ci.yml test job 的 CLI smoke 对齐(2026-08-03 对账补齐):
 # 未注册 provider → exit 2;configyaml 渲染 dotenv。
 "$bin" ingest mock -provider nope >/dev/null 2>&1 && { echo "verify: ingest mock -provider nope should exit non-zero"; exit 1; } || true

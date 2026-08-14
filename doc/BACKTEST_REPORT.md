@@ -123,7 +123,7 @@
 口径(与 doc/tasks/2026-08-13-backtest-toolchain.md 一致):
 
 - `unfilled_ratio = unfilled_count / attempt_count`;`attempt_count` **只计真正发出成交尝试的期权动作**;正股建议/HOLD/DATA_BLOCKED/候选淘汰不入分母;分母为 0 时 `unfilled_ratio = null`(返回 `not_applicable`,不得报 0%)。
-- 当前 Wheel 历史事件能力为 `DATA_BLOCKED` 时，`net_return_pct`、`net_return_amount` 与 `excess_return_pct` 必须为 `null`，`return_status=not_applicable_data_blocked`。`window_mark_to_market_*` 仅表示窗口末按已有 mark 计算的账面估值变动，HTML 不得把它命名为“净收益”。非 Wheel benchmark 且终局估值完整时，净结果字段才可写数值。
+- Wheel 能力为 `DATA_BLOCKED` 时，`net_return_pct`、`net_return_amount` 与 `excess_return_pct` 必须为 `null`，`return_status=not_applicable_data_blocked`。同一 HKEX 合约从 DTE ≥10 覆盖到 DTE ≤1、存在可用 bar 且终局估值完整时，能力为 `RESEARCH_ONLY`，净结果字段可写机械模拟数值，但 `return_status=research_only`；它不代表可执行历史收益。`window_mark_to_market_*` 始终只是窗口末账面估值变动。
 - `fill_count` 可由 `attempt_count - unfilled_count` 推导,但两者同时输出计数,防舍入/口径不一致。
 - `cost_model.total_fees_amount` 必须等于成交明细 `fee` 之和；固定 `fee_per_trade` 对正股和期权实际成交逐笔从现金扣除，未成交、HOLD 和机械到期事件不收费。`fees_included` 只在该扣账路径真实启用时为 `true`。
 - `manual_not_executed_count`:模拟成交但人工未执行的条数(与模拟未成交区分)。
@@ -193,9 +193,9 @@
 
 - `valid_coverage_ratio = ready_bar_count / total_bar_count`；总 bar 为 0 时是 `null`。零 snapshot 时仍生成逐 bar `DATA_BLOCKED/HOLD` 报告，不能因没有合约行而把缺字段计数或覆盖率解释成已通过。
 - `underlying_bars` 按回测实际消费的标的 bar 聚合 `{source,adjusted,bar_count}`；腾讯 qfq 落库虽使用 canonical `adjust=fwd`，此处必须显示 `source=tencent,adjusted=qfq`。多源同日固定择一，计数之和应等于 `total_bar_count`（文件输入没有平台元数据时数组为空）。
-- `option_snapshot_sources` 只列实际消费的原子期权 snapshot 来源（通常为实时积累的 `futu`），与腾讯标的日 K 分开，禁止让 `source=tencent` 暗示腾讯提供了历史 Greeks/盘口。
+- `option_snapshot_sources` 只列实际消费的原子期权 snapshot 来源：实时积累通常为 `futu`，HKEX 日终研究投影为 `hkex`；它与腾讯标的日 K 分开，禁止让 `source=tencent` 暗示腾讯提供了历史 Greeks/盘口。
 - 缺字段计数按实际 snapshot 合约行统计，字典始终存在；另以批次/合约行数和 `option_quote_snapshots` blocker 区分“零行”与“有行但字段缺失”。
-- 富途现有接口不能回填完整历史原子 snapshot 或真实到期/指派事件；完整到期周期未被数据证据证明前，Wheel 报告的 `status` 与 identity `capability_status` 固定为 `DATA_BLOCKED`。
+- 富途现有接口不能回填完整历史原子 snapshot。HKEX DTOP/RP006 研究投影只有在同一合约覆盖 DTE ≥10 至 DTE ≤1 且至少一根 bar 可用时，报告的 `status` 与 identity `capability_status` 才可为 `RESEARCH_ONLY`；否则固定为 `DATA_BLOCKED`。两者都不能证明真实成交、到期或指派事件，均不得标成可执行 `READY`。
 
 ## 4. generations(逐代轨迹,`es_train` 必填)
 
@@ -281,6 +281,7 @@
 ```json
 [
   "RESEARCH_ONLY:历史事件数据未解锁,本结果只用于研究,不驱动提醒",
+  "HKEX EOD:日终结算价投影不是可执行 bid/ask,Delta/Theta 为模型派生",
   "DATA_BLOCKED:成交/指派/人工处置事实缺失,未成交率为启发式估算",
   "bar-time replay:非事件级回放,不含逐 quote 成交时序"
 ]
