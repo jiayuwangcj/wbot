@@ -21,9 +21,11 @@ import (
 )
 
 const (
-	// 1.3:net_return_*/annualized/gross 改为已实现收益口径(2026-08-14 老板指令,
-	// 浮盈浮亏依赖战略参数,评价只看已实现);市值标记留在 window_mark_to_market_*。
-	SchemaVersion           = "1.3"
+	// 1.4:net_return_*/annualized/gross 改为权利金净收益口径(2026-08-14 老板指令
+	// 「忽略掉正股价差收益,仅以权利金为最大目标」):期权腿净收益 = 权利金收入 −
+	// 平仓成本 − 期权/行权交割费,剔除正股已实现盈亏;市值标记与已实现全量分别留
+	// 在 window_mark_to_market_* 与 attribution(审计)。
+	SchemaVersion           = "1.4"
 	ParamsDictionaryVersion = "params-1.0"
 	orderAssumption         = "卖出期权,按 Bid 价尝试成交,有效时长=bar 内"
 )
@@ -59,10 +61,13 @@ type ReportConfig struct {
 
 type MoneyResult struct {
 	ReturnStatus string `json:"return_status"`
-	// net_return_* 是评价口径(schema 1.3):已实现收益 = 权利金 − 平仓成本 +
-	// 正股已实现 − 费用,与战略参数无关。市值标记见 window_mark_to_market_*。
+	// net_return_* 是评价口径(schema 1.4):权利金净收益 = 权利金收入 − 平仓成本 −
+	// 期权/行权交割费,忽略正股价差收益(2026-08-14 老板指令)。已实现全量与市值
+	// 标记分别见 attribution 与 window_mark_to_market_*(审计)。
 	NetReturnPct                *float64      `json:"net_return_pct"`
 	NetReturnAmount             *float64      `json:"net_return_amount"`
+	PremiumNetReturnPct         *float64      `json:"premium_net_return_pct,omitempty"`
+	PremiumNetReturnAmount      *float64      `json:"premium_net_return_amount,omitempty"`
 	FinalEquityAmount           *float64      `json:"final_equity_amount"`
 	AnnualizedReturnPct         *float64      `json:"annualized_return_pct"`
 	GrossReturnPct              *float64      `json:"gross_return_pct"`
@@ -159,12 +164,15 @@ type StockCostBreakdown struct {
 // report can never show a realized total that disagrees with the terminal
 // summary. unfilled_attempt_premium_amount is the opportunity cost of the
 // liquidity-heuristic unfilled attempts, never booked into the P&L.
+// premium_net_amount is the 权利金净收益 evaluation metric (reward-3.0):
+// option-leg P&L only, stock realized P&L excluded.
 type Attribution struct {
 	PremiumIncomeAmount    float64 `json:"premium_income_amount"`
 	OptionCloseCostAmount  float64 `json:"option_close_cost_amount"`
 	StockRealizedPnLAmount float64 `json:"stock_realized_pnl_amount"`
 	FeesAmount             float64 `json:"fees_amount"`
 	RealizedPnLAmount      float64 `json:"realized_pnl_amount"`
+	PremiumNetAmount       float64 `json:"premium_net_amount"`
 	UnfilledAttemptPremium float64 `json:"unfilled_attempt_premium_amount"`
 	UnfilledAttemptCount   int64   `json:"unfilled_attempt_count"`
 }
@@ -401,21 +409,23 @@ func Build(in Input) (*Report, error) {
 	hash := hex.EncodeToString(digest[:])
 
 	windowReturnAmount, windowReturnPct := terminalWindowReturn(terminal, in.InitialCash)
-	// 评价口径 = 已实现收益(schema 1.3):net_return_* 只含已实现(权利金 − 平仓 −
-	// 正股已实现 − 费用),与战略参数无关;市值标记留在 window_mark_to_market_* 审计。
-	realizedReturnAmount, realizedReturnPct := in.Result.RealizedReturnAmount, in.Result.RealizedReturnPct
-	var netReturnAmount, netReturnPct, excessReturnPct *float64
+	// 评价口径 = 权利金净收益(schema 1.4,2026-08-14 老板指令):net_return_* 只含
+	// 期权腿(权利金收入 − 平仓 − 期权/行权费),忽略正股已实现盈亏;已实现全量与
+	// 市值标记分别留在 attribution 与 window_mark_to_market_* 审计。
+	premiumNetAmount, premiumNetPct := a.PremiumNetAmount, a.PremiumNetAmount/in.InitialCash
+	var netReturnAmount, netReturnPct, premiumNetReturnAmount, premiumNetReturnPct, excessReturnPct *float64
 	returnStatus := "not_applicable_data_blocked"
 	if in.Strategy == "wheel" {
-		// wheel 评价口径 = 已实现(schema 1.3):net_return_* 只含已实现,与战略参数
-		// 无关;市值标记留在 window_mark_to_market_* 审计。
+		// wheel 评价口径 = 权利金净收益(schema 1.4):正股仅急涨急跌应急操作,其
+		// 盈亏不参与评价;市值标记留在 window_mark_to_market_* 审计。
 		if capability == "RESEARCH_ONLY" {
 			returnStatus = "research_only"
-			netReturnAmount, netReturnPct = &realizedReturnAmount, &realizedReturnPct
+			netReturnAmount, netReturnPct = &premiumNetAmount, &premiumNetPct
+			premiumNetReturnAmount, premiumNetReturnPct = &premiumNetAmount, &premiumNetPct
 		}
 	} else if windowReturnAmount != nil && windowReturnPct != nil {
 		// 非 wheel 基准(hold/buy-hold 等)无战略参数与期权腿,市值收益即其真实
-		// 口径,不参与已实现口径切换(该口径作用于 wheel/ES 评价)。
+		// 口径,不参与权利金口径切换(该口径作用于 wheel/ES 评价)。
 		returnStatus = "complete"
 		netReturnAmount, netReturnPct = windowReturnAmount, windowReturnPct
 	}
@@ -465,6 +475,7 @@ func Build(in Input) (*Report, error) {
 		},
 		Result: MoneyResult{
 			ReturnStatus: returnStatus, NetReturnPct: netReturnPct, NetReturnAmount: netReturnAmount,
+			PremiumNetReturnPct: premiumNetReturnPct, PremiumNetReturnAmount: premiumNetReturnAmount,
 			FinalEquityAmount: finalEquityAmount, AnnualizedReturnPct: annualizedReturnPct,
 			GrossReturnPct: grossReturnPct, GrossReturnAmount: grossReturnAmount,
 			StockMarketValuePct: stockMarketValuePct, OptionMarketValuePct: optionMarketValuePct, HoldingsMarketValuePct: holdingsMarketValuePct,
@@ -502,6 +513,7 @@ func Build(in Input) (*Report, error) {
 				StockRealizedPnLAmount: a.StockRealizedPnLAmount,
 				FeesAmount:             a.FeesAmount,
 				RealizedPnLAmount:      a.RealizedPnLAmount,
+				PremiumNetAmount:       a.PremiumNetAmount,
 				UnfilledAttemptPremium: a.UnfilledAttemptPremium,
 				UnfilledAttemptCount:   a.UnfilledAttemptCount,
 			},

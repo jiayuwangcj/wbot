@@ -317,8 +317,10 @@ func trainMetrics(r *backtest.Result, initialCash float64) backtestes.Metrics {
 			filled++
 		}
 	}
-	// 评价口径 = 已实现收益(reward-2.0):市值标记依赖战略参数,不进战术寻优。
-	return backtestes.Metrics{NetReturn: r.RealizedReturnPct, MaxDrawdown: r.MaxDrawdown, TailLoss: tailLoss(r.EquityCurve), CostPct: r.Fees.TotalAmount / initialCash,
+	// 评价口径 = 权利金净收益(reward-3.0,2026-08-14 老板指令「仅以权利金为最大
+	// 目标」):期权腿净收益(权利金收入 − 平仓 − 期权/行权费),忽略正股价差收益;
+	// 正股仅急涨急跌应急操作,盈亏不参与战术寻优。回撤/尾部惩罚保留作风控。
+	return backtestes.Metrics{NetReturn: r.Attribution.PremiumNetAmount / initialCash, MaxDrawdown: r.MaxDrawdown, TailLoss: tailLoss(r.EquityCurve), CostPct: r.Fees.TotalAmount / initialCash,
 		UnfilledRatio: r.Unfilled.UnfilledRatio, EffectiveTrades: filled}
 }
 

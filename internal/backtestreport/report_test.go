@@ -38,8 +38,10 @@ func testInput(attempts, fills, unfilled int64) Input {
 		SourceHash: "sha256-test-source",
 		Result: &backtest.Result{Equity: 10123, TotalReturn: 0.0123, MaxDrawdown: 0.05, Bars: 2, Unfilled: stats,
 			RealizedReturnAmount: 123, RealizedReturnPct: 0.0123,
-			Fees:        backtest.FeeSummary{Included: true, PerTrade: 3, TotalAmount: 9, StockAmount: 3, OptionAmount: 6, ChargedTradeCount: 3},
-			Attribution: backtest.PnLAttribution{PremiumIncomeAmount: 132, StockRealizedPnLAmount: 0, FeesAmount: 9, RealizedPnLAmount: 123, UnfilledAttemptPremium: 30, UnfilledAttemptCount: unfilled},
+			Fees: backtest.FeeSummary{Included: true, PerTrade: 3, TotalAmount: 9, StockAmount: 3, OptionAmount: 6, ChargedTradeCount: 3},
+			// 归因恒等式:RealizedPnL 123 = PremiumIncome 132 − OptionCloseCost 0 + 0 − Fees 9;
+			// 权利金口径(reward-3.0):PremiumNetAmount = 132 − 0 − (OptionFees 6 + ExerciseDelivery 0) = 126。
+			Attribution: backtest.PnLAttribution{PremiumIncomeAmount: 132, StockRealizedPnLAmount: 0, FeesAmount: 9, RealizedPnLAmount: 123, PremiumNetAmount: 126, UnfilledAttemptPremium: 30, UnfilledAttemptCount: unfilled},
 			Terminal: backtest.TerminalSummary{ValuationStatus: backtest.ValuationComplete, SettlementStatus: backtest.SettlementOpenOptionLegs, CashAmount: 10000,
 				OptionMarketValueAmount: &optionValue, HoldingsMarketValueAmount: &holdings, FinalEquityAmount: &finalEquity, OpenOptionLegCount: 1,
 				RealizedPnLAmount: &realized, UnrealizedPnLAmount: &unrealized, EventBasis: "mechanical_backtest", PnLStatus: backtest.ValuationComplete},
@@ -55,7 +57,7 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.SchemaVersion != "1.3" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
+	if r.SchemaVersion != "1.4" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
 		t.Fatalf("identity = %+v", r)
 	}
 	if r.Identity.DataWindow.From != "2024-01-01T00:00:00Z" || r.Identity.DataWindow.To != "2024-01-02T00:00:00Z" {
@@ -126,7 +128,7 @@ func TestBuildCompleteHKEXResearchExposesNonNullReturn(t *testing.T) {
 	if r.Identity.CapabilityStatus != "RESEARCH_ONLY" || len(r.Identity.BlockedBy) != 0 {
 		t.Fatalf("identity = %+v; want RESEARCH_ONLY without global blocker", r.Identity)
 	}
-	if r.Result.ReturnStatus != "research_only" || r.Result.NetReturnPct == nil || *r.Result.NetReturnPct != 0.0123 || r.Result.NetReturnAmount == nil || *r.Result.NetReturnAmount != 123 {
+	if r.Result.ReturnStatus != "research_only" || r.Result.NetReturnPct == nil || *r.Result.NetReturnPct != 0.0126 || r.Result.NetReturnAmount == nil || *r.Result.NetReturnAmount != 126 {
 		t.Fatalf("research return = %+v; want non-null mechanical return", r.Result)
 	}
 	if r.DataQuality.Status != "RESEARCH_ONLY" || r.DataQuality.HistoricalOptionCycleComplete == nil || !*r.DataQuality.HistoricalOptionCycleComplete {
@@ -168,14 +170,14 @@ func TestBuildAnnualizedReturnCostDragAndPositionPercents(t *testing.T) {
 	if r.InitialCash != 10000 || r.Result.FinalEquityAmount == nil || *r.Result.FinalEquityAmount != 10123 {
 		t.Fatalf("cash/equity = %v / %v", r.InitialCash, r.Result.FinalEquityAmount)
 	}
-	wantAnnualized := math.Pow(1.0123, 365) - 1
+	wantAnnualized := math.Pow(1.0126, 365) - 1
 	if r.Result.AnnualizedReturnPct == nil || math.Abs(*r.Result.AnnualizedReturnPct-wantAnnualized) > 1e-12 {
 		t.Fatalf("annualized return = %v; want %v", r.Result.AnnualizedReturnPct, wantAnnualized)
 	}
 	if r.Result.CostDrag.TotalFeesAmount != 161 || r.Result.CostDrag.CostDragPct != 0.0161 || r.Result.CostDrag.CostDragReturnPct != 0.0161 {
 		t.Fatalf("cost drag = %+v", r.Result.CostDrag)
 	}
-	if r.Result.GrossReturnAmount == nil || *r.Result.GrossReturnAmount != 284 || r.Result.GrossReturnPct == nil || *r.Result.GrossReturnPct != 0.0284 {
+	if r.Result.GrossReturnAmount == nil || *r.Result.GrossReturnAmount != 287 || r.Result.GrossReturnPct == nil || *r.Result.GrossReturnPct != 0.0287 {
 		t.Fatalf("gross return = %v / %v", r.Result.GrossReturnAmount, r.Result.GrossReturnPct)
 	}
 	if r.Result.StockMarketValuePct == nil || *r.Result.StockMarketValuePct != 0.0123 || r.Result.OptionMarketValuePct == nil || *r.Result.OptionMarketValuePct != 0 || r.Result.MaxStockMarketValuePct == nil || *r.Result.MaxStockMarketValuePct != 0.0123 || r.Result.MaxPositionPct == nil || *r.Result.MaxPositionPct != 110 {

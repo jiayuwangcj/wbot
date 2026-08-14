@@ -185,7 +185,7 @@ func runBacktestBatch(dsn, file, symbol, strategyName string, groups []map[strin
 			fmt.Fprintf(os.Stderr, "backtest: fixed-parameter params %d: %v\n", i+1, err)
 			return 1
 		}
-		printFixedBacktestSummary(i, paramsJSON, item.Result)
+		printFixedBacktestSummary(i, paramsJSON, item.Result, flags.Options.Cash)
 	}
 
 	exitCode := 0
@@ -235,13 +235,17 @@ func runBacktestBatch(dsn, file, symbol, strategyName string, groups []map[strin
 	return exitCode
 }
 
-func printFixedBacktestSummary(index int, paramsJSON []byte, res *backtest.Result) {
+func printFixedBacktestSummary(index int, paramsJSON []byte, res *backtest.Result, initialCash float64) {
 	attr := res.Attribution
+	// 评价口径 = 权利金净收益(reward-3.0):premium_net_return 是期权腿净收益率
+	// (权利金收入 − 平仓 − 期权/行权费)/初始金,忽略正股;realized_return 保留
+	// 已实现全量(含正股)审计。
+	premiumNetReturn := attr.PremiumNetAmount / initialCash
 	if res.Unfilled.AttemptCount == 0 {
-		fmt.Printf("params[%d] params=%s final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试) premium_income=%v stock_realized=%v\n", index, paramsJSON, res.Equity, res.RealizedReturnPct, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, attr.PremiumIncomeAmount, attr.StockRealizedPnLAmount)
+		fmt.Printf("params[%d] params=%s final_equity=%v realized_return=%v premium_net_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试) premium_income=%v stock_realized=%v\n", index, paramsJSON, res.Equity, res.RealizedReturnPct, premiumNetReturn, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, attr.PremiumIncomeAmount, attr.StockRealizedPnLAmount)
 		return
 	}
-	fmt.Printf("params[%d] params=%s final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%) premium_income=%v stock_realized=%v unfilled_premium=%v\n", index, paramsJSON, res.Equity, res.RealizedReturnPct, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100, attr.PremiumIncomeAmount, attr.StockRealizedPnLAmount, attr.UnfilledAttemptPremium)
+	fmt.Printf("params[%d] params=%s final_equity=%v realized_return=%v premium_net_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%) premium_income=%v stock_realized=%v unfilled_premium=%v\n", index, paramsJSON, res.Equity, res.RealizedReturnPct, premiumNetReturn, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100, attr.PremiumIncomeAmount, attr.StockRealizedPnLAmount, attr.UnfilledAttemptPremium)
 }
 
 func buildFixedBacktestReport(item fixedBacktestResult, flags backtestBatchFlags) (*backtestreport.Report, error) {

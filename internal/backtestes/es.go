@@ -21,10 +21,13 @@ import (
 
 const (
 	AlgorithmVersion = "es-1.0"
-	// reward-2.0 evaluates on realized P&L only (2026-08-14 老板指令): unrealized
-	// marks depend on the strategic position curve, so strategic choices must
-	// not drive the tactical search. reward-1.0 used mark-to-market net return.
-	RewardVersion = "reward-2.0"
+	// reward-3.0 evaluates on 权利金净收益 only (2026-08-14 老板指令「忽略掉正股
+	// 价差收益,仅以权利金为最大目标」): premium income − option close cost −
+	// option/exercise-delivery fees. Stock realized P&L is excluded from the
+	// tactical search — stock trades are emergency-only and their marks must
+	// not steer strategy parameters. reward-2.0 used total realized P&L
+	// (including stock legs); reward-1.0 used mark-to-market net return.
+	RewardVersion = "reward-3.0"
 )
 
 var tacticalOrder = []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}

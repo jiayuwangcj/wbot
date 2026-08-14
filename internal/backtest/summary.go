@@ -52,12 +52,17 @@ type TerminalSummary struct {
 // StockRealizedPnLAmount − FeesAmount is asserted by the report builder;
 // UnfilledAttemptPremium is the premium attempted fills would have collected
 // (opportunity cost, never booked into any P&L line).
+// PremiumNetAmount is the 权利金净收益 evaluation metric (2026-08-14 老板指令,
+// reward-3.0): option-leg P&L only — premium income minus close cost and
+// option/exercise-delivery fees. Stock realized P&L (行权接股后卖出差价) is
+// deliberately excluded: the wheel earns premium; stock moves are emergencies.
 type PnLAttribution struct {
 	PremiumIncomeAmount    float64 `json:"premium_income_amount"`
 	OptionCloseCostAmount  float64 `json:"option_close_cost_amount"`
 	StockRealizedPnLAmount float64 `json:"stock_realized_pnl_amount"`
 	FeesAmount             float64 `json:"fees_amount"`
 	RealizedPnLAmount      float64 `json:"realized_pnl_amount"`
+	PremiumNetAmount       float64 `json:"premium_net_amount"`
 	UnfilledAttemptPremium float64 `json:"unfilled_attempt_premium_amount"`
 	UnfilledAttemptCount   int64   `json:"unfilled_attempt_count"`
 }
@@ -69,6 +74,9 @@ func attributionOf(st *State, fees FeeSummary, unfilled UnfilledStats) PnLAttrib
 		StockRealizedPnLAmount: st.StockRealizedPnL,
 		FeesAmount:             fees.TotalAmount,
 		RealizedPnLAmount:      st.PremiumIncome - st.OptionCloseCost + st.StockRealizedPnL - fees.TotalAmount,
+		// 期权腿净收益:权利金收入 − 平仓成本 − (期权成交费 + 行权交割费)。
+		// 正股已实现盈亏与正股交易费不计入(仅审计)。
+		PremiumNetAmount:       st.PremiumIncome - st.OptionCloseCost - (fees.OptionAmount + fees.ExerciseDeliveryAmount),
 		UnfilledAttemptPremium: st.UnfilledAttemptPremium,
 		UnfilledAttemptCount:   unfilled.UnfilledCount,
 	}
