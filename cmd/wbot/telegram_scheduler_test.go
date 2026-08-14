@@ -647,10 +647,14 @@ func TestCallbackNoConfirmedCancelsOrder(t *testing.T) {
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
 
 	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
+	// declineOrder runs in a goroutine; the sendMessage it emits is written
+	// asynchronously, so both assertions must poll (CI observed the race:
+	// "no sendMessage received" while CancelOrder had already happened).
 	waitFor(t, func() bool { return placer.cancelCallsCount() == 1 }, "CancelOrder never happened")
 	if id := placer.cancelIDValue(); id != "12345" {
 		t.Fatalf("CancelOrder id=%q; want 12345", id)
 	}
+	waitFor(t, func() bool { return len(fake.sends) > 0 }, "sendMessage never received")
 	act := store.lastAppended(t)
 	if act.Action != "NO" || act.Note != "撤单成功 订单号 12345" {
 		t.Fatalf("action = %+v; want NO 撤单成功", act)
@@ -676,6 +680,7 @@ func TestCallbackNoCancelFailureTellsManual(t *testing.T) {
 
 	s.handleCallback(context.Background(), callback(42, "wheel:9:no"))
 	waitFor(t, func() bool { return placer.cancelCallsCount() == 1 }, "CancelOrder never happened")
+	waitFor(t, func() bool { return len(fake.sends) > 0 }, "sendMessage never received")
 	act := store.lastAppended(t)
 	if act.Action != "NO" || !strings.Contains(act.Note, "请手动在模拟盘撤单") {
 		t.Fatalf("action = %+v; want NO with manual-cancel note", act)
