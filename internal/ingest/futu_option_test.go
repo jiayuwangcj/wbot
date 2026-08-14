@@ -283,6 +283,12 @@ VALUES ($1, $2, $3::jsonb)`, "HK.00700", "wheel", configuredParams); err != nil 
 	if strategy != "wheel" || !paramsOK {
 		t.Fatalf("watchlist after second ingestion = (strategy %q, params match %v); want unchanged wheel config", strategy, paramsOK)
 	}
+	// Remove the row we inserted: CI runs the full package chain against one
+	// PG, and a leftover HK.00700 with partial params breaks the acceptance
+	// from_watchlist run later in the job (503: full_position_price missing).
+	if _, err := database.Exec(`DELETE FROM watchlist WHERE symbol = $1`, "HK.00700"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestRunOptionIngestionRollsBackOnInsertError(t *testing.T) {
