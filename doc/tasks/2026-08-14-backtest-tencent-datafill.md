@@ -53,3 +53,12 @@ futu 无法拉取历史期权行情(P0-1 裁决),老板指令改用腾讯免费�
 ## Next
 
 提交 #66 评审修复供 reviewer 复审；生产调度由 cron/systemd 每日一次运行，供美股数据从当前日起逐日积累。
+
+## 收口(2026-08-14,supervisor-fc)
+
+- 评审:reviewer 两轮——首轮有条件合入(P1 形成 K 冻结);修复提交 e394a84 复评**合入(无条件)**。功能类型 feature(含 QueryBars 多源去重 bugfix)
+- P1 修复:默认剔除北京时间今日形成 K(-include-forming 保留旧行为),真实接口实测剔除/保留两分支
+- 附带:P2-1 CLI smoke(ci.yml + verify.sh ingest tencent -h/-count 0)、P2-2 /v1/bars source/adjusted 契约 + httpapi 实际返回;telegram 同族竞态随修 f19a8b0
+- 合入:9d0813c(fix/backtest-datafill → feat/llm-signal-endpoint,--no-ff),已 push;验收:verify 全绿、accept 8/8 两轮、真实 PG 1001 行幂等
+- **cron 排时约束(P2 残留)**:美股积累 cron 须排北京时间 04:00–21:30(美股收盘后)运行,避开 00:00–04:00 US 盘中盲区;HK 积累建议 16:30 后
+- P3 残留:真实 PG 中 08-14 partial 行(close=444.2/vol=8.39M)可运维随手清理,不强制(回测中由 futu 行遮蔽)
