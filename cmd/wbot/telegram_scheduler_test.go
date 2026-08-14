@@ -489,6 +489,7 @@ func TestCallbackYesReplaceCancelsThenPlaces(t *testing.T) {
 		t.Fatalf("action = %+v; want CONFIRM order 12345", act)
 	}
 	// 改单行随推送消息(卡片)发出,toast 仅简短文。
+	waitFor(t, func() bool { return fake.sendCountTo("42") == 1 }, "replace push never sent")
 	msg := fake.lastSend(t)
 	text, _ := msg["text"].(string)
 	if !strings.Contains(text, "改单") || !strings.Contains(text, "206158430256") {
