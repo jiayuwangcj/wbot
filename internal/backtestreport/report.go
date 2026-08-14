@@ -354,6 +354,9 @@ func Build(in Input) (*Report, error) {
 	if math.Abs(a.RealizedPnLAmount-(a.PremiumIncomeAmount-a.OptionCloseCostAmount+a.StockRealizedPnLAmount-a.FeesAmount)) > 1e-6*math.Max(1, math.Abs(a.RealizedPnLAmount)) {
 		return nil, errors.New("backtest report: attribution identity does not hold")
 	}
+	if math.Abs(a.PremiumNetAmount-(a.PremiumIncomeAmount-a.OptionCloseCostAmount-in.Result.Fees.OptionAmount-in.Result.Fees.ExerciseDeliveryAmount)) > 1e-6*math.Max(1, math.Abs(a.PremiumNetAmount)) {
+		return nil, errors.New("backtest report: premium-net attribution identity does not hold")
+	}
 	if a.UnfilledAttemptCount != in.Result.Unfilled.UnfilledCount {
 		return nil, errors.New("backtest report: attribution unfilled count does not match unfilled stats")
 	}
