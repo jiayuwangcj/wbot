@@ -35,7 +35,8 @@ type ResultRecord struct {
 }
 
 // SaveResult persists one run: params (e.g. cash/fee/adjust) plus the metrics
-// derived from Result (equity/total_return/max_drawdown/bars) and, when the
+// derived from Result (equity/total_return/max_drawdown/bars plus fee,
+// terminal and data-quality summaries) and, when the
 // Result carries them, the equity_curve/trades trace (migration 004) and
 // signals trace (migration 006). Stock trades get their Symbol filled with
 // the underlying symbol; option trades keep the contract code. A trace-less
@@ -61,10 +62,18 @@ func SaveResult(ctx context.Context, db *sql.DB, strategy, symbol string, params
 		return 0, fmt.Errorf("backtest: save result: params: %w", err)
 	}
 	metricsJSON, err := json.Marshal(map[string]any{
-		"equity":       r.Equity,
-		"total_return": r.TotalReturn,
-		"max_drawdown": r.MaxDrawdown,
-		"bars":         r.Bars,
+		"equity":         r.Equity,
+		"total_return":   r.TotalReturn,
+		"max_drawdown":   r.MaxDrawdown,
+		"bars":           r.Bars,
+		"attempt_count":  r.Unfilled.AttemptCount,
+		"fill_count":     r.Unfilled.FillCount,
+		"unfilled_count": r.Unfilled.UnfilledCount,
+		"unfilled_ratio": r.Unfilled.UnfilledRatio, // null when no attempts
+		"unfilled_model": unfilledModelLabel(),
+		"fees":           r.Fees,
+		"terminal":       r.Terminal,
+		"data_quality":   r.DataQuality,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("backtest: save result: metrics: %w", err)

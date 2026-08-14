@@ -204,7 +204,7 @@ if [[ "$smoke" == "1" ]]; then
 	check "GET /v1/wheel/signals" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/wheel/signals?limit=2")"
 	check "GET /v1/backtests?limit=1" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/backtests?limit=1")"
 	check "GET /v1/admin/cluster" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/admin/cluster")"
-	check "POST /v1/backtests (Wheel 回测可跑)" 201 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base_url/v1/backtests" -H 'Content-Type: application/json' -d '{"symbol":"BTEXEC.US","strategy":"wheel","params":{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":10,"strategic_state":"NORMAL"}}')"
+	check "POST /v1/backtests (Wheel 回测可跑)" 201 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$base_url/v1/backtests" -H 'Content-Type: application/json' -d '{"symbol":"BTEXEC.US","strategy":"wheel","params":{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"move_interval_pct":0,"min_premium_per_share":0,"stock_switch_pct":0,"trade_gap":10,"min_dte":5,"max_dte":10,"min_option_quality":0,"strategic_state":"NORMAL"}}')"
 	# DB-local 端点补齐(2026-08-03): 与网关无关,dev-up 种子数据后应恒 200;
 	# futu 系端点依赖网关,由 scripts/accept-*.sh 覆盖,不入 dev-up。
 	check "GET /v1/datacheck" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$base_url/v1/datacheck")"

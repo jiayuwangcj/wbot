@@ -43,12 +43,26 @@ func OptionsDataFromQuoteSnapshots(rows []wheelstore.QuoteSnapshotRecord) (*Opti
 		} else if b.UnderlyingPrice == 0 && r.UnderlyingPrice != nil {
 			b.UnderlyingPrice = *r.UnderlyingPrice
 		}
+		if len(b.Quotes) > 0 && !strings.EqualFold(strings.TrimSpace(b.Quotes[0].Source), strings.TrimSpace(r.Source)) {
+			return nil, fmt.Errorf("backtest: snapshot %s: mixed sources in atomic batch", r.SnapshotKey)
+		}
 		q := optionQuoteFromSnapshot(r)
 		b.Quotes = append(b.Quotes, q)
 	}
 	out := make([]QuoteSnapshotBatch, 0, len(batches))
 	for _, b := range batches {
 		sort.SliceStable(b.Quotes, func(i, j int) bool { return quoteName(b.Quotes[i]) < quoteName(b.Quotes[j]) })
+		b.ExpiryOrder = make([]int, len(b.Quotes))
+		for i := range b.ExpiryOrder {
+			b.ExpiryOrder[i] = i
+		}
+		sort.SliceStable(b.ExpiryOrder, func(i, j int) bool {
+			left, right := b.Quotes[b.ExpiryOrder[i]], b.Quotes[b.ExpiryOrder[j]]
+			if !left.Expiry.Equal(right.Expiry) {
+				return left.Expiry.Before(right.Expiry)
+			}
+			return quoteName(left) < quoteName(right)
+		})
 		out = append(out, *b)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -66,8 +80,10 @@ func OptionsDataFromQuoteSnapshots(rows []wheelstore.QuoteSnapshotRecord) (*Opti
 				continue
 			}
 			data.Chain[name] = OptionContract{Code: name, Kind: kind, Strike: q.Strike, Expiry: q.Expiry}
-			// A snapshot bid is a real observed market side and may be used
-			// as a conservative mark/fill. It is not an inferred legacy close.
+			// The adapter defines the snapshot mark semantics. Live providers
+			// supply an observed bid; source=hkex supplies the explicitly
+			// RESEARCH_ONLY EOD settlement projection documented in BACKTEST.md.
+			// Neither path falls back to a legacy option OHLC close here.
 			if q.Bid > 0 {
 				data.Bars[name] = append(data.Bars[name], ingest.Bar{Ts: b.ObservedAt, Open: q.Bid, High: q.Bid, Low: q.Bid, Close: q.Bid, Volume: q.Volume})
 			}

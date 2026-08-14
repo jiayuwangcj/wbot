@@ -264,7 +264,7 @@ func TestFutuTradeDispatch(t *testing.T) {
 // TestFutuOrderSafetyGuard: real-env writes are refused without -live-confirm
 // and without an explicit account; both guards never touch the gateway.
 func TestFutuOrderSafetyGuard(t *testing.T) {
-	base := []string{"wbot", "futu", "order", "-symbol", "HK.00700", "-side", "buy", "-qty", "100"}
+	base := []string{"wbot", "futu", "order", "-symbol", "HK.00700", "-side", "buy", "-qty", "100", "-price", "470"}
 
 	_, stderr, code := captureRun(t, append(base, "-env", "real"))
 	if code != 2 {

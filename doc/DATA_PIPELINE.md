@@ -9,6 +9,8 @@
 | `wbot ingest mock` | 插入一条 mock 拉取 + 3 条示例 bars（demo 源） |
 | `wbot ingest file -file <path>` | 从 JSON 文件拉取 bars（每元素 `{"ts":RFC3339,"open","high","low","close","volume"}`） |
 | `wbot ingest url -url <url>` | 从 HTTP(S) URL 拉取同格式 JSON bars |
+| `wbot ingest tencent -symbol HK.00700 -count 1000` | 腾讯免费 qfq 日 K 回填；写 `adjust=fwd,source=tencent`，默认剔除北京时间今日的形成 K（`-include-forming` 可保留），请求间隔 ≥1s，瞬时失败指数退避；美股当前仅单日并显式提示 |
+| `wbot ingest hkex -symbol HK.00700 -class TCH -lot-size 100 -from YYYY-MM-DD -to YYYY-MM-DD` | HKEX 官方 DTOP + RP006 港股期权日终回填；写官方结算价/IV/成交/OI及研究态 snapshot，官方站请求间隔 ≥1s、失败退避、逐日提交、整段可幂等重跑；默认回看 550 日，最长 730 日 |
 | `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust fwd\|none` 默认 fwd） |
 | `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §10、[[DATA_STANDARD]]） |
 | `wbot ingest account` | 经 OpenD protobuf（只读 funds 查询）把账户资金快照写入 `account_snapshots`（资产曲线数据层；见下文 §账户资产快照、[[FUTU]] §9） |
@@ -16,15 +18,22 @@
 | `wbot ingest freshness` | 数据新鲜度检查：各 symbol×timeframe 的 max_ts 年龄与三态状态 + 期权区块（underlying×source）；**任一 stale → exit 1**（可接 cron 门禁） |
 | `wbot datacheck` | 检查 watchlist 每个标的的完整 bars 矩阵与最新期权链；缺失/过期 → exit 1，`-json` 输出完整报告，`-repair` 经富途网关补拉后复查 |
 
-通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-every`（间隔重复）、`-from`/`-to`（RFC3339 时间范围，零值=不限）。
+通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-from`/`-to`（通常为 RFC3339 时间范围，零值=不限）；常驻型命令另带 `-every`。HKEX 子命令的 `-from/-to` 是闭区间 `YYYY-MM-DD`，且 `-to` 必须早于香港当日；Tencent/HKEX 回填均为一次性命令，由 cron/systemd 调度。
 
 ## 行为保证
 
 - **校验**：落库前 `ValidateBars` 拒绝非法 OHLC/时间序数据（见 `internal/ingest`）。
 - **数据标准**：bars/option_quotes 带 `adjust`（none/fwd/back）与 `source`（平台）列，PK 含二者，不同复权/平台数据共存可对比（[[DATA_STANDARD]]）。
-- **可重复**：bars 以 `(symbol, timeframe, ts, adjust, source)` 唯一，重复写入 `ON CONFLICT DO NOTHING`；`ingest futu-option` 二次运行命中 DB 缓存直接跳过拉取。
+- **可重复**：bars 以 `(symbol, timeframe, ts, adjust, source)` 唯一，重复写入 `ON CONFLICT DO NOTHING`；`ingest futu-option` 二次运行命中 DB 缓存直接跳过拉取。HKEX 同时依靠 `option_quotes(symbol,ts,adjust,source)` 与 `option_quote_snapshots(underlying,observed_at,snapshot_key,symbol)` 两个唯一键幂等；唯一例外是 RP006 后续恢复时可把既有 quote 的 null IV 补齐，已有值不覆盖。
+- **回测择源**：相同 `symbol/timeframe/adjust/ts` 的多平台行只消费一条，固定优先 `futu` → `tencent` → 其他 source 字典序；腾讯用于补齐 Futu 缺失日期，不制造重复回测 bar。
 - **失败容忍**：`-every` 模式下单轮失败打日志继续，不终止整个调度；单次模式（无 `-every`）失败即退出非零。
-- **事务**：一次拉取 = 一条 `ingestion_runs`（running → succeeded/failed）+ 全部 bars，同一事务。
+- **事务**：通用 bars 一次拉取以事务落库。HKEX 长区间使用一条 `ingestion_runs` 观测整段状态、每个交易日一个原子事务；后段下载失败不回滚已验证日期，重跑由唯一键续填。
+
+## HKEX 港股期权日终
+
+`ingest hkex` 使用公开的 `DTOP_O_YYYYMMDD.zip` 与 `RP006_YYMMDD.zip`。DTOP 的 SEOCH all 文件给出准确到期日、行权价、Call/Put 结算价、成交张数与 gross OI；RP006-FINAL 以系列代码交叉核对结算价，并补 IV 和 `<class>SP` 标的结算价。两份文件的业务日期或同系列结算价不一致即整日失败；DTOP 404、`no_trading_activities.txt` 或零明细视为非交易日。若 DTOP 有效而 RP006 404/明示 `No File Available Yet`，仍落 DTOP settlement，并把当天计为 `quote_only_days`、不生成研究 snapshot。官方地址固定至少 1 秒一次请求，429/5xx/网络瞬时错误按 1 秒、2 秒退避重试。
+
+`option_quotes` 保留官方日终事实（OHLC 均为 settlement，`adjust=none,source=hkex`）。`option_quote_snapshots` 仅是研究投影：`bid=ask=settlement`，Delta/Theta 由官方 IV 与标的 settlement 按 Black-Scholes `r=0` 派生，lot size 来自显式 CLI 参数。它不会进入实时采集/提醒链路；完整历史周期只把回测能力提升为 `RESEARCH_ONLY`，不会提升为可执行 `READY`。
 
 ## 本地开发 PG
 
@@ -41,7 +50,7 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 
 - **CLI**：`wbot ingest mock|file|url` 各支持 `-provider <name>`，默认按子命令推断（mock→mock、file→file、url→url）；未注册的 provider 名 → 报错退出 2。
 - **配置承载**：`Config` 为 `map[string]string`，只透传非敏感选项（如 `path`、`url`）；**凭证/token 不放入 Config、不入 `ingestion_runs`**——provider 自行从环境变量（或 `~/.wbot/config.yaml` 渲染出的 env）读取（[[PRIVACY]]）。
-- **接新数据源**：实现 `Source` 并 `Register` 一个 provider 即可被 CLI 选用；真实行情源接入为后续 Issue（见 `doc/issues/draft-2026-07-31-ingest-provider-abstraction.md`）。
+- **接新数据源**：通用 file/url 型 provider 实现 `Source` 并注册；需要独立协议/限频的真实源可像 `TencentSource` / `FutuSource` 一样使用专用子命令，仍复用 `RunIngestion` 的校验、事务和幂等落库。
 
 ## 调度方式选择
 
@@ -88,18 +97,18 @@ bars 补拉窗口为最近 14 天（周线 60 天、月线 180 天），写入 s
 `wbot ingest freshness [-dsn] [-max-age <dur>]` 按 symbol×timeframe×adjust 列出 bars 表各组合的 `max_ts`、年龄（秒）与状态，**并附加期权区块**（按 underlying×source 聚合 option_quotes 的 `max_ts`），作为「数据停更」的观察闭环（与 `ingest status` 互补：status 看拉取任务成败，freshness 看数据是否新鲜）。
 
 - **三态**：`fresh`（max_ts 年龄 ≤ 阈值，等于阈值算 fresh）、`stale`（超过阈值）、`unknown`（无数据）。
-- **阈值**：bars 默认按 timeframe 映射——3 × 名义 bar 间隔，下限 10 分钟（`1d` → 3 天、`1m` → 10 分钟、`5m` → 15 分钟、`1w` → 21 天、`1mo` → 90 天）；无法解析的 timeframe 回退 24h。**期权默认 4h**（日内行情数据，`MaxAgeForOptions`）。`-max-age`（如 `-max-age 24h`）对 bars 与期权全局覆盖；**负值拒绝**（`-max-age must not be negative`，exit 2，2026-08-03）。
+- **阈值**：bars 默认按 timeframe 映射——3 × 名义 bar 间隔，下限 10 分钟（`1d` → 3 天、`1m` → 10 分钟、`5m` → 15 分钟、`1w` → 21 天、`1mo` → 90 天）；无法解析的 timeframe 回退 24h。期权实时源默认 4h；`source=hkex` 是日终源，默认 3 天（与 `1d` bars 一致、覆盖普通周末）。`-max-age`（如 `-max-age 24h`）对 bars 与期权全局覆盖；**负值拒绝**（`-max-age must not be negative`，exit 2，2026-08-03）。
 - **退出码**：任一 stale（bars 或期权）→ `1`；全 fresh / 无数据 unknown → `0`；参数错误 → `2`。cron 门禁示例：
 
 ```cron
 */10 * * * * wbot ingest freshness >>"$HOME/.cache/wbot-freshness.log" 2>&1 || notify-freshness-stale
 ```
 
-- 判定实现：`internal/ingest`（`JudgeFreshness`/`MaxAgeForTimeframe`/`MaxAgeForOptions`/`QueryFreshness`/`QueryOptionFreshness`）；`/v1/admin/cluster` 的 `bars_coverage` 每项带 `max_ts_age_seconds`/`fresh`（同阈值规则，向后兼容，见 [[API]]），`options_freshness` 按 underlying×source 聚合同一三态（默认 4h，与 CLI 期权区块一致）。
+- 判定实现：`internal/ingest`（`JudgeFreshness`/`MaxAgeForTimeframe`/`MaxAgeForOptionSource`/`QueryFreshness`/`QueryOptionFreshness`）；`/v1/admin/cluster` 的 `bars_coverage` 每项带 `max_ts_age_seconds`/`fresh`（同阈值规则，向后兼容，见 [[API]]），`options_freshness` 按 underlying×source 聚合同一三态（实时源 4h、HKEX 日终 3d，与 CLI 期权区块一致）。
 
 ## 相关实现
 
-- `internal/ingest/`：`Source` 接口（mock/file/http）、`Provider` 注册表（provider.go）、`RunIngestion`、`RunEvery`/`RunEveryResilient`、`ValidateBars`、`RecentRuns`
+- `internal/ingest/`：`Source` 接口（mock/file/http）、`Provider` 注册表（provider.go）、HKEX DTOP/RP006 adapter、`RunIngestion`、`RunEvery`/`RunEveryResilient`、`ValidateBars`、`RecentRuns`
 - `internal/db/migrations/`：`001_ingestion_runs.sql`、`002_bars.sql`、`004_account_snapshots.sql`
 - `internal/ingest/account.go`：`QueryAccountSnapshots`（资产曲线查询）
 - 任务轨迹：`doc/tasks/2026-04-18-wbot-ingest-cli.md` 起；后续 ingest 闭环：`2026-07-31-ingest-time-range.md`（-from/-to）、`2026-08-02-ingest-mock-rangeflags.md`（mock 范围参数）、`2026-08-02-ingest-refill.md`（bars 补数据）、`2026-08-03-options-ingest-button.md`（期权链拉取）、`2026-08-03-futu-ingest-account-doc.md`（资金快照文档）、`2026-08-03-ci-option-freshness.md`（freshness 验收远程化）

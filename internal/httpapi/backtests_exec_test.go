@@ -20,7 +20,7 @@ import (
 	"github.com/jiayu/wbot/internal/watchlist"
 )
 
-const validWheelParamsJSON = `"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200`
+const validWheelParamsJSON = `"full_position_price":400,"zero_position_price":550,"max_inventory":1200`
 
 func wheelExecBody(symbol string) string {
 	return `{"symbol":"` + symbol + `","strategy":"wheel","params":{` + validWheelParamsJSON + `}}`
@@ -28,11 +28,9 @@ func wheelExecBody(symbol string) string {
 
 func validWheelParams() map[string]any {
 	return map[string]any{
-		"price_position_curve": []any{
-			map[string]any{"price": 400.0, "target_inventory": 1200.0},
-			map[string]any{"price": 550.0, "target_inventory": 0.0},
-		},
-		"max_inventory": 1200.0,
+		"full_position_price": 400.0,
+		"zero_position_price": 550.0,
+		"max_inventory":       1200.0,
 	}
 }
 
@@ -96,7 +94,7 @@ func TestBacktestExecuteManual(t *testing.T) {
 	if fake.gotSymbol != "DEMO.US" || fake.gotStrategy != "wheel" {
 		t.Fatalf("executor got (%q, %q); want (DEMO.US, wheel)", fake.gotSymbol, fake.gotStrategy)
 	}
-	if fake.gotParams == nil || len(fake.gotParams) != 2 {
+	if fake.gotParams == nil || fake.gotParams["full_position_price"] != 400.0 || fake.gotParams["zero_position_price"] != 550.0 {
 		t.Fatalf("executor params = %v; want required Wheel inputs", fake.gotParams)
 	}
 }
@@ -110,8 +108,22 @@ func TestBacktestExecuteManualParams(t *testing.T) {
 	if got.Code != http.StatusCreated {
 		t.Fatalf("status = %d; want 201 (body %s)", got.Code, got.Body)
 	}
-	if len(fake.gotParams) != 3 || fake.gotParams["strategic_state"] != "CAUTION" {
+	if fake.gotParams["strategic_state"] != "CAUTION" {
 		t.Fatalf("executor params = %v; want Wheel params with CAUTION", fake.gotParams)
+	}
+}
+
+func TestBacktestExecuteLegacyLotSizeIgnored(t *testing.T) {
+	rec := sampleRecord(9)
+	fake := newFakeExecutor()
+	fake.rec = &rec
+	got := postExec(t, BacktestExecuteHandler(fake, &fakeWatchlistStore{}),
+		`{"symbol":"HK.00700","strategy":"wheel","params":{`+validWheelParamsJSON+`,"lot_size":"100"}}`)
+	if got.Code != http.StatusCreated {
+		t.Fatalf("status = %d; want 201 (body %s)", got.Code, got.Body)
+	}
+	if _, ok := fake.gotParams["lot_size"]; ok {
+		t.Fatalf("executor params = %v; legacy lot_size must be dropped before execution (2026-08-13)", fake.gotParams)
 	}
 }
 
@@ -130,7 +142,7 @@ func TestBacktestExecuteValidation(t *testing.T) {
 		{"unknown strategy", `{"symbol":"DEMO.US","strategy":"nope"}`, "invalid_request", "unknown template"},
 		{"benchmark hidden", `{"symbol":"DEMO.US","strategy":"hold"}`, "invalid_request", "unknown template"},
 		{"missing strategic inputs", `{"symbol":"DEMO.US","strategy":"wheel","params":{}}`, "invalid_request", "required"},
-		{"bad param type", `{"symbol":"DEMO.US","strategy":"wheel","params":{` + validWheelParamsJSON + `,"lot_size":"100"}}`, "invalid_request", "want a number"},
+		{"bad param type", `{"symbol":"DEMO.US","strategy":"wheel","params":{` + validWheelParamsJSON + `,"move_interval_pct":"0.01"}}`, "invalid_request", "want a number"},
 		{"param out of range", `{"symbol":"DEMO.US","strategy":"wheel","params":{` + validWheelParamsJSON + `,"min_option_quality":-1}}`, "invalid_request", "want in"},
 		{"unknown param", `{"symbol":"DEMO.US","strategy":"wheel","params":{` + validWheelParamsJSON + `,"bogus":1}}`, "invalid_request", "unknown param"},
 		{"from_watchlist exclusive", `{"from_watchlist":true,"symbol":"DEMO.US"}`, "invalid_request", "mutually exclusive"},

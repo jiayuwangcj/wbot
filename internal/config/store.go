@@ -43,6 +43,13 @@ var WhitelistedKeys = []Key{
 	{"credentials.ibkr.account", "credentials.ibkr"},
 	{"credentials.telegram.token", "credentials.telegram"},
 	{"credentials.telegram.chat_ids", "credentials.telegram"},
+	{"credentials.discord.app_id", "credentials.discord"},
+	{"credentials.discord.public_key", "credentials.discord"},
+	{"credentials.discord.bot_token", "credentials.discord"},
+	{"credentials.discord.channel_id", "credentials.discord"},
+	{"assistant.discord.allowed_user_ids", "assistant.discord"},
+	{"assistant.claude.cli_path", "assistant.claude"},
+	{"assistant.claude.api_key", "assistant.claude"},
 	{"system.listen", "system"},
 }
 

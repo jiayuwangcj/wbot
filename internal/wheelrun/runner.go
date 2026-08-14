@@ -9,13 +9,14 @@ package wheelrun
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/jiayu/wbot/internal/datacheck"
 	"github.com/jiayu/wbot/internal/futu"
 	"github.com/jiayu/wbot/internal/llmreview"
 	"github.com/jiayu/wbot/internal/strategy"
@@ -36,19 +37,6 @@ type OptionChainer interface {
 	OptionChain(ctx context.Context, symbol string, begin, end time.Time) ([]futu.OptionContract, error)
 }
 
-// LLMReviewer audits an ALERT before it can pass the notification gate.
-type LLMReviewer interface {
-	Review(ctx context.Context, req llmreview.ReviewRequest) (llmreview.ReviewResult, error)
-}
-
-// SignalStore is the wheelstore subset the runner reads and writes.
-type SignalStore interface {
-	LatestConfig(ctx context.Context, symbol string) (*wheelstore.ConfigRecord, error)
-	AppendSignal(ctx context.Context, r wheelstore.SignalRecord) (int64, error)
-	AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error)
-	ListSignals(ctx context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error)
-}
-
 // WatchlistLister lists wheel bindings and syncs their execution status
 // (adapted from the watchlist package so the runner stays DB-free).
 type WatchlistLister interface {
@@ -56,40 +44,183 @@ type WatchlistLister interface {
 	SetExecutionStatus(ctx context.Context, symbol, status, reason string) error
 }
 
+// FundsFunc returns the account's available cash. A nil FundsFunc leaves
+// HasCashAvailable false, so every put candidate is rejected on
+// cash-availability (fail-closed; 2026-08-13 the runner never wired funds).
+type FundsFunc func(ctx context.Context) (float64, error)
+
 // Dependencies is the runner's full injectable surface. Positions is the
 // slice-B TradePositions interface (positions.go).
 type Dependencies struct {
-	Quoter      Quoter
-	Positions   TradePositions
-	Chain       OptionChainer
-	Store       SignalStore
-	Watchlist   WatchlistLister
-	LLMReviewer LLMReviewer
-	LLMModel    string
+	Quoter            Quoter
+	Positions         TradePositions
+	Funds             FundsFunc
+	Chain             OptionChainer
+	Store             wheelstore.SignalRepository
+	Watchlist         WatchlistLister
+	LLMReviewer       llmreview.Reviewer
+	LLMModel          string
+	Calendar          datacheck.Calendar
+	Now               func() time.Time
+	MarketOpen        MarketOpenFunc
+	SnapshotRecorder  QuoteSnapshotRecorder
+	SnapshotQueueSize int
 }
 
 // Runner evaluates every wheel binding on one sequential pass. It is not
 // safe for concurrent use; a single goroutine owns it (Run).
+//
+// LLM audits run off the pass loop: reviewAlert can take minutes (300s HTTP
+// timeout) and a synchronous call inside runSymbol stalled every symbol
+// while one audit was in flight (2026-08-14: signals 868/870/871). ALERTs
+// are handed to a bounded review queue drained by reviewWorkers; the audit
+// result lands as an LLM_REVIEW/REJECTED action exactly as before, so the
+// push gate's semantics are unchanged.
 type Runner struct {
-	deps Dependencies
+	deps      Dependencies
+	snapshots *asyncSnapshotRecorder
+
+	// reviewCh is the bounded queue of pending audits. reviewInflight tracks
+	// symbols with a queued or running audit so a symbol that keeps ALERTing
+	// (candidate stays in range) does not pile up one audit per pass — the
+	// audit the push gate waits on is already in flight.
+	reviewCh       chan reviewTask
+	reviewInflight map[string]bool
+	reviewMu       sync.Mutex
+	reviewWG       sync.WaitGroup
+	closeOnce      sync.Once
+
+	// lastAlert is the per-symbol suppression baseline for repeat ALERTs of
+	// the same contract (see suppressRepeatAlert/commitAlertBaseline). The
+	// pass loop writes it on successful ALERTs; review workers clear it when
+	// an audit fails on the infrastructure side (clearSuppression), so all
+	// access is serialized by reviewMu.
+	lastAlert map[string]lastAlertInfo
 }
 
-func NewRunner(deps Dependencies) *Runner { return &Runner{deps: deps} }
+// reviewTask snapshots everything reviewAlert needs so the worker can run
+// after the pass has moved on (cfg/sig/record are values; positions is the
+// pass's slice, read-only after enqueue).
+type reviewTask struct {
+	ctx           context.Context
+	symbol        string
+	signalID      int64
+	configVersion int
+	cfg           wheel.Config
+	sig           wheel.Signal
+	record        wheelstore.SignalRecord
+	positions     []Position
+	price         float64
+	cash          float64
+	hasCash       bool
+}
+
+// lastAlertInfo is the suppression baseline: the contract that last alerted
+// for a symbol and when. A suppressed round does not update it, so the
+// window expires and the candidate alerts (and is re-audited) again.
+type lastAlertInfo struct {
+	at       time.Time
+	contract string
+}
+
+const (
+	// reviewWorkers bounds concurrent LLM audits. A serial queue would age
+	// later signals out of the push gate's freshness window once several
+	// symbols alert in the same pass (each audit takes minutes).
+	reviewWorkers = 2
+	// reviewQueueDepth caps queued audits; entries beyond it are dropped
+	// with a log line (defensive only: per-symbol dedup already bounds the
+	// queue to one entry per symbol).
+	reviewQueueDepth = 8
+	// repeatAlertWindow: a second ALERT for the same symbol and contract
+	// inside this window is downgraded to HOLD. JD 2026-08-14: the 28/29P
+	// candidate stayed in range, every pass re-alerted and every round
+	// spawned a fresh 4-minute audit.
+	repeatAlertWindow = 30 * time.Minute
+)
+
+func NewRunner(deps Dependencies) *Runner {
+	recorder := deps.SnapshotRecorder
+	if recorder == nil {
+		if candidate, ok := deps.Store.(QuoteSnapshotRecorder); ok {
+			recorder = candidate
+		}
+	}
+	r := &Runner{
+		deps:           deps,
+		snapshots:      newAsyncSnapshotRecorder(recorder, deps.SnapshotQueueSize),
+		reviewCh:       make(chan reviewTask, reviewQueueDepth),
+		reviewInflight: map[string]bool{},
+		lastAlert:      map[string]lastAlertInfo{},
+	}
+	for i := 0; i < reviewWorkers; i++ {
+		r.reviewWG.Add(1)
+		go r.reviewWorker()
+	}
+	return r
+}
+
+// Close drains the bounded snapshot side channel and stops the review
+// workers after queued audits complete. Run calls it automatically; callers
+// that use RunOnce directly can close explicitly when they need to wait for
+// queued observations and audits to finish.
+func (r *Runner) Close() {
+	if r == nil {
+		return
+	}
+	r.closeOnce.Do(func() {
+		close(r.reviewCh)
+		r.reviewWG.Wait()
+		r.snapshots.close()
+	})
+}
+
+func (r *Runner) now() time.Time {
+	if r.deps.Now != nil {
+		return r.deps.Now()
+	}
+	return time.Now()
+}
+
+// reviewWorker drains the review queue. The audit uses the enqueue-time
+// context, so a cancelled run loop fails in-flight audits promptly (the
+// failure lands as an audit action, same as the synchronous path). A panic
+// inside the audit must not kill the worker: it is recovered, the
+// suppression baseline is cleared (the audit never produced a verdict) and
+// the next pass re-audits.
+func (r *Runner) reviewWorker() {
+	defer r.reviewWG.Done()
+	for task := range r.reviewCh {
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					fmt.Fprintf(os.Stderr, "wheelrun: %s: review worker panic: %v\n", task.symbol, p)
+					r.clearSuppression(task.symbol)
+				}
+				r.reviewMu.Lock()
+				delete(r.reviewInflight, task.symbol)
+				r.reviewMu.Unlock()
+			}()
+			r.reviewAlert(task.ctx, task.symbol, task.signalID, task.configVersion, task.cfg, task.sig, task.record, task.positions, task.price, task.cash, task.hasCash)
+		}()
+	}
+}
 
 // fallbackBlocker keeps the validateSignal contract (DATA_BLOCKED must have
 // at least one blocker) when Evaluate reports a data block without naming it.
 const fallbackBlocker = "no complete quote snapshot"
 
 // 与 doc/WHEEL_STRATEGY.md「LLM 审核规则摘要（单一来源）」小节同步，文档为源。
-const wheelReviewRules = `仅审核 wheel 区间策略；信号只能是 ALERT 或 HOLD，审核不得触发自动下单。策略在价格区间内通过卖出现金担保 Put 或备兑 Call 收取权利金，并在价格超出区间时依照价格-目标库存曲线调整风险敞口：目标库存高于有效库存时只能考虑卖 Put 增加库存敞口，目标库存低于有效库存时只能考虑卖 Call 降低库存敞口。
+const wheelReviewRules = `仅审核 wheel 区间策略；信号只能是 ALERT 或 HOLD，审核不得触发自动下单。策略在满仓价到清仓价区间内线性计算目标库存，通过卖出现金担保 Put 或备兑 Call 收取权利金：目标库存高于有效库存时只能考虑卖 Put 增加库存敞口，目标库存低于有效库存时只能考虑卖 Call 降低库存敞口。
 当前情况由标的现价、策略配置版本、现金可用额及股票/期权持仓组成；signal 描述提示动作、方向、卖出合约数、候选报价、当前/目标/有效/交易后库存、库存缺口、能力状态和阻断原因；预期收益 expected_gain 是按卖价 Bid × 合约乘数 × 数量估算的毛权利金，不含手续费、滑点、税费及指派损益，不代表保证收益，缺失或为零不得推断为有收益。
 必须逐项审核：
-1. 方向反转检查（硬性项）：核对 signal.direction 与当前持仓、effective_inventory、inventory_gap、target_inventory 及价格-目标库存曲线一致；缺口为正时卖 Put、缺口为负时卖 Call，卖出/买入符号与目标库存变化必须一致，任何方向反转或符号矛盾都必须 REJECT。
-2. 策略参数：核对 min_dte/max_dte、价格区间、max_inventory、max_daily_orders、strategic_state 及候选合约参数。
+1. 方向反转检查（硬性项）：核对 signal.direction 与当前持仓、effective_inventory、inventory_gap、target_inventory 及满仓价—清仓价区间一致；缺口为正时卖 Put、缺口为负时卖 Call，卖出/买入符号与目标库存变化必须一致，任何方向反转或符号矛盾都必须 REJECT。
+2. 策略参数：核对 full_position_price/zero_position_price、max_inventory、move_interval_pct、min_premium_per_share、min_option_profit、stock_switch_pct、trade_gap、min_option_quality、min_dte/max_dte、strategic_state 及候选合约参数。
 3. 数据质量：报价必须完整且新鲜，Bid/Ask 正数且未倒挂，IV/Delta/Theta 合理，Volume/OI 非零；不得用缺失 Greeks 或过期、拼接数据作判断。
-4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量、交易后有效库存和 extreme 每日限制。
+4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量和交易后有效库存；策略不设每日提醒次数上限。
 5. 系统性错误：排查闭市或停牌误判、同一合约重复动作、与现有持仓或历史动作矛盾、合约类型/到期日/乘数错误及 Greeks 缺失。
-6. 数据不足：capability_status 为 DATA_BLOCKED、blocked_by 非空，或任一关键字段不足时必须 REJECT；不得以 expected_gain 补偿或放宽任何校验。`
+6. 数据不足：capability_status 为 DATA_BLOCKED、blocked_by 非空，或任一关键字段不足时必须 REJECT；不得以 expected_gain 补偿或放宽任何校验。
+7. 改单（signal.replace 非空，硬性项）：改单=撤销 pending_orders 中旧挂单（replace.order_id/replace.contract）改挂首选候选，是写操作、同样需要审核。必须核对：a) 新合约不要求严格优于旧合约：允许价格稍差的调整（如权利金略低、质量相当），若理由合理——更快成交、流动性更好、更接近目标库存——应予批准；但新合约明显劣化（质量/流动性显著更差、风险显著增大）或调整无任何依据时必须 REJECT；b) 旧挂单确在 pending_orders 中且方向一致；c) 改单后库存偏差不增大；d) 频繁改单（同标的短时多次）必须 REJECT——避免反复撤换浪费与不确定性。`
 
 // RunOnce evaluates every wheel binding once. A per-symbol failure is logged
 // and does not stop the remaining symbols; the returned error (nil when all
@@ -101,12 +232,17 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 	}
 	failed := 0
 	wheelBindings := 0
+	now := r.now()
 	for _, it := range items {
 		if it.Strategy != "wheel" {
 			continue
 		}
 		wheelBindings++
-		if err := r.runSymbol(ctx, it.Symbol); err != nil {
+		if !r.marketOpen(it.Symbol, now) {
+			fmt.Fprintf(os.Stderr, "wheelrun: %s: market closed; skipping live evaluation\n", it.Symbol)
+			continue
+		}
+		if err := r.runSymbol(ctx, it.Symbol, now); err != nil {
 			failed++
 			fmt.Fprintf(os.Stderr, "wheelrun: %s: %v\n", it.Symbol, err)
 		}
@@ -121,6 +257,9 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 // cancelled. Interval must be positive; per-pass errors are logged and never
 // abort the loop.
 func (r *Runner) Run(ctx context.Context, interval time.Duration) error {
+	// Close before the interval check: Run(ctx, 0) must not leak the review
+	// workers it already spawned in NewRunner.
+	defer r.Close()
 	if interval <= 0 {
 		return errors.New("wheelrun: interval must be positive")
 	}
@@ -144,7 +283,14 @@ func (r *Runner) Run(ctx context.Context, interval time.Duration) error {
 
 // runSymbol executes the full chain for one symbol. Every failure is returned
 // for RunOnce to log; nothing panics and no broker order is ever placed.
-func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
+func (r *Runner) marketOpen(symbol string, now time.Time) bool {
+	if r.deps.MarketOpen != nil {
+		return r.deps.MarketOpen(symbol, now)
+	}
+	return MarketIsOpen(symbol, now, r.deps.Calendar)
+}
+
+func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) error {
 	rec, err := r.deps.Store.LatestConfig(ctx, symbol)
 	if err != nil {
 		return fmt.Errorf("latest config: %w", err)
@@ -160,15 +306,6 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	if price <= 0 {
 		return fmt.Errorf("current price %v is not positive", price)
 	}
-	positions, err := r.deps.Positions.Positions(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("positions: %w", err)
-	}
-	stockShares, opts, err := PositionsInput(positions)
-	if err != nil {
-		return fmt.Errorf("positions input: %w", err)
-	}
-	now := time.Now()
 	contracts, err := r.deps.Chain.OptionChain(ctx, symbol, now.AddDate(0, 0, cfg.MinDTE), now.AddDate(0, 0, cfg.MaxDTE))
 	if err != nil {
 		return fmt.Errorf("option chain: %w", err)
@@ -177,36 +314,103 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string) error {
 	for _, c := range contracts {
 		contractSymbols = append(contractSymbols, c.Symbol)
 	}
-	quotes, err := r.deps.Quoter.OptionQuotes(ctx, contractSymbols)
+	positions, err := r.deps.Positions.Positions(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("positions: %w", err)
+	}
+	filteredPositions, unassignedOptions := filterPositions(symbol, positions, contractSymbols)
+	for _, p := range unassignedOptions {
+		positionCode := p.Code
+		if positionCode == "" {
+			positionCode = p.Symbol
+		}
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: skipping unassigned option position %s (not in option chain)\n", symbol, positionCode)
+	}
+	stockShares, opts, err := PositionsInput(filteredPositions)
+	if err != nil {
+		return fmt.Errorf("positions input: %w", err)
+	}
+	quoteContracts, quotes, err := r.collectOptionQuotes(ctx, symbol, contracts, price, cfg, stockShares, opts, now)
 	if err != nil {
 		return fmt.Errorf("option quotes: %w", err)
 	}
-	dailyOrders, err := r.dailyOrders(ctx, symbol, now)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "wheelrun: %s: daily orders: %v (using 0)\n", symbol, err)
+	// Held options need live delta/lot from the quote map for the effective
+	// inventory; PositionsInput leaves Delta/LotSize zero (its contract:
+	// "the runner fills quotes ... from OptionQuotes" — implemented here,
+	// 2026-08-13: signal 500's sold 450P contributed zero delta stock, so
+	// the inventory gap never closed after the fill). The directional
+	// fetch may have skipped a held contract of the opposite direction,
+	// so pull those individually.
+	for _, p := range opts {
+		if _, ok := quotes[p.Symbol]; ok {
+			continue
+		}
+		if page, err := r.deps.Quoter.OptionQuotes(ctx, []string{p.Symbol}); err == nil {
+			for k, q := range page {
+				if q.Symbol == "" {
+					q.Symbol = k
+				}
+				quotes[k] = q
+				quotes[q.Symbol] = q
+			}
+		}
+	}
+	for i := range opts {
+		if q, ok := quotes[opts[i].Symbol]; ok {
+			opts[i].Delta = q.Delta
+			if opts[i].LotSize <= 0 && q.LotSize > 0 {
+				opts[i].LotSize = q.LotSize
+			}
+		}
+	}
+	asOf := r.now()
+	r.enqueueQuoteSnapshots(symbol, price, quoteContracts, quotes, asOf)
+	// Unfilled orders must gate the candidate selection, not just the review:
+	// without this, an unfilled order keeps re-alerting the same contract and
+	// the LLM gate rejects the duplicate every cycle (2026-08-13: P29000 over
+	// pending order 206158430256 rejected on signals 747/749/750/751).
+	pending, perr := r.deps.Store.ListPendingOrders(ctx, symbol)
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: list pending orders: %v\n", symbol, perr)
 	}
 	in := wheel.DecisionInput{
 		CurrentPrice:     price,
-		AsOf:             now,
+		AsOf:             asOf,
 		StockShares:      stockShares,
 		Positions:        opts,
-		Quotes:           assembleQuotes(symbol, contracts, quotes),
-		DailyOrders:      dailyOrders,
-		ExtremeDay:       false,
+		Quotes:           assembleQuotes(symbol, quoteContracts, quotes),
 		CashAvailable:    0,
 		HasCashAvailable: false,
+		Pending:          mapPending(pending),
+	}
+	if r.deps.Funds != nil {
+		if cash, err := r.deps.Funds(ctx); err == nil {
+			in.CashAvailable = cash
+			in.HasCashAvailable = true
+		} else {
+			fmt.Fprintf(os.Stderr, "wheelrun: %s: funds: %v\n", symbol, err)
+		}
 	}
 	sig, err := wheel.Evaluate(cfg, in)
 	if err != nil {
 		return fmt.Errorf("evaluate: %w", err)
 	}
 	record, status, reason := mapSignal(symbol, rec.Version, sig, price)
+	if record.Action == "ALERT" && r.suppressRepeatAlert(symbol, sig, now) {
+		// 同候选在窗口内重复:降为 HOLD,不落 ALERT、不触发审核。窗口不滚动,
+		// 期满后候选重新 ALERT 并重新审核。原策略原因保留在文案中,不覆盖。
+		record.Action = "HOLD"
+		record.Reason = fmt.Sprintf("重复候选抑制: %s 在 %v 窗口内已 ALERT 过, 降为 HOLD; %s", sig.Quote.Symbol, repeatAlertWindow, sig.Reason)
+	}
 	id, err := r.deps.Store.AppendSignal(ctx, record)
 	if err != nil {
 		return fmt.Errorf("append signal: %w", err)
 	}
 	if record.Action == "ALERT" {
-		r.reviewAlert(ctx, symbol, id, rec.Version, cfg, sig, record, positions, price)
+		// 基线在信号落库成功后才写:落库失败的 ALERT 从未发生,不应进入
+		// 抑制窗口(否则下一 pass 会被静默降 HOLD)。
+		r.commitAlertBaseline(symbol, sig, now)
+		r.enqueueReview(ctx, symbol, id, rec.Version, cfg, sig, record, filteredPositions, price, in.CashAvailable, in.HasCashAvailable)
 	}
 	if err := r.deps.Watchlist.SetExecutionStatus(ctx, symbol, status, reason); err != nil {
 		return fmt.Errorf("signal %d stored, watchlist status sync: %w", id, err)
@@ -224,6 +428,7 @@ func (r *Runner) persistDataBlocked(ctx context.Context, symbol string, version 
 		CapabilityStatus: wheel.CapabilityDataBlocked,
 		BlockedBy:        []string{blocker},
 		Reason:           reason,
+		Strategy:         "wheel",
 	}
 	id, appendErr := r.deps.Store.AppendSignal(ctx, record)
 	if appendErr != nil {
@@ -235,10 +440,118 @@ func (r *Runner) persistDataBlocked(ctx context.Context, symbol string, version 
 	return fmt.Errorf("%s; signal %d DATA_BLOCKED", reason, id)
 }
 
-func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64) {
+// enqueueReview hands an ALERT to the review queue without blocking the run
+// loop. Per-symbol dedup: a symbol whose audit is already queued or running
+// skips further reviews (the audit the push gate waits on is in flight, a
+// second one would only delay the queue). A full queue drops the entry with
+// a log line — the push gate then skips this signal and the next windowed
+// ALERT audits again.
+func (r *Runner) enqueueReview(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64, cash float64, hasCash bool) {
+	if r.deps.LLMReviewer == nil {
+		return
+	}
+	r.reviewMu.Lock()
+	if r.reviewInflight[symbol] {
+		r.reviewMu.Unlock()
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: LLM review already in flight; skipping review signal=%d\n", symbol, signalID)
+		return
+	}
+	r.reviewInflight[symbol] = true
+	r.reviewMu.Unlock()
+	task := reviewTask{
+		ctx:           ctx,
+		symbol:        symbol,
+		signalID:      signalID,
+		configVersion: configVersion,
+		cfg:           cfg,
+		sig:           sig,
+		record:        record,
+		positions:     positions,
+		price:         price,
+		cash:          cash,
+		hasCash:       hasCash,
+	}
+	select {
+	case r.reviewCh <- task:
+	default:
+		r.reviewMu.Lock()
+		delete(r.reviewInflight, symbol)
+		r.reviewMu.Unlock()
+		// 队列满丢弃 = 审核未发生:清抑制基线,下一 pass 的重复 ALERT 重新
+		// 入队重试(否则该 symbol 在窗口内静默降 HOLD,通知最长丢 30 分钟)。
+		r.clearSuppression(symbol)
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: review queue full; dropping review signal=%d\n", symbol, signalID)
+	}
+}
+
+// suppressRepeatAlert downgrades an ALERT when the same contract already
+// alerted for this symbol within repeatAlertWindow: the candidate stays in
+// range pass after pass and every round would otherwise re-alert and spawn a
+// fresh audit (JD 28/29P, 2026-08-14). It is a read-only check — the
+// baseline is committed by commitAlertBaseline only after the ALERT lands in
+// the store; suppressed rounds do not extend it, so the candidate alerts
+// again once the window expires. sig.Quote must be non-nil for ALERTs.
+func (r *Runner) suppressRepeatAlert(symbol string, sig wheel.Signal, now time.Time) bool {
+	if sig.Quote == nil {
+		return false
+	}
+	contract := sig.Quote.Symbol
+	r.reviewMu.Lock()
+	last, ok := r.lastAlert[symbol]
+	r.reviewMu.Unlock()
+	if ok && last.contract == contract && now.Sub(last.at) < repeatAlertWindow {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: repeat candidate %s within %v; HOLD instead of ALERT\n", symbol, contract, repeatAlertWindow)
+		return true
+	}
+	return false
+}
+
+// commitAlertBaseline records the contract+time baseline for a persisted
+// ALERT. Called by the pass loop after AppendSignal succeeds; workers clear
+// it (clearSuppression) when an audit fails on the infrastructure side.
+func (r *Runner) commitAlertBaseline(symbol string, sig wheel.Signal, now time.Time) {
+	if sig.Quote == nil {
+		return
+	}
+	r.reviewMu.Lock()
+	r.lastAlert[symbol] = lastAlertInfo{at: now, contract: sig.Quote.Symbol}
+	r.reviewMu.Unlock()
+}
+
+// clearSuppression removes the repeat-alert baseline for a symbol. Used by
+// the review path when an audit never produced a verdict (gate failure after
+// retry, dropped queue entry, worker panic): the next pass must re-ALERT and
+// re-audit instead of being silently HOLD for the rest of the window.
+func (r *Runner) clearSuppression(symbol string) {
+	r.reviewMu.Lock()
+	delete(r.lastAlert, symbol)
+	r.reviewMu.Unlock()
+}
+
+// reviewAlert runs the LLM audit for one signal (on a review worker; the
+// enqueue-time context is the deadline). The gate is fail-closed: pending
+// orders and cash availability are mandatory audit inputs, a transient gate
+// failure is retried once (2026-08-13: signal 741 a DNS timeout was hard
+// recorded as REJECTED), and any remaining failure lands as an audit action
+// the push gate skips.
+func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64, cash float64, hasCash bool) {
 	if r.deps.LLMReviewer == nil {
 		fmt.Fprintf(os.Stderr, "wheelrun: %s: LLM reviewer unavailable; skipping review signal=%d\n", symbol, signalID)
 		return
+	}
+	var cashPtr *float64
+	if hasCash {
+		cashPtr = &cash
+	}
+	// 挂单声明是审核的强制输入(老板指令 2026-08-13):LLM 规则要求
+	// pending_orders 缺失必须 REJECT。查询后显式归一为空切片——「查过且
+	// 无挂单」与「没查(nil)」必须区分(2026-08-13:signal 735 因 null REJECT)。
+	pending, perr := r.deps.Store.ListPendingOrders(ctx, symbol)
+	if perr != nil {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: list pending orders: %v\n", symbol, perr)
+	}
+	if pending == nil {
+		pending = []wheelstore.PendingOrder{}
 	}
 	summary := map[string]any{
 		"symbol":           symbol,
@@ -248,101 +561,53 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 		"signal":           sig,
 		"persisted_signal": record,
 		"positions":        positions,
-		"cash_available":   nil,
+		"cash_available":   cashPtr,
+		"pending_orders":   pending,
 		"rules":            wheelReviewRules,
 	}
-	result, err := r.deps.LLMReviewer.Review(ctx, llmreview.ReviewRequest{
-		StrategyConfig: cfg,
-		Signal:         sig,
-		Positions:      positions,
-		CashAvailable:  nil,
-		RulesText:      wheelReviewRules,
-		Symbol:         symbol,
-	})
-	if err != nil {
-		r.recordReviewFailure(ctx, symbol, signalID, summary, err)
-		return
-	}
-	verdict := strings.ToUpper(strings.TrimSpace(result.Verdict))
-	switch verdict {
-	case "APPROVE":
-		r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
-			SignalID: signalID,
-			Action:   "LLM_REVIEW",
-			Actor:    r.llmActor(),
-			Details:  reviewDetails(verdict, result.Reasons, result.Notes, summary),
+	gate := func() (string, string, error) {
+		return llmreview.RecordLLMGate(ctx, r.deps.Store, r.deps.LLMReviewer, strings.TrimSpace(r.deps.LLMModel), llmreview.GateInput{
+			SignalID:                   signalID,
+			UnexpectedVerdictIsFailure: true,
+			Request: llmreview.ReviewRequest{
+				StrategyConfig: cfg,
+				Signal:         sig,
+				Positions:      positions,
+				CashAvailable:  cashPtr,
+				CurrentPrice:   price,
+				RulesText:      wheelReviewRules,
+				Symbol:         symbol,
+				PendingOrders:  pending,
+				// 审核模型需要当前日期验证 DTE/报价时效(signal 736:
+				// "current_date 为空,无法验证 max_quote_age_seconds=3600")。
+				AsOf: r.now().UTC().Format(time.RFC3339),
+			},
+			Summary: summary,
 		})
-	case "REJECT":
-		r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
-			SignalID: signalID,
-			Action:   "REJECTED",
-			Actor:    r.llmActor(),
-			Details:  reviewDetails(verdict, result.Reasons, result.Notes, summary),
-		})
-	default:
-		r.recordReviewFailure(ctx, symbol, signalID, summary, fmt.Errorf("unexpected LLM verdict %q", result.Verdict))
 	}
-}
-
-func (r *Runner) recordReviewFailure(ctx context.Context, symbol string, signalID int64, summary map[string]any, err error) {
-	reason := err.Error()
-	r.appendReviewAction(ctx, symbol, wheelstore.ActionRecord{
-		SignalID: signalID,
-		Action:   "REJECTED",
-		Actor:    r.llmActor(),
-		Details: map[string]any{
-			"verdict":       "REJECT",
-			"reasons":       []string{reason},
-			"error":         reason,
-			"input_summary": summary,
-		},
-	})
-}
-
-func (r *Runner) appendReviewAction(ctx context.Context, symbol string, action wheelstore.ActionRecord) {
-	if _, err := r.deps.Store.AppendAction(ctx, action); err != nil {
-		fmt.Fprintf(os.Stderr, "wheelrun: %s: append LLM gate action %s: %v\n", symbol, action.Action, err)
-	}
-}
-
-func (r *Runner) llmActor() string {
-	model := strings.TrimSpace(r.deps.LLMModel)
-	if model == "" {
-		model = "unknown"
-	}
-	return "llm:" + model
-}
-
-func reviewDetails(verdict string, reasons []string, notes string, summary map[string]any) map[string]any {
-	if reasons == nil {
-		reasons = []string{}
-	}
-	details := map[string]any{
-		"verdict":       verdict,
-		"reasons":       reasons,
-		"input_summary": summary,
-	}
-	if notes != "" {
-		details["notes"] = notes
-	}
-	return details
-}
-
-// dailyOrders counts today's (UTC) ALERT signals as the day's order usage.
-// The count is best-effort: a store failure logs and yields 0.
-func (r *Runner) dailyOrders(ctx context.Context, symbol string, now time.Time) (int, error) {
-	signals, err := r.deps.Store.ListSignals(ctx, symbol, "", "", 1000)
-	if err != nil {
-		return 0, err
-	}
-	start := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 0, 0, 0, 0, time.UTC)
-	n := 0
-	for _, s := range signals {
-		if s.Action == "ALERT" && !s.CreatedAt.Before(start) {
-			n++
+	_, action, err := gate()
+	if action == "LLM_REVIEW_FAILED" {
+		// 审核请求失败(DNS/网络/超时)多为瞬态:同步重试一次,避免信号被
+		// 落成 failed 后无人再审(2026-08-13: signal 741 一次 DNS 超时被
+		// 硬记 REJECTED,用户看到「模型拒绝」实际是网络错误)。RecordLLMGate
+		// 落库后返回 nil err,失败语义经 disposition=LLM_REVIEW_FAILED 传递。
+		// 重试仍失败才保留 LLM_REVIEW_FAILED(推送器跳过,审计可查)。
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: LLM gate transient failure signal=%d, retrying once: %v\n", symbol, signalID, err)
+		select {
+		case <-time.After(3 * time.Second):
+		case <-ctx.Done():
+			return
 		}
+		_, action, err = gate()
 	}
-	return n, nil
+	if action == "LLM_REVIEW_FAILED" {
+		// 审核基础设施失败(重试后仍失败):本次审核从未产生 verdict,清除
+		// 抑制基线,下一 pass 重新 ALERT 并重新审核(P1-1)。
+		r.clearSuppression(symbol)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: append LLM gate action %s: %v\n", symbol, action, err)
+	}
 }
 
 // assembleQuotes merges chain metadata (type/expiry/strike) with live quotes
@@ -355,12 +620,16 @@ func assembleQuotes(underlying string, contracts []futu.OptionContract, quotes m
 		if !ok {
 			continue
 		}
+		symbol := q.Symbol
+		if symbol == "" {
+			symbol = c.Symbol
+		}
 		lot := q.LotSize
 		if lot <= 0 {
 			lot = c.LotSize
 		}
 		out = append(out, wheel.OptionQuote{
-			Symbol:       q.Symbol,
+			Symbol:       symbol,
 			Underlying:   underlying,
 			Source:       "futu",
 			OptionType:   wheel.OptionType(c.OptionType),
@@ -400,6 +669,7 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 		ConfigVersion:    version,
 		CapabilityStatus: capStatus,
 		BlockedBy:        blocked,
+		Strategy:         "wheel",
 		Inventory: wheelstore.InventorySnapshot{
 			CurrentPrice:       fptr(price),
 			ActualInventory:    fptr(sig.ActualInventory),
@@ -408,9 +678,12 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 			TargetInventory:    fptr(sig.TargetInventory),
 			InventoryGap:       fptr(sig.InventoryGap),
 		},
-		Candidates:       candidateMaps(sig.Candidates),
+		Candidates:       candidateRecords(sig.Candidates),
 		RejectionReasons: sig.RejectReasons,
 		Reason:           sig.Reason,
+	}
+	if sig.Replace != nil {
+		record.Replace = &wheelstore.ReplaceRecord{OrderID: sig.Replace.OrderID, Contract: sig.Replace.Contract}
 	}
 	status, reason := watchlist.StatusReady, ""
 	if capStatus != wheel.CapabilityReady {
@@ -422,17 +695,68 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 	return record, status, reason
 }
 
-// candidateMaps renders candidates as the JSON maps the signal table stores
-// (marshal cannot fail: all candidate fields are primitives).
-func candidateMaps(cands []wheel.CandidateEvaluation) []map[string]any {
-	out := make([]map[string]any, 0, len(cands))
-	for _, c := range cands {
-		b, _ := json.Marshal(c)
-		m := map[string]any{}
-		_ = json.Unmarshal(b, &m)
-		out = append(out, m)
+// mapPending converts store pending-order rows to the strategy's
+// duplicate-detection / 改单 footprint (contract + direction + order id).
+func mapPending(rows []wheelstore.PendingOrder) []wheel.PendingOrder {
+	if len(rows) == 0 {
+		return nil
+	}
+	out := make([]wheel.PendingOrder, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, wheel.PendingOrder{Contract: r.Contract, Direction: r.Direction, OrderID: r.OrderID})
 	}
 	return out
+}
+
+// candidateRecords converts domain candidates directly to the shared signal
+// DTO; no JSON map round-trip is needed between strategy and repository.
+func candidateRecords(cands []wheel.CandidateEvaluation) []wheelstore.Candidate {
+	out := make([]wheelstore.Candidate, 0, len(cands))
+	for _, c := range cands {
+		quote := quoteRecord(c.Quote)
+		out = append(out, wheelstore.AsFullCandidate(wheelstore.Candidate{
+			Quote:               &quote,
+			Direction:           string(c.Direction),
+			Quantity:            c.Quantity,
+			SignedContracts:     c.SignedContracts,
+			Quality:             c.Quality,
+			ExpectedGain:        c.ExpectedGain,
+			PostTradeEffective:  c.PostTradeEffective,
+			AssignmentInventory: c.AssignmentInventory,
+			Accepted:            c.Accepted,
+			Reasons:             c.Reasons,
+		}))
+	}
+	return out
+}
+
+func quoteRecord(q wheel.OptionQuote) wheelstore.Quote {
+	return wheelstore.Quote{
+		Symbol:       q.Symbol,
+		Code:         q.Code,
+		Underlying:   q.Underlying,
+		Source:       q.Source,
+		OptionType:   string(q.OptionType),
+		Type:         string(q.Type),
+		Expiry:       q.Expiry.Format(time.RFC3339Nano),
+		Strike:       q.Strike,
+		Delta:        q.Delta,
+		MarketDelta:  q.MarketDelta,
+		Bid:          q.Bid,
+		Ask:          q.Ask,
+		Last:         q.Last,
+		ImpliedVol:   q.ImpliedVol,
+		Theta:        q.Theta,
+		Volume:       q.Volume,
+		OpenInterest: q.OpenInterest,
+		LotSize:      q.LotSize,
+		QuoteTime:    q.QuoteTime.Format(time.RFC3339Nano),
+		CapturedAt:   q.CapturedAt.Format(time.RFC3339Nano),
+		Timestamp:    q.Timestamp.Format(time.RFC3339Nano),
+		Ts:           q.Ts.Format(time.RFC3339Nano),
+		IV:           q.IV,
+		OI:           q.OI,
+	}
 }
 
 func fptr(v float64) *float64 { return &v }

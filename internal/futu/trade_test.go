@@ -4,7 +4,9 @@ import (
 	"context"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jiayu/wbot/internal/futu/fakegw"
 	trdcommon "github.com/qtopie/gofutuapi/gen/trade/common"
@@ -53,6 +55,7 @@ func TestOpenTradeRefused(t *testing.T) {
 	}
 	addr := ln.Addr().String()
 	ln.Close()
+	started := time.Now()
 	tc, err := OpenTrade(context.Background(), addr)
 	if err == nil {
 		tc.Close()
@@ -60,6 +63,120 @@ func TestOpenTradeRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "connect") {
 		t.Fatalf("OpenTrade: want readable connect error, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("OpenTrade refused took %v; want fast error", elapsed)
+	}
+}
+
+func TestOpenTradeHandshakeTimeout(t *testing.T) {
+	ln, err := netListen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err == nil {
+			accepted <- conn
+		}
+	}()
+
+	started := time.Now()
+	tc, err := OpenTrade(context.Background(), ln.Addr().String())
+	elapsed := time.Since(started)
+	if err == nil {
+		tc.Close()
+		t.Fatal("OpenTrade: want init handshake timeout, got nil")
+	}
+	if elapsed < 10*time.Second || elapsed > 15*time.Second {
+		t.Fatalf("OpenTrade timeout took %v; want 10-15s", elapsed)
+	}
+	select {
+	case conn := <-accepted:
+		defer conn.Close()
+		_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+		buf := make([]byte, 1024)
+		for {
+			if _, readErr := conn.Read(buf); readErr != nil {
+				if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+					t.Fatal("timed-out init connection remains open")
+				}
+				break
+			}
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mock gateway did not accept init connection")
+	}
+}
+
+func TestTradeConnectionReusedByAddress(t *testing.T) {
+	addr, accepts := fakegw.ServerWithAcceptCount(t, func(protoID int32, body []byte) []byte {
+		if protoID == protoInit {
+			return fakegw.InitBody(42)
+		}
+		return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1)})
+	})
+
+	for i := 0; i < 2; i++ {
+		tc, err := AcquireTrade(context.Background(), addr)
+		if err != nil {
+			t.Fatalf("AcquireTrade call %d: %v", i+1, err)
+		}
+		if _, err := tc.Account(context.Background(), EnvSim, 0); err != nil {
+			t.Fatalf("Account call %d: %v", i+1, err)
+		}
+		if err := tc.Close(); err != nil {
+			t.Fatalf("Close call %d: %v", i+1, err)
+		}
+	}
+	if got := accepts.Load(); got != 1 {
+		t.Fatalf("accepted connections = %d; want 1", got)
+	}
+}
+
+func TestTradeReconnectsOnceAfterDisconnect(t *testing.T) {
+	var accounts atomic.Int32
+	addr, accepts := fakegw.ServerWithAcceptCount(t, func(protoID int32, body []byte) []byte {
+		switch protoID {
+		case protoInit:
+			return fakegw.InitBody(42)
+		case protoAccs:
+			if accounts.Add(1) == 1 {
+				return nil
+			}
+			return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1)})
+		default:
+			return nil
+		}
+	})
+	tc := openTrade(t, addr)
+	acc, err := tc.Account(context.Background(), EnvSim, 0)
+	if err != nil {
+		t.Fatalf("Account after disconnect: %v", err)
+	}
+	if acc.GetAccID() != 1907141 {
+		t.Fatalf("account id = %d; want 1907141", acc.GetAccID())
+	}
+	if got := accepts.Load(); got != 2 {
+		t.Fatalf("accepted connections = %d; want 2 (initial + one reconnect)", got)
+	}
+}
+
+func TestTradeRetryAttemptsAtMostTwo(t *testing.T) {
+	addr, accepts := fakegw.ServerWithAcceptCount(t, func(protoID int32, body []byte) []byte {
+		if protoID == protoInit {
+			return fakegw.InitBody(42)
+		}
+		return nil
+	})
+	tc := openTrade(t, addr)
+	if _, err := tc.Account(context.Background(), EnvSim, 0); err == nil {
+		t.Fatal("Account: want disconnect error, got nil")
+	}
+	if got := accepts.Load(); got != 2 {
+		t.Fatalf("accepted connections = %d; want exactly 2 total attempts", got)
 	}
 }
 
@@ -228,7 +345,9 @@ func TestPlaceOrderMarketMapping(t *testing.T) {
 	}
 }
 
-func TestPlaceOrderLimitAndMarket(t *testing.T) {
+// TestPlaceOrderLimitOnly 验证限价单成功 + 市价单(price<=0)fail-closed
+// (老板指令 2026-08-12: 所有策略禁止市价单,只用限价单)。
+func TestPlaceOrderLimitOnly(t *testing.T) {
 	var gotReqs []*trdplaceorder.Request
 	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
 		if protoID == protoOrder {
@@ -254,17 +373,14 @@ func TestPlaceOrderLimitAndMarket(t *testing.T) {
 	if ex != "EX123" || id != 777 {
 		t.Fatalf("order ids: %q %d", ex, id)
 	}
-	ex, _, err = tc.PlaceOrder(context.Background(), acc, OrderRequest{
-		Symbol: "HK.00700", Side: "sell", Qty: 100, // price 0 => market
-	})
-	if err != nil {
-		t.Fatalf("PlaceOrder market: %v", err)
+	// 市价单禁止: price<=0 必须被拒(fail-closed),永不发 Market order。
+	if _, _, err := tc.PlaceOrder(context.Background(), acc, OrderRequest{
+		Symbol: "HK.00700", Side: "sell", Qty: 100, // price 0 => market, banned
+	}); err == nil {
+		t.Fatal("PlaceOrder with price 0: want error (市价单禁止), got nil")
 	}
-	if ex != "EX123" {
-		t.Fatalf("second order id: %q", ex)
-	}
-	if len(gotReqs) != 2 {
-		t.Fatalf("got %d order requests; want 2", len(gotReqs))
+	if len(gotReqs) != 1 {
+		t.Fatalf("got %d order requests; want 1 (market must not reach gateway)", len(gotReqs))
 	}
 	limit := gotReqs[0].GetC2S()
 	if limit.GetCode() != "00700" || limit.GetQty() != 100 || limit.GetPrice() != 470 {
@@ -272,10 +388,6 @@ func TestPlaceOrderLimitAndMarket(t *testing.T) {
 	}
 	if limit.GetTrdSide() != 1 || limit.GetOrderType() != 1 || limit.GetHeader().GetAccID() != 1907141 {
 		t.Fatalf("limit side/type/acc mismatch: side=%d type=%d", limit.GetTrdSide(), limit.GetOrderType())
-	}
-	market := gotReqs[1].GetC2S()
-	if market.GetTrdSide() != 2 || market.GetOrderType() != 2 {
-		t.Fatalf("market side/type mismatch: side=%d type=%d", market.GetTrdSide(), market.GetOrderType())
 	}
 }
 
@@ -318,4 +430,122 @@ func TestPlaceOrderBusinessError(t *testing.T) {
 // netListen opens a loopback listener (used to synthesize a refused port).
 func netListen() (net.Listener, error) {
 	return net.Listen("tcp", "127.0.0.1:0")
+}
+
+// simAcc builds a simulate-env TrdAcc with an explicit SimAccType
+// (fakegw.Acc leaves SimAccType unset, which reads as Stock).
+func simAcc(accID uint64, simType int32, markets ...int32) *trdcommon.TrdAcc {
+	return &trdcommon.TrdAcc{
+		TrdEnv:            proto.Int32(0),
+		AccID:             proto.Uint64(accID),
+		SimAccType:        proto.Int32(simType),
+		TrdMarketAuthList: markets,
+	}
+}
+
+func TestIsOptionCode(t *testing.T) {
+	for code, want := range map[string]bool{
+		"TCH260821P460000": true, // 富途期权格式: 前缀+YYMMDD+C/P+行权价
+		"TCH260821C335000": true,
+		"00700":            false, // 正股纯数字
+		"00883":            false,
+		"AAPL":             false,
+		"tch260821p460000": false, // 小写不匹配
+		"TCH260821P":       false, // 缺行权价
+		"TCH260821X460":    false, // 非法 C/P
+		"TCH260821P46000A": false, // 行权价含字母
+	} {
+		if got := IsOptionCode(code); got != want {
+			t.Fatalf("IsOptionCode(%q) = %v; want %v", code, got, want)
+		}
+	}
+}
+
+// TestAccountForSymbol: 多模拟账户按 symbol 自动解析 (老板指令 2026-08-12) —
+// 期权→期权账户(SimAccType=Option), 正股→对应市场股票账户; 无匹配 fail-closed。
+func TestAccountForSymbol(t *testing.T) {
+	stock := int32(trdcommon.SimAccType_SimAccType_Stock)
+	option := int32(trdcommon.SimAccType_SimAccType_Option)
+	accounts := []*trdcommon.TrdAcc{
+		// TrdMarketAuthList 是 TrdMarket 枚举(HK=1/US=2/CN=3),不是 TrdSecMarket
+		// (ParseSymbol 的 marketCode: HK=1/US=11/SH=21/SZ=22);fixture 曾按旧
+		// 枚举写 11/21/22,与真实网关(2026-08-13 实测 13477966 markets=[2])
+		// 不符,恰好掩盖了 AccountForSymbol 的枚举混用 bug。
+		simAcc(1907141, stock, 1),   // HK 股票模拟
+		simAcc(1907143, stock, 3),   // SH/SZ 股票模拟 (TrdMarket CN=3)
+		simAcc(13477968, option, 1), // HK 期权模拟
+		simAcc(13477966, 4, 2),      // US 模拟: 实测 SimAccType=4 (网关未文档化, 全能)
+	}
+	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
+		if protoID == protoAccs {
+			return fakegw.AccountsBody(accounts)
+		}
+		return nil
+	}))
+	tc := openTrade(t, addr)
+
+	cases := []struct {
+		symbol string
+		wantID uint64
+	}{
+		{"HK.00700", 1907141},             // 港股正股
+		{"00700.HK", 1907141},             // code-first 形式
+		{"HK.TCH260821P460000", 13477968}, // 港股期权 → 期权账户
+		{"HK.TCH260821C335000", 13477968},
+		{"US.AAPL", 13477966},           // 美股正股 → US 模拟账户 (unknown 全能)
+		{"US.JD260821P29500", 13477966}, // 美股期权 → US 账户 (2026-08-13 修复: 枚举映射 + unknown 放行)
+		{"US.JD260821C45000", 13477966},
+		{"SH.600000", 1907143}, // 沪深正股 → CN 账户
+		{"SZ.000001", 1907143}, // 深市正股 → CN 账户
+	}
+	for _, c := range cases {
+		acc, err := tc.AccountForSymbol(context.Background(), EnvSim, c.symbol, 0)
+		if err != nil {
+			t.Fatalf("AccountForSymbol(%s): %v", c.symbol, err)
+		}
+		if acc.GetAccID() != c.wantID {
+			t.Fatalf("AccountForSymbol(%s) = acc %d; want %d", c.symbol, acc.GetAccID(), c.wantID)
+		}
+	}
+
+	// 显式 accID 时不做自动解析 (原始行为)。
+	acc, err := tc.AccountForSymbol(context.Background(), EnvSim, "HK.TCH260821P460000", 1907141)
+	if err != nil {
+		t.Fatalf("explicit accID: %v", err)
+	}
+	if acc.GetAccID() != 1907141 {
+		t.Fatalf("explicit accID = %d; want 1907141", acc.GetAccID())
+	}
+
+	if _, err := tc.AccountForSymbol(context.Background(), EnvSim, "bad-symbol", 0); err == nil {
+		t.Fatalf("bad symbol: want error")
+	}
+}
+
+// TestAccountForSymbolFailClosed: 该市场/类型无账户 → fail-closed 报错并列出
+// 可用账户 (2026-08-13 修复前 US 期权因枚举混用落入此分支; 修复后 US 期权
+// 路由到 unknown 全能账户, 此测试用「仅 HK 账户」场景保持覆盖)。
+func TestAccountForSymbolFailClosed(t *testing.T) {
+	stock := int32(trdcommon.SimAccType_SimAccType_Stock)
+	option := int32(trdcommon.SimAccType_SimAccType_Option)
+	accounts := []*trdcommon.TrdAcc{
+		simAcc(1907141, stock, 1),
+		simAcc(13477968, option, 1),
+	}
+	addr := fakegw.Server(t, handler(func(protoID int32, body []byte) []byte {
+		if protoID == protoAccs {
+			return fakegw.AccountsBody(accounts)
+		}
+		return nil
+	}))
+	tc := openTrade(t, addr)
+	for _, symbol := range []string{"US.JD260821P29500", "US.AAPL"} {
+		acc, err := tc.AccountForSymbol(context.Background(), EnvSim, symbol, 0)
+		if err == nil {
+			t.Fatalf("AccountForSymbol(%s): want error, got acc %d", symbol, acc.GetAccID())
+		}
+		if !strings.Contains(err.Error(), "available") {
+			t.Fatalf("AccountForSymbol(%s): want available-accounts list, got %v", symbol, err)
+		}
+	}
 }

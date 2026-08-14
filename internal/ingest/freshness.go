@@ -108,6 +108,16 @@ func QueryFreshness(ctx context.Context, db *sql.DB, now time.Time) ([]Freshness
 // (freshness draft extension; -max-age overrides globally).
 const MaxAgeForOptions = 4 * time.Hour
 
+// MaxAgeForOptionSource preserves the intraday default while recognizing the
+// official HKEX feed's once-per-trading-day cadence. The three-day window is
+// the same default used for 1d bars and spans a normal weekend.
+func MaxAgeForOptionSource(source string) time.Duration {
+	if strings.EqualFold(strings.TrimSpace(source), HKEXDataSource) {
+		return MaxAgeForTimeframe("1d")
+	}
+	return MaxAgeForOptions
+}
+
 // OptionFreshness is one underlying×source combination's option_quotes
 // max_ts age at a query's now.
 type OptionFreshness struct {

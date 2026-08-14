@@ -2,6 +2,7 @@ package wheel
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"slices"
 	"strings"
@@ -10,7 +11,7 @@ import (
 )
 
 func testConfig(state string) Config {
-	return Config{Strategy: "wheel", PricePositionCurve: []PricePoint{{Price: 400, TargetInventory: 1200}, {Price: 480, TargetInventory: 600}, {Price: 550, TargetInventory: 0}}, MaxInventory: 1200, LotSize: 100, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, MaxDailyOrders: 1, ExtremeMaxDailyOrders: 2, NoTradeGap: 50, StrategicState: state}
+	return Config{Strategy: "wheel", FullPositionPrice: 400, ZeroPositionPrice: 550, MaxInventory: 1200, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, TradeGap: 50, StrategicState: state}
 }
 
 func testQuote(kind string, strike float64, expiry time.Time) OptionQuote {
@@ -26,15 +27,35 @@ func TestInterpolateTargetInventoryTable(t *testing.T) {
 	cases := []struct {
 		name        string
 		price, want float64
-	}{{"below", 300, 1200}, {"anchor", 480, 600}, {"middle", 440, 900}, {"above", 600, 0}}
-	curve := testConfig(StateNormal).PricePositionCurve
+	}{{"below", 300, 1200}, {"full anchor", 400, 1200}, {"middle", 475, 600}, {"above", 600, 0}}
+	cfg := testConfig(StateNormal)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := InterpolateTargetInventory(curve, tc.price)
+			got, err := cfg.TargetInventory(tc.price)
 			if err != nil || math.Abs(got-tc.want) > 1e-9 {
 				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
 			}
 		})
+	}
+}
+
+func TestConfigTargetInventoryUsesCompletePriceCurve(t *testing.T) {
+	cfg := testConfig(StateNormal)
+	cfg.PricePositionCurve = []PricePoint{
+		{Price: 30.25, TargetInventory: 1100},
+		{Price: 31.25, TargetInventory: 1000},
+		{Price: 33.25, TargetInventory: 800},
+		{Price: 35.25, TargetInventory: 600},
+	}
+	cfg.MaxInventory = 1100
+	for _, tc := range []struct {
+		price float64
+		want  float64
+	}{{29, 1100}, {32.25, 900}, {35.25, 600}, {40, 600}} {
+		got, err := cfg.TargetInventory(tc.price)
+		if err != nil || got != tc.want {
+			t.Fatalf("TargetInventory(%v) = %v, %v; want %v from complete curve", tc.price, got, err, tc.want)
+		}
 	}
 }
 
@@ -47,12 +68,18 @@ func TestConfigValidateTable(t *testing.T) {
 	}{
 		{"valid", func(c *Config) {}, false},
 		{"wrong strategy", func(c *Config) { c.Strategy = "covered-call" }, true},
-		{"price not increasing", func(c *Config) { c.PricePositionCurve[1].Price = 400 }, true},
-		{"target increasing", func(c *Config) { c.PricePositionCurve[1].TargetInventory = 1300 }, true},
-		{"target over max", func(c *Config) { c.PricePositionCurve[0].TargetInventory = 1301 }, true},
+		{"full price non-positive", func(c *Config) { c.FullPositionPrice = 0 }, true},
+		{"zero not above full", func(c *Config) { c.ZeroPositionPrice = c.FullPositionPrice }, true},
+		{"fractional max inventory", func(c *Config) { c.MaxInventory = 1200.5 }, true},
 		{"DTE outside wheel window", func(c *Config) { c.MinDTE = 4 }, true},
+		{"DTE above widened max", func(c *Config) { c.MaxDTE = MaxWheelDTE + 1 }, true},
+		{"DTE at widened max", func(c *Config) { c.MaxDTE = MaxWheelDTE }, false},
 		{"quality outside bounds", func(c *Config) { c.MinOptionQuality = 1.1 }, true},
-		{"daily hard cap", func(c *Config) { c.ExtremeMaxDailyOrders = 3 }, true},
+		{"negative option profit", func(c *Config) { c.MinOptionProfit = -1 }, true},
+		{"negative move interval", func(c *Config) { c.MoveIntervalPct = -0.01 }, true},
+		{"curve target above max inventory", func(c *Config) {
+			c.PricePositionCurve = []PricePoint{{Price: 100, TargetInventory: 1201}, {Price: 110, TargetInventory: 0}}
+		}, true},
 		{"unknown state", func(c *Config) { c.StrategicState = "RISK_ON" }, true},
 	}
 	for _, tc := range cases {
@@ -98,7 +125,10 @@ func TestQuoteValidationTable(t *testing.T) {
 		{"wrong DTE", func(q *OptionQuote) { q.Expiry = asOf.AddDate(0, 0, 11) }, true},
 		{"stale", func(q *OptionQuote) { q.QuoteTime = asOf.Add(-25 * time.Hour) }, true},
 		{"missing timestamp", func(q *OptionQuote) { q.QuoteTime = time.Time{} }, true},
-		{"bad lot", func(q *OptionQuote) { q.LotSize = 10 }, true},
+		{"bad lot", func(q *OptionQuote) { q.LotSize = 0 }, true},
+		// Lot size comes from the live quote now; any positive value is accepted
+		// (config no longer carries one, 2026-08-13).
+		{"mismatched lot accepted", func(q *OptionQuote) { q.LotSize = 10 }, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -108,6 +138,21 @@ func TestQuoteValidationTable(t *testing.T) {
 				t.Fatalf("error=%v want %v", got, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestQuoteValidationUsesDTESentinels(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	cfg := testConfig(StateNormal)
+	tooSoon := testQuote(string(Put), 400, asOf.AddDate(0, 0, 4))
+	tooSoon.QuoteTime = asOf
+	if err := tooSoon.Validate(asOf, cfg); !errors.Is(err, ErrDTEBelowMinimum) {
+		t.Fatalf("too-soon DTE error = %v; want ErrDTEBelowMinimum", err)
+	}
+	tooLate := testQuote(string(Put), 400, asOf.AddDate(0, 0, 11))
+	tooLate.QuoteTime = asOf
+	if err := tooLate.Validate(asOf, cfg); !errors.Is(err, ErrDTEAboveMaximum) {
+		t.Fatalf("too-late DTE error = %v; want ErrDTEAboveMaximum", err)
 	}
 }
 
@@ -185,7 +230,199 @@ func TestEvaluateAlertIncludesExpectedGain(t *testing.T) {
 	}
 }
 
-func TestEvaluateRiskAndDailyLimitTable(t *testing.T) {
+func TestEvaluateFiltersBelowMinimumOptionProfit(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	put.Bid = 1.5
+	put.Ask = 1.6
+	cfg := testConfig(StateNormal)
+	cfg.MinPremiumPerShare = 1
+	cfg.MinOptionProfit = 200
+	in := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 1_000_000}
+	signal, err := Evaluate(cfg, in)
+	if err != nil || signal.Action != ActionHold || len(signal.Candidates) != 1 {
+		t.Fatalf("signal = %+v err=%v; want one filtered candidate and HOLD", signal, err)
+	}
+	candidate := signal.Candidates[0]
+	if candidate.ExpectedGain != 150 || candidate.Accepted || !strings.Contains(strings.Join(candidate.Reasons, " "), "expected option profit") {
+		t.Fatalf("candidate = %+v; want min_option_profit rejection", candidate)
+	}
+	cfg.MinOptionProfit = 150
+	signal, err = Evaluate(cfg, in)
+	if err != nil || signal.Action != ActionAlert || signal.Quote == nil || signal.Quote.Symbol != put.Symbol {
+		t.Fatalf("equal-threshold signal = %+v err=%v; want accepted ALERT", signal, err)
+	}
+}
+
+// TestEvaluatePendingOrderExclusion: 未成交挂单必须排除同合约同方向的
+// 候选——否则每次评估都重新 alert 同一合约,LLM 审核反复拒绝重复敞口
+// (2026-08-13: US.JD P29000 挂单 206158430256 未成交,747/749/750/751
+// 连续被 REJECT)。
+func TestEvaluatePendingOrderExclusion(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))  // Symbol P-4
+	put2 := testQuote(string(Put), 500, asOf.AddDate(0, 0, 7)) // Symbol P-5
+	cfg := testConfig(StateNormal)
+	base := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
+
+	// 首选(P-4)在挂单中:该候选被排除,信号改选 P-5。
+	sig, err := Evaluate(cfg, base)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("baseline signal = %+v err=%v; want ALERT", sig, err)
+	}
+	withPending := base
+	withPending.Pending = []PendingOrder{{Contract: put.Symbol, Direction: string(Put)}}
+	sig, err = Evaluate(cfg, withPending)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("pending signal = %+v err=%v; want ALERT on next contract", sig, err)
+	}
+	if sig.Quote == nil || sig.Quote.Symbol != put2.Symbol {
+		t.Fatalf("chosen quote = %+v; want %s (pending %s must be skipped)", sig.Quote, put2.Symbol, put.Symbol)
+	}
+	for _, c := range sig.Candidates {
+		if !c.Accepted && strings.Contains(strings.Join(c.Reasons, " "), "pending order") {
+			continue
+		}
+		if c.Accepted && c.Quote.Symbol == put.Symbol {
+			t.Fatalf("candidate %s accepted despite pending order", put.Symbol)
+		}
+	}
+
+	// 全部候选被挂单覆盖:HOLD,且不得误报 DATA_BLOCKED(行情是好的)。
+	allPending := base
+	allPending.Pending = []PendingOrder{{Contract: put.Symbol, Direction: string(Put)}, {Contract: put2.Symbol, Direction: string(Put)}}
+	sig, err = Evaluate(cfg, allPending)
+	if err != nil || sig.Action != ActionHold {
+		t.Fatalf("all-pending signal = %+v err=%v; want HOLD", sig, err)
+	}
+	if sig.CapabilityStatus != CapabilityReady {
+		t.Fatalf("all-pending capability = %s; want READY (book full, not data blocked)", sig.CapabilityStatus)
+	}
+	if !strings.Contains(sig.Reason, "pending orders") {
+		t.Fatalf("all-pending reason = %q; want explicit pending mention", sig.Reason)
+	}
+
+	// 方向不匹配的挂单不排除候选(反向挂单是另一笔敞口)。
+	callPending := base
+	callPending.Pending = []PendingOrder{{Contract: put.Symbol, Direction: string(Call)}}
+	sig, err = Evaluate(cfg, callPending)
+	if err != nil || sig.Action != ActionAlert || sig.Quote == nil || sig.Quote.Symbol != put.Symbol {
+		t.Fatalf("wrong-direction pending signal = %+v err=%v; want ALERT on %s", sig, err, put.Symbol)
+	}
+}
+
+// TestEvaluateReplaceOrder: 改单语义——同方向存在恰一张未成交挂单且首选
+// 候选是不同合约时,信号携带 replace(撤旧挂新)。同样需要 LLM 审核(审核
+// 规则 7 把关),改单不绕过任何闸门(老板指令 2026-08-13)。
+func TestEvaluateReplaceOrder(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))  // P-4,首选
+	put2 := testQuote(string(Put), 500, asOf.AddDate(0, 0, 7)) // P-5
+	cfg := testConfig(StateNormal)
+	base := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
+
+	// 首选 P-4 与挂单合约 P-5 不同 → 改单信号。
+	withPending := base
+	withPending.Pending = []PendingOrder{{Contract: put2.Symbol, Direction: string(Put), OrderID: "206158430256"}}
+	sig, err := Evaluate(cfg, withPending)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("replace signal = %+v err=%v; want ALERT", sig, err)
+	}
+	if sig.Replace == nil {
+		t.Fatalf("replace signal missing Replace; want 撤 %s 换 %s", put2.Symbol, put.Symbol)
+	}
+	if sig.Replace.OrderID != "206158430256" || sig.Replace.Contract != put2.Symbol {
+		t.Fatalf("Replace = %+v; want order 206158430256 on %s", sig.Replace, put2.Symbol)
+	}
+	if sig.Quote == nil || sig.Quote.Symbol != put.Symbol {
+		t.Fatalf("chosen = %+v; want %s", sig.Quote, put.Symbol)
+	}
+	if !strings.Contains(sig.Reason, "replace pending") {
+		t.Fatalf("reason = %q; want replace mention", sig.Reason)
+	}
+
+	// 挂单合约 = 首选 → 排除,无 replace(不重复不下改单)。
+	sameContract := base
+	sameContract.Pending = []PendingOrder{{Contract: put.Symbol, Direction: string(Put), OrderID: "1"}}
+	sig, err = Evaluate(cfg, sameContract)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("same-contract signal = %+v err=%v; want ALERT on next contract", sig, err)
+	}
+	if sig.Replace != nil {
+		t.Fatalf("same-contract signal must not carry Replace: %+v", sig.Replace)
+	}
+	if sig.Quote == nil || sig.Quote.Symbol != put2.Symbol {
+		t.Fatalf("same-contract chosen = %+v; want %s", sig.Quote, put2.Symbol)
+	}
+
+	// 多张同方向挂单 → 不触发改单(不确定替换哪张,留给人工)。
+	multi := base
+	multi.Pending = []PendingOrder{{Contract: put2.Symbol, Direction: string(Put), OrderID: "1"}, {Contract: "P-6", Direction: string(Put), OrderID: "2"}}
+	sig, err = Evaluate(cfg, multi)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("multi-pending signal = %+v err=%v; want ALERT", sig, err)
+	}
+	if sig.Replace != nil {
+		t.Fatalf("multi-pending must not carry Replace: %+v", sig.Replace)
+	}
+
+	// rest 单合约已不在报价(过期/失效)→ 视为陈旧挂单,允许改单换新候选。
+	stale := base
+	stale.Pending = []PendingOrder{{Contract: "P-9-expired", Direction: string(Put), OrderID: "999"}}
+	sig, err = Evaluate(cfg, stale)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("stale-pending signal = %+v err=%v; want ALERT", sig, err)
+	}
+	if sig.Replace == nil || sig.Replace.OrderID != "999" || sig.Replace.Contract != "P-9-expired" {
+		t.Fatalf("stale-pending Replace = %+v; want 撤 P-9-expired(999) 换 %s", sig.Replace, put.Symbol)
+	}
+
+	// 挂单候选失效(DTE 3 < 5,仍被报价但过不了结构校验)→ 允许改单。
+	soon := testQuote(string(Put), 400, asOf.AddDate(0, 0, 3))
+	bad := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{soon, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
+	bad.Pending = []PendingOrder{{Contract: soon.Symbol, Direction: string(Put), OrderID: "100"}}
+	sig, err = Evaluate(cfg, bad)
+	if err != nil || sig.Action != ActionAlert {
+		t.Fatalf("invalid-pending signal = %+v err=%v; want ALERT", sig, err)
+	}
+	if sig.Replace == nil || sig.Replace.Contract != soon.Symbol {
+		t.Fatalf("invalid-pending Replace = %+v; want 撤失效的 %s", sig.Replace, soon.Symbol)
+	}
+	if sig.Quote == nil || sig.Quote.Symbol != put2.Symbol {
+		t.Fatalf("invalid-pending chosen = %+v; want %s", sig.Quote, put2.Symbol)
+	}
+}
+
+func TestEvaluateTacticalGates(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	baseInput := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 1_000_000}
+
+	cfg := testConfig(StateNormal)
+	cfg.MoveIntervalPct = 0.02
+	in := baseInput
+	in.LastEffectiveFillPrice = 405
+	if signal, err := Evaluate(cfg, in); err != nil || signal.Action != ActionHold || !strings.Contains(signal.Reason, "move_interval_pct") {
+		t.Fatalf("move gate signal = %+v err=%v", signal, err)
+	}
+
+	cfg = testConfig(StateNormal)
+	cfg.MinPremiumPerShare = put.Bid + 0.01
+	if signal, err := Evaluate(cfg, baseInput); err != nil || signal.Action != ActionHold || !slices.Contains(signal.RejectReasons, "wheel: premium per share 4.0000 below minimum 4.0100") {
+		t.Fatalf("premium gate signal = %+v err=%v", signal, err)
+	}
+
+	cfg = testConfig(StateNormal)
+	cfg.StockSwitchPct = 0.05
+	in = baseInput
+	in.CurrentPrice = 400
+	in.LastEffectiveFillPrice = 450
+	if signal, err := Evaluate(cfg, in); err != nil || signal.Action != ActionHold || signal.StockSuggestion == nil || signal.StockSuggestion.Side != "BUY" || signal.StockSuggestion.Shares <= 0 {
+		t.Fatalf("stock switch signal = %+v err=%v", signal, err)
+	}
+}
+
+func TestEvaluateRiskAndNoDailyLimitTable(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig(StateNormal)
 	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
@@ -196,7 +433,7 @@ func TestEvaluateRiskAndDailyLimitTable(t *testing.T) {
 	}{
 		{"no cash context", DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}}, "HOLD"},
 		{"insufficient cash", DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 1}, "HOLD"},
-		{"daily cap", DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, DailyOrders: 1, HasCashAvailable: true, CashAvailable: 100000}, "HOLD"},
+		{"repeated decisions remain unlimited", DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 100000}, "ALERT"},
 		{"assignment max", DecisionInput{CurrentPrice: 400, AsOf: asOf, StockShares: 1200, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 100000}, "HOLD"},
 	}
 	for _, tc := range cases {

@@ -35,15 +35,29 @@ type fakeFutuAccounter struct {
 
 func (f *fakeFutuAccounter) Account(_ context.Context, env futu.Env, accID uint64) (AccountSnapshot, error) {
 	f.gotEnv, f.gotID = env, accID
+	return f.snapshot(env, accID)
+}
+
+// AccountForSymbol mirrors Account; symbol→account resolution is exercised at
+// the internal/futu layer with the live gateway.
+func (f *fakeFutuAccounter) AccountForSymbol(_ context.Context, env futu.Env, _ string) (AccountSnapshot, error) {
+	f.gotEnv = env
+	return f.snapshot(env, 13477968)
+}
+
+func (f *fakeFutuAccounter) snapshot(env futu.Env, accID uint64) (AccountSnapshot, error) {
 	if f.err != nil {
 		return AccountSnapshot{}, f.err
 	}
 	if f.snap.Env != "" {
 		return f.snap, nil
 	}
+	if accID == 0 {
+		accID = 1907141 // endpoint default account
+	}
 	return AccountSnapshot{
 		Env:   "simulate",
-		AccID: 1907141,
+		AccID: accID,
 		Funds: FundsJSON{Power: 1198286.822, TotalAssets: 1198286.822, Cash: 318666.822, MarketVal: 879620, AvailableCash: 318666.822},
 		Positions: []PositionJSON{
 			{Symbol: "HK.00700", Qty: 100, AvgCost: 470.0, Price: 475.2, MarketVal: 47520, PL: 520},
@@ -326,5 +340,44 @@ func TestFutuAccountLiveGateway(t *testing.T) {
 	}
 	if got.Funds.TotalAssets == 0 && got.Funds.Cash == 0 {
 		t.Fatalf("live funds empty: %+v", got.Funds)
+	}
+}
+
+// TestFutuAccountAvailableCashFallback: 模拟盘网关实测 available_funds 恒为 0
+// (2026-08-12 盘中),而 cash 是真实可用现金;AvailableCash 必须回退 cash-frozen,
+// 否则 LLM 审核/下单上下文会把资金充裕账户误判为「现金不足」fail-closed REJECT。
+func TestFutuAccountAvailableCashFallback(t *testing.T) {
+	fastFutuLimits(t)
+	addr := fakegw.Server(t, func(protoID int32, body []byte) []byte {
+		switch protoID {
+		case protoInit:
+			return fakegw.InitBody(42)
+		case protoFunds:
+			return fakegw.FundsBody(0, 1907141, &trdcommon.Funds{
+				Power:             proto.Float64(1188976.366),
+				TotalAssets:       proto.Float64(1188976.366),
+				Cash:              proto.Float64(272866.366),
+				MarketVal:         proto.Float64(916110),
+				FrozenCash:        proto.Float64(0),
+				DebtCash:          proto.Float64(0),
+				AvlWithdrawalCash: proto.Float64(0),
+				AvailableFunds:    proto.Float64(0), // 模拟盘网关不填
+			})
+		case protoPos:
+			return fakegw.PositionsBody(0, 1907141, nil)
+		}
+		return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1907141, 1)})
+	})
+	h := FutuAccountHandler(&futuAccounter{pc: newProtoClientAt(addr)})
+	rec := get(t, h, "/v1/futu/account")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; want 200 (body %s)", rec.Code, rec.Body)
+	}
+	var got AccountSnapshot
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
+	}
+	if want := 272866.366; got.Funds.AvailableCash != want {
+		t.Fatalf("AvailableCash = %v; want fallback %v (cash - frozen)", got.Funds.AvailableCash, want)
 	}
 }

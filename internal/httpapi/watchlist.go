@@ -142,7 +142,12 @@ func WatchlistHandler(store WatchlistStore) http.Handler {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			it, err := store.Upsert(r.Context(), symbol, req.Strategy, req.Params)
+			canonical, err := strategy.CanonicalParams(req.Params)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			it, err := store.Upsert(r.Context(), symbol, req.Strategy, canonical)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "httpapi: watchlist: upsert %s: %v\n", symbol, err)
 				writeError(w, http.StatusInternalServerError, "internal error")

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
+	"github.com/jiayu/wbot/internal/wheel"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 // mkBars builds valid bars with equal OHLC and daily timestamps from closes.
@@ -33,6 +35,14 @@ type stubStrategy struct {
 	size   float64
 	err    error
 }
+
+type signalStubStrategy struct{ signal wheel.Signal }
+
+func (s signalStubStrategy) OnBar(_ context.Context, _ ingest.Bar, _ *State) (Action, float64, error) {
+	return ActionHold, 0, nil
+}
+
+func (s signalStubStrategy) Signal() wheel.Signal { return s.signal }
 
 func (s stubStrategy) OnBar(_ context.Context, _ ingest.Bar, _ *State) (Action, float64, error) {
 	return s.action, s.size, s.err
@@ -78,6 +88,15 @@ func TestRunFee(t *testing.T) {
 	if math.Abs(res.Equity-12099) > 1e-9 {
 		t.Fatalf("Run().Equity = %v; want ~12099", res.Equity)
 	}
+	if !res.Fees.Included || res.Fees.PerTrade != 1 || res.Fees.TotalAmount != 1 || res.Fees.StockAmount != 1 || res.Fees.OptionAmount != 0 || res.Fees.ChargedTradeCount != 1 {
+		t.Fatalf("Run().Fees = %+v; want one charged stock fill", res.Fees)
+	}
+	tm := res.Terminal
+	if tm.ValuationStatus != ValuationComplete || tm.FinalEquityAmount == nil || *tm.FinalEquityAmount != 12099 ||
+		tm.HoldingsMarketValueAmount == nil || *tm.HoldingsMarketValueAmount != 12100 || tm.StockAverageCost == nil || *tm.StockAverageCost != 100 ||
+		tm.RealizedPnLAmount == nil || *tm.RealizedPnLAmount != -1 || tm.UnrealizedPnLAmount == nil || *tm.UnrealizedPnLAmount != 2100 {
+		t.Fatalf("Run().Terminal = %+v; want complete stock mark with fee realized and price move unrealized", tm)
+	}
 	if res.Bars != 3 {
 		t.Fatalf("Run() = %+v; want Bars 3", res)
 	}
@@ -88,6 +107,153 @@ func TestRunFee(t *testing.T) {
 	}
 	if resHold.Equity != 10000 || resHold.TotalReturn != 0 {
 		t.Fatalf("Run() hold = %+v; want Equity 10000, TotalReturn 0 (hold settles charge no fee)", resHold)
+	}
+	if !resHold.Fees.Included || resHold.Fees.TotalAmount != 0 || resHold.Fees.ChargedTradeCount != 0 {
+		t.Fatalf("Run() hold fees = %+v; want an enabled zero-charge fee model", resHold.Fees)
+	}
+}
+
+func TestRunDataQualityZeroAndMissingSnapshots(t *testing.T) {
+	blocked := signalStubStrategy{signal: wheel.Signal{
+		Action: wheel.ActionHold, Direction: wheel.DirectionHold,
+		CapabilityStatus: wheel.CapabilityDataBlocked, BlockedBy: []string{"option_quote_snapshots"},
+	}}
+	res, err := RunOptions(context.Background(), mkBars(100, 101), 10000, 0, blocked, &OptionsData{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := res.DataQuality
+	if q.Status != wheel.CapabilityDataBlocked || q.SnapshotBatchCount != 0 || q.SnapshotContractRowCount != 0 ||
+		q.BlockedBarCount != 2 || q.ReadyBarCount != 0 || q.ValidCoverageRatio == nil || *q.ValidCoverageRatio != 0 ||
+		q.HistoricalOptionCycleComplete == nil || *q.HistoricalOptionCycleComplete {
+		t.Fatalf("zero snapshot quality = %+v", q)
+	}
+	if len(q.MissingRequiredFieldCounts) == 0 || q.MissingRequiredFieldCounts["bid"] != 0 {
+		t.Fatalf("zero-row missing field counts = %+v; want explicit zero-valued dictionary", q.MissingRequiredFieldCounts)
+	}
+
+	missing := &OptionsData{QuoteBatches: []QuoteSnapshotBatch{{Quotes: []wheel.OptionQuote{{}}}}}
+	res, err = RunOptions(context.Background(), mkBars(100), 10000, 0, blocked, missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q = res.DataQuality
+	if q.SnapshotBatchCount != 1 || q.SnapshotContractRowCount != 1 {
+		t.Fatalf("missing snapshot counts = %+v", q)
+	}
+	for _, field := range []string{"bid", "ask", "delta", "theta", "source", "symbol", "snapshot_key", "underlying_price"} {
+		if q.MissingRequiredFieldCounts[field] != 1 {
+			t.Fatalf("missing %s count = %d; all counts %+v", field, q.MissingRequiredFieldCounts[field], q.MissingRequiredFieldCounts)
+		}
+	}
+}
+
+func TestLatestQuoteBatchSourcePriority(t *testing.T) {
+	at := time.Date(2025, 7, 2, 8, 0, 0, 0, time.UTC)
+	batch := func(source, key string, observed time.Time) QuoteSnapshotBatch {
+		return QuoteSnapshotBatch{ObservedAt: observed, SnapshotKey: key, Quotes: []wheel.OptionQuote{{Source: source}}}
+	}
+	opts := &OptionsData{QuoteBatches: []QuoteSnapshotBatch{
+		batch("alpha", "z", at),
+		batch("hkex", "a", at),
+		batch("futu", "a", at),
+	}}
+	if got := latestQuoteBatch(opts, at); got == nil || got.Quotes[0].Source != "futu" {
+		t.Fatalf("same-time source = %+v; want futu", got)
+	}
+	opts.QuoteBatches = opts.QuoteBatches[:2]
+	if got := latestQuoteBatch(opts, at); got == nil || got.Quotes[0].Source != "hkex" {
+		t.Fatalf("same-time source without futu = %+v; want hkex", got)
+	}
+	opts.QuoteBatches = append(opts.QuoteBatches, batch("alpha", "old-source-newer-time", at.Add(time.Second)))
+	if got := latestQuoteBatch(opts, at.Add(time.Second)); got == nil || got.ObservedAt != at.Add(time.Second) {
+		t.Fatalf("newer observation = %+v; want timestamp to outrank provider", got)
+	}
+}
+
+func TestOptionsDataRejectsMixedSourcesInAtomicBatch(t *testing.T) {
+	at := time.Date(2025, 7, 2, 8, 0, 0, 0, time.UTC)
+	rows := []wheelstore.QuoteSnapshotRecord{
+		{Symbol: "P1", Underlying: "HK.00700", Source: "futu", SnapshotKey: "same", ObservedAt: at},
+		{Symbol: "P2", Underlying: "HK.00700", Source: "hkex", SnapshotKey: "same", ObservedAt: at},
+	}
+	if _, err := OptionsDataFromQuoteSnapshots(rows); err == nil || !strings.Contains(err.Error(), "mixed sources") {
+		t.Fatalf("mixed source error = %v", err)
+	}
+}
+
+func TestHKEXHistoricalCycleUnlocksResearchOnly(t *testing.T) {
+	theta := -0.1
+	expiry := time.Date(2025, 7, 12, 0, 0, 0, 0, time.UTC)
+	quote := func(observed time.Time) wheel.OptionQuote {
+		return wheel.OptionQuote{
+			Symbol: "HK.TST250712P500000", Source: "hkex", OptionType: wheel.Put,
+			Expiry: expiry, Strike: 500, Delta: -0.4, Bid: 10, Ask: 10,
+			ImpliedVol: 0.2, Theta: &theta, Volume: 1000, OpenInterest: 5000,
+			LotSize: 100, QuoteTime: observed,
+		}
+	}
+	first := time.Date(2025, 7, 2, 8, 0, 0, 0, time.UTC)
+	last := time.Date(2025, 7, 11, 8, 0, 0, 0, time.UTC)
+	opts := &OptionsData{QuoteBatches: []QuoteSnapshotBatch{
+		{ObservedAt: first, SnapshotKey: "hkex-eod-20250702-bs-r0", Underlying: "HK.TEST", UnderlyingPrice: 500, Quotes: []wheel.OptionQuote{quote(first)}},
+		{ObservedAt: last, SnapshotKey: "hkex-eod-20250711-bs-r0", Underlying: "HK.TEST", UnderlyingPrice: 500, Quotes: []wheel.OptionQuote{quote(last)}},
+	}}
+	signals := []SignalTrace{{CapabilityStatus: wheel.CapabilityReady}}
+	quality := summarizeDataQuality([]ingest.Bar{{Ts: last, Open: 500, High: 500, Low: 500, Close: 500, Volume: 1}}, opts, signals)
+	if quality.Status != "RESEARCH_ONLY" || quality.HistoricalOptionCycleComplete == nil || !*quality.HistoricalOptionCycleComplete || quality.ReadyBarCount != 1 || quality.SnapshotBatchCount != 2 {
+		t.Fatalf("HKEX cycle quality = %+v", quality)
+	}
+	if len(quality.OptionSnapshotSources) != 1 || quality.OptionSnapshotSources[0] != "hkex" {
+		t.Fatalf("sources = %v; want hkex", quality.OptionSnapshotSources)
+	}
+	for field, count := range quality.MissingRequiredFieldCounts {
+		if count != 0 {
+			t.Fatalf("missing %s = %d; want zero", field, count)
+		}
+	}
+	for _, blocker := range quality.BlockedBy {
+		if blocker == "historical_option_cycle" {
+			t.Fatalf("complete cycle still blocked: %v", quality.BlockedBy)
+		}
+	}
+
+	incomplete := &OptionsData{QuoteBatches: opts.QuoteBatches[:1]}
+	quality = summarizeDataQuality(nil, incomplete, signals)
+	if quality.Status != wheel.CapabilityDataBlocked || quality.HistoricalOptionCycleComplete == nil || *quality.HistoricalOptionCycleComplete {
+		t.Fatalf("incomplete cycle quality = %+v", quality)
+	}
+}
+
+func TestRunDataQualityRecordsUnderlyingAndOptionSources(t *testing.T) {
+	bars := mkBars(100, 101, 102)
+	bars[0].Source, bars[0].Adjusted = "futu", "fwd"
+	for i := 1; i < len(bars); i++ {
+		bars[i].Source, bars[i].Adjusted = "tencent", "qfq"
+	}
+	blocked := signalStubStrategy{signal: wheel.Signal{
+		Action: wheel.ActionHold, Direction: wheel.DirectionHold,
+		CapabilityStatus: wheel.CapabilityDataBlocked, BlockedBy: []string{"historical_option_snapshots"},
+	}}
+	opts := &OptionsData{QuoteBatches: []QuoteSnapshotBatch{{Quotes: []wheel.OptionQuote{
+		{Source: "futu"}, {Source: "futu"},
+	}}}}
+	res, err := RunOptions(context.Background(), bars, 10000, 0, blocked, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.DataQuality
+	wantBars := []BarProvenance{{Source: "futu", Adjusted: "fwd", BarCount: 1}, {Source: "tencent", Adjusted: "qfq", BarCount: 2}}
+	if len(got.UnderlyingBars) != len(wantBars) {
+		t.Fatalf("underlying bars = %+v; want %+v", got.UnderlyingBars, wantBars)
+	}
+	for i := range wantBars {
+		if got.UnderlyingBars[i] != wantBars[i] {
+			t.Fatalf("underlying bars = %+v; want %+v", got.UnderlyingBars, wantBars)
+		}
+	}
+	if len(got.OptionSnapshotSources) != 1 || got.OptionSnapshotSources[0] != "futu" {
+		t.Fatalf("option snapshot sources = %v; want [futu]", got.OptionSnapshotSources)
 	}
 }
 

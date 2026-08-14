@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
@@ -17,9 +18,14 @@ import (
 	"strings"
 	"time"
 
+	_ "time/tzdata" // 内嵌 IANA 时区库:部署镜像(scratch/alpine)无 /usr/share/zoneinfo,
+	// LoadLocation 会静默回退 UTC,导致 market_hours/datacheck 时段判断错位
+	// (实测 2026-08-12:23:27 HKT=15:27 UTC 落入港股 13:00-16:00 窗口,门控失效)
+
 	"github.com/jiayu/wbot/internal/agent"
 	"github.com/jiayu/wbot/internal/backtest"
 	"github.com/jiayu/wbot/internal/backtestexec"
+	"github.com/jiayu/wbot/internal/backtestreport"
 	"github.com/jiayu/wbot/internal/config"
 	"github.com/jiayu/wbot/internal/configyaml"
 	"github.com/jiayu/wbot/internal/db"
@@ -32,8 +38,10 @@ import (
 	"github.com/jiayu/wbot/internal/notify"
 	"github.com/jiayu/wbot/internal/paper"
 	"github.com/jiayu/wbot/internal/poll"
+	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/watchlist"
 	"github.com/jiayu/wbot/internal/webui"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 // Set at link time: go build -ldflags "-X main.version=v1.2.3"
@@ -241,12 +249,14 @@ func runServe(prog string, argv []string) int {
 	datacheckNotify := fs.Bool("datacheck-notify", false, "send scheduled datacheck alerts via configured Telegram/Discord endpoints")
 	wheelRun := fs.Bool("wheel-run", false, "run the wheel live loop for watchlist bindings (default off)")
 	wheelInterval := fs.Duration("wheel-interval", 5*time.Minute, "wheel live loop evaluation interval")
+	llmRun := fs.Bool("llm-run", false, "run the LLM strategy loop for llm watchlist bindings (default off)")
+	llmInterval := fs.Duration("llm-interval", 5*time.Minute, "LLM strategy evaluation interval")
 	wheelEnv := fs.String("wheel-env", "sim", "wheel account env: sim (simulate) or real (read-only evaluation)")
-	telegramRun := fs.Bool("telegram-run", false, "run the wheel Telegram alert/confirm loop (default off; token/chat_ids from ~/.wbot/wbot.conf)")
+	telegramRun := fs.Bool("telegram-run", false, "run the wheel Telegram/Discord alert/confirm loop (default off; tokens/chat_ids from ~/.wbot/wbot.conf)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status. With -telegram-run, ALERT signals approved by the LLM gate are pushed to Telegram with yes/no/dismiss buttons (token/chat_ids from ~/.wbot/wbot.conf; yes places a sim-env market order).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status. With -telegram-run, ALERT signals approved by the LLM gate are pushed to Telegram with yes/no/dismiss buttons (token/chat_ids from ~/.wbot/wbot.conf; yes places a sim-env market order). With Discord credentials set in wbot.conf, the same signals are pushed as embed cards to the configured Discord channel and button confirmations arrive at POST /v1/discord/interactions (Ed25519-verified; the only public-facing path).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -261,6 +271,10 @@ func runServe(prog string, argv []string) int {
 	}
 	if err := validateWheelInterval(*wheelInterval); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+		return 2
+	}
+	if *llmInterval <= 0 {
+		fmt.Fprintln(os.Stderr, "serve: -llm-interval must be positive")
 		return 2
 	}
 	datacheckHour, datacheckMinute, err := parseDailyTime(strings.TrimSpace(*datacheckAt))
@@ -316,6 +330,13 @@ func runServe(prog string, argv []string) int {
 	meta := httpapi.ProcessMeta{Version: version, StartedAt: startedAt, ListenAddr: ln.Addr().String()}
 	store := httpapi.NewDBStore(database)
 	top := serveMux(meta, httpapi.PingerFunc(database.PingContext), store, httpapi.NewDBWatchlistStore(database), httpapi.NewDBBacktestStore(database), httpapi.NewDBBacktestExecutor(database), httpapi.NewFutuQuoter(), httpapi.NewFutuAccounter(), httpapi.NewFutuOrderer(), httpapi.NewFutuOptionChainer(), httpapi.NewIngestRunner(database))
+	// LLM 策略信号注入(2026-08-12,独立于 wheel 链路):POST /v1/wheel/llm-signal
+	// 把 LLM 决策落成 ALERT 信号,经 LLM 审核闸门 + telegram 人工确认后下单。
+	reviewer, model := llmReviewerFromEnv()
+	if reviewer == nil {
+		fmt.Fprintln(os.Stderr, "wheel: WARN LLM reviewer disabled; set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL; llm-signal dispositions will be REJECTED")
+	}
+	top.Handle(httpapi.LLMSignalPath, httpapi.LLMSignalHandler(wheelstore.New(database), reviewer, model, httpapi.NewFutuAccounter(), httpapi.NewFutuQuoter()))
 	srv := &http.Server{Handler: top}
 
 	go func() {
@@ -340,7 +361,21 @@ func runServe(prog string, argv []string) int {
 	if *wheelRun {
 		go startWheelRunner(runCtx, database, wheelEnvVal, *wheelInterval)
 	}
+	if *llmRun {
+		go startLLMStrategyScheduler(runCtx, database, *llmInterval, model)
+	}
 	if *telegramRun {
+		// Discord 是 wheel 确认闭环的第二通道(2026-08-12):配置缺失时跳过,
+		// 只注册交互端点(公网 haproxy 仅转发此路径)并跑推送循环。
+		if ds, err := startDiscordScheduler(runCtx, database, wheelEnvVal); err != nil {
+			fmt.Fprintf(os.Stderr, "discord: %v\n", err)
+		} else if ds != nil {
+			top.Handle("POST /v1/discord/interactions", http.HandlerFunc(ds.handleInteraction))
+			if err := ds.registerAssistantCommands(runCtx); err != nil {
+				fmt.Fprintf(os.Stderr, "discord: register /ask: %v\n", err)
+			}
+			go ds.runDiscordPush(runCtx, discordPushInterval)
+		}
 		go startTelegramScheduler(runCtx, database, wheelEnvVal)
 	}
 
@@ -415,21 +450,43 @@ func runBacktest(prog string, argv []string) int {
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = unbounded")
 	limit := fs.Int("limit", 10000, "maximum number of bars to load")
 	cash := fs.Float64("cash", 10000, "initial cash")
-	fee := fs.Float64("fee", 0, "per-trade fixed fee (placeholder)")
+	fee := fs.Float64("fee", 0, "legacy fixed fee deducted from every filled stock/option trade")
+	feeOption := fs.Float64("fee-option-per-contract", backtest.DefaultOptionFeePerContract, "option fee per contract (type-specific fee model)")
+	feeStock := fs.Float64("fee-stock-per-lot", backtest.DefaultStockFeePerLot, "stock fee per lot (type-specific fee model)")
+	lotSize := fs.Int("lot-size", backtest.DefaultLotSize, "stock shares per lot (type-specific fee model)")
+	seed := fs.Int64("seed", 42, "seed for the unfilled-attempt draw (same seed, same trace; 0 = default 42)")
 	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
-	params := fs.String("params", "", `Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md`)
+	var params repeatedStringFlag
+	fs.Var(&params, "params", `Wheel configuration as JSON; repeat for fixed-parameter sensitivity runs, or pass a JSON array`)
+	fromWatchlist := fs.Bool("from-watchlist", false, "load exact Wheel params and config_version for -symbol from the database watchlist")
+	train := fs.String("train", "", `ES tactical search ranges as JSON, for example {"move_interval_pct":["0.005","0.03"]}`)
+	population := fs.Int("population", 20, "ES population size (16..24; with -train)")
+	maxGenerations := fs.Int("max-generations", 40, "maximum ES generations (with -train)")
+	budget := fs.Int("budget", 840, "total backtest evaluation budget including held-out tests (with -train)")
+	earlyStopPatience := fs.Int("early-stop-patience", 8, "validation generations without material improvement before stopping")
+	trainTimeout := fs.Duration("train-timeout", 10*time.Minute, "ES wall-clock timeout (with -train)")
 	maxDrawdown := fs.Float64("max-drawdown", 0, "max drawdown limit (0..1); exit 1 when exceeded; 0 = no check")
 	save := fs.Bool("save", false, "persist this run into backtest_results (requires -dsn input)")
 	exportID := fs.Int64("export", 0, "export a saved result to stdout instead of running (positive result id; requires -dsn input)")
 	format := fs.String("format", "csv", "export format with -export: csv or json (same output as GET /v1/backtests/{id}/export)")
+	report := fs.Bool("report", false, "write a deterministic schema 1.2 JSON report and HTML projection")
+	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
+	push := fs.Bool("push", false, "push the generated report to the configured Discord channel exactly once per report ID (requires -report)")
+	cache := fs.Bool("cache", false, "upsert report evidence into strategy_cache (requires -dsn -strategy wheel -from-watchlist -report)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Runs a strategy over bars from a JSON file (-file) or directly from the\n")
 		fmt.Fprintf(os.Stderr, "database (-dsn, default $WBOT_PG_DSN) and prints one summary line.\n")
 		fmt.Fprintf(os.Stderr, "The wheel strategy reads quote snapshots and contract metadata, so it requires -dsn input.\n")
-		fmt.Fprintf(os.Stderr, "A fixed per-trade fee (-fee, default 0) is deducted from cash on every buy/sell settle.\n")
+		fmt.Fprintf(os.Stderr, "Type-specific fees default to %.0f per option contract and %.0f per stock lot (lot size %d). Legacy -fee remains a fixed per-trade compatibility mode; when both are supplied, type-specific flags win.\n", backtest.DefaultOptionFeePerContract, backtest.DefaultStockFeePerLot, backtest.DefaultLotSize)
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
+		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
+		fmt.Fprintf(os.Stderr, "With -train JSON, runs deterministic ES over tactical Wheel parameters only; strategic parameters remain fixed from -params.\n")
+		fmt.Fprintf(os.Stderr, "Repeat -params for one fixed-parameter sensitivity run, or pass -params '[{...},{...}]'; results share one prepared snapshot and use 8 workers.\n")
+		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
+		fmt.Fprintf(os.Stderr, "With -push, explicitly sends the generated report as a Discord embed using bot_token/channel_id from ~/.wbot/wbot.conf; successful report IDs are not sent twice.\n")
+		fmt.Fprintf(os.Stderr, "With -cache, explicitly upserts the generated report into strategy_cache as RESEARCH_CANDIDATE; it never publishes watchlist/Wheel config.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
 		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
@@ -465,22 +522,53 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -max-drawdown must be in [0, 1]\n")
 		return 2
 	}
+	typeSpecificFees := flagWasSet(fs, "fee-option-per-contract") || flagWasSet(fs, "fee-stock-per-lot") || flagWasSet(fs, "lot-size")
+	legacyFee := flagWasSet(fs, "fee")
+	var feeModel *backtest.FeeModel
+	if typeSpecificFees {
+		if *lotSize <= 0 {
+			fmt.Fprintf(os.Stderr, "backtest: -lot-size must be > 0\n")
+			return 2
+		}
+		model := backtest.HKFeeModel(*feeOption, *feeStock, *lotSize)
+		feeModel = &model
+	} else if legacyFee || !typeSpecificFees {
+		// Keep nil so the shared executor selects the historical fixed-fee path.
+		// This includes an explicitly supplied -fee 0 and the historical no-flag
+		// default. Type-specific flags opt into the real HK schedule above.
+		feeModel = nil
+	}
 
 	fp := strings.TrimSpace(*file)
 	d := strings.TrimSpace(*dsn)
-	if d == "" {
+	// Explicit flags are mutually exclusive; WBOT_PG_DSN is only a default
+	// for the -dsn flag, so a -file run must not trip the conflict when the
+	// environment happens to carry a DSN (CI sets WBOT_PG_DSN globally).
+	if fp != "" && d != "" {
+		fmt.Fprintf(os.Stderr, "backtest: -file and -dsn are mutually exclusive\n")
+		return 2
+	}
+	if d == "" && fp == "" {
 		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
 	}
 	if fp == "" && d == "" {
 		fmt.Fprintf(os.Stderr, "backtest: set -file or -dsn (or WBOT_PG_DSN)\n")
 		return 2
 	}
-	if fp != "" && d != "" {
-		fmt.Fprintf(os.Stderr, "backtest: -file and -dsn are mutually exclusive\n")
+	if *push && !*report {
+		fmt.Fprintf(os.Stderr, "backtest: -push requires -report\n")
 		return 2
 	}
 
 	if *exportID != 0 {
+		if *cache {
+			fmt.Fprintf(os.Stderr, "backtest: -cache cannot be combined with -export\n")
+			return 2
+		}
+		if *push {
+			fmt.Fprintf(os.Stderr, "backtest: -push cannot be combined with -export\n")
+			return 2
+		}
 		if fp != "" {
 			fmt.Fprintf(os.Stderr, "backtest: -export reads from the database; -file is mutually exclusive\n")
 			return 2
@@ -503,13 +591,51 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 
+	btSym := strings.TrimSpace(*symbol)
+	if len(symList) == 1 {
+		btSym = symList[0]
+	}
 	stratName := strings.TrimSpace(*strat)
-	paramsMap := map[string]any{}
-	if ps := strings.TrimSpace(*params); ps != "" {
-		if err := json.Unmarshal([]byte(ps), &paramsMap); err != nil {
-			fmt.Fprintf(os.Stderr, "backtest: -params: %v\n", err)
+	paramsGroups, err := parseBacktestParamGroups(params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: -params: %v\n", err)
+		return 2
+	}
+	paramsMap := paramsGroups[0]
+	paramsPresent := false
+	for _, raw := range params {
+		if strings.TrimSpace(raw) != "" {
+			paramsPresent = true
+			break
+		}
+	}
+	var configVersion *int
+	if *fromWatchlist {
+		if fp != "" || multi || stratName != "wheel" || paramsPresent {
+			fmt.Fprintf(os.Stderr, "backtest: -from-watchlist requires one -dsn symbol, -strategy wheel, and no -params\n")
 			return 2
 		}
+		configDB, err := db.Open(d)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: open db for watchlist config: %v\n", err)
+			return 1
+		}
+		item, loadErr := watchlist.Get(context.Background(), configDB, btSym)
+		closeErr := configDB.Close()
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "backtest: load watchlist config: %v\n", loadErr)
+			return 1
+		}
+		if closeErr != nil {
+			fmt.Fprintf(os.Stderr, "backtest: close watchlist config db: %v\n", closeErr)
+			return 1
+		}
+		if item.Strategy != "wheel" || item.ConfigVersion == nil || *item.ConfigVersion <= 0 {
+			fmt.Fprintf(os.Stderr, "backtest: watchlist %s has no versioned wheel config\n", btSym)
+			return 1
+		}
+		paramsMap = item.Params
+		configVersion = item.ConfigVersion
 	}
 	// Build is the shared CLI/API validation contract (internal/backtestexec):
 	// the API's POST /v1/backtests accepts exactly these strategies and params.
@@ -517,6 +643,12 @@ func runBacktest(prog string, argv []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 		return 2
+	}
+	for i, group := range paramsGroups[1:] {
+		if _, _, err := backtestexec.Build(stratName, group); err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: -params group %d: %v\n", i+2, err)
+			return 2
+		}
 	}
 	if templ != nil && templ.NeedsOptions && fp != "" {
 		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads atomic option_quote_snapshots; -file input has no option snapshot data (use -dsn)\n", stratName)
@@ -527,6 +659,10 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -save requires -dsn input\n")
 		return 2
 	}
+	if *cache && (!*report || fp != "" || multi || stratName != "wheel" || configVersion == nil) {
+		fmt.Fprintf(os.Stderr, "backtest: -cache requires one -dsn symbol, -strategy wheel, -from-watchlist, and -report\n")
+		return 2
+	}
 	if multi && templ != nil && templ.NeedsOptions {
 		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads atomic option_quote_snapshots; not supported for multi-symbol runs (use hold or buy-hold)\n", stratName)
 		return 2
@@ -535,28 +671,60 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -save is not supported for multi-symbol runs\n")
 		return 2
 	}
-
-	btSym := strings.TrimSpace(*symbol)
-	if len(symList) == 1 {
-		btSym = symList[0]
+	if multi && *report {
+		fmt.Fprintf(os.Stderr, "backtest: -report produces report_kind=single_run and is not supported for multi-symbol runs\n")
+		return 2
 	}
+	if multi && len(paramsGroups) > 1 {
+		fmt.Fprintln(os.Stderr, "backtest: multiple -params groups require one symbol")
+		return 2
+	}
+	if strings.TrimSpace(*train) != "" {
+		if len(paramsGroups) > 1 {
+			fmt.Fprintf(os.Stderr, "backtest: -train accepts one fixed -params group; use repeated -params without -train for sensitivity analysis\n")
+			return 2
+		}
+		if fp != "" || multi || stratName != "wheel" || *save {
+			fmt.Fprintf(os.Stderr, "backtest: -train requires one -dsn symbol, -strategy wheel, and does not support -file/-symbols/-save\n")
+			return 2
+		}
+		if *population < 16 || *population > 24 || *maxGenerations <= 0 || *budget <= 0 || *earlyStopPatience <= 0 || *trainTimeout <= 0 {
+			fmt.Fprintf(os.Stderr, "backtest: invalid ES controls (population 16..24; generations/budget/patience/timeout must be positive)\n")
+			return 2
+		}
+	}
+
 	btOpts := backtestexec.Options{
-		Symbol:    btSym,
-		Strategy:  stratName,
-		Params:    paramsMap,
-		Timeframe: strings.TrimSpace(*timeframe),
-		Adjust:    strings.TrimSpace(*adjust),
-		From:      fromT,
-		To:        toT,
-		Limit:     *limit,
-		Cash:      *cash,
-		Fee:       *fee,
+		Symbol:        btSym,
+		Strategy:      stratName,
+		Params:        paramsMap,
+		ConfigVersion: configVersion,
+		Timeframe:     strings.TrimSpace(*timeframe),
+		Adjust:        strings.TrimSpace(*adjust),
+		From:          fromT,
+		To:            toT,
+		Limit:         *limit,
+		Cash:          *cash,
+		Fee:           *fee,
+		FeeModel:      feeModel,
+		Seed:          *seed,
+	}
+	if strings.TrimSpace(*train) != "" {
+		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Push: *push, Cache: *cache})
+	}
+	if len(paramsGroups) > 1 {
+		return runBacktestBatch(d, fp, btSym, stratName, paramsGroups, btOpts, backtestBatchFlags{
+			Save: *save, Report: *report, ReportDir: *reportDir, Push: *push, MaxDrawdown: *maxDrawdown,
+			Symbol: btSym, Strategy: stratName, ConfigVersion: configVersion, Options: btOpts,
+		})
 	}
 
 	var (
-		res     *backtest.Result
-		startTs time.Time
-		endTs   time.Time
+		res               *backtest.Result
+		startTs           time.Time
+		endTs             time.Time
+		baselineReturnPct float64
+		sourceHash        string
 	)
 	var database *sql.DB
 	if fp != "" {
@@ -565,17 +733,20 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: read %s: %v\n", fp, err)
 			return 1
 		}
+		digest := sha256.Sum256(data)
+		sourceHash = fmt.Sprintf("sha256-%x", digest)
 		bars, err := backtest.ParseBars(data)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
-		res, err = backtest.RunOptions(context.Background(), bars, *cash, *fee, s, nil)
+		res, err = backtestexec.RunBars(context.Background(), bars, btOpts, s, &backtest.OptionsData{RunSeed: *seed})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
 		startTs, endTs = bars[0].Ts, bars[len(bars)-1].Ts
+		baselineReturnPct = bars[len(bars)-1].Close/bars[0].Close - 1
 	} else if multi {
 		// Multi-symbol: equal-weight sub-accounts over the intersection of the
 		// symbols' bars (shared runner in internal/backtestexec, doc/BACKTEST.md).
@@ -597,12 +768,12 @@ func runBacktest(prog string, argv []string) int {
 			return 1
 		}
 		mr := mout.Result
-		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d symbols=%d\n",
-			mr.Equity, mr.TotalReturn, mr.MaxDrawdown, mr.Bars, len(mr.PerSymbol))
+		fmt.Printf("final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d symbols=%d\n",
+			mr.Equity, mr.RealizedReturnPct, mr.TotalReturn, mr.MaxDrawdown, mr.Bars, len(mr.PerSymbol))
 		for _, sub := range mr.PerSymbol {
 			r := sub.Result
-			fmt.Printf("  %s: final_equity=%v total_return=%v max_drawdown=%v bars=%d\n",
-				sub.Symbol, r.Equity, r.TotalReturn, r.MaxDrawdown, r.Bars)
+			fmt.Printf("  %s: final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d\n",
+				sub.Symbol, r.Equity, r.RealizedReturnPct, r.TotalReturn, r.MaxDrawdown, r.Bars)
 		}
 		if *maxDrawdown > 0 && mr.MaxDrawdown > *maxDrawdown {
 			fmt.Fprintf(os.Stderr, "backtest: max drawdown %v exceeds limit %v\n", mr.MaxDrawdown, *maxDrawdown)
@@ -631,9 +802,81 @@ func runBacktest(prog string, argv []string) int {
 			return 1
 		}
 		res, startTs, endTs = outcome.Result, outcome.StartTs, outcome.EndTs
+		baselineReturnPct = outcome.BaselineReturnPct
+		sourceHash = outcome.SourceHash
 	}
 
-	fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars)
+	// 评价口径 = 权利金净收益(reward-3.0):premium_net_return 是期权腿净收益率
+	// (权利金收入 − 平仓 − 期权/行权费)/初始金,忽略正股;realized_return 保留
+	// 已实现全量(含正股)审计。
+	premiumNetReturn := res.Attribution.PremiumNetAmount / btOpts.Cash
+	if res.Unfilled.AttemptCount == 0 {
+		fmt.Printf("final_equity=%v realized_return=%v premium_net_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试)\n", res.Equity, res.RealizedReturnPct, premiumNetReturn, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount)
+	} else {
+		fmt.Printf("final_equity=%v realized_return=%v premium_net_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n",
+			res.Equity, res.RealizedReturnPct, premiumNetReturn, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
+	}
+	var pushErr error
+	if *report {
+		reportParams := paramsMap
+		if stratName == "wheel" {
+			reportParams, err = strategy.CanonicalParams(paramsMap)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "backtest: report params: %v\n", err)
+				return 1
+			}
+		}
+		migrationLossy := false
+		var originalJSON json.RawMessage
+		if stratName == "wheel" {
+			cfg, parseErr := strategy.ParseConfig(paramsMap)
+			if parseErr != nil {
+				fmt.Fprintf(os.Stderr, "backtest: report config audit: %v\n", parseErr)
+				return 1
+			}
+			migrationLossy = cfg.MigrationLossy
+		}
+		if migrationLossy {
+			originalJSON, err = json.Marshal(paramsMap)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "backtest: report original params: %v\n", err)
+				return 1
+			}
+		}
+		rep, err := backtestreport.Build(backtestreport.Input{
+			Symbol: btSym, Strategy: stratName, Params: reportParams, ConfigVersion: configVersion,
+			CodeVersion: version, RunSeed: *seed, InitialCash: *cash, FeePerTrade: *fee,
+			Start: startTs, End: endTs, BaselineReturnPct: baselineReturnPct,
+			SourceHash: sourceHash, MigrationLossy: migrationLossy, OriginalJSON: originalJSON,
+			Result: res,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+		jsonPath, htmlPath, err := backtestreport.Write(strings.TrimSpace(*reportDir), rep)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+			return 1
+		}
+		fmt.Printf("report_id=%s json=%s html=%s\n", rep.ReportID, jsonPath, htmlPath)
+		if *cache {
+			if err := cacheBacktestReport(context.Background(), database, rep, jsonPath, false); err != nil {
+				fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+				return 1
+			}
+			fmt.Printf("cache_symbol=%s approved_state=%s\n", rep.Identity.Symbol, wheelstore.StrategyCacheResearchCandidate)
+		}
+		if *push {
+			var status string
+			status, pushErr = pushBacktestReport(context.Background(), rep)
+			if pushErr != nil {
+				fmt.Fprintf(os.Stderr, "backtest: push: %v\n", pushErr)
+			} else {
+				fmt.Printf("push_status=%s report_id=%s\n", status, rep.ReportID)
+			}
+		}
+	}
 	if *save {
 		id, err := backtest.SaveResult(context.Background(), database,
 			stratName, strings.TrimSpace(*symbol),
@@ -649,6 +892,9 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
+	}
+	if pushErr != nil {
+		return 1
 	}
 	return 0
 }
@@ -720,7 +966,7 @@ func runWatchlistAdd(prog string, argv []string) int {
 	fs.BoolVar(&showHelp, "help", false, "")
 	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
 	symbol := fs.String("symbol", "", "instrument symbol (required, e.g. HK.00700)")
-	strategy := fs.String("strategy", "", "strategy name (required; wheel is the only product strategy)")
+	strategy := fs.String("strategy", "", "strategy name (required; llm or wheel)")
 	params := fs.String("params", "", "Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md")
 
 	fs.Usage = func() {
@@ -1015,6 +1261,10 @@ func runIngest(prog string, argv []string) int {
 		return runIngestFile(prog, argv[1:])
 	case "url":
 		return runIngestURL(prog, argv[1:])
+	case "tencent":
+		return runIngestTencent(prog, argv[1:])
+	case "hkex":
+		return runIngestHKEX(prog, argv[1:])
 	case "futu":
 		return runIngestFutu(prog, argv[1:])
 	case "futu-option":
@@ -1475,15 +1725,15 @@ func runIngestFreshness(prog string, argv []string) int {
 	if len(entries) == 0 {
 		fmt.Println("unknown: no bars data")
 	}
-	// 期权数据并入同一判定(草稿非目标项):按 underlying×source 聚合,
-	// 阈值 MaxAgeForOptions(4h),-max-age 全局覆盖;stale 同样使 exit 1。
+	// 期权数据并入同一判定：按 underlying×source 聚合；实时源默认 4h，
+	// HKEX 官方日终源默认 3d，-max-age 全局覆盖；stale 同样使 exit 1。
 	opts, err := ingest.QueryOptionFreshness(context.Background(), database, now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ingest freshness: %v\n", err)
 		return 1
 	}
 	for _, o := range opts {
-		threshold := ingest.MaxAgeForOptions
+		threshold := ingest.MaxAgeForOptionSource(o.Source)
 		if *maxAge > 0 {
 			threshold = *maxAge
 		}
@@ -1686,6 +1936,16 @@ func parseRangeTime(flagName, s string) (time.Time, error) {
 	return t, nil
 }
 
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
 func ingestRepeatCtx(every time.Duration) (context.Context, context.CancelFunc) {
 	if every <= 0 {
 		return context.Background(), func() {}
@@ -1707,6 +1967,8 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "Subcommands:\n  mock   Insert a mock ingestion run and sample OHLCV bars (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  file   Load bars from a JSON file (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  url    Load bars from a JSON URL (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  tencent  Backfill free qfq daily K-lines into bars (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  hkex   Backfill official HK stock-option EOD settlement data (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu   Fetch K-lines from the futu-opend-rs gateway (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu-option  Fetch option-chain K-lines + underlying bars, cache-first (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  account  Snapshot account funds into account_snapshots (资产曲线数据层) (-h for flags)\n")

@@ -28,7 +28,7 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 | 历史事件回测 | `DATA_BLOCKED` | 现有历史覆盖不足以还原逐 quote/成交事件及同一时点盘口/Greeks | 历史原子 snapshot 覆盖目标日期/DTE，事件 trace 可复现并通过数据质量验收 | 不用 OHLC 猜 bid/ask/Greeks，不把 bar-time 回放冒充事件回测 |
 | 实时/自动执行 | `OUT_OF_SCOPE` | 产品只做人工提醒，不提供实时执行器 | 永久不接交易 API | 无自动确认、无实时执行器、无隐式降级开关 |
 
-状态值 `READY`、`DATA_BLOCKED`、`INTEGRATION_BLOCKED`、`RESEARCH_ONLY`、`OUT_OF_SCOPE` 表示能力闸门；迁移行另有 `NEEDS_RECONFIGURATION`，表示必须由用户提交完整 Wheel 配置后才可继续。任何阻塞响应都应携带 `capability_status`、`blocked_by`、缺失字段和下一启用条件。
+状态值 `READY`、`DATA_BLOCKED`、`INTEGRATION_BLOCKED`、`RESEARCH_ONLY`、`OUT_OF_SCOPE` 表示能力闸门。`NEEDS_RECONFIGURATION` 已废弃：S1 有损迁移后旧行自动映射满仓/清仓价格，无需用户重提交完整配置；迁移行通过配置 `params` 内的 `migration_lossy=true`、`migration_warnings` 和 `migration_original_price_position_curve` 审计字段展示。任何阻塞响应都应携带 `capability_status`、`blocked_by`、缺失字段和下一启用条件。
 
 ## Web UI
 
@@ -51,24 +51,26 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 [
   {
     "name": "wheel",
-    "description": "按价格—目标库存曲线管理库存，只生成人工提醒，不自动下单",
+    "description": "按满仓价—清仓价区间管理库存，只生成人工提醒，不自动下单",
     "params": [
-      {"name":"price_position_curve","type":"curve","required":true},
+      {"name":"full_position_price","type":"number","required":true},
+      {"name":"zero_position_price","type":"number","required":true},
       {"name":"max_inventory","type":"number","required":true},
-      {"name":"lot_size","type":"number","default":100},
+      {"name":"move_interval_pct","type":"number","default":0},
+      {"name":"min_premium_per_share","type":"number","default":0},
+      {"name":"min_option_profit","type":"number","default":200},
+      {"name":"stock_switch_pct","type":"number","default":0},
+      {"name":"trade_gap","type":"number","default":50},
       {"name":"min_dte","type":"number","default":5},
       {"name":"max_dte","type":"number","default":10},
       {"name":"min_option_quality","type":"number","default":0.6},
-      {"name":"max_daily_orders","type":"number","default":1},
-      {"name":"extreme_max_daily_orders","type":"number","default":2},
-      {"name":"no_trade_gap","type":"number","default":50},
       {"name":"strategic_state","type":"choice","default":"NORMAL","choices":["NORMAL","CAUTION","PAUSE_BUY","EXIT"]}
     ]
   }
 ]
 ```
 
-`price_position_curve` 至少两个锚点，`price` 严格递增，`target_inventory` 单调不增且在 `[0,max_inventory]`；DTE 必须位于 5–10，质量分在 `[0,1]`，正常/极端提醒张数硬上限为 1/2。缺少两个 required 字段、未知字段、类型或范围非法时返回 `400 invalid_request`。
+满仓价必须大于 0，清仓价必须大于满仓价，最大库存为正整数；DTE 必须位于 5–45，质量分在 `[0,1]`，其余战术参数非负。百分比输入使用小数（`0.018` 表示 `1.8%`）。新战术键可省略且 0 表示关闭相应门槛；策略不设每日提醒次数上限。缺少三个 required 字段、未知字段、类型或范围非法时返回 `400 invalid_request`。
 
 ## GET /v1/watchlist
 
@@ -80,15 +82,17 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
     "symbol":"HK.00700",
     "strategy":"wheel",
     "params": {
-      "price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],
+      "full_position_price":400,
+      "zero_position_price":550,
       "max_inventory":1200,
-      "lot_size":100,
+      "move_interval_pct":0.018,
+      "min_premium_per_share":1.2,
+      "min_option_profit":200,
+      "stock_switch_pct":0.03,
+      "trade_gap":50,
       "min_dte":5,
       "max_dte":10,
       "min_option_quality":0.6,
-      "max_daily_orders":1,
-      "extreme_max_daily_orders":2,
-      "no_trade_gap":50,
       "strategic_state":"NORMAL"
     },
     "created_at":"2026-08-10T01:00:00Z",
@@ -97,16 +101,16 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 ]
 ```
 
-迁移留下的旧行保留审计数据并标记 `NEEDS_RECONFIGURATION`；它们不能被本端点当作可执行 Wheel 配置返回，也不能通过默认值自动修复。
+旧曲线配置可读取并转换为新键；转换后的新版本带 `migration_lossy`、原曲线审计值和迁移告警计数，持久化不再写旧参数键。
 
 ## PUT /v1/watchlist/{symbol}
 
-新增或更新一个标的。请求必须显式传 `price_position_curve` 与 `max_inventory`；其余字段可使用 `/v1/strategies` 中的文档默认值。当前 serve 路由负责 schema 校验、追加 `wheel_configs(symbol, version)` 不可变版本并把 watchlist 指向新版本；它不会覆盖已产生信号引用的版本。
+新增或更新一个标的。新请求必须显式传 `full_position_price`、`zero_position_price` 与 `max_inventory`；其余字段可使用 `/v1/strategies` 中的文档默认值。兼容读取旧曲线请求，但持久化统一写新键。当前 serve 路由负责 schema 校验、追加 `wheel_configs(symbol, version)` 不可变版本并把 watchlist 指向新版本；它不会覆盖已产生信号引用的版本。
 
 ```bash
 curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
   -H 'Content-Type: application/json' \
-  -d '{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200,"lot_size":100,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"max_daily_orders":1,"extreme_max_daily_orders":2,"no_trade_gap":50,"strategic_state":"NORMAL"}}'
+  -d '{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200,"move_interval_pct":0.018,"min_premium_per_share":1.2,"min_option_profit":200,"stock_switch_pct":0.03,"trade_gap":50,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"strategic_state":"NORMAL"}}'
 ```
 
 成功返回 `200` 和存储后的 watchlist 行。`400 invalid_request` 覆盖缺 symbol/strategy、strategy 不是 `wheel`、缺 required 字段、非法曲线、未知字段、类型/范围错误或非 JSON body；`405` 表示方法不允许。`DELETE /v1/watchlist/{symbol}` 只删除关注绑定，不删除配置/快照/信号审计；不存在返回 `404`。
@@ -144,7 +148,7 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 
 ## 回测结果端点
 
-这些端点是通用结果/导出数据面；产品 Wheel 回测是否具备可信历史数据仍由 `DATA_BLOCKED` 闸门决定。当前运行器是 bar-time replay：每根 bar 选择 `observed_at <= bar.ts` 的最新原子 snapshot（同一时点按 snapshot key 稳定取值），不是事件驱动的 quote/成交回放。
+这些端点是通用结果/导出数据面；产品 Wheel 回测能力由数据质量闸门决定。当前运行器是 bar-time replay：每根 bar 选择 `observed_at <= bar.ts` 的最新原子 snapshot；同一时点按 `futu` → `hkex` → 其他 source 字典序，再按 snapshot key 稳定取值。HKEX 日终投影即使完整也只能是 `RESEARCH_ONLY`，不是事件驱动的 quote/成交回放。
 
 ### GET /v1/backtests
 
@@ -160,17 +164,19 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 
 ### POST /v1/backtests
 
-产品请求形态为 `{"symbol":"...","strategy":"wheel","params":{完整配置}}`，或 `{"from_watchlist":true}` 批量运行 watchlist 中的 Wheel 配置；该产品端点拒绝 `hold`/`buy-hold`。完全没有 bars 或 snapshot 行、依赖故障、超时分别返回 `503` 和结构化错误；存在 snapshot 行但报价不完整、陈旧或缺少所需 Put/Call 方向时，bar-time 研究回放仍保存并返回 `201`，但对应 trace 必须是 `DATA_BLOCKED/HOLD`，不能产生假 `ALERT`。因此 `201` 表示审计运行已持久化，不表示实时提醒能力已解锁。同进程互斥时返回 `409 busy`。CLI 内部仍可运行 `hold`/`buy-hold` 基准，但客户端不得把它们当作 Wheel 产品能力。
+产品请求形态为 `{"symbol":"...","strategy":"wheel","params":{完整配置}}`，或 `{"from_watchlist":true}` 批量运行 watchlist 中的 Wheel 配置；该产品端点拒绝 `hold`/`buy-hold`。完全没有 bars、依赖故障或超时返回 `503` 和结构化错误；零 snapshot 行或 snapshot 报价不完整、陈旧、缺少所需 Put/Call 方向时，bar-time 研究回放仍保存并返回 `201`，但对应 trace 必须全程或逐 bar 为 `DATA_BLOCKED/HOLD`，metrics 的 `data_quality` 明确给出零覆盖/缺字段，不能产生假 `ALERT`。因此 `201` 表示阻塞证据已持久化，不表示实时提醒能力已解锁。同进程互斥时返回 `409 busy`。CLI 内部仍可运行 `hold`/`buy-hold` 基准，但客户端不得把它们当作 Wheel 产品能力。
 
 ## 其他只读数据面
 
 下列既有端点不改变 Wheel 的提醒边界：
 
+`GET /v1/bars?symbol=&timeframe=&adjust=&from=&to=&limit=&desc=1` 返回 OHLCV bars；默认按时间升序，`desc=1` 时最新在前。若同一 `symbol/timeframe/adjust/ts` 存在多个来源，响应只保留一条，并按 `futu` → `tencent` → 其他 `source` 字典序确定性择一。每条 bar 除 `ts/open/high/low/close/volume` 外还返回 `source` 和 `adjusted`：`source` 是实际选中的平台（如 `futu`、`tencent`），`adjusted` 是该平台的复权语义（例如 Tencent canonical `adjust=fwd` 返回 `qfq`），客户端不得仅凭请求的 `adjust` 猜测来源或供应商复权名称。
+
 | 端点 | 语义 |
 | --- | --- |
 | `GET /v1/health` | DB ping，失败 `503 dependency_failed` |
 | `GET /v1/datacheck` | watchlist bars/期权覆盖快照，只读，不 repair |
-| `GET /v1/runs`、`GET /v1/bars` | ingestion runs 和 OHLCV bars |
+| `GET /v1/runs`、`GET /v1/bars` | ingestion runs 和带逐 bar `source`/`adjusted` provenance 的 OHLCV bars |
 | `GET /v1/account/snapshots` | DB 中的账户资金历史，不走交易网关 |
 | `GET /v1/futu/quote`、`/v1/futu/options` | 网关行情/链只读代理，不能作为完整 Wheel snapshot 的替代 |
 | `GET /v1/futu/account`、`/v1/futu/orders` | 账户/订单只读代理，不提供下单或撤单 |

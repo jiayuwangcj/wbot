@@ -95,12 +95,14 @@ func (s dbStore) Datacheck(ctx context.Context) (datacheck.Report, error) {
 
 // barJSON mirrors the `ingest bars -json` output shape (ts RFC3339).
 type barJSON struct {
-	Ts     string  `json:"ts"`
-	Open   float64 `json:"open"`
-	High   float64 `json:"high"`
-	Low    float64 `json:"low"`
-	Close  float64 `json:"close"`
-	Volume int64   `json:"volume"`
+	Ts       string  `json:"ts"`
+	Open     float64 `json:"open"`
+	High     float64 `json:"high"`
+	Low      float64 `json:"low"`
+	Close    float64 `json:"close"`
+	Volume   int64   `json:"volume"`
+	Source   string  `json:"source"`
+	Adjusted string  `json:"adjusted"`
 }
 
 type runJSON struct {
@@ -183,7 +185,7 @@ func Handler(store Store) http.Handler {
 		}
 		out := make([]barJSON, 0, len(bars))
 		for _, b := range bars {
-			out = append(out, barJSON{b.Ts.Format(time.RFC3339), b.Open, b.High, b.Low, b.Close, b.Volume})
+			out = append(out, barJSON{b.Ts.Format(time.RFC3339), b.Open, b.High, b.Low, b.Close, b.Volume, b.Source, b.Adjusted})
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)

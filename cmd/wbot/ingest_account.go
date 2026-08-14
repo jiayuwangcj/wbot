@@ -77,7 +77,7 @@ func runIngestAccount(prog string, argv []string) int {
 		return 1
 	}
 	defer tc.Close()
-	acc, ok := resolveAccount(prog, "ingest account", tc, e, *accID)
+	acc, ok := resolveAccount(prog, "ingest account", tc, e, *accID, "")
 	if !ok {
 		return 1
 	}

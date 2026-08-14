@@ -36,8 +36,8 @@ func TestWatchlistIntegrationVersionedWheelHistory(t *testing.T) {
 
 	symbol := fmt.Sprintf("ITEST.WHEEL.%d", os.Getpid())
 	putURL := srv.URL + "/v1/watchlist/" + symbol
-	params1 := `{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}`
-	params2 := `{"price_position_curve":[{"price":400,"target_inventory":1000},{"price":550,"target_inventory":0}],"max_inventory":1000}`
+	params1 := `{"full_position_price":400,"zero_position_price":550,"max_inventory":1200}`
+	params2 := `{"full_position_price":400,"zero_position_price":550,"max_inventory":1000}`
 	put := func(params string) map[string]any {
 		req, err := http.NewRequest(http.MethodPut, putURL, strings.NewReader(`{"strategy":"wheel","params":`+params+`}`))
 		if err != nil {

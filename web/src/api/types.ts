@@ -14,17 +14,23 @@ export interface WheelCurvePoint {
   target_inventory: number;
 }
 
+// WheelParams 契约(2026-08-13 收敛):只有价格范围 + 最大持仓必须提供;
+// 其余参数后端有默认值,可省略。lot_size 已整体去除(运行时从行情
+// contract_size 实时拉取,兜底 100)。
 export interface WheelParams {
-  price_position_curve: WheelCurvePoint[];
+  full_position_price: number;
+  zero_position_price: number;
   max_inventory: number;
-  lot_size: number;
-  min_dte: number;
-  max_dte: number;
-  min_option_quality: number;
-  max_daily_orders: number;
-  extreme_max_daily_orders: number;
-  no_trade_gap: number;
-  strategic_state: WheelState;
+  move_interval_pct?: number;
+  min_premium_per_share?: number;
+  min_option_profit?: number;
+  stock_switch_pct?: number;
+  trade_gap?: number;
+  min_dte?: number;
+  max_dte?: number;
+  min_option_quality?: number;
+  max_quote_age_seconds?: number;
+  strategic_state?: WheelState;
 }
 
 export interface StrategyParam {

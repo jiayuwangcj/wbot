@@ -80,6 +80,7 @@ func TestRun(t *testing.T) {
 		{"backtest dsn no value", []string{"wbot", "backtest", "-dsn"}, 2},
 		{"backtest bad strategy", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "nope"}, 2},
 		{"backtest bad params json", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "hold", "-params", "{"}, 2},
+		{"backtest bad seed", []string{"wbot", "backtest", "-file", "/dev/null", "-seed", "abc"}, 2},
 		{"backtest params with hold", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "hold", "-params", `{"a":1}`}, 2},
 		{"backtest covered-call bad param", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "covered-call", "-params", `{"strike_pct_otm":-1}`}, 2},
 		{"backtest covered-call unknown param", []string{"wbot", "backtest", "-file", "/dev/null", "-strategy", "covered-call", "-params", `{"bogus":1}`}, 2},
@@ -138,6 +139,8 @@ func TestRunRequiresDSN(t *testing.T) {
 		{"ingest mock no dsn with every", []string{"wbot", "ingest", "mock", "-every", "1ms"}, 2},
 		{"ingest file no dsn", []string{"wbot", "ingest", "file", "-file", "/dev/null"}, 2},
 		{"ingest url no dsn", []string{"wbot", "ingest", "url", "-url", "http://127.0.0.1:1/bars.json"}, 2},
+		{"ingest tencent no dsn", []string{"wbot", "ingest", "tencent", "-symbol", "HK.00700"}, 2},
+		{"ingest hkex no dsn", []string{"wbot", "ingest", "hkex", "-from", "2025-07-02", "-to", "2025-07-02"}, 2},
 		{"ingest futu no dsn", []string{"wbot", "ingest", "futu", "-symbol", "HK.00700", "-timeframe", "K_DAY"}, 2},
 		{"ingest futu-option no dsn", []string{"wbot", "ingest", "futu-option", "-symbol", "HK.00700"}, 2},
 		{"ingest status no dsn", []string{"wbot", "ingest", "status"}, 2},
@@ -203,11 +206,11 @@ VALUES ('CLIO95P', $1, 'PUT', 95, $2, 'fixture', $3, $4, -0.30, $5, $6, 0.30, -0
 	}
 
 	argv := []string{"wbot", "backtest", "-dsn", dsn, "-symbol", symbol, "-timeframe", "1d", "-adjust", "none",
-		"-strategy", "wheel", "-params", `{"price_position_curve":[{"price":90,"target_inventory":100},{"price":110,"target_inventory":100}],"max_inventory":100,"min_option_quality":0,"no_trade_gap":0}`}
+		"-strategy", "wheel", "-params", `{"full_position_price":90,"zero_position_price":110,"max_inventory":100,"min_option_quality":0,"trade_gap":0}`}
 	// Day 0 sells one P95 for 300. Existing assignment commitment consumes the
 	// max inventory, so later snapshots cannot open another. Final bid mark is 1.
 	out := captureRunOutput(t, argv)
-	for _, want := range []string{"final_equity=10200", "total_return=0.02", "bars=5"} {
+	for _, want := range []string{"final_equity=10200", "mark_return=0.02", "bars=5"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("output %q; want containing %q", out, want)
 		}
@@ -215,6 +218,16 @@ VALUES ('CLIO95P', $1, 'PUT', 95, $2, 'fixture', $3, $4, -0.30, $5, $6, 0.30, -0
 	// Determinism: a second run prints the identical summary line.
 	if out2 := captureRunOutput(t, argv); out2 != out {
 		t.Fatalf("runs differ: %q vs %q", out2, out)
+	}
+	// -seed overrides the unfilled-attempt draws: seed 5's day-0 attempt
+	// unfills (draw outcome, unfilled.go), so the summary line must differ
+	// while the same seed stays reproducible.
+	out5 := captureRunOutput(t, append(argv, "-seed", "5"))
+	if out5 == out {
+		t.Fatalf("-seed 5 output %q; want a different (unfilled) run", out5)
+	}
+	if out5b := captureRunOutput(t, append(argv, "-seed", "5")); out5b != out5 {
+		t.Fatalf("-seed 5 runs differ: %q vs %q", out5b, out5)
 	}
 }
 
@@ -257,8 +270,8 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(i), c);
 	out := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", dsn, "-symbol", symbol, "-timeframe", "1d",
 		"-adjust", "none", "-strategy", "buy-hold", "-save"})
 	var id int64
-	if _, err := fmt.Sscanf(out, "final_equity=%g total_return=%g max_drawdown=%g bars=%d\nsaved result id=%d",
-		new(float64), new(float64), new(float64), new(int), &id); err != nil || id == 0 {
+	if _, err := fmt.Sscanf(out, "final_equity=%g realized_return=%g premium_net_return=%g mark_return=%g max_drawdown=%g bars=%d fees=%g 未成交 N/A(无成交尝试)\nsaved result id=%d",
+		new(float64), new(float64), new(float64), new(float64), new(float64), new(int), new(float64), &id); err != nil || id == 0 {
 		t.Fatalf("output %q; want saved result id=N (err %v)", out, err)
 	}
 	idStr := strconv.FormatInt(id, 10)
@@ -412,7 +425,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(start+i
 	// A: 5000 @110 -> 5000*133.1/110 = 6050; B: 5000 @200 -> 5000*242/200 = 6050.
 	out := captureRunOutput(t, argv)
 	for _, want := range []string{
-		"final_equity=12100", "total_return=0.21", "bars=3 symbols=2",
+		"final_equity=12100", "mark_return=0.21", "bars=3 symbols=2",
 		symA + ": final_equity=6050", symB + ": final_equity=6050",
 	} {
 		if !strings.Contains(out, want) {
@@ -429,7 +442,7 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'none', 'futu')`, symbol, day(start+i
 	if strings.Contains(outSingle, "symbols=") {
 		t.Fatalf("single-symbol -symbols output %q; want single-symbol summary", outSingle)
 	}
-	for _, want := range []string{"final_equity=13310", "total_return=0.331", "bars=4"} {
+	for _, want := range []string{"final_equity=13310", "mark_return=0.331", "bars=4"} {
 		if !strings.Contains(outSingle, want) {
 			t.Fatalf("single output %q; want containing %q", outSingle, want)
 		}
@@ -643,7 +656,7 @@ func TestServeMuxWatchlistRoutes(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("/v1/watchlist = %d; want 200 (body %s)", rec.Code, rec.Body)
 	}
-	req := httptest.NewRequest(http.MethodPut, "/v1/watchlist/HK.00700", strings.NewReader(`{"strategy":"wheel","params":{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}}`))
+	req := httptest.NewRequest(http.MethodPut, "/v1/watchlist/HK.00700", strings.NewReader(`{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200}}`))
 	rec = httptest.NewRecorder()
 	top.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -669,7 +682,7 @@ func TestWatchlistCLIIntegration(t *testing.T) {
 		t.Fatalf("cleanup remove = %d; want 0 or 1", got)
 	}
 
-	addArgs := []string{"wbot", "watchlist", "add", "-symbol", symbol, "-strategy", "wheel", "-params", `{"price_position_curve":[{"price":400,"target_inventory":1200},{"price":550,"target_inventory":0}],"max_inventory":1200}`}
+	addArgs := []string{"wbot", "watchlist", "add", "-symbol", symbol, "-strategy", "wheel", "-params", `{"full_position_price":400,"zero_position_price":550,"max_inventory":1200}`}
 	if out := captureRunOutput(t, addArgs); !strings.Contains(out, symbol) {
 		t.Fatalf("add output missing symbol: %q", out)
 	}
@@ -810,7 +823,7 @@ func (serveFakeAuditStore) ListWheelConfigs(context.Context, string, int) ([]whe
 }
 
 func (serveFakeAuditStore) ListWheelSignals(context.Context, string, string, string, int) ([]wheelstore.SignalRecord, error) {
-	return []wheelstore.SignalRecord{{ID: 1, Symbol: "DEMO.US", Action: "HOLD", BlockedBy: []string{}, Candidates: []map[string]any{}, RejectionReasons: []string{}}}, nil
+	return []wheelstore.SignalRecord{{ID: 1, Symbol: "DEMO.US", Action: "HOLD", BlockedBy: []string{}, Candidates: []wheelstore.Candidate{}, RejectionReasons: []string{}}}, nil
 }
 
 func (serveFakeAuditStore) ListWheelSignalActions(context.Context, int64) ([]wheelstore.ActionRecord, error) {
@@ -885,12 +898,22 @@ type serveFakeFutuAccounter struct {
 }
 
 func (f serveFakeFutuAccounter) Account(_ context.Context, _ futu.Env, _ uint64) (httpapi.AccountSnapshot, error) {
+	return f.snapshot(1907141)
+}
+
+// AccountForSymbol mirrors Account; symbol→account resolution is exercised at
+// the internal/futu layer with the live gateway.
+func (f serveFakeFutuAccounter) AccountForSymbol(_ context.Context, _ futu.Env, _ string) (httpapi.AccountSnapshot, error) {
+	return f.snapshot(13477968)
+}
+
+func (f serveFakeFutuAccounter) snapshot(accID uint64) (httpapi.AccountSnapshot, error) {
 	if f.err != nil {
 		return httpapi.AccountSnapshot{}, f.err
 	}
 	return httpapi.AccountSnapshot{
 		Env:   "simulate",
-		AccID: 1907141,
+		AccID: accID,
 		Funds: httpapi.FundsJSON{Power: 1198286.822, TotalAssets: 1198286.822, Cash: 318666.822, MarketVal: 879620, AvailableCash: 318666.822},
 		Positions: []httpapi.PositionJSON{
 			{Symbol: "HK.00700", Qty: 100, AvgCost: 470.0, Price: 475.2, MarketVal: 47520, PL: 520},
@@ -942,7 +965,7 @@ func TestServeMuxWheelAuditRoutes(t *testing.T) {
 func TestServeMuxBacktestExecuteRoute(t *testing.T) {
 	top := serveMuxForTest()
 	req := httptest.NewRequest(http.MethodPost, "/v1/backtests",
-		strings.NewReader(`{"symbol":"DEMO.US","strategy":"wheel","params":{"price_position_curve":[{"price":100,"target_inventory":100},{"price":200,"target_inventory":0}],"max_inventory":100}}`))
+		strings.NewReader(`{"symbol":"DEMO.US","strategy":"wheel","params":{"full_position_price":100,"zero_position_price":200,"max_inventory":100}}`))
 	rec := httptest.NewRecorder()
 	top.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -1309,7 +1332,7 @@ VALUES ($1, $2, 'PUT', 95, $3, 'fixture', $4, $5, -0.30, $6, $7, 0.30, -0.10, 10
 			t.Fatal(err)
 		}
 	}
-	wheelParams := `{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":100}],"max_inventory":100,"min_option_quality":0}`
+	wheelParams := `{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"min_option_quality":0}`
 
 	// CLI -save: baseline Wheel output from immutable quote snapshots.
 	cliOut := captureRunOutput(t, []string{"wbot", "backtest", "-dsn", os.Getenv("WBOT_PG_DSN"),

@@ -16,18 +16,16 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock("../../api", () => apiMocks);
 
 const params = {
-  price_position_curve: [
-    { price: 100, target_inventory: 100 },
-    { price: 120, target_inventory: 0 },
-  ],
+  full_position_price: 100,
+  zero_position_price: 120,
   max_inventory: 100,
-  lot_size: 100,
+  move_interval_pct: 0,
+  min_premium_per_share: 0,
+  stock_switch_pct: 0,
+  trade_gap: 50,
   min_dte: 5,
   max_dte: 10,
   min_option_quality: 0.6,
-  max_daily_orders: 1,
-  extreme_max_daily_orders: 2,
-  no_trade_gap: 50,
   strategic_state: "NORMAL" as const,
 };
 
@@ -85,7 +83,7 @@ describe("WatchlistPage", () => {
     expect(await screen.findByText("1 个标的")).toBeInTheDocument();
     expect(screen.getByText("READY · 未登记原因")).toBeInTheDocument();
     expect(screen.getAllByText("实际 / 有效 / 目标").length).toBeGreaterThan(0);
-    expect(screen.getByText("wheel · 曲线 2 锚点 · 最大库存 100")).toBeInTheDocument();
+    expect(screen.getByText("wheel · 满仓价 100 · 清仓价 120 · 最大库存 100")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /新增观察标的/ })).toBeInTheDocument();
   });
 
@@ -114,7 +112,7 @@ describe("WatchlistPage", () => {
 
     expect(screen.getByText("添加观察标的")).toBeInTheDocument();
     expect(screen.getByDisplayValue("wheel")).toHaveAttribute("type", "hidden");
-    expect(screen.getByText("价格必须严格递增，目标库存必须单调不增且位于 0 与最大库存之间。")).toBeInTheDocument();
+    expect(screen.getByText("百分比字段按界面中的 % 输入，提交时统一换算为小数。")).toBeInTheDocument();
     const form = document.getElementById("watchlist-wheel-form");
     if (!form) throw new Error("missing Wheel form");
     fireEvent.submit(form);
@@ -145,7 +143,7 @@ describe("WatchlistPage", () => {
     expect(symbolInput).toHaveValue("");
     expect(symbolInput).toHaveFocus();
     expect(screen.getByText("添加观察标的")).toBeInTheDocument();
-    const resetPriceInput = document.querySelector<HTMLInputElement>("#watchlist-wheel-form input[placeholder='例如 400']");
+    const resetPriceInput = document.querySelector<HTMLInputElement>("#watchlist-wheel-form input[role='spinbutton']");
     if (!resetPriceInput) throw new Error("missing reset price input");
     expect(resetPriceInput).toHaveValue("");
   });

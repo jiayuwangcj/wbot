@@ -6,11 +6,14 @@ package backtestexec
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/backtestes"
+	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/wheel"
 )
@@ -18,11 +21,9 @@ import (
 func TestBuild(t *testing.T) {
 	wheelParams := func() map[string]any {
 		return map[string]any{
-			"price_position_curve": []any{
-				map[string]any{"price": 100.0, "target_inventory": 1000.0},
-				map[string]any{"price": 200.0, "target_inventory": 0.0},
-			},
-			"max_inventory": 1000.0,
+			"full_position_price": 100.0,
+			"zero_position_price": 200.0,
+			"max_inventory":       1000.0,
 		}
 	}
 	unknown := wheelParams()
@@ -106,6 +107,135 @@ func TestSaveParams(t *testing.T) {
 	}
 }
 
+func TestSaveParamsIncludesTypedFeeModel(t *testing.T) {
+	model := backtest.HKFeeModel(21, 70, 100)
+	got := SaveParams(Options{Cash: 1_000_000, Fee: 3, FeeModel: &model})
+	for key, want := range map[string]any{
+		"fee":                     3.0,
+		"fee_option_per_contract": 21.0,
+		"fee_stock_per_lot":       70.0,
+		"lot_size":                100,
+	} {
+		if got[key] != want {
+			t.Fatalf("SaveParams[%q] = %#v; want %#v (all=%v)", key, got[key], want, got)
+		}
+	}
+}
+
+func TestSaveParamsIncludesOnlyRealConfigVersion(t *testing.T) {
+	version := 2
+	got := SaveParams(Options{Cash: 10000, ConfigVersion: &version})
+	if got["config_version"] != 2 {
+		t.Fatalf("config_version = %#v; want 2", got["config_version"])
+	}
+	if _, ok := SaveParams(Options{Cash: 10000})["config_version"]; ok {
+		t.Fatal("ad-hoc params persisted a fabricated config_version")
+	}
+}
+
+func TestOptionsDataForRunAllowsZeroSnapshots(t *testing.T) {
+	opts, err := optionsDataForRun(nil, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts == nil || opts.RunSeed != 42 || len(opts.QuoteBatches) != 0 {
+		t.Fatalf("zero snapshot options = %+v; want non-nil DATA_BLOCKED input", opts)
+	}
+}
+
+func TestRunPreparedIsDeterministicAndDoesNotShareRunSeed(t *testing.T) {
+	ts := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	theta := -0.1
+	prepared := &Prepared{
+		bars: []ingest.Bar{{Ts: ts, Open: 100, High: 100, Low: 100, Close: 100, Volume: 1}},
+		options: &backtest.OptionsData{RunSeed: 999, Bars: backtest.OptionBars{"P95": {{Ts: ts, Open: 2, High: 2, Low: 2, Close: 2, Volume: 1}}}, QuoteBatches: []backtest.QuoteSnapshotBatch{{
+			ObservedAt: ts, SnapshotKey: "batch", Underlying: "TEST.US", UnderlyingPrice: 100,
+			Quotes: []wheel.OptionQuote{{Symbol: "P95", Code: "P95", Underlying: "TEST.US", Source: "test", OptionType: wheel.Put,
+				Expiry: ts.AddDate(0, 0, 7), Strike: 95, Delta: -0.3, Bid: 2, Ask: 2.1, ImpliedVol: 0.2,
+				Theta: &theta, Volume: 1, OpenInterest: 1, LotSize: 100, QuoteTime: ts}}, ExpiryOrder: []int{0},
+		}}},
+		sourceHash: "sha256-test",
+	}
+	o := Options{Symbol: "TEST.US", Strategy: "wheel", Params: map[string]any{
+		"full_position_price": 90.0, "zero_position_price": 110.0, "max_inventory": 1000.0,
+		"min_option_quality": 0.0, "trade_gap": 0.0,
+	}, Cash: 20000, Seed: 123}
+	first, err := prepared.RunPrepared(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := prepared.RunPrepared(context.Background(), o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJSON, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondJSON, err := json.Marshal(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(firstJSON) != string(secondJSON) {
+		t.Fatalf("same seed produced different prepared outcomes:\n%s\n%s", firstJSON, secondJSON)
+	}
+	if prepared.options.RunSeed != 999 {
+		t.Fatalf("prepared RunSeed mutated to %d; want immutable seed 999", prepared.options.RunSeed)
+	}
+	if first.Result.Unfilled.AttemptCount != 1 {
+		t.Fatalf("attempt count = %d; want one seed-controlled attempt", first.Result.Unfilled.AttemptCount)
+	}
+}
+
+func TestRunPreparedConcurrentEvaluationsMatchSerial(t *testing.T) {
+	ts := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	theta := -0.1
+	prepared := &Prepared{
+		bars: []ingest.Bar{{Ts: ts, Open: 100, High: 100, Low: 100, Close: 100, Volume: 1}},
+		options: &backtest.OptionsData{RunSeed: 999, Bars: backtest.OptionBars{"P95": {{Ts: ts, Open: 2, High: 2, Low: 2, Close: 2, Volume: 1}}}, QuoteBatches: []backtest.QuoteSnapshotBatch{{
+			ObservedAt: ts, SnapshotKey: "batch", Underlying: "TEST.US", UnderlyingPrice: 100,
+			Quotes: []wheel.OptionQuote{{Symbol: "P95", Code: "P95", Underlying: "TEST.US", Source: "test", OptionType: wheel.Put,
+				Expiry: ts.AddDate(0, 0, 7), Strike: 95, Delta: -0.3, Bid: 2, Ask: 2.1, ImpliedVol: 0.2,
+				Theta: &theta, Volume: 1, OpenInterest: 1, LotSize: 100, QuoteTime: ts}}, ExpiryOrder: []int{0},
+		}}},
+		sourceHash: "sha256-concurrent-test",
+	}
+	opts := Options{Symbol: "TEST.US", Strategy: "wheel", Params: map[string]any{
+		"full_position_price": 90.0, "zero_position_price": 110.0, "max_inventory": 1000.0,
+		"min_option_quality": 0.0, "trade_gap": 0.0,
+	}, Cash: 20000, Seed: 777}
+	tasks := make([]func(context.Context) (*Outcome, error), 16)
+	for i := range tasks {
+		tasks[i] = func(ctx context.Context) (*Outcome, error) {
+			return prepared.RunPrepared(ctx, opts)
+		}
+	}
+	parallel, err := backtestes.ParallelMap(context.Background(), tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := prepared.RunPrepared(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(serial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range parallel {
+		encoded, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(encoded) != string(want) {
+			t.Fatalf("parallel result[%d] differs from serial:\nparallel=%s\nserial=%s", i, encoded, want)
+		}
+	}
+	if prepared.options.RunSeed != 999 {
+		t.Fatalf("prepared RunSeed mutated to %d; want immutable seed 999", prepared.options.RunSeed)
+	}
+}
+
 func TestRunRejectsNilDB(t *testing.T) {
 	if _, err := Run(context.Background(), nil, Options{Symbol: "DEMO.US", Strategy: "hold"}); err == nil {
 		t.Fatal("Run(nil db) err = nil; want error")
@@ -136,8 +266,9 @@ func TestRunMultiRejects(t *testing.T) {
 		{"no strategy", Options{}, []string{"A.US"}, "strategy is required"},
 		{"unknown strategy", Options{Strategy: "nope"}, []string{"A.US"}, "unknown template"},
 		{"option strategy", Options{Strategy: "wheel", Params: map[string]any{
-			"price_position_curve": []any{map[string]any{"price": 100.0, "target_inventory": 1000.0}, map[string]any{"price": 200.0, "target_inventory": 0.0}},
-			"max_inventory":        1000.0,
+			"full_position_price": 100.0,
+			"zero_position_price": 200.0,
+			"max_inventory":       1000.0,
 		}}, []string{"A.US"}, "needs option_quotes"},
 		{"hold rejects params", Options{Strategy: "hold", Params: map[string]any{"a": 1}}, []string{"A.US"}, "no params"},
 		{"nil db", Options{Strategy: "hold"}, []string{"A.US"}, "nil db"},

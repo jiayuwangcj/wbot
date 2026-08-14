@@ -31,6 +31,11 @@ func openIntegrationDB(t *testing.T) *sql.DB {
 func cleanIntegrationWheel(t *testing.T, database *sql.DB, symbol string) {
 	t.Helper()
 	if _, err := database.Exec(`
+DELETE FROM wheel_order_claims
+WHERE signal_id IN (SELECT id FROM wheel_signals WHERE symbol = $1)`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
 DELETE FROM wheel_signal_actions
 WHERE signal_id IN (SELECT id FROM wheel_signals WHERE symbol = $1)`, symbol); err != nil {
 		t.Fatal(err)
@@ -99,7 +104,7 @@ func TestWheelStoreIntegration(t *testing.T) {
 
 	alertID, err := store.AppendSignal(ctx, SignalRecord{
 		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
-		Inventory: validInventory(), Candidates: []map[string]any{{"quote_snapshot_id": quoteID, "direction": "PUT"}},
+		Inventory: validInventory(), Candidates: []Candidate{{QuoteSnapshotID: quoteID, Direction: "PUT"}},
 		Reason: "inventory gap exceeds no-trade gap",
 	})
 	if err != nil || alertID <= 0 {
@@ -112,6 +117,20 @@ func TestWheelStoreIntegration(t *testing.T) {
 	})
 	if err != nil || holdID <= 0 {
 		t.Fatalf("AppendSignal HOLD id=%d err=%v", holdID, err)
+	}
+	if pending, err := store.HasRecentUndisposedSignal(ctx, symbol, time.Now().Add(-time.Hour)); err != nil || !pending {
+		t.Fatalf("HasRecentUndisposedSignal = %v, %v; want true", pending, err)
+	}
+	claimed, err := store.ClaimOrder(ctx, alertID, "telegram:42")
+	if err != nil || !claimed {
+		t.Fatalf("ClaimOrder first = %v, %v; want true", claimed, err)
+	}
+	claimed, err = store.ClaimOrder(ctx, alertID, "discord:42")
+	if err != nil || claimed {
+		t.Fatalf("ClaimOrder second channel = %v, %v; want false", claimed, err)
+	}
+	if err := store.CompleteOrderClaim(ctx, alertID, 12345, "order-12345", map[string]any{"limit_price": 1.25}); err != nil {
+		t.Fatalf("CompleteOrderClaim: %v", err)
 	}
 	gotAlert, err := store.GetSignal(ctx, alertID)
 	if err != nil || gotAlert.Action != "ALERT" || len(gotAlert.Candidates) != 1 {
@@ -157,11 +176,22 @@ VALUES ($1, $2, 1, $3, $4::jsonb, 'invalid fixture')`, symbol, tc.action, tc.sta
 		t.Fatalf("ListSignals capability=READY len=%d err=%v rows=%+v", len(ready), err, ready)
 	}
 
-	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "CONFIRM", Actor: "operator", Note: "reviewed"}); err != nil {
+	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "CONFIRM", Actor: "operator", Note: "reviewed", Details: map[string]any{"order_id": 12345}}); err != nil {
 		t.Fatalf("AppendAction CONFIRM: %v", err)
+	}
+	// ListPendingOrders surfaces the confirmed-but-unfilled order with the
+	// broker order id from the CONFIRM details (2026-08-13: LLM 策略输入)。
+	pendingOrders, err := store.ListPendingOrders(ctx, symbol)
+	if err != nil || len(pendingOrders) != 1 || pendingOrders[0].SignalID != alertID || pendingOrders[0].OrderID != "12345" {
+		t.Fatalf("ListPendingOrders = %+v err=%v; want one order id 12345", pendingOrders, err)
 	}
 	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "FILL", Actor: "operator", Note: "human-reported fill", Details: map[string]any{"contracts": 1}}); err != nil {
 		t.Fatalf("AppendAction FILL: %v", err)
+	}
+	// FILL 解除挂单:同一信号不再被视为 pending。
+	pendingOrders, err = store.ListPendingOrders(ctx, symbol)
+	if err != nil || len(pendingOrders) != 0 {
+		t.Fatalf("ListPendingOrders after FILL = %+v err=%v; want none", pendingOrders, err)
 	}
 	if _, err := store.AppendAction(ctx, ActionRecord{SignalID: alertID, Action: "LLM_REVIEW", Actor: "llm:test-model", Details: map[string]any{"verdict": "APPROVE", "reasons": []string{"within budget"}}}); err != nil {
 		t.Fatalf("AppendAction LLM_REVIEW: %v", err)
@@ -174,6 +204,49 @@ VALUES ($1, $2, 1, $3, $4::jsonb, 'invalid fixture')`, symbol, tc.action, tc.sta
 	// constraint even when written with bare SQL past the Go validation.
 	if _, err := database.Exec(`INSERT INTO wheel_signal_actions (signal_id, action, actor) VALUES ($1, 'HACK', 'test')`, alertID); err == nil {
 		t.Fatal("database accepted HACK action; CHECK constraint from migration 008 missing")
+	}
+}
+
+func TestStrategyCacheUpsertIntegration(t *testing.T) {
+	database := openIntegrationDB(t)
+	ctx := context.Background()
+	symbol := "CACHE.IDEMPOTENT"
+	if _, err := database.Exec(`DELETE FROM strategy_cache WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = database.Exec(`DELETE FROM strategy_cache WHERE symbol = $1`, symbol) })
+	record := StrategyCacheRecord{
+		Symbol: symbol, Market: "US", Currency: "USD", ConfigVersion: 1, ModelVersion: "test-model",
+		DataWindow:    StrategyCacheWindow{From: "2025-01-01T00:00:00Z", To: "2025-12-31T00:00:00Z"},
+		ApprovedState: StrategyCacheResearchCandidate,
+		Payload:       map[string]any{"schema_version": "strategy-cache-1.0", "report_reference": map[string]any{"report_id": "same-report"}},
+	}
+	store := New(database)
+	if err := store.UpsertStrategyCache(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	record.Payload["return_metrics"] = map[string]any{"net_return_pct": 0.2}
+	if err := store.UpsertStrategyCache(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := database.QueryRow(`SELECT count(*) FROM strategy_cache WHERE symbol = $1`, symbol).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("cache rows=%d err=%v; want one upserted row", count, err)
+	}
+	got, err := store.GetStrategyCache(ctx, symbol)
+	if err != nil || got.Payload["return_metrics"] == nil {
+		t.Fatalf("GetStrategyCache=%+v err=%v; second write did not overwrite payload", got, err)
+	}
+	record.Payload["approval_gates"] = map[string]any{"data_gate_passed": true, "sample_out_passed": true, "human_approved": false}
+	if err := store.UpsertStrategyCache(ctx, record); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ApproveStrategyCache(ctx, symbol); err != nil {
+		t.Fatal(err)
+	}
+	approved, err := store.GetStrategyCache(ctx, symbol)
+	if err != nil || approved.ApprovedState != StrategyCacheApprovedCandidate {
+		t.Fatalf("approved cache=%+v err=%v", approved, err)
 	}
 }
 
@@ -197,7 +270,7 @@ func TestWheelTelegramDispositionIntegration(t *testing.T) {
 	inv := validInventory()
 	signalID, err := store.AppendSignal(ctx, SignalRecord{
 		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
-		Inventory: inv, Candidates: []map[string]any{{"quote_snapshot_id": 1, "direction": "PUT", "quantity": 1}},
+		Inventory: inv, Candidates: []Candidate{{QuoteSnapshotID: 1, Direction: "PUT", Quantity: 1}},
 		Reason: "inventory gap exceeds no-trade gap",
 	})
 	if err != nil || signalID <= 0 {
@@ -267,7 +340,7 @@ func TestWheelTelegramDispositionIntegration(t *testing.T) {
 	}
 	alert2, err := store.AppendSignal(ctx, SignalRecord{
 		Symbol: symbol, Action: "ALERT", ConfigVersion: 1, CapabilityStatus: "READY",
-		Inventory: inv, Candidates: []map[string]any{{"quote_snapshot_id": 1, "direction": "PUT"}},
+		Inventory: inv, Candidates: []Candidate{{QuoteSnapshotID: 1, Direction: "PUT"}},
 		Reason: "gap again",
 	})
 	if err != nil || alert2 <= holdID {

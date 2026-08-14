@@ -53,9 +53,12 @@ type OptionChain map[string]OptionContract
 type OptionBars map[string][]ingest.Bar
 
 // OptionsData is the runner-injected option universe: chain + per-code bars.
+// RunSeed seeds the unfilled-attempt draws for sell actions (unfilled.go);
+// 0 means defaultRunSeed (42), so runs stay deterministic by default.
 type OptionsData struct {
-	Bars  OptionBars
-	Chain OptionChain
+	Bars    OptionBars
+	Chain   OptionChain
+	RunSeed int64
 	// QuoteBatches are immutable, atomic Wheel quote observations. A batch is
 	// selected by observed_at + snapshot_key; quotes from different batches
 	// are never combined.
@@ -77,6 +80,11 @@ type QuoteSnapshotBatch struct {
 	Underlying      string
 	UnderlyingPrice float64
 	Quotes          []wheel.OptionQuote
+	// ExpiryOrder is a loader-built index into Quotes. Keeping the canonical
+	// quote order untouched preserves report/trade determinism while allowing
+	// the backtest adapter to binary-search the per-bar DTE range. It is an
+	// execution index, not part of the semantic source snapshot.
+	ExpiryOrder []int `json:"-"`
 }
 
 // OptionQuoteBatch is a concise compatibility name for QuoteSnapshotBatch.
@@ -85,13 +93,14 @@ type OptionQuoteBatch = QuoteSnapshotBatch
 // State is a backtest's portfolio state; Run updates Price to each bar's close
 // before OnBar, fills OptPrice from open legs, and clears Pending per bar.
 type State struct {
-	Cash     float64
-	Position float64
-	Price    float64
-	Options  map[string]OptionPosition
-	Chain    OptionChain
-	OptBars  OptionBars
-	OptPrice map[string]float64
+	Cash             float64
+	Position         float64
+	StockAverageCost float64
+	Price            float64
+	Options          map[string]OptionPosition
+	Chain            OptionChain
+	OptBars          OptionBars
+	OptPrice         map[string]float64
 	// Pending is the contract a strategy picked for an option action on the
 	// current bar; the runner settles size contracts against it and clears it.
 	Pending *OptionPosition
@@ -105,6 +114,33 @@ type State struct {
 	SnapshotKey string
 	DailyOrders int
 	ExtremeDay  bool
+	// Fill accounting (unfilled.go): AttemptCount counts every sell attempt
+	// that reaches settlement sampling, FillCount fills, UnfilledCount the
+	// rest. Buys, HOLD and DATA_BLOCKED never increment these.
+	AttemptCount  int64
+	FillCount     int64
+	UnfilledCount int64
+	// AttemptsByContract numbers sell attempts per contract code (p.Code);
+	// the per-contract sequence is the attempt_index passed to the unfilled
+	// draw, so a new candidate elsewhere in the run never shifts existing
+	// contracts' draws (lazy-initialized on first attempt).
+	AttemptsByContract map[string]int64
+	// Mechanical expiry accounting is deliberately separate from broker facts.
+	// AssignmentCount counts ITM expiries of short legs only; long-leg exercise
+	// is an exercise event, not an assignment.
+	ExpiryCount      int64
+	ShortExpiryCount int64
+	AssignmentCount  int64
+	// P&L attribution ledger (report §收益归因). PremiumIncome credits every
+	// filled short leg (price×contracts×lot); OptionCloseCost debits filled
+	// closing buys; StockRealizedPnL books each stock sell against the running
+	// basis; UnfilledAttemptPremium totals the premium attempted fills would
+	// have collected (opportunity, never booked). Identity: realized =
+	// PremiumIncome − OptionCloseCost + StockRealizedPnL − total fees.
+	PremiumIncome          float64
+	OptionCloseCost        float64
+	StockRealizedPnL       float64
+	UnfilledAttemptPremium float64
 }
 
 // Equity returns total portfolio value: cash + position at price plus option

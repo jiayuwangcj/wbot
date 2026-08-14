@@ -81,7 +81,7 @@ type barCoverageJSON struct {
 }
 
 // optionFreshnessJSON mirrors the CLI's option block per underlying×source
-// (fresh/stale/unknown with MaxAgeForOptions default threshold). Same
+// (fresh/stale/unknown with the source-aware option threshold). Same
 // staleness-field pattern as barCoverageJSON — new field only, old clients
 // keep working (doc/DATA_PIPELINE.md freshness section).
 type optionFreshnessJSON struct {
@@ -135,7 +135,7 @@ func fillPipelineAndDataPlane(ctx context.Context, c *componentsJSON, store Clus
 		c.DataPlane.OptionsFreshness = append(c.DataPlane.OptionsFreshness, optionFreshnessJSON{
 			Underlying: o.Underlying, Source: o.Source, MaxTs: o.MaxTs.Format(time.RFC3339),
 			MaxTsAgeSeconds: int64(age.Seconds()),
-			Fresh:           string(ingest.JudgeFreshness(o.MaxTs, now, ingest.MaxAgeForOptions)),
+			Fresh:           string(ingest.JudgeFreshness(o.MaxTs, now, ingest.MaxAgeForOptionSource(o.Source))),
 		})
 	}
 	return nil

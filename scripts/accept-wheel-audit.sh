@@ -15,8 +15,8 @@ set -uo pipefail
 base="${1:-http://127.0.0.1:8080}"
 # 用 PID 保证同秒内连续执行也拿到唯一 symbol(秒级时间戳会被复用)。
 sym="AUDCFG$$.US"
-params_a='{"strategy":"wheel","params":{"price_position_curve":[{"price":90,"target_inventory":100},{"price":130,"target_inventory":0}],"max_inventory":100,"no_trade_gap":10}}'
-params_b='{"strategy":"wheel","params":{"price_position_curve":[{"price":90,"target_inventory":100},{"price":120,"target_inventory":40},{"price":130,"target_inventory":0}],"max_inventory":100,"no_trade_gap":20}}'
+params_a='{"strategy":"wheel","params":{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"trade_gap":10}}'
+params_b='{"strategy":"wheel","params":{"full_position_price":90,"zero_position_price":130,"max_inventory":100,"trade_gap":20}}'
 pass=0; failed=0
 check() { local d="$1" w="$2" g="$3"; if [[ "$g" == "$w" ]]; then pass=$((pass+1)); printf '  \033[32mPASS\033[0m %s\n' "$d"; else failed=$((failed+1)); printf '  \033[31mFAIL\033[0m %s (want %s, got %s)\n' "$d" "$w" "$g"; fi; }
 # count occurrences in a possibly single-line JSON body (grep -c counts lines).
@@ -27,15 +27,15 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$base/v1/watchlist/$sym" -
 check "PUT $sym 创建配置 exit 200 (got $code)" 200 "$code"
 body=$(curl -s -m 5 "$base/v1/wheel/configs?symbol=$sym")
 check "configs 含 v1 行" 1 "$(count "$body" '"version":1')"
-check "configs v1 保留完整配置(no_trade_gap:10)" 1 "$(count "$body" 'no_trade_gap":10')"
+check "configs v1 保留完整配置(trade_gap:10)" 1 "$(count "$body" 'trade_gap":10')"
 
 # 2. 版本不可变性: 重复 PUT(改 params)追加 v2,v1 原文不被覆盖。
 code=$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$base/v1/watchlist/$sym" -H 'Content-Type: application/json' -d "$params_b")
 check "PUT 改配置追加 v2 exit 200 (got $code)" 200 "$code"
 body=$(curl -s -m 5 "$base/v1/wheel/configs?symbol=$sym")
 check "configs 同时含 v1 与 v2(版本不可变)" 2 "$(count "$body" '"version":[12]')"
-check "v2 保留新配置(no_trade_gap:20)" 1 "$(count "$body" 'no_trade_gap":20')"
-check "v1 原文仍在(no_trade_gap:10 不被覆盖)" 1 "$(count "$body" 'no_trade_gap":10')"
+check "v2 保留新配置(trade_gap:20)" 1 "$(count "$body" 'trade_gap":20')"
+check "v1 原文仍在(trade_gap:10 不被覆盖)" 1 "$(count "$body" 'trade_gap":10')"
 
 # 3. configs 过滤与 400 契约。
 check "configs 无该 symbol → []" 1 "$(curl -s -m 5 "$base/v1/wheel/configs?symbol=NOSUCH.US" | grep -c '^\[\]$')"

@@ -56,7 +56,7 @@ func TestRunTraceBuyHoldFee(t *testing.T) {
 		t.Fatalf("Run() error: %v", err)
 	}
 	assertCurve(t, res, []eqPoint{{0, 9999}, {1, 10999}, {2, 12099}})
-	if tr := res.Trades[0]; tr.CashAfter != -1 || tr.Price != 100 {
+	if tr := res.Trades[0]; tr.CashAfter != -1 || tr.Price != 100 || tr.Fee != 1 {
 		t.Fatalf("Trades[0] = %+v; want cash_after -1 at close 100", tr)
 	}
 }
@@ -77,6 +77,7 @@ func TestRunTraceExerciseCall(t *testing.T) {
 	// the short call exercises (position 100 -> 0, cash +10500).
 	chain := map[string]OptionContract{"C": {Code: "C", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
 	opts := mkOptionsData(chain, map[string][]float64{"C": {3, 2.5, 1}})
+	opts.RunSeed = 0 // fills the single sell attempt (draw outcome, unfilled.go)
 	s := &scriptStrategy{
 		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
 		sizes:   []float64{100, 1, 0},
@@ -104,6 +105,7 @@ func TestRunTraceExpireOTM(t *testing.T) {
 	// Same setup but spot 104 < 105 at expiry: the call voids (no cash flow).
 	chain := map[string]OptionContract{"C": {Code: "C", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
 	opts := mkOptionsData(chain, map[string][]float64{"C": {3, 2.5, 1}})
+	opts.RunSeed = 0 // fills the single sell attempt (draw outcome, unfilled.go)
 	s := &scriptStrategy{
 		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
 		sizes:   []float64{100, 1, 0},
@@ -129,6 +131,7 @@ func TestRunTraceExercisePut(t *testing.T) {
 	// 95: cash -9500, position +100).
 	chain := map[string]OptionContract{"P": {Code: "P", Kind: OptionPut, Strike: 95, Expiry: expiryAt(1)}}
 	opts := mkOptionsData(chain, map[string][]float64{"P": {4, 4}})
+	opts.RunSeed = 0 // fills the single sell attempt (draw outcome, unfilled.go)
 	s := &scriptStrategy{
 		actions: []Action{ActionSellPut, ActionHold},
 		sizes:   []float64{1, 0},
@@ -162,6 +165,7 @@ func TestRunTraceSameDayExpiryDeterministic(t *testing.T) {
 		"B": {Code: "B", Kind: OptionCall, Strike: 100, Expiry: expiryAt(1)},
 	}
 	opts := mkOptionsData(chain, map[string][]float64{"A": {1, 0.5}, "B": {0.5, 0.25}})
+	opts.RunSeed = 0 // fills both sell attempts (draw outcomes, unfilled.go)
 	newScript := func() *scriptStrategy {
 		return &scriptStrategy{
 			actions: []Action{ActionSellCall, ActionSellCall},
@@ -172,11 +176,15 @@ func TestRunTraceSameDayExpiryDeterministic(t *testing.T) {
 			},
 		}
 	}
+	// No stock is held, so each assignment buys in its whole delivery at market
+	// (110) before delivering at strike; the ledger never goes short.
 	want := []Trade{
-		{Ts: expiryAt(0), Action: "sell-call", Symbol: "A", Size: 1, Price: 1, CashAfter: 10100},
-		{Ts: expiryAt(1), Action: "sell-call", Symbol: "B", Size: 1, Price: 0.25, CashAfter: 10125},
-		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "A", Size: -100, Price: 90, CashAfter: 19125},
-		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "B", Size: -100, Price: 100, CashAfter: 29125},
+		{Ts: expiryAt(0), Action: "sell-call", Symbol: "A", Size: 1, Price: 1, CashAfter: 10100, Filled: true},
+		{Ts: expiryAt(1), Action: "sell-call", Symbol: "B", Size: 1, Price: 0.25, CashAfter: 10125, Filled: true},
+		{Ts: expiryAt(1), Action: "exercise-buyin", Symbol: "A", Size: 100, Price: 110, CashAfter: -875},
+		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "A", Size: -100, Price: 90, CashAfter: 8125},
+		{Ts: expiryAt(1), Action: "exercise-buyin", Symbol: "B", Size: 100, Price: 110, CashAfter: -2875},
+		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "B", Size: -100, Price: 100, CashAfter: 7125},
 	}
 	for i := 0; i < 20; i++ {
 		res, err := RunOptions(context.Background(), mkBars(100, 110), 10000, 0, newScript(), opts)

@@ -50,6 +50,10 @@ go build -o "$bin" ./cmd/wbot
 "$bin" paper -symbol V.US -side buy >/dev/null
 "$bin" serve -h >/dev/null 2>&1
 "$bin" backtest -h >/dev/null 2>&1
+"$bin" ingest tencent -h >/dev/null 2>&1
+if "$bin" ingest tencent -count 0 >/dev/null 2>&1; then echo "verify: ingest tencent -count 0 should exit 2"; exit 1; else test "$?" -eq 2; fi
+"$bin" ingest hkex -h >/dev/null 2>&1
+if "$bin" ingest hkex -from nope >/dev/null 2>&1; then echo "verify: ingest hkex bad date should exit 2"; exit 1; else test "$?" -eq 2; fi
 # 与 ci.yml test job 的 CLI smoke 对齐(2026-08-03 对账补齐):
 # 未注册 provider → exit 2;configyaml 渲染 dotenv。
 "$bin" ingest mock -provider nope >/dev/null 2>&1 && { echo "verify: ingest mock -provider nope should exit non-zero"; exit 1; } || true
@@ -59,6 +63,14 @@ tools/config-to-env.sh "$tmp/config.yaml" >/dev/null
 "$bin" configyaml -file "$tmp/config.yaml" >/dev/null
 # 与 ci.yml test job 的自包含 accept 对齐(2026-08-03):
 # paper + agent federation 无外部依赖,本地验收即远程验收。
-scripts/accept-paper.sh >/dev/null
-scripts/accept-agent-federation.sh >/dev/null
+# 2026-08-14:accept 必须显式退出码把关(此前忽略退出码,accept 假绿掩盖 CI 必红)。
+run_accept() {
+  if ! "$@" >/dev/null 2>&1; then echo "verify: $1 FAILED"; exit 1; fi
+}
+run_accept scripts/accept-paper.sh
+run_accept scripts/accept-agent-federation.sh
+run_accept scripts/accept-backtest-report.sh "$bin"
+run_accept scripts/accept-backtest-push.sh "$bin"
+run_accept scripts/accept-backtest-train.sh "$bin"
+run_accept scripts/accept-cache-llm.sh
 echo "verify: ok"

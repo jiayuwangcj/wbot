@@ -4,6 +4,7 @@
 package wheel
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -42,7 +43,43 @@ const (
 	CapabilityReady           = "READY"
 	CapabilityDataBlocked     = "DATA_BLOCKED"
 	defaultMaxQuoteAgeSeconds = 24 * 60 * 60
+	// DefaultLotSize is the market-standard contract multiplier used only as a
+	// fallback for position-derived inventory math; candidate quotes carry
+	// their live contract_size and are never allowed to fall back (a missing
+	// lot on a quote is a data defect and DATA_BLOCKs the candidate).
+	DefaultLotSize = 100
+	// DefaultMinOptionProfit is the gross premium floor for one candidate
+	// option trade. It is a total premium amount, not a per-share threshold.
+	DefaultMinOptionProfit = 200.0
+	// MinWheelDTE/MaxWheelDTE bound the DTE window the wheel may trade.
+	// The upper bound was widened 10 → 45 on 2026-08-14: the historical 5..10
+	// window was a structural handicap (thin premiums, sparse candidates,
+	// zero-candidate days); configs already deployed stay valid.
+	MinWheelDTE = 5
+	MaxWheelDTE = 45
 )
+
+// DTE validation failures are hot-path, expected candidate rejections. Keep
+// them as sentinels so Validate does not format one heap-backed error per
+// out-of-range contract; callers that need a human-readable signal can still
+// use errors.Is and the stable sentinel text.
+var (
+	ErrDTEBelowMinimum = errors.New("wheel: option DTE is below configured minimum")
+	ErrDTEAboveMaximum = errors.New("wheel: option DTE is above configured maximum")
+)
+
+// candidateLotSize returns the contract multiplier of the first quoted
+// candidate that carries one. All contracts of a family share the same lot
+// size, so the first valid quote is representative; DefaultLotSize is the
+// market default when no candidate quotes a size.
+func candidateLotSize(quotes []OptionQuote) int {
+	for _, q := range quotes {
+		if q.LotSize > 0 {
+			return q.LotSize
+		}
+	}
+	return DefaultLotSize
+}
 
 // QuoteMaxAge returns the configured freshness window. Keeping the default in
 // one place lets loaders include a still-fresh snapshot just before a bounded
@@ -75,19 +112,29 @@ type PricePoint struct {
 	TargetInventory float64 `json:"target_inventory" yaml:"target_inventory"`
 }
 
-// Config is the complete, structured wheel configuration.
+// Config is the complete, structured wheel configuration. Strategic price
+// anchors are deliberately separate from tactical parameters: callers choose
+// the former, while optimizers may tune only the latter.
 type Config struct {
-	Strategy              string       `json:"strategy" yaml:"strategy"`
-	PricePositionCurve    []PricePoint `json:"price_position_curve" yaml:"price_position_curve"`
-	MaxInventory          float64      `json:"max_inventory" yaml:"max_inventory"`
-	LotSize               int          `json:"lot_size" yaml:"lot_size"`
-	MinDTE                int          `json:"min_dte" yaml:"min_dte"`
-	MaxDTE                int          `json:"max_dte" yaml:"max_dte"`
-	MinOptionQuality      float64      `json:"min_option_quality" yaml:"min_option_quality"`
-	MaxDailyOrders        int          `json:"max_daily_orders" yaml:"max_daily_orders"`
-	ExtremeMaxDailyOrders int          `json:"extreme_max_daily_orders" yaml:"extreme_max_daily_orders"`
-	NoTradeGap            float64      `json:"no_trade_gap" yaml:"no_trade_gap"`
-	StrategicState        string       `json:"strategic_state" yaml:"strategic_state"`
+	Strategy               string          `json:"strategy" yaml:"strategy"`
+	PricePositionCurve     []PricePoint    `json:"price_position_curve,omitempty" yaml:"price_position_curve,omitempty"`
+	FullPositionPrice      float64         `json:"full_position_price" yaml:"full_position_price"`
+	ZeroPositionPrice      float64         `json:"zero_position_price" yaml:"zero_position_price"`
+	MaxInventory           float64         `json:"max_inventory" yaml:"max_inventory"`
+	MoveIntervalPct        float64         `json:"move_interval_pct" yaml:"move_interval_pct"`
+	MinPremiumPerShare     float64         `json:"min_premium_per_share" yaml:"min_premium_per_share"`
+	MinOptionProfit        float64         `json:"min_option_profit" yaml:"min_option_profit"`
+	StockSwitchPct         float64         `json:"stock_switch_pct" yaml:"stock_switch_pct"`
+	TradeGap               float64         `json:"trade_gap" yaml:"trade_gap"`
+	MinOptionQuality       float64         `json:"min_option_quality" yaml:"min_option_quality"`
+	MinDTE                 int             `json:"min_dte" yaml:"min_dte"`
+	MaxDTE                 int             `json:"max_dte" yaml:"max_dte"`
+	StrategicState         string          `json:"strategic_state" yaml:"strategic_state"`
+	MigrationLossy         bool            `json:"migration_lossy,omitempty" yaml:"migration_lossy,omitempty"`
+	MigrationWarningCount  int             `json:"migration_warning_count,omitempty" yaml:"migration_warning_count,omitempty"`
+	MigrationWarnings      []string        `json:"migration_warnings,omitempty" yaml:"migration_warnings,omitempty"`
+	MigrationOriginalCurve json.RawMessage `json:"migration_original_price_position_curve,omitempty" yaml:"-"`
+
 	// MaxQuoteAgeSeconds is required freshness in seconds. Zero uses the
 	// conservative one-day default so a quote can never be timeless.
 	MaxQuoteAgeSeconds int `json:"max_quote_age_seconds,omitempty" yaml:"max_quote_age_seconds,omitempty"`
@@ -97,36 +144,41 @@ func (c Config) Validate() error {
 	if c.Strategy != "wheel" {
 		return fmt.Errorf("wheel: strategy must be wheel")
 	}
-	if len(c.PricePositionCurve) < 2 {
-		return fmt.Errorf("wheel: price_position_curve requires at least two points")
+	if !finite(c.MaxInventory) || c.MaxInventory <= 0 || math.Trunc(c.MaxInventory) != c.MaxInventory {
+		return fmt.Errorf("wheel: max_inventory must be a positive integer")
 	}
-	if !finite(c.MaxInventory) || c.MaxInventory <= 0 {
-		return fmt.Errorf("wheel: max_inventory must be positive")
+	if len(c.PricePositionCurve) > 0 {
+		if err := validatePricePositionCurve(c.PricePositionCurve, c.MaxInventory); err != nil {
+			return err
+		}
+	} else {
+		if !finite(c.FullPositionPrice) || c.FullPositionPrice <= 0 {
+			return fmt.Errorf("wheel: full_position_price must be positive")
+		}
+		if !finite(c.ZeroPositionPrice) || c.ZeroPositionPrice <= c.FullPositionPrice {
+			return fmt.Errorf("wheel: zero_position_price must be greater than full_position_price")
+		}
 	}
-	var prev PricePoint
-	for i, p := range c.PricePositionCurve {
-		if !finite(p.Price) || p.Price <= 0 || !finite(p.TargetInventory) {
-			return fmt.Errorf("wheel: invalid curve point %d", i)
-		}
-		if p.TargetInventory < 0 || p.TargetInventory > c.MaxInventory {
-			return fmt.Errorf("wheel: target inventory out of bounds at point %d", i)
-		}
-		if i > 0 && (p.Price <= prev.Price || p.TargetInventory > prev.TargetInventory) {
-			return fmt.Errorf("wheel: curve must have increasing prices and non-increasing targets")
-		}
-		prev = p
-	}
-	if c.LotSize <= 0 || c.MinDTE < 5 || c.MaxDTE > 10 || c.MinDTE > c.MaxDTE {
-		return fmt.Errorf("wheel: DTE must be a valid range within 5..10 and lot_size positive")
+	if c.MinDTE < MinWheelDTE || c.MaxDTE > MaxWheelDTE || c.MinDTE > c.MaxDTE {
+		return fmt.Errorf("wheel: DTE must be a valid range within %d..%d", MinWheelDTE, MaxWheelDTE)
 	}
 	if !finite(c.MinOptionQuality) || c.MinOptionQuality < 0 || c.MinOptionQuality > 1 {
 		return fmt.Errorf("wheel: min_option_quality must be in [0,1]")
 	}
-	if c.MaxDailyOrders < 1 || c.MaxDailyOrders > 1 || c.ExtremeMaxDailyOrders < 1 || c.ExtremeMaxDailyOrders > 2 || c.ExtremeMaxDailyOrders < c.MaxDailyOrders {
-		return fmt.Errorf("wheel: daily order limits exceed hard limits")
+	if !finite(c.MoveIntervalPct) || c.MoveIntervalPct < 0 {
+		return fmt.Errorf("wheel: move_interval_pct must be non-negative")
 	}
-	if !finite(c.NoTradeGap) || c.NoTradeGap < 0 {
-		return fmt.Errorf("wheel: no_trade_gap must be non-negative")
+	if !finite(c.MinPremiumPerShare) || c.MinPremiumPerShare < 0 {
+		return fmt.Errorf("wheel: min_premium_per_share must be non-negative")
+	}
+	if !finite(c.MinOptionProfit) || c.MinOptionProfit < 0 {
+		return fmt.Errorf("wheel: min_option_profit must be non-negative")
+	}
+	if !finite(c.StockSwitchPct) || c.StockSwitchPct < 0 {
+		return fmt.Errorf("wheel: stock_switch_pct must be non-negative")
+	}
+	if !finite(c.TradeGap) || c.TradeGap < 0 {
+		return fmt.Errorf("wheel: trade_gap must be non-negative")
 	}
 	switch c.StrategicState {
 	case StateNormal, StateCaution, StatePauseBuy, StateExit:
@@ -140,7 +192,41 @@ func (c Config) Validate() error {
 func ValidateConfig(c Config) error { return c.Validate() }
 
 func (c Config) TargetInventory(price float64) (float64, error) {
-	return InterpolateTargetInventory(c.PricePositionCurve, price)
+	if len(c.PricePositionCurve) > 0 {
+		if !finite(price) || price <= 0 || !finite(c.MaxInventory) || c.MaxInventory <= 0 {
+			return 0, errors.New("wheel: invalid price curve or current price")
+		}
+		if err := validatePricePositionCurve(c.PricePositionCurve, c.MaxInventory); err != nil {
+			return 0, err
+		}
+		return InterpolateTargetInventory(c.PricePositionCurve, price)
+	}
+	if !finite(price) || price <= 0 || !finite(c.FullPositionPrice) || !finite(c.ZeroPositionPrice) || c.FullPositionPrice <= 0 || c.ZeroPositionPrice <= c.FullPositionPrice || !finite(c.MaxInventory) || c.MaxInventory <= 0 {
+		return 0, errors.New("wheel: invalid price anchors or current price")
+	}
+	if price <= c.FullPositionPrice {
+		return c.MaxInventory, nil
+	}
+	if price >= c.ZeroPositionPrice {
+		return 0, nil
+	}
+	ratio := (price - c.FullPositionPrice) / (c.ZeroPositionPrice - c.FullPositionPrice)
+	return c.MaxInventory * (1 - ratio), nil
+}
+
+func validatePricePositionCurve(curve []PricePoint, maxInventory float64) error {
+	if len(curve) < 2 {
+		return errors.New("wheel: price_position_curve must contain at least two points")
+	}
+	for i, p := range curve {
+		if !finite(p.Price) || p.Price <= 0 || !finite(p.TargetInventory) || p.TargetInventory < 0 || p.TargetInventory > maxInventory {
+			return fmt.Errorf("wheel: price_position_curve point %d is outside price/inventory bounds", i)
+		}
+		if i > 0 && (p.Price <= curve[i-1].Price || p.TargetInventory > curve[i-1].TargetInventory) {
+			return errors.New("wheel: price_position_curve prices must increase and target inventory must not increase")
+		}
+	}
+	return nil
 }
 
 func (c Config) Interpolate(price float64) (float64, error) { return c.TargetInventory(price) }
@@ -325,6 +411,11 @@ func (q OptionQuote) Spread() float64 { return q.Ask - q.Bid }
 
 // Validate verifies all fields required to consider a quote candidate.
 func (q OptionQuote) Validate(asOf time.Time, cfg Config) error {
+	asOfDate, minExpiryDate, maxExpiryDate := validationDates(asOf, cfg)
+	return q.validate(asOf, cfg, asOfDate, minExpiryDate, maxExpiryDate)
+}
+
+func (q OptionQuote) validate(asOf time.Time, cfg Config, asOfDate, minExpiryDate, maxExpiryDate time.Time) error {
 	if q.name() == "" || strings.TrimSpace(q.Source) == "" || q.Expiry.IsZero() || !finite(q.Strike) || q.Strike <= 0 || !finite(q.delta()) || q.delta() < -1 || q.delta() > 1 {
 		return errors.New("wheel: quote missing symbol, source, expiry, strike or delta")
 	}
@@ -344,9 +435,6 @@ func (q OptionQuote) Validate(asOf time.Time, cfg Config) error {
 	if !finite(q.impliedVol()) || q.impliedVol() <= 0 || q.Theta == nil || !finite(*q.Theta) || q.Volume <= 0 || q.openInterest() <= 0 || q.LotSize <= 0 {
 		return errors.New("wheel: quote missing IV, Theta, liquidity or lot size")
 	}
-	if cfg.LotSize > 0 && q.LotSize != cfg.LotSize {
-		return errors.New("wheel: quote lot size does not match config")
-	}
 	qt := q.quoteTime()
 	if !asOf.IsZero() && qt.IsZero() {
 		return errors.New("wheel: quote timestamp is missing")
@@ -361,14 +449,28 @@ func (q OptionQuote) Validate(asOf time.Time, cfg Config) error {
 		return errors.New("wheel: option has expired")
 	}
 	if !asOf.IsZero() {
-		asOfDate := time.Date(asOf.UTC().Year(), asOf.UTC().Month(), asOf.UTC().Day(), 0, 0, 0, 0, time.UTC)
-		expiryDate := time.Date(q.Expiry.UTC().Year(), q.Expiry.UTC().Month(), q.Expiry.UTC().Day(), 0, 0, 0, 0, time.UTC)
-		dte := int(expiryDate.Sub(asOfDate) / (24 * time.Hour))
-		if dte < cfg.MinDTE || dte > cfg.MaxDTE {
-			return fmt.Errorf("wheel: DTE %d outside [%d,%d]", dte, cfg.MinDTE, cfg.MaxDTE)
+		expiryDate := calendarDate(q.Expiry)
+		if expiryDate.Before(minExpiryDate) {
+			return ErrDTEBelowMinimum
+		}
+		if expiryDate.After(maxExpiryDate) {
+			return ErrDTEAboveMaximum
 		}
 	}
 	return nil
+}
+
+func validationDates(asOf time.Time, cfg Config) (asOfDate, minExpiryDate, maxExpiryDate time.Time) {
+	if asOf.IsZero() {
+		return time.Time{}, time.Time{}, time.Time{}
+	}
+	asOfDate = calendarDate(asOf)
+	return asOfDate, asOfDate.AddDate(0, 0, cfg.MinDTE), asOfDate.AddDate(0, 0, cfg.MaxDTE)
+}
+
+func calendarDate(ts time.Time) time.Time {
+	utc := ts.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func ValidateQuote(q OptionQuote, asOf time.Time, cfg Config) error { return q.Validate(asOf, cfg) }
@@ -482,10 +584,34 @@ type DecisionInput struct {
 	FuturesEquivalentShares float64
 	Positions               []OptionPosition
 	Quotes                  []OptionQuote
-	DailyOrders             int
-	ExtremeDay              bool
-	CashAvailable           float64
-	HasCashAvailable        bool
+	// LastEffectiveFillPrice is optional. A zero value means that no prior
+	// effective fill is available, so movement-based tactical gates stay off.
+	LastEffectiveFillPrice float64
+	CashAvailable          float64
+	HasCashAvailable       bool
+	// Pending lists unfilled orders already resting for this symbol.
+	// Candidates whose contract+direction match an entry are excluded:
+	// re-alerting the same contract while a prior order is unfilled would
+	// ask the user to double up an open position (2026-08-13: LLM gate
+	// kept rejecting repeated US.JD P29000 alerts over pending order 206158430256).
+	Pending []PendingOrder
+}
+
+// PendingOrder is the unfilled-order footprint the strategy needs to avoid
+// duplicate alerts. Kept intentionally minimal; runner maps the store row.
+type PendingOrder struct {
+	Contract  string
+	Direction string
+	OrderID   string
+}
+
+// ReplaceOrder marks a signal as a modify (改单): the previously confirmed
+// unfilled order should be cancelled and this signal's candidate placed in
+// its stead. It never bypasses review or confirm — the gate and the operator
+// decide as with a fresh order (老板指令 2026-08-13).
+type ReplaceOrder struct {
+	OrderID  string `json:"order_id"`
+	Contract string `json:"contract"`
 }
 
 type CandidateEvaluation struct {
@@ -494,10 +620,19 @@ type CandidateEvaluation struct {
 	Quantity            int         `json:"quantity"`
 	SignedContracts     int         `json:"signed_contracts"`
 	Quality             float64     `json:"quality"`
+	ExpectedGain        float64     `json:"expected_gain,omitempty"`
 	PostTradeEffective  float64     `json:"post_trade_effective_inventory"`
 	AssignmentInventory float64     `json:"assignment_inventory"`
 	Accepted            bool        `json:"accepted"`
 	Reasons             []string    `json:"reasons,omitempty"`
+}
+
+// StockSuggestion is a non-executing tactical suggestion. It is attached to
+// a HOLD signal so existing option-alert and human-review gates cannot mistake
+// it for an option order.
+type StockSuggestion struct {
+	Side   string  `json:"side"`
+	Shares float64 `json:"shares"`
 }
 
 type Signal struct {
@@ -523,8 +658,14 @@ type Signal struct {
 	Reasons             []string              `json:"reasons"`
 	RejectReasons       []string              `json:"reject_reasons,omitempty"`
 	Candidates          []CandidateEvaluation `json:"candidates,omitempty"`
-	CapabilityStatus    string                `json:"capability_status"`
-	BlockedBy           []string              `json:"blocked_by,omitempty"`
+	StockSuggestion     *StockSuggestion      `json:"stock_suggestion,omitempty"`
+	// Replace marks this ALERT as a 改单: replace the pending order (same
+	// direction, different contract) with the chosen candidate. Set only
+	// when exactly one same-direction pending order exists and the chosen
+	// contract differs from it; multiple pendings are left alone.
+	Replace          *ReplaceOrder `json:"replace,omitempty"`
+	CapabilityStatus string        `json:"capability_status"`
+	BlockedBy        []string      `json:"blocked_by,omitempty"`
 }
 
 type Decision = Signal
@@ -564,54 +705,77 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	if err != nil {
 		return Signal{Action: ActionHold, Direction: DirectionHold, Reason: err.Error(), Reasons: []string{err.Error()}}, err
 	}
-	inv := CalculateInventory(in.StockShares, in.FuturesEquivalentShares, in.Positions, cfg.LotSize)
+	inv := CalculateInventory(in.StockShares, in.FuturesEquivalentShares, in.Positions, candidateLotSize(in.Quotes))
 	gap := target - inv.EffectiveInventory
 	base := Signal{Action: ActionHold, Direction: DirectionHold, TargetInventory: target, InventoryGap: gap, ActualInventory: inv.ActualInventory, OptionDeltaStock: inv.OptionDeltaStock, EffectiveInventory: inv.EffectiveInventory, CapabilityStatus: CapabilityReady}
-	if math.Abs(gap) <= cfg.NoTradeGap {
+	if math.Abs(gap) <= cfg.TradeGap {
 		return hold("inventory gap is within no-trade band", base), nil
+	}
+	if in.LastEffectiveFillPrice > 0 && cfg.MoveIntervalPct > 0 {
+		move := math.Abs(in.CurrentPrice-in.LastEffectiveFillPrice) / in.LastEffectiveFillPrice
+		if move < cfg.MoveIntervalPct {
+			return hold("price move is below move_interval_pct", base), nil
+		}
+	}
+	if in.LastEffectiveFillPrice > 0 && cfg.StockSwitchPct > 0 {
+		move := math.Abs(in.CurrentPrice-in.LastEffectiveFillPrice) / in.LastEffectiveFillPrice
+		if move >= cfg.StockSwitchPct {
+			side := "BUY"
+			if gap < 0 {
+				side = "SELL"
+			}
+			base.StockSuggestion = &StockSuggestion{Side: side, Shares: math.Abs(gap)}
+			return hold("stock_switch_pct reached; stock suggestion only", base), nil
+		}
 	}
 	direction := DirectionPut
 	if gap < 0 {
 		direction = DirectionCall
 	}
 	base.Direction = direction
-	if in.DailyOrders < 0 {
-		return hold("daily order count is invalid", base), nil
-	}
-	limit := cfg.MaxDailyOrders
-	if in.ExtremeDay {
-		limit = cfg.ExtremeMaxDailyOrders
-	}
-	if in.DailyOrders >= limit || limit <= 0 {
-		return hold("daily order limit reached", base), nil
-	}
 	switch cfg.StrategicState {
 	case StatePauseBuy, StateExit:
 		if direction == DirectionPut {
 			return hold("strategic state does not permit new puts", base), nil
 		}
 	}
-	remaining := limit - in.DailyOrders
-	qty := int(math.Ceil(math.Abs(gap) / float64(cfg.LotSize)))
-	if qty < 1 {
-		qty = 1
-	}
-	if qty > remaining {
-		qty = remaining
-	}
-	if cfg.StrategicState == StateCaution && direction == DirectionPut && qty > 1 {
-		qty = (qty + 1) / 2
-	}
-	if qty < 1 {
-		return hold("inventory gap cannot produce an order", base), nil
-	}
-
 	validDirectionQuoteCount := 0
 	dependencyBlocked := false
+	pendingExcluded := 0
+	// 改单资格记录:循环中首个带挂单的候选保留其合约与有效性,供选中候选
+	// 后按选择排序判定「撤旧挂新」是否真的更优(避免把更优挂单换成更差合约)。
+	pendingContract := ""
+	var pendingCandidate CandidateEvaluation
+	pendingValid := false
+	asOfDate, minExpiryDate, maxExpiryDate := validationDates(in.AsOf, cfg)
 	for _, q := range in.Quotes {
-		candidate := CandidateEvaluation{Quote: q, Direction: direction, Quantity: qty, SignedContracts: -qty, Quality: QualityScore(q)}
-		if err := q.Validate(in.AsOf, cfg); err != nil {
-			candidate.Reasons = append(candidate.Reasons, err.Error())
+		// A signal remains one human-reviewed contract suggestion. Removing the
+		// daily cap means later valid evaluations are not suppressed; it does not
+		// turn one reminder into an unbounded multi-contract order.
+		qty := 1
+		candidate := CandidateEvaluation{Quote: q, Direction: direction, Quantity: qty, SignedContracts: -qty, Quality: QualityScore(q), ExpectedGain: expectedGain(q, qty)}
+		if hasPendingContract(in.Pending, q.Symbol, string(direction)) {
+			// Pending matches imply direction agreement, so the quote still
+			// counts as direction-valid: all-candidates-pending must read as
+			// HOLD, not DATA_BLOCKED (quotes are fresh, the book is full).
+			candidate.Reasons = append(candidate.Reasons, "wheel: contract already has an unfilled pending order")
+			pendingExcluded++
+			validDirectionQuoteCount++
+			// 记录首个挂单候选的选择排序要素与有效性,供改单判定
+			// (见下方选中分支)。仅首个即可:改单只对唯一同方向挂单生效。
+			if pendingContract == "" {
+				signed := -float64(1)
+				postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(q.LotSize)
+				pendingCandidate = CandidateEvaluation{Quote: q, Direction: direction, Quantity: 1, SignedContracts: -1, Quality: QualityScore(q), PostTradeEffective: EffectiveInventory(inv.ActualInventory, postDelta)}
+				pendingValid = q.validate(in.AsOf, cfg, asOfDate, minExpiryDate, maxExpiryDate) == nil
+				pendingContract = q.Symbol
+			}
+		} else if err := q.validate(in.AsOf, cfg, asOfDate, minExpiryDate, maxExpiryDate); err != nil {
+			reason := err.Error()
+			if errors.Is(err, ErrDTEBelowMinimum) || errors.Is(err, ErrDTEAboveMaximum) {
+				reason = dteRejectionReason(q, asOfDate, cfg)
+			}
+			candidate.Reasons = append(candidate.Reasons, reason)
 		} else {
 			if (direction == DirectionPut && q.optionType() != string(Put)) || (direction == DirectionCall && q.optionType() != string(Call)) {
 				candidate.Reasons = append(candidate.Reasons, "wheel: quote direction does not match inventory gap")
@@ -621,19 +785,26 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			if len(candidate.Reasons) == 0 && candidate.Quality < cfg.MinOptionQuality {
 				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: option quality %.4f below minimum %.4f", candidate.Quality, cfg.MinOptionQuality))
 			}
+			if len(candidate.Reasons) == 0 && q.Bid < cfg.MinPremiumPerShare {
+				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: premium per share %.4f below minimum %.4f", q.Bid, cfg.MinPremiumPerShare))
+			}
+			if len(candidate.Reasons) == 0 && candidate.ExpectedGain < cfg.MinOptionProfit {
+				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: expected option profit %.2f below minimum %.2f", candidate.ExpectedGain, cfg.MinOptionProfit))
+			}
 		}
 		if len(candidate.Reasons) == 0 {
 			signed := -float64(qty)
 			if direction == DirectionCall {
 				signed = -float64(qty)
 			}
-			postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(cfg.LotSize)
+			postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(q.LotSize)
 			candidate.PostTradeEffective = EffectiveInventory(inv.ActualInventory, postDelta)
 			candidate.AssignmentInventory = inv.ActualInventory
 			if direction == DirectionPut {
-				candidate.AssignmentInventory += PutAssignmentShares(in.Positions, cfg.LotSize) + float64(qty*cfg.LotSize)
+				candidate.AssignmentInventory += PutAssignmentShares(in.Positions, DefaultLotSize) + float64(qty*q.LotSize)
 			} else {
-				candidate.AssignmentInventory -= CoveredShares(in.Positions, cfg.LotSize) + float64(qty*cfg.LotSize)
+				candidate.AssignmentInventory -= CoveredShares(in.Positions, DefaultLotSize) + float64(qty*q.LotSize)
+
 			}
 			if direction == DirectionPut && candidate.AssignmentInventory > cfg.MaxInventory+1e-9 {
 				candidate.Reasons = append(candidate.Reasons, "wheel: put assignment exceeds max inventory")
@@ -644,7 +815,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			if direction == DirectionPut && !in.HasCashAvailable {
 				candidate.Reasons = append(candidate.Reasons, "wheel: cash/margin availability is missing")
 				dependencyBlocked = true
-			} else if direction == DirectionPut && in.CashAvailable+1e-9 < PutAssignmentCash(in.Positions, cfg.LotSize)+q.Strike*float64(qty*cfg.LotSize) {
+			} else if direction == DirectionPut && in.CashAvailable+1e-9 < PutAssignmentCash(in.Positions, DefaultLotSize)+q.Strike*float64(qty*q.LotSize) {
 				candidate.Reasons = append(candidate.Reasons, "wheel: cash/margin is insufficient for put assignment")
 			}
 			if math.Abs(target-candidate.PostTradeEffective) > math.Abs(gap)+1e-9 {
@@ -672,42 +843,98 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 			base.CapabilityStatus = CapabilityDataBlocked
 			base.BlockedBy = append(base.BlockedBy, "cash_available")
 		}
+		if pendingExcluded > 0 && validDirectionQuoteCount == pendingExcluded {
+			// Every direction-valid quote is already covered by an unfilled
+			// order: the book is full, not the data. HOLD quietly instead of
+			// asking the user to double an open position.
+			return hold("all qualified candidates already have unfilled pending orders", base), nil
+		}
 		return hold("no quote passed validation and risk checks", base), nil
 	}
-	sort.SliceStable(accepted, func(i, j int) bool {
-		iDist, jDist := math.Abs(target-accepted[i].PostTradeEffective), math.Abs(target-accepted[j].PostTradeEffective)
-		if iDist != jDist {
-			return iDist < jDist
-		}
-		// In CAUTION, lower-strike puts are the safer increase-inventory
-		// choice. This preference is applied only after post-trade risk is
-		// equal, preserving the primary inventory objective.
-		if cfg.StrategicState == StateCaution && direction == DirectionPut && accepted[i].Quote.Strike != accepted[j].Quote.Strike {
-			return accepted[i].Quote.Strike < accepted[j].Quote.Strike
-		}
-		if accepted[i].Quality != accepted[j].Quality {
-			return accepted[i].Quality > accepted[j].Quality
-		}
-		iSpread, jSpread := accepted[i].Quote.Spread()/accepted[i].Quote.Mid(), accepted[j].Quote.Spread()/accepted[j].Quote.Mid()
-		if iSpread != jSpread {
-			return iSpread < jSpread
-		}
-		if !accepted[i].Quote.Expiry.Equal(accepted[j].Quote.Expiry) {
-			return accepted[i].Quote.Expiry.Before(accepted[j].Quote.Expiry)
-		}
-		if accepted[i].Quote.Strike != accepted[j].Quote.Strike {
-			return accepted[i].Quote.Strike < accepted[j].Quote.Strike
-		}
-		return accepted[i].Quote.name() < accepted[j].Quote.name()
-	})
+	sort.SliceStable(accepted, func(i, j int) bool { return betterCandidate(accepted[i], accepted[j], cfg, target, direction) })
 	chosen := accepted[0]
 	base.Action, base.Quantity, base.SignedContracts, base.Quality = ActionAlert, chosen.Quantity, chosen.SignedContracts, chosen.Quality
 	base.ExpectedGain = expectedGain(chosen.Quote, chosen.Quantity)
 	base.Quote = &chosen.Quote
 	base.PostTradeEffective, base.AssignmentInventory = chosen.PostTradeEffective, chosen.AssignmentInventory
-	base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds no-trade gap %.2f", direction, gap, cfg.NoTradeGap)
+	base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds trade gap %.2f", direction, gap, cfg.TradeGap)
 	base.Reasons = []string{base.Reason}
+	if replace := pendingReplaceTarget(in.Pending, direction, chosen.Quote.Symbol); replace != nil {
+		// 改单闸门:rest 单已不在报价(过期/失效)、已不满足结构校验、或新
+		// 候选严格按选择排序优于 rest 单时才撤旧挂新。更优合约上的 rest
+		// 单(被排除的 natural top)绝不换成次优候选,避免策略空转改单。
+		if pendingContract == "" || !pendingValid || betterCandidate(chosen, pendingCandidate, cfg, target, direction) {
+			base.Replace = replace
+			base.Reason = fmt.Sprintf("%s inventory gap %.2f exceeds trade gap %.2f; replace pending %s with %s", direction, gap, cfg.TradeGap, replace.Contract, chosen.Quote.Symbol)
+		}
+	}
 	return base, nil
+}
+
+func dteRejectionReason(q OptionQuote, asOfDate time.Time, cfg Config) string {
+	dte := int(calendarDate(q.Expiry).Sub(asOfDate) / (24 * time.Hour))
+	return fmt.Sprintf("wheel: DTE %d outside [%d,%d]", dte, cfg.MinDTE, cfg.MaxDTE)
+}
+
+// betterCandidate reports whether candidate a strictly outranks b in
+// selection: smaller distance to target, then (CAUTION) lower put strike,
+// higher quality, tighter relative spread, earlier expiry, lower strike,
+// name. Shared by the selection sort and the 改单 gate so one ordering
+// governs both.
+func betterCandidate(a, b CandidateEvaluation, cfg Config, target float64, direction Direction) bool {
+	aDist, bDist := math.Abs(target-a.PostTradeEffective), math.Abs(target-b.PostTradeEffective)
+	if aDist != bDist {
+		return aDist < bDist
+	}
+	// In CAUTION, lower-strike puts are the safer increase-inventory
+	// choice. This preference is applied only after post-trade risk is
+	// equal, preserving the primary inventory objective.
+	if cfg.StrategicState == StateCaution && direction == DirectionPut && a.Quote.Strike != b.Quote.Strike {
+		return a.Quote.Strike < b.Quote.Strike
+	}
+	if a.Quality != b.Quality {
+		return a.Quality > b.Quality
+	}
+	aSpread, bSpread := a.Quote.Spread()/a.Quote.Mid(), b.Quote.Spread()/b.Quote.Mid()
+	if aSpread != bSpread {
+		return aSpread < bSpread
+	}
+	if !a.Quote.Expiry.Equal(b.Quote.Expiry) {
+		return a.Quote.Expiry.Before(b.Quote.Expiry)
+	}
+	if a.Quote.Strike != b.Quote.Strike {
+		return a.Quote.Strike < b.Quote.Strike
+	}
+	return a.Quote.name() < b.Quote.name()
+}
+
+// pendingReplaceTarget returns the single same-direction pending order that a
+// better candidate should replace (改单), or nil. Multiple same-direction
+// pendings or a pending for the very contract chosen are left alone — the
+// former is ambiguous, the latter is already covered (and excluded above).
+func pendingReplaceTarget(pending []PendingOrder, direction, chosenContract string) *ReplaceOrder {
+	var same []PendingOrder
+	for _, p := range pending {
+		if strings.EqualFold(p.Direction, direction) {
+			same = append(same, p)
+		}
+	}
+	if len(same) != 1 || same[0].Contract == chosenContract || same[0].OrderID == "" {
+		return nil
+	}
+	return &ReplaceOrder{OrderID: same[0].OrderID, Contract: same[0].Contract}
+}
+
+// hasPendingContract reports whether an unfilled order for the same contract
+// and direction is already resting, so the strategy does not re-alert it.
+// Direction is compared case-insensitively (store rows say PUT/CALL).
+func hasPendingContract(pending []PendingOrder, contract, direction string) bool {
+	for _, p := range pending {
+		if p.Contract == contract && strings.EqualFold(p.Direction, direction) {
+			return true
+		}
+	}
+	return false
 }
 
 func expectedGain(q OptionQuote, quantity int) float64 {
