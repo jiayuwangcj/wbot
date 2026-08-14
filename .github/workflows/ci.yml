@@ -212,6 +212,8 @@ jobs:
           "$bin" backtest -h >/dev/null 2>&1
           "$bin" ingest tencent -h >/dev/null 2>&1
           if "$bin" ingest tencent -count 0 >/dev/null 2>&1; then exit 1; else test "$?" -eq 2; fi
+          "$bin" ingest hkex -h >/dev/null 2>&1
+          if "$bin" ingest hkex -from nope >/dev/null 2>&1; then exit 1; else test "$?" -eq 2; fi
           "$bin" ingest mock -provider nope >/dev/null 2>&1 && exit 1 || true
           cp tools/config.yaml.example "$tmp/config.yaml"
           chmod 600 "$tmp/config.yaml"
@@ -325,6 +327,9 @@ jobs:
           # Cluster options_freshness: seeds its own ACCCLUS* rows and
           # asserts fresh/stale statuses against the running serve.
           scripts/accept-options-cluster.sh http://127.0.0.1:8080 "$WBOT_PG_DSN"
+          # HKEX EOD backfill: local fake official ZIPs -> idempotent PG rows ->
+          # snapshot-backed Wheel RESEARCH_ONLY report with real simulated fills.
+          scripts/accept-hkex-datafill.sh "$bin" "$WBOT_PG_DSN"
           # Wheel live e2e: self-managed serve (random port) + fake Futu/LLM/Telegram.
           scripts/accept-wheel-live.sh "$bin" "$WBOT_PG_DSN"
 

@@ -104,6 +104,39 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	}
 }
 
+func TestBuildCompleteHKEXResearchExposesNonNullReturn(t *testing.T) {
+	in := testInput(3, 2, 1)
+	complete := true
+	coverage := 0.9
+	in.Result.DataQuality.Status = "RESEARCH_ONLY"
+	in.Result.DataQuality.OptionSnapshotSources = []string{"hkex"}
+	in.Result.DataQuality.TotalBarCount = 10
+	in.Result.DataQuality.ReadyBarCount = 9
+	in.Result.DataQuality.BlockedBarCount = 1
+	in.Result.DataQuality.ValidCoverageRatio = &coverage
+	in.Result.DataQuality.HistoricalOptionCycleComplete = &complete
+	in.Result.DataQuality.BlockedBy = []string{"historical_option_cycle", "option_quote_snapshot"}
+	r, err := Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Identity.CapabilityStatus != "RESEARCH_ONLY" || len(r.Identity.BlockedBy) != 0 {
+		t.Fatalf("identity = %+v; want RESEARCH_ONLY without global blocker", r.Identity)
+	}
+	if r.Result.ReturnStatus != "research_only" || r.Result.NetReturnPct == nil || *r.Result.NetReturnPct != 0.0123 || r.Result.NetReturnAmount == nil || *r.Result.NetReturnAmount != 123 {
+		t.Fatalf("research return = %+v; want non-null mechanical return", r.Result)
+	}
+	if r.DataQuality.Status != "RESEARCH_ONLY" || r.DataQuality.HistoricalOptionCycleComplete == nil || !*r.DataQuality.HistoricalOptionCycleComplete {
+		t.Fatalf("quality = %+v", r.DataQuality)
+	}
+	if len(r.DataQuality.BlockedBy) != 1 || r.DataQuality.BlockedBy[0] != "option_quote_snapshot" {
+		t.Fatalf("quality blockers = %v; legacy cycle blocker should be removed", r.DataQuality.BlockedBy)
+	}
+	if !containsStringFold(r.Risk, "HKEX EOD:日终结算价投影不是可执行 bid/ask,Delta/Theta 为模型派生") {
+		t.Fatalf("risk = %v; want explicit HKEX EOD projection warning", r.Risk)
+	}
+}
+
 func TestBuildConfigVersionIsExplicitAndAffectsIdentity(t *testing.T) {
 	adHoc := testInput(0, 0, 0)
 	adHoc.ConfigVersion = nil

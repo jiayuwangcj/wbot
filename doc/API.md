@@ -146,7 +146,7 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 
 ## 回测结果端点
 
-这些端点是通用结果/导出数据面；产品 Wheel 回测是否具备可信历史数据仍由 `DATA_BLOCKED` 闸门决定。当前运行器是 bar-time replay：每根 bar 选择 `observed_at <= bar.ts` 的最新原子 snapshot（同一时点按 snapshot key 稳定取值），不是事件驱动的 quote/成交回放。
+这些端点是通用结果/导出数据面；产品 Wheel 回测能力由数据质量闸门决定。当前运行器是 bar-time replay：每根 bar 选择 `observed_at <= bar.ts` 的最新原子 snapshot；同一时点按 `futu` → `hkex` → 其他 source 字典序，再按 snapshot key 稳定取值。HKEX 日终投影即使完整也只能是 `RESEARCH_ONLY`，不是事件驱动的 quote/成交回放。
 
 ### GET /v1/backtests
 

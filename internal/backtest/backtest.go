@@ -260,11 +260,54 @@ func latestQuoteBatch(opts *OptionsData, ts time.Time) *QuoteSnapshotBatch {
 		if b.ObservedAt.After(ts) {
 			continue
 		}
-		if best == nil || b.ObservedAt.After(best.ObservedAt) || (b.ObservedAt.Equal(best.ObservedAt) && b.SnapshotKey > best.SnapshotKey) {
+		if best == nil || b.ObservedAt.After(best.ObservedAt) || (b.ObservedAt.Equal(best.ObservedAt) && preferQuoteBatch(b, best)) {
 			best = b
 		}
 	}
 	return best
+}
+
+// preferQuoteBatch resolves only exact observed_at ties. A genuinely newer
+// observation always wins; at the same instant live Futu is preferred over
+// the HKEX EOD research projection, then other providers use lexical source
+// order. snapshot_key remains the final deterministic tie-breaker.
+func preferQuoteBatch(candidate, current *QuoteSnapshotBatch) bool {
+	candidateSource, currentSource := quoteBatchSource(candidate), quoteBatchSource(current)
+	candidateRank, currentRank := quoteBatchSourceRank(candidateSource), quoteBatchSourceRank(currentSource)
+	if candidateRank != currentRank {
+		return candidateRank > currentRank
+	}
+	if candidateSource != currentSource {
+		return candidateSource < currentSource
+	}
+	return candidate.SnapshotKey > current.SnapshotKey
+}
+
+func quoteBatchSource(batch *QuoteSnapshotBatch) string {
+	if batch == nil || len(batch.Quotes) == 0 {
+		return ""
+	}
+	source := strings.ToLower(strings.TrimSpace(batch.Quotes[0].Source))
+	for _, quote := range batch.Quotes[1:] {
+		candidate := strings.ToLower(strings.TrimSpace(quote.Source))
+		if candidate != "" && (source == "" || candidate < source) {
+			source = candidate
+		}
+	}
+	return source
+}
+
+func quoteBatchSourceRank(source string) int {
+	switch source {
+	case "futu":
+		return 3
+	case "hkex":
+		return 2
+	case "":
+		return 0
+	default:
+		return 1
+	}
 }
 
 type signalProvider interface{ Signal() wheel.Signal }

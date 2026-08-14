@@ -1208,6 +1208,8 @@ func runIngest(prog string, argv []string) int {
 		return runIngestURL(prog, argv[1:])
 	case "tencent":
 		return runIngestTencent(prog, argv[1:])
+	case "hkex":
+		return runIngestHKEX(prog, argv[1:])
 	case "futu":
 		return runIngestFutu(prog, argv[1:])
 	case "futu-option":
@@ -1668,15 +1670,15 @@ func runIngestFreshness(prog string, argv []string) int {
 	if len(entries) == 0 {
 		fmt.Println("unknown: no bars data")
 	}
-	// 期权数据并入同一判定(草稿非目标项):按 underlying×source 聚合,
-	// 阈值 MaxAgeForOptions(4h),-max-age 全局覆盖;stale 同样使 exit 1。
+	// 期权数据并入同一判定：按 underlying×source 聚合；实时源默认 4h，
+	// HKEX 官方日终源默认 3d，-max-age 全局覆盖；stale 同样使 exit 1。
 	opts, err := ingest.QueryOptionFreshness(context.Background(), database, now)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ingest freshness: %v\n", err)
 		return 1
 	}
 	for _, o := range opts {
-		threshold := ingest.MaxAgeForOptions
+		threshold := ingest.MaxAgeForOptionSource(o.Source)
 		if *maxAge > 0 {
 			threshold = *maxAge
 		}
@@ -1901,6 +1903,7 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "  file   Load bars from a JSON file (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  url    Load bars from a JSON URL (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  tencent  Backfill free qfq daily K-lines into bars (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  hkex   Backfill official HK stock-option EOD settlement data (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu   Fetch K-lines from the futu-opend-rs gateway (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu-option  Fetch option-chain K-lines + underlying bars, cache-first (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  account  Snapshot account funds into account_snapshots (资产曲线数据层) (-h for flags)\n")

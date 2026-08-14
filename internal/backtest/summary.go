@@ -4,6 +4,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/wheel"
@@ -168,12 +169,15 @@ func summarizeDataQuality(bars []ingest.Bar, opts *OptionsData, signals []Signal
 	if opts == nil {
 		return q
 	}
-	cycleComplete := false
+	batches := optionQuoteBatches(opts)
+	cycleComplete := hkexHistoricalOptionCycleComplete(batches)
 	q.HistoricalOptionCycleComplete = &cycleComplete
 	q.Status = wheel.CapabilityDataBlocked
-	batches := optionQuoteBatches(opts)
 	q.SnapshotBatchCount = len(batches)
-	blocked := map[string]struct{}{"historical_option_cycle": {}}
+	blocked := map[string]struct{}{}
+	if !cycleComplete {
+		blocked["historical_option_cycle"] = struct{}{}
+	}
 	if len(batches) == 0 {
 		blocked["option_quote_snapshots"] = struct{}{}
 	}
@@ -199,8 +203,66 @@ func summarizeDataQuality(bars []ingest.Bar, opts *OptionsData, signals []Signal
 			blocked["missing_"+field] = struct{}{}
 		}
 	}
+	if cycleComplete && q.ReadyBarCount > 0 {
+		// HKEX EOD settlement marks unlock deterministic research returns, not
+		// live/executable READY semantics. Gaps remain visible in BlockedBy and
+		// ValidCoverageRatio without nulling the entire research window.
+		q.Status = "RESEARCH_ONLY"
+	}
 	q.BlockedBy = sortedKeys(blocked)
 	return q
+}
+
+// hkexHistoricalOptionCycleComplete proves at least one contract was observed
+// from DTE >=10 through DTE <=1 in complete source=hkex EOD batches. This is
+// the narrow gate needed by the Wheel's configured 5..10 DTE research window;
+// it does not claim event-level fills or broker assignment evidence.
+func hkexHistoricalOptionCycleComplete(batches []QuoteSnapshotBatch) bool {
+	type coverage struct {
+		first, last time.Time
+		expiry      time.Time
+	}
+	byContract := make(map[string]coverage)
+	for _, batch := range batches {
+		observed := utcDate(batch.ObservedAt)
+		if observed.IsZero() {
+			continue
+		}
+		for _, quote := range batch.Quotes {
+			if !strings.EqualFold(strings.TrimSpace(quote.Source), "hkex") || quote.Expiry.IsZero() {
+				continue
+			}
+			name := firstQuoteName(quote)
+			if name == "" {
+				continue
+			}
+			c := byContract[name]
+			if c.first.IsZero() || observed.Before(c.first) {
+				c.first = observed
+			}
+			if c.last.IsZero() || observed.After(c.last) {
+				c.last = observed
+			}
+			c.expiry = utcDate(quote.Expiry)
+			byContract[name] = c
+		}
+	}
+	for _, c := range byContract {
+		lead := int(c.expiry.Sub(c.first) / (24 * time.Hour))
+		tail := int(c.expiry.Sub(c.last) / (24 * time.Hour))
+		if lead >= 10 && tail >= 0 && tail <= 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func utcDate(t time.Time) time.Time {
+	if t.IsZero() {
+		return time.Time{}
+	}
+	t = t.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func summarizeBarProvenance(bars []ingest.Bar) []BarProvenance {

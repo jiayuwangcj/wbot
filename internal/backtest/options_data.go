@@ -43,6 +43,9 @@ func OptionsDataFromQuoteSnapshots(rows []wheelstore.QuoteSnapshotRecord) (*Opti
 		} else if b.UnderlyingPrice == 0 && r.UnderlyingPrice != nil {
 			b.UnderlyingPrice = *r.UnderlyingPrice
 		}
+		if len(b.Quotes) > 0 && !strings.EqualFold(strings.TrimSpace(b.Quotes[0].Source), strings.TrimSpace(r.Source)) {
+			return nil, fmt.Errorf("backtest: snapshot %s: mixed sources in atomic batch", r.SnapshotKey)
+		}
 		q := optionQuoteFromSnapshot(r)
 		b.Quotes = append(b.Quotes, q)
 	}
@@ -66,8 +69,10 @@ func OptionsDataFromQuoteSnapshots(rows []wheelstore.QuoteSnapshotRecord) (*Opti
 				continue
 			}
 			data.Chain[name] = OptionContract{Code: name, Kind: kind, Strike: q.Strike, Expiry: q.Expiry}
-			// A snapshot bid is a real observed market side and may be used
-			// as a conservative mark/fill. It is not an inferred legacy close.
+			// The adapter defines the snapshot mark semantics. Live providers
+			// supply an observed bid; source=hkex supplies the explicitly
+			// RESEARCH_ONLY EOD settlement projection documented in BACKTEST.md.
+			// Neither path falls back to a legacy option OHLC close here.
 			if q.Bid > 0 {
 				data.Bars[name] = append(data.Bars[name], ingest.Bar{Ts: b.ObservedAt, Open: q.Bid, High: q.Bid, Low: q.Bid, Close: q.Bid, Volume: q.Volume})
 			}

@@ -1,6 +1,6 @@
 # Wheel 回测契约
 
-回测必须复用动态 Wheel 的库存语义：满仓价、清仓价、最大库存、战略状态、有效库存和战术门槛均来自完整的版本化 Wheel 配置。回测只记录 bar-time 的信号/机械结算 trace，不发送订单。当前运行器以 bars 为时间轴，从 `option_quote_snapshots` 选择 `observed_at <= bar.ts` 的最新原子批次（同一时点按 `snapshot_key` 稳定选择），再调用 Wheel；它不是按 quote 或成交事件驱动的历史执行回放。缺少可信 snapshot 时，运行固定为 `DATA_BLOCKED/HOLD`，不可用日线收盘、固定 Greeks 或默认盘口“跑通”。
+回测必须复用动态 Wheel 的库存语义：满仓价、清仓价、最大库存、战略状态、有效库存和战术门槛均来自完整的版本化 Wheel 配置。回测只记录 bar-time 的信号/机械结算 trace，不发送订单。当前运行器以 bars 为时间轴，从 `option_quote_snapshots` 选择 `observed_at <= bar.ts` 的最新原子批次；同一时点按 `futu` → `hkex` → 其他 source 字典序，再按 `snapshot_key` 稳定选择，然后调用 Wheel。它不是按 quote 或成交事件驱动的历史执行回放。缺少可信 snapshot 时，运行固定为 `DATA_BLOCKED/HOLD`；HKEX 日终结算价投影只能产生明确标记的 `RESEARCH_ONLY` 结果，不能冒充实时盘口。
 
 ## 能力状态
 
@@ -8,6 +8,7 @@
 | --- | --- | --- | --- | --- |
 | Wheel 领域决策（曲线插值、库存缺口、状态、候选风控） | `READY` | P0-A 单测已通过 | 保持确定性单测和回归样例 | 不把回测状态当作实时提醒 |
 | bar-time 最新原子 snapshot 回放 | `READY`（研究/验证） | 已实现按 bar 选择最新批次；它不提供事件级成交时序 | 同输入同 trace、批次不混用、过期 → HOLD 的回归证据 | 不宣称实时执行或事件驱动历史回测 |
+| HKEX 日终 Wheel 回测 | `RESEARCH_ONLY` | DTOP/RP006 有官方 settlement/IV/成交/OI，但没有历史 bid/ask、真实 Greeks 或成交事件 | 官方字段交叉校验、完整 DTE 周期、真实 PG 与确定性 trace 验收 | 不把 `bid=ask=settlement` 或派生 Greeks 宣称为可执行行情 |
 | 真实供应商 adapter / 实时 Wheel 输入 | `DATA_BLOCKED` | 尚无经过验收的供应商 adapter 提供同一时点完整 bid/ask、Delta、IV、Theta、OI、volume、lot size 和 freshness | 字段映射、真实只读采样、原子性、断线/限流/陈旧测试通过 | 不用日线收盘、固定 Delta/IV/OI、默认 Theta 或拼接不同时间数据 |
 | 历史事件 Wheel 回测 | `DATA_BLOCKED` | 历史覆盖不足以还原逐 quote/成交事件及同一时点盘口/Greeks | 历史 snapshot 覆盖目标日期/DTE，事件 trace 可复现并通过质量验收 | 不用 OHLC 猜 bid/ask/Greeks，不把 bar-time 回放冒充事件回测 |
 | 覆盖率/参数面研究 | `RESEARCH_ONLY` | 依赖事件回测和足够历史快照 | P1-A 完成、滚动窗口和可复现 seed 验收 | 研究结果不写 `ALERT`，不改写用户配置 |
@@ -18,7 +19,13 @@
 
 ### 富途历史期权数据裁决（2026-08-14）
 
-富途 `GetHistoryKL` 只能回填 K 线，缺少同一时点的 bid/ask、Delta、IV、Theta 和 OI；`GetOptionQuote` 是无历史时间参数的当前快照；`GetOptionChain` 的日期参数筛选到期日且只返回静态合约。三者不能组合成过去时点的原子期权 snapshot，也不能覆盖真实成交、到期和指派事件。因此 HK.00700/US.JD 只能从实时采集启用后向未来积累数据；完整到期周期达标前，报告固定为 `DATA_BLOCKED`，并输出数据质量卡。禁止用期权 OHLC、当前 Greeks 或跨时点数据进行回填。
+富途 `GetHistoryKL` 只能回填 K 线，缺少同一时点的 bid/ask、Delta、IV、Theta 和 OI；`GetOptionQuote` 是无历史时间参数的当前快照；`GetOptionChain` 的日期参数筛选到期日且只返回静态合约。三者不能组合成过去时点的原子期权 snapshot，也不能覆盖真实成交、到期和指派事件。因此 Futu 来源的 HK.00700/US.JD 仍只能从实时采集启用后向未来积累；禁止用 Futu 期权 OHLC、当前 Greeks 或跨时点数据冒充历史快照。
+
+### HKEX 日终期权研究数据裁决（2026-08-14）
+
+HKEX 官方 DTOP 的 SEOCH all 文件提供准确到期日、行权价、Call/Put 结算价、成交张数与 gross OI；RP006-FINAL 提供同系列结算价、IV 与 `<class>SP` 标的结算价。`wbot ingest hkex` 将官方事实写入 `option_quotes(source=hkex,adjust=none)`，OHLC 四列均映射 settlement；为让现有 bar-time runner 消费，另写 `option_quote_snapshots` 研究投影：`bid=ask=settlement`、官方 IV/成交/OI、显式 lot size，并按 Black-Scholes `r=0` 派生 Delta/Theta。
+
+该投影没有历史可执行价差、逐 quote 时序、利率/股息模型、真实成交、券商到期或指派事实。只有同一 HKEX 合约从 DTE ≥10 覆盖到 DTE ≤1 且窗口存在可用 bar 时，报告才从 `DATA_BLOCKED` 提升为 `RESEARCH_ONLY`，允许输出机械模拟净收益；报告必须保留风险提示与实际缺口。它永不驱动实时 Wheel runner、LLM 审核或 Telegram 提醒，事件级能力仍为 `DATA_BLOCKED`。
 
 ## 命令边界
 
@@ -91,7 +98,7 @@ wbot backtest \
 
 ## 当前 trace 语义与事件级阻塞
 
-当前每根 bar 的顺序是：读取 bar → 选择截至该 bar 时点的最新原子 snapshot → 运行 Wheel → 在 bar close 机械结算 → 写入 equity/trade/signal trace。snapshot loader 的 `limit` 表示完整批次数，不在 SQL 行级截断多合约批次；若设置开始时间，还会向前读取一个配置 freshness 窗口，使首根 bar 能使用仍新鲜的前置 snapshot。snapshot 不会跨批次拼接，未来时间的 snapshot 不会泄漏到当前 bar；没有所需方向的 `observed_at <= bar.ts` 可信批次时，Wheel signal 为 `DATA_BLOCKED/HOLD`。普通风险限制产生的 HOLD 保持 `capability_status=READY`，两者不可混为一类。这是一种可复现的 bar-time replay，不是事件驱动回测。
+当前每根 bar 的顺序是：读取 bar → 选择截至该 bar 时点的最新原子 snapshot → 运行 Wheel → 在 bar close 机械结算 → 写入 equity/trade/signal trace。snapshot loader 的 `limit` 表示完整批次数，不在 SQL 行级截断多合约批次；若设置开始时间，还会向前读取一个配置 freshness 窗口，使首根 bar 能使用仍新鲜的前置 snapshot。同一时点按 `futu` → `hkex` → 其他 source 字典序，再按 `snapshot_key`；snapshot 不会跨批次拼接，未来时间的 snapshot 不会泄漏到当前 bar。没有所需方向的可信批次时，Wheel signal 为 `DATA_BLOCKED/HOLD`。普通风险限制产生的 HOLD 保持 `capability_status=READY`，两者不可混为一类。这是一种可复现的 bar-time replay，不是事件驱动回测。
 
 事件驱动的到期、指派、人工确认和成交回填指标仍是 `DATA_BLOCKED`：它们需要覆盖目标日期/DTE 的完整历史 snapshot、quote/成交事件顺序和人工审计事实。已保留 snapshot schema、runner trace、机械到期结算和 deterministic fixtures；解锁证据必须包含供应商/历史数据字段映射、原子性/新鲜度测试、端到端可复现 trace 和最大库存违规为零。禁止用 OHLC、固定 Delta、默认流动性、事后中间价或 bar-time replay 冒充事件证据。
 
@@ -101,7 +108,7 @@ wbot backtest \
 
 当前确定性运行结果的 `Result.Unfilled` 记录期权卖出成交尝试口径：`AttemptCount = FillCount + UnfilledCount`，`UnfilledRatio = UnfilledCount / AttemptCount`；没有成交尝试时比例为 `null`，CLI 显示“未成交 N/A”，不得解释为 0%。`Trade.Filled=false` 表示一次由 `Trade.UnfilledModel` 标识的模拟未成交卖出尝试，不入账、不改变现金或持仓；成交的期权交易为 `Filled=true`。正股交易、HOLD 与 DATA_BLOCKED 不进入该尝试分母。
 
-`-report` 以 [[BACKTEST_REPORT]] schema 1.1 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。Wheel 历史能力为 `DATA_BLOCKED` 时，`net_return_*` 和超额字段为 `null`；只保留明确标为窗口末账面估值变动的 `window_mark_to_market_*`，不得显示成可执行收益。`data_quality` 分开记录实际消费的标的 bars `{source,adjusted,bar_count}` 与 `option_snapshot_sources`，例如腾讯回填必须显示 `tencent/qfq`，不能冒充 Futu 实时期权 snapshot。
+`-report` 以 [[BACKTEST_REPORT]] schema 1.1 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。Wheel 能力为 `DATA_BLOCKED` 时，`net_return_*` 和超额字段为 `null`；HKEX 完整周期的 `RESEARCH_ONLY` 报告可输出机械模拟数值，但 `return_status=research_only`，不得解释为可执行收益。`data_quality` 分开记录实际消费的标的 bars `{source,adjusted,bar_count}` 与 `option_snapshot_sources`，例如腾讯正股回填显示 `tencent/qfq`，HKEX 期权投影单独显示 `hkex`。
 
 `-push` 必须与 `-report` 同用，推送发生在 JSON/HTML 成功落盘之后。embed 由同一内存报告确定性投影 7 个核心字段（标的、窗口、净收益/能力状态、覆盖率、费用、回撤、停止原因），并逐条保留完整 `risk`；超出 Discord 限额时报错，不截断风险状态。每个 `report_id` 派生固定 25 字符 nonce 并请求 Discord 去重；成功后再在 `~/.wbot/backtest-push/discord/` 写本地 sent 标记。Discord 请求失败时 CLI 返回 1、报告仍可查看且不写 sent 标记，原命令重跑会用同一 ID/nonce 重试；成功后的再次执行输出 `push_status=already_sent` 且不发网络请求。未配置 token/channel 时 stderr 给出 `wbot.conf` 设置项，凭证不写报告或日志。测试可用 `DISCORD_API_BASE_URL` 指向本地假 Bot API，生产保持默认 Discord API。
 
@@ -134,6 +141,7 @@ ES 启动搜索前先跑一次全窗口数据探针；有效覆盖率为 0 或�
 
 - `internal/wheel`：两价区间、库存、状态、候选校验和 `ALERT/HOLD` 决策；P0-A `READY`。
 - `internal/strategy`：唯一注册项 `wheel`；bar-time 适配器只消费当前最新原子 snapshot，缺失/过期时固定产生 `DATA_BLOCKED/HOLD`。
+- `internal/ingest/hkex.go`：官方 DTOP/RP006 下载、交叉校验、幂等日终事实与 `RESEARCH_ONLY` snapshot 投影；不接入实时链路。
 - `internal/wheelstore`、`internal/watchlist` 与 migrations 005/007：版本配置、不可变 snapshot、signal/action 审计表、`READY/DATA_BLOCKED` 数据库约束和 watchlist 版本指针；P0-B/P0-C repository 与 PostgreSQL integration `READY`，真实供应商 adapter 与人工写动作仍受阻塞。
 - `internal/backtest` / `internal/backtestexec` 与 `internal/db/migrations/006_backtest_signals.sql`：确定性 bar-time replay、完整策略输入、逐 bar signal 保存/导出路径；不能替代事件级 Wheel 快照回测或实时执行。
 

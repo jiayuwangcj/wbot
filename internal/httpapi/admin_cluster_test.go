@@ -242,17 +242,19 @@ func TestClusterFreshnessFields(t *testing.T) {
 }
 
 // TestClusterOptionFreshnessFields: options_freshness entries carry
-// max_ts_age_seconds and fresh judged by MaxAgeForOptions (4h default) —
-// 2h old → fresh, 100h old → stale; old fields stay unchanged.
+// max_ts_age_seconds and source-aware freshness: Futu uses 4h while HKEX EOD
+// uses 72h. Old fields stay unchanged.
 func TestClusterOptionFreshnessFields(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	freshTs := now.Add(-2 * time.Hour)   // 4h option threshold → fresh
 	staleTs := now.Add(-100 * time.Hour) // 4h option threshold → stale
+	hkexTs := now.Add(-48 * time.Hour)   // 72h HKEX EOD threshold → fresh
 	store := &fakeClusterStore{
 		coverage: []ingest.BarCoverage{},
 		opts: []ingest.OptionFreshness{
 			{Underlying: "OPTFRESH.US", Source: "futu", MaxTs: freshTs, AgeSeconds: 7200},
 			{Underlying: "OPTSTALE.US", Source: "futu", MaxTs: staleTs, AgeSeconds: 360000},
+			{Underlying: "HK.00700", Source: "hkex", MaxTs: hkexTs, AgeSeconds: 172800},
 		},
 	}
 	rec := get(t, ClusterHandler(testMeta(), store), "/v1/admin/cluster")
@@ -276,8 +278,8 @@ func TestClusterOptionFreshnessFields(t *testing.T) {
 		t.Fatalf("unmarshal: %v (body %s)", err, rec.Body)
 	}
 	opts := got.Components.DataPlane.OptionsFreshness
-	if len(opts) != 2 {
-		t.Fatalf("options_freshness len = %d; want 2", len(opts))
+	if len(opts) != 3 {
+		t.Fatalf("options_freshness len = %d; want 3", len(opts))
 	}
 	fresh, stale := opts[0], opts[1]
 	if fresh.Underlying != "OPTFRESH.US" || fresh.Source != "futu" || fresh.MaxTs != freshTs.Format(time.RFC3339) ||
@@ -287,6 +289,11 @@ func TestClusterOptionFreshnessFields(t *testing.T) {
 	if stale.Underlying != "OPTSTALE.US" || stale.Source != "futu" || stale.MaxTs != staleTs.Format(time.RFC3339) ||
 		stale.Fresh != "stale" || stale.MaxTsAgeSeconds < 359999 || stale.MaxTsAgeSeconds > 360001 {
 		t.Fatalf("stale option entry = %+v; want OPTSTALE.US futu stale ≈360000s", stale)
+	}
+	hkex := opts[2]
+	if hkex.Underlying != "HK.00700" || hkex.Source != "hkex" || hkex.MaxTs != hkexTs.Format(time.RFC3339) ||
+		hkex.Fresh != "fresh" || hkex.MaxTsAgeSeconds < 172799 || hkex.MaxTsAgeSeconds > 172801 {
+		t.Fatalf("HKEX option entry = %+v; want 48h-old EOD source fresh", hkex)
 	}
 }
 

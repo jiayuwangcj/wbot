@@ -76,4 +76,10 @@ func TestMaxAgeForOptions(t *testing.T) {
 	if MaxAgeForOptions != 4*time.Hour {
 		t.Fatalf("MaxAgeForOptions = %v; want 4h", MaxAgeForOptions)
 	}
+	if got := MaxAgeForOptionSource("futu"); got != 4*time.Hour {
+		t.Fatalf("MaxAgeForOptionSource(futu) = %v; want 4h", got)
+	}
+	if got := MaxAgeForOptionSource(" HKEX "); got != 72*time.Hour {
+		t.Fatalf("MaxAgeForOptionSource(hkex) = %v; want 72h", got)
+	}
 }

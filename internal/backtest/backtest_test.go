@@ -10,6 +10,7 @@ import (
 
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/wheel"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 // mkBars builds valid bars with equal OHLC and daily timestamps from closes.
@@ -144,6 +145,83 @@ func TestRunDataQualityZeroAndMissingSnapshots(t *testing.T) {
 		if q.MissingRequiredFieldCounts[field] != 1 {
 			t.Fatalf("missing %s count = %d; all counts %+v", field, q.MissingRequiredFieldCounts[field], q.MissingRequiredFieldCounts)
 		}
+	}
+}
+
+func TestLatestQuoteBatchSourcePriority(t *testing.T) {
+	at := time.Date(2025, 7, 2, 8, 0, 0, 0, time.UTC)
+	batch := func(source, key string, observed time.Time) QuoteSnapshotBatch {
+		return QuoteSnapshotBatch{ObservedAt: observed, SnapshotKey: key, Quotes: []wheel.OptionQuote{{Source: source}}}
+	}
+	opts := &OptionsData{QuoteBatches: []QuoteSnapshotBatch{
+		batch("alpha", "z", at),
+		batch("hkex", "a", at),
+		batch("futu", "a", at),
+	}}
+	if got := latestQuoteBatch(opts, at); got == nil || got.Quotes[0].Source != "futu" {
+		t.Fatalf("same-time source = %+v; want futu", got)
+	}
+	opts.QuoteBatches = opts.QuoteBatches[:2]
+	if got := latestQuoteBatch(opts, at); got == nil || got.Quotes[0].Source != "hkex" {
+		t.Fatalf("same-time source without futu = %+v; want hkex", got)
+	}
+	opts.QuoteBatches = append(opts.QuoteBatches, batch("alpha", "old-source-newer-time", at.Add(time.Second)))
+	if got := latestQuoteBatch(opts, at.Add(time.Second)); got == nil || got.ObservedAt != at.Add(time.Second) {
+		t.Fatalf("newer observation = %+v; want timestamp to outrank provider", got)
+	}
+}
+
+func TestOptionsDataRejectsMixedSourcesInAtomicBatch(t *testing.T) {
+	at := time.Date(2025, 7, 2, 8, 0, 0, 0, time.UTC)
+	rows := []wheelstore.QuoteSnapshotRecord{
+		{Symbol: "P1", Underlying: "HK.00700", Source: "futu", SnapshotKey: "same", ObservedAt: at},
+		{Symbol: "P2", Underlying: "HK.00700", Source: "hkex", SnapshotKey: "same", ObservedAt: at},
+	}
+	if _, err := OptionsDataFromQuoteSnapshots(rows); err == nil || !strings.Contains(err.Error(), "mixed sources") {
+		t.Fatalf("mixed source error = %v", err)
+	}
+}
+
+func TestHKEXHistoricalCycleUnlocksResearchOnly(t *testing.T) {
+	theta := -0.1
+	expiry := time.Date(2025, 7, 12, 0, 0, 0, 0, time.UTC)
+	quote := func(observed time.Time) wheel.OptionQuote {
+		return wheel.OptionQuote{
+			Symbol: "HK.TST250712P500000", Source: "hkex", OptionType: wheel.Put,
+			Expiry: expiry, Strike: 500, Delta: -0.4, Bid: 10, Ask: 10,
+			ImpliedVol: 0.2, Theta: &theta, Volume: 1000, OpenInterest: 5000,
+			LotSize: 100, QuoteTime: observed,
+		}
+	}
+	first := time.Date(2025, 7, 2, 8, 0, 0, 0, time.UTC)
+	last := time.Date(2025, 7, 11, 8, 0, 0, 0, time.UTC)
+	opts := &OptionsData{QuoteBatches: []QuoteSnapshotBatch{
+		{ObservedAt: first, SnapshotKey: "hkex-eod-20250702-bs-r0", Underlying: "HK.TEST", UnderlyingPrice: 500, Quotes: []wheel.OptionQuote{quote(first)}},
+		{ObservedAt: last, SnapshotKey: "hkex-eod-20250711-bs-r0", Underlying: "HK.TEST", UnderlyingPrice: 500, Quotes: []wheel.OptionQuote{quote(last)}},
+	}}
+	signals := []SignalTrace{{CapabilityStatus: wheel.CapabilityReady}}
+	quality := summarizeDataQuality([]ingest.Bar{{Ts: last, Open: 500, High: 500, Low: 500, Close: 500, Volume: 1}}, opts, signals)
+	if quality.Status != "RESEARCH_ONLY" || quality.HistoricalOptionCycleComplete == nil || !*quality.HistoricalOptionCycleComplete || quality.ReadyBarCount != 1 || quality.SnapshotBatchCount != 2 {
+		t.Fatalf("HKEX cycle quality = %+v", quality)
+	}
+	if len(quality.OptionSnapshotSources) != 1 || quality.OptionSnapshotSources[0] != "hkex" {
+		t.Fatalf("sources = %v; want hkex", quality.OptionSnapshotSources)
+	}
+	for field, count := range quality.MissingRequiredFieldCounts {
+		if count != 0 {
+			t.Fatalf("missing %s = %d; want zero", field, count)
+		}
+	}
+	for _, blocker := range quality.BlockedBy {
+		if blocker == "historical_option_cycle" {
+			t.Fatalf("complete cycle still blocked: %v", quality.BlockedBy)
+		}
+	}
+
+	incomplete := &OptionsData{QuoteBatches: opts.QuoteBatches[:1]}
+	quality = summarizeDataQuality(nil, incomplete, signals)
+	if quality.Status != wheel.CapabilityDataBlocked || quality.HistoricalOptionCycleComplete == nil || *quality.HistoricalOptionCycleComplete {
+		t.Fatalf("incomplete cycle quality = %+v", quality)
 	}
 }
 
