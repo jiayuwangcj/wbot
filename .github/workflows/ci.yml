@@ -210,6 +210,8 @@ jobs:
           "$bin" paper -symbol V.US -side buy
           "$bin" serve -h >/dev/null 2>&1
           "$bin" backtest -h >/dev/null 2>&1
+          "$bin" ingest tencent -h >/dev/null 2>&1
+          if "$bin" ingest tencent -count 0 >/dev/null 2>&1; then exit 1; else test "$?" -eq 2; fi
           "$bin" ingest mock -provider nope >/dev/null 2>&1 && exit 1 || true
           cp tools/config.yaml.example "$tmp/config.yaml"
           chmod 600 "$tmp/config.yaml"

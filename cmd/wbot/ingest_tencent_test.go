@@ -84,7 +84,7 @@ func TestIngestTencentUsageDocumentsContract(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("code = %d", code)
 	}
-	for _, want := range []string{"HK.00700", "US.JD", "-count", "source=tencent", "adjust=fwd", "one second", "exponential backoff"} {
+	for _, want := range []string{"HK.00700", "US.JD", "-count", "-include-forming", "discarded", "Beijing", "source=tencent", "adjust=fwd", "one second", "exponential backoff"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("usage missing %q: %s", want, stderr)
 		}

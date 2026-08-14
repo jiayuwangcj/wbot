@@ -105,6 +105,43 @@ func TestTencentSourceQFQKeySortDeduplicateAndFilter(t *testing.T) {
 	}
 }
 
+func TestTencentSourceFormingBarPolicy(t *testing.T) {
+	fastTencentRequests(t)
+	const payload = `{"code":0,"msg":"","data":{"hk00700":{"day":[
+  ["2026-08-13","580","581","582","579","100"],
+  ["2026-08-14","581","582","583","580","10"]
+]}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, payload)
+	}))
+	defer srv.Close()
+	now := func() time.Time { return time.Date(2026, 8, 14, 10, 7, 0, 0, tencentDateLocation) }
+
+	for _, tt := range []struct {
+		name           string
+		includeForming bool
+		want           int
+	}{
+		{name: "exclude by default", want: 1},
+		{name: "retain when requested", includeForming: true, want: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			bars, err := (TencentSource{
+				Endpoint:       srv.URL,
+				Count:          2,
+				IncludeForming: tt.includeForming,
+				now:            now,
+			}).Bars(context.Background(), "HK.00700", "1d", time.Time{}, time.Time{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(bars) != tt.want {
+				t.Fatalf("bars = %d; want %d: %+v", len(bars), tt.want, bars)
+			}
+		})
+	}
+}
+
 func TestTencentSourceRetriesServerFailure(t *testing.T) {
 	fastTencentRequests(t)
 	var calls atomic.Int32

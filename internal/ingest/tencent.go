@@ -80,9 +80,11 @@ func ParseTencentInstrument(symbol string) (TencentInstrument, error) {
 // to 1000. Only daily bars are accepted: the backfill is deliberately separate
 // from the real-time Futu snapshot path.
 type TencentSource struct {
-	Client   *http.Client
-	Endpoint string
-	Count    int
+	Client         *http.Client
+	Endpoint       string
+	Count          int
+	IncludeForming bool
+	now            func() time.Time
 }
 
 type tencentResponse struct {
@@ -192,10 +194,33 @@ func (s TencentSource) Bars(ctx context.Context, symbol domain.Symbol, timeframe
 	}
 	sort.Slice(bars, func(i, j int) bool { return bars[i].Ts.Before(bars[j].Ts) })
 	bars = filterRange(bars, from, to)
+	bars = filterTencentFormingBar(bars, s.IncludeForming, s.currentTime())
 	if len(bars) == 0 {
-		return nil, fmt.Errorf("ingest: tencent source: no daily bars for %s in requested range", instrument.Symbol)
+		return nil, fmt.Errorf("ingest: tencent source: no completed daily bars for %s in requested range (use -include-forming to retain today's partial bar)", instrument.Symbol)
 	}
 	return bars, nil
+}
+
+func (s TencentSource) currentTime() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// filterTencentFormingBar removes only the newest row when its Tencent +08
+// calendar date is today. Daily timestamps represent the start of that local
+// date, so comparing instants or a rolling 24-hour duration would be wrong.
+func filterTencentFormingBar(bars []Bar, include bool, now time.Time) []Bar {
+	if include || len(bars) == 0 {
+		return bars
+	}
+	last := bars[len(bars)-1].Ts.In(tencentDateLocation)
+	today := now.In(tencentDateLocation)
+	if last.Year() == today.Year() && last.YearDay() == today.YearDay() {
+		return bars[:len(bars)-1]
+	}
+	return bars
 }
 
 func (s TencentSource) get(ctx context.Context, requestURL string) ([]byte, error) {

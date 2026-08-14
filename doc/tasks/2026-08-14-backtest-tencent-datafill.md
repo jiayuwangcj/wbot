@@ -38,16 +38,18 @@ futu 无法拉取历史期权行情(P0-1 裁决),老板指令改用腾讯免费�
 - [x] 港股期权历史接口调查
 - [x] 数据质量卡 source/adjusted 标注
 - [x] 真实 PG 回填验收(00700 ≥300 交易日)
+- [x] #66 评审 P1/P2 修复（形成 K、CLI smoke、`/v1/bars` 契约）
 
 ## Evidence（2026-08-14）
 
 - 新增 `wbot ingest tencent`：固定腾讯 `qfq` → canonical `adjust=fwd,source=tencent`，支持 HK/US/SH/SZ 市场代码映射、进程内请求间隔 ≥1s、429/5xx/网络失败指数退避、范围过滤与响应内同日去重；落库复用 `RunIngestion` 的事务和 `ON CONFLICT DO NOTHING`。
-- 腾讯真实接口 `HK.00700 -count 1000` 返回 1001 条，日期覆盖北京时间 2022-07-22 至 2026-08-14；`US.JD` 如实返回 1 条并输出「腾讯美股仅当日,历史靠每日积累」。
+- 腾讯真实接口可能额外返回北京时间今日的盘中形成 K；默认在 source 边界剔除该末行，次日运行再补完整值，`-include-forming` 可显式恢复旧行为。2026-08-14 验收 dry-run 返回 1000 个已完成 bars，止于北京时间 2026-08-13；`US.JD` 如实返回最近 1 个已完成交易日并输出「腾讯美股仅当日,历史靠每日积累」。
 - 真实 PG 中 `source=tencent,adjust=fwd` 的 `HK.00700` 为 `1001 rows / 1001 distinct ts`；连续两次执行 `scripts/accept-tencent-datafill.sh` 均为 `ALL 8 CHECKS PASSED`，第二次行数不增长。
 - 回测同日多源固定选择 `futu → tencent → 其他 source`，腾讯只补 Futu 缺日。真实 PG 报告共消费 5462 日，其中 `futu/fwd=5458`、`tencent/qfq=4`；JSON/HTML `data_quality` 均显示标的 bars provenance，并单独列出实际消费的期权 snapshot source。
 - 港股期权调查结论：腾讯免费端点不能发现/识别已上市 TCH 合约，历史 K 为空，未实现伪造回填；期权面继续由实时 snapshot 向未来积累。详见 `doc/issues/2026-08-14-tencent-hk-option-api-investigation.md`。
 - 验证通过：目标包单测、真实 PG ingest/backtestexec 集成测、验收脚本连续两轮，以及完整 `scripts/verify.sh`（含 gofmt/test/vet/race/staticcheck/CLI smoke）。
+- #66 评审修复验证：单测覆盖默认剔除北京时间今日末行与 `-include-forming` 保留两分支；CI/本地 smoke 均覆盖 `ingest tencent -h` 及非法 `-count 0` 精确 exit 2；`/v1/bars` HTTP 响应和文档同步暴露逐 bar `source`/`adjusted`，并声明 `futu → tencent → 其他字典序` 去重语义。
 
 ## Next
 
-独立 reviewer 评审并判定 feature/bugfix → 主会话按评审报告决定合入；生产调度由 cron/systemd 每日一次运行，供美股数据从当前日起逐日积累。
+提交 #66 评审修复供 reviewer 复审；生产调度由 cron/systemd 每日一次运行，供美股数据从当前日起逐日积累。

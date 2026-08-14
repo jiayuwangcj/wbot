@@ -43,6 +43,7 @@ func runIngestTencent(prog string, argv []string) int {
 	symbol := fs.String("symbol", "HK.00700", "market-qualified symbol (HK.00700 or US.JD)")
 	timeframe := fs.String("timeframe", tencentTimeframe, "bar timeframe (Tencent backfill supports 1d only)")
 	count := fs.Int("count", ingest.TencentMaxBars, "requested daily bars (1..1000; provider may include the forming bar)")
+	includeForming := fs.Bool("include-forming", false, "retain today's Beijing-time forming daily bar (unsafe for idempotent backfill)")
 	from := fs.String("from", "", "start of bar range, RFC3339; empty = provider history window")
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = latest available day")
 	endpoint := fs.String("endpoint", ingest.TencentKlineEndpoint, "Tencent Finance K-line endpoint")
@@ -52,9 +53,12 @@ func runIngestTencent(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest tencent -symbol HK.00700 [flags]\n\n", prog)
 		fmt.Fprintf(os.Stderr, "Backfills free Tencent Finance qfq daily K-lines into bars as adjust=fwd, source=tencent.\n")
 		fmt.Fprintf(os.Stderr, "Writes are idempotent through the bars primary key; repeated runs do not duplicate a date.\n")
+		fmt.Fprintf(os.Stderr, "By default, the newest bar is discarded when its Beijing calendar date is today, preventing\n")
+		fmt.Fprintf(os.Stderr, "a partial daily bar from being frozen by idempotent inserts. Run again on the next calendar day\n")
+		fmt.Fprintf(os.Stderr, "to ingest the completed bar, or use -include-forming to retain the old partial-bar behavior.\n")
 		fmt.Fprintf(os.Stderr, "HK.00700 currently returns 1000+ rows with -count 1000. Tencent US symbols such as\n")
-		fmt.Fprintf(os.Stderr, "US.JD currently return only the latest trading day; the command records that row and warns\n")
-		fmt.Fprintf(os.Stderr, "that US history must accumulate daily. Requests are spaced at least one second apart and\n")
+		fmt.Fprintf(os.Stderr, "US.JD currently return only the latest trading day; completed rows are recorded once their\n")
+		fmt.Fprintf(os.Stderr, "Beijing date is no longer today, so US history must accumulate daily. Requests are spaced at least one second apart and\n")
 		fmt.Fprintf(os.Stderr, "transient failures use exponential backoff. This command never changes the Futu live path.\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
@@ -105,9 +109,10 @@ func runIngestTencent(prog string, argv []string) int {
 	}
 
 	src := ingest.TencentSource{
-		Client:   &http.Client{Timeout: 20 * time.Second},
-		Endpoint: strings.TrimSpace(*endpoint),
-		Count:    *count,
+		Client:         &http.Client{Timeout: 20 * time.Second},
+		Endpoint:       strings.TrimSpace(*endpoint),
+		Count:          *count,
+		IncludeForming: *includeForming,
 	}
 	ctx := context.Background()
 	fetch := func() ([]ingest.Bar, error) {
@@ -125,6 +130,10 @@ func runIngestTencent(prog string, argv []string) int {
 			fmt.Fprintln(os.Stderr, "ingest tencent: 腾讯美股仅当日,历史靠每日积累")
 		}
 	}
+	formingMode := "forming bar excluded when dated today in Beijing"
+	if *includeForming {
+		formingMode = "forming bar included"
+	}
 
 	if *dryRun {
 		bars, err := fetch()
@@ -133,8 +142,8 @@ func runIngestTencent(prog string, argv []string) int {
 			return 1
 		}
 		printUSLimitation(len(bars))
-		fmt.Printf("ingest tencent: dry-run: %d bars, %s .. %s (symbol=%s timeframe=%s source=tencent adjusted=qfq)\n",
-			len(bars), bars[0].Ts.Format(time.RFC3339), bars[len(bars)-1].Ts.Format(time.RFC3339), instrument.Symbol, tf)
+		fmt.Printf("ingest tencent: dry-run: %d bars, %s .. %s (symbol=%s timeframe=%s source=tencent adjusted=qfq; %s)\n",
+			len(bars), bars[0].Ts.Format(time.RFC3339), bars[len(bars)-1].Ts.Format(time.RFC3339), instrument.Symbol, tf, formingMode)
 		return 0
 	}
 
@@ -166,7 +175,7 @@ func runIngestTencent(prog string, argv []string) int {
 		return 1
 	}
 	printUSLimitation(len(bars))
-	fmt.Fprintf(os.Stderr, "ingest tencent: ok (symbol=%s timeframe=%s bars=%d source=tencent adjusted=qfq adjust=fwd)\n",
-		instrument.Symbol, tf, len(bars))
+	fmt.Fprintf(os.Stderr, "ingest tencent: ok (symbol=%s timeframe=%s bars=%d source=tencent adjusted=qfq adjust=fwd; %s)\n",
+		instrument.Symbol, tf, len(bars), formingMode)
 	return 0
 }

@@ -9,7 +9,7 @@
 | `wbot ingest mock` | 插入一条 mock 拉取 + 3 条示例 bars（demo 源） |
 | `wbot ingest file -file <path>` | 从 JSON 文件拉取 bars（每元素 `{"ts":RFC3339,"open","high","low","close","volume"}`） |
 | `wbot ingest url -url <url>` | 从 HTTP(S) URL 拉取同格式 JSON bars |
-| `wbot ingest tencent -symbol HK.00700 -count 1000` | 腾讯免费 qfq 日 K 回填；写 `adjust=fwd,source=tencent`，请求间隔 ≥1s，瞬时失败指数退避；美股当前仅单日并显式提示 |
+| `wbot ingest tencent -symbol HK.00700 -count 1000` | 腾讯免费 qfq 日 K 回填；写 `adjust=fwd,source=tencent`，默认剔除北京时间今日的形成 K（`-include-forming` 可保留），请求间隔 ≥1s，瞬时失败指数退避；美股当前仅单日并显式提示 |
 | `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust fwd\|none` 默认 fwd） |
 | `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §10、[[DATA_STANDARD]]） |
 | `wbot ingest account` | 经 OpenD protobuf（只读 funds 查询）把账户资金快照写入 `account_snapshots`（资产曲线数据层；见下文 §账户资产快照、[[FUTU]] §9） |

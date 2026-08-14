@@ -46,5 +46,5 @@
 
 - `wbot ingest futu-option`：先查 DB（`option_quotes` 按 underlying+adjust+时间窗、`bars` 按 symbol+timeframe+adjust）——窗口内有数据即 **cache hit 跳过拉取**（打印行数），否则拉取落库
 - `wbot ingest futu`：`ON CONFLICT DO NOTHING` 幂等（同键重拉不覆盖）
-- `wbot ingest tencent`：固定 `source=tencent,adjust=fwd(qfq)`，同一 symbol/date 重跑 `ON CONFLICT DO NOTHING`；HK.00700 可一次回填 1000+ 日，美股当前仅一日并依靠每日运行向未来积累。
+- `wbot ingest tencent`：固定 `source=tencent,adjust=fwd(qfq)`，同一 symbol/date 重跑 `ON CONFLICT DO NOTHING`；默认剔除北京时间今日的末行，避免形成 K 被幂等写入冻结，次日运行补入完整值（`-include-forming` 显式保留旧行为）；HK.00700 可一次回填 1000+ 日，美股当前仅一日并依靠每日运行向未来积累。
 - 一致性校验：同 symbol+timeframe+adjust 的不同 source 行可查询对比（各 provider 独立 source 标签：CLI mock/file/url 默认 `cli-mock`/`cli-file`/`cli-url`（`-source` 可覆盖），futu 系写入平台源；dev-up 种子即 mock 写入，与 futu 数据同键共存可对比）

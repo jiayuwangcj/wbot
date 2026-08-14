@@ -1554,6 +1554,7 @@ func TestCallbackYesStubOrderIDRejected(t *testing.T) {
 	if act.Action != "REJECTED" || act.Note != "order unconfirmed" {
 		t.Fatalf("action = %+v; want REJECTED order unconfirmed", act)
 	}
+	waitFor(t, func() bool { return fake.sendCountTo("42") == 1 }, "rejection push never sent")
 	text, _ := fake.lastSend(t)["text"].(string)
 	if !strings.Contains(text, "下单未获券商确认") {
 		t.Fatalf("push = %q; want 下单未获券商确认", text)
