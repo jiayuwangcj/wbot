@@ -109,8 +109,9 @@ VALUES ($1, $2, 'PUT', 95, $3, 'fixture', $4, $5, -0.30, $6, $7, 0.30, -0.10, 10
 	// integration runs share the serve database (WBOT_PG_DSN), and wiping
 	// watchlist here silently stops live wheel monitoring (2026-08-13).
 	type wlBinding struct {
-		symbol, strategy, params, status, reason string
-		version                                  *int64
+		symbol, strategy, params string
+		version                  *int64
+		status, reason           sql.NullString
 	}
 	var existing []wlBinding
 	rows, err := database.Query(`SELECT symbol, strategy, params::text, config_version, execution_status, invalidation_reason FROM watchlist`)
@@ -127,7 +128,10 @@ VALUES ($1, $2, 'PUT', 95, $3, 'fixture', $4, $5, -0.30, $6, $7, 0.30, -0.10, 10
 		if v.Valid {
 			b.version = &v.Int64
 		}
-		b.status, b.reason = st.String, rs.String
+		// Keep NULL nullable: execution_status may legitimately be NULL, and
+		// st.String would turn it into "" which violates
+		// watchlist_execution_status_check on restore (SQLSTATE 23514).
+		b.status, b.reason = st, rs
 		existing = append(existing, b)
 	}
 	rows.Close()
