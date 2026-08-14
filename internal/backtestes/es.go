@@ -30,7 +30,7 @@ const (
 	RewardVersion = "reward-3.0"
 )
 
-var tacticalOrder = []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "covered_call_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
+var tacticalOrder = []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "covered_call_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte", "profit_take_pct", "put_delta_max", "call_delta_max", "min_iv_rank"}
 
 type Bound struct {
 	Min      float64 `json:"min"`
@@ -60,6 +60,11 @@ func ParseSpace(data string, base map[string]any) (Space, error) {
 		"covered_call_pct":   {Unit: "%"},
 		"min_option_quality": {Unit: "[0,1]"}, "min_dte": {Unit: "自然日", Discrete: true},
 		"max_dte": {Unit: "自然日", Discrete: true},
+		// profit_take_pct captures the max-profit fraction at which the short
+		// leg is bought back (exit, not entry); delta caps and min_iv_rank gate
+		// entries. Newer gates are appended so existing gene orders stay stable.
+		"profit_take_pct": {Unit: "%"}, "put_delta_max": {Unit: "Δ"}, "call_delta_max": {Unit: "Δ"},
+		"min_iv_rank": {Unit: "[0,1]"},
 	}
 	bounds := make(map[string]Bound, len(raw))
 	for name, pair := range raw {
@@ -89,6 +94,12 @@ func ParseSpace(data string, base map[string]any) (Space, error) {
 		}
 		if name == "covered_call_pct" && hi > 1 {
 			return Space{}, errors.New("train search space: covered_call_pct must be in [0,1]")
+		}
+		if name == "profit_take_pct" && hi > 0.8 {
+			return Space{}, errors.New("train search space: profit_take_pct must be in [0,0.8]")
+		}
+		if (name == "put_delta_max" || name == "call_delta_max" || name == "min_iv_rank") && hi > 1 {
+			return Space{}, fmt.Errorf("train search space: %s must be in [0,1]", name)
 		}
 		if (name == "min_dte" || name == "max_dte") && (lo < wheel.MinWheelDTE || hi > wheel.MaxWheelDTE) {
 			return Space{}, fmt.Errorf("train search space: %s must be within %d..%d", name, wheel.MinWheelDTE, wheel.MaxWheelDTE)

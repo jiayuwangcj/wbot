@@ -25,11 +25,14 @@ const (
 // Position is one broker position in the futu-neutral shape. Qty is always
 // positive; the side gives the sign (short positions are negative on input).
 type Position struct {
-	Symbol  string  // market-qualified, e.g. HK.TCH260807C335000
-	Code    string  // bare code, e.g. TCH260807C335000 or 00700
-	Qty     float64 // shares (stocks) or contracts (options)
-	Side    int     // PositionSide: 0 long, 1 short, -1 unknown
-	AvgCost float64 // broker-reported stock acquisition basis; options ignore it
+	Symbol string  // market-qualified, e.g. HK.TCH260807C335000
+	Code   string  // bare code, e.g. TCH260807C335000 or 00700
+	Qty    float64 // shares (stocks) or contracts (options)
+	Side   int     // PositionSide: 0 long, 1 short, -1 unknown
+	// AvgCost is the broker-reported acquisition basis: average cost for
+	// stock, received premium per contract for short options (futu
+	// GetCostPrice), which feeds wheel's profit_take_pct buyback math.
+	AvgCost float64
 }
 
 // TradePositions is the injectable position source for the runner (fakes in
@@ -178,6 +181,7 @@ func PositionsInput(positions []Position) (stockShares float64, opts []wheel.Opt
 				SignedContracts: signed,
 				Strike:          strike,
 				OptionType:      typ,
+				AvgPremium:      p.AvgCost,
 			})
 			continue
 		} else if errors.Is(perr, errUnsupportedOption) {

@@ -197,3 +197,44 @@ func TestEarlyStop(t *testing.T) {
 		t.Fatalf("early stop = %q after %d generations", r.StopReason, len(r.Generations))
 	}
 }
+
+func TestParseSpaceIncludesReturnBoostParams(t *testing.T) {
+	s, err := ParseSpace(`{"profit_take_pct":[0.3,0.7],"put_delta_max":[0.15,0.40],"call_delta_max":[0.15,0.40],"min_iv_rank":[0,0.5]}`, baseParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Bounds["profit_take_pct"]; got.Min != 0.3 || got.Max != 0.7 {
+		t.Fatalf("profit_take_pct bound = %+v", got)
+	}
+	if got := s.Bounds["put_delta_max"]; got.Unit != "Δ" || got.Min != 0.15 || got.Max != 0.40 {
+		t.Fatalf("put_delta_max bound = %+v", got)
+	}
+	if got := s.Bounds["min_iv_rank"]; got.Unit != "[0,1]" || got.Max != 0.5 {
+		t.Fatalf("min_iv_rank bound = %+v", got)
+	}
+	// New gates ride at the end of the gene order so existing gene sequences
+	// decode identically.
+	order := orderedNames(s.Bounds)
+	last := order[len(order)-4:]
+	if last[0] != "profit_take_pct" || last[1] != "put_delta_max" || last[2] != "call_delta_max" || last[3] != "min_iv_rank" {
+		t.Fatalf("tactical order tail = %v; want profit_take_pct..min_iv_rank appended", last)
+	}
+}
+
+func TestParseSpaceRejectsOutOfRangeReturnBoostParams(t *testing.T) {
+	for name, tc := range map[string]struct {
+		space string
+		want  string
+	}{
+		"profit_take_pct above 0.8": {space: `{"profit_take_pct":[0.3,0.9]}`, want: "[0,0.8]"},
+		"put_delta_max above 1":     {space: `{"put_delta_max":[0,1.2]}`, want: "[0,1]"},
+		"call_delta_max above 1":    {space: `{"call_delta_max":[0,2]}`, want: "[0,1]"},
+		"min_iv_rank above 1":       {space: `{"min_iv_rank":[0,1.5]}`, want: "[0,1]"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseSpace(tc.space, baseParams()); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v; want range %s enforced", err, tc.want)
+			}
+		})
+	}
+}

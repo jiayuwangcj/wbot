@@ -67,6 +67,10 @@ var templates = []Template{
 			{Name: "min_option_profit", Type: "number", Default: wheel.DefaultMinOptionProfit, Min: 0, Max: math.MaxFloat64, Help: "单笔候选期权预期收益总额最低门槛（权利金×张数）"},
 			{Name: "stock_switch_pct", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "切换为正股建议的价格变动比例（小数）"},
 			{Name: "covered_call_pct", Type: "number", Default: wheel.DefaultCoveredCallPct, Min: 0, Max: 1, Help: "covered call 价外幅度（小数），行权价不低于现价×(1+幅度)和接股成本"},
+			{Name: "profit_take_pct", Type: "number", Default: 0.0, Min: 0, Max: 0.8, Help: "已收权利金回落到最大利润此比例时买回平仓（0 = 持有到期）"},
+			{Name: "put_delta_max", Type: "number", Default: wheel.DefaultPutDeltaMax, Min: 0, Max: 1, Help: "卖 put 的 delta 绝对值上限（0 = 不限制）"},
+			{Name: "call_delta_max", Type: "number", Default: wheel.DefaultCallDeltaMax, Min: 0, Max: 1, Help: "卖 call 的 delta 上限（0 = 不限制）"},
+			{Name: "min_iv_rank", Type: "number", Default: 0.0, Min: 0, Max: 1, Help: "标的 1 年 IV 百分位下限，低于阈值不卖（0 = 不过滤）"},
 			{Name: "trade_gap", Type: "number", Default: 50.0, Min: 0, Max: math.MaxFloat64, Help: "库存缺口不超过此值时不交易"},
 			{Name: "min_dte", Type: "number", Default: 5.0, Min: wheel.MinWheelDTE, Max: wheel.MaxWheelDTE, Help: "最小到期天数（DTE）"},
 			{Name: "max_dte", Type: "number", Default: 10.0, Min: wheel.MinWheelDTE, Max: wheel.MaxWheelDTE, Help: "最大到期天数（DTE）"},
@@ -156,6 +160,22 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param covered_call_pct: %w", err)
 	}
+	profitTakePct, err := asNumber(values["profit_take_pct"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param profit_take_pct: %w", err)
+	}
+	putDeltaMax, err := asNumber(values["put_delta_max"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param put_delta_max: %w", err)
+	}
+	callDeltaMax, err := asNumber(values["call_delta_max"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param call_delta_max: %w", err)
+	}
+	minIVRank, err := asNumber(values["min_iv_rank"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param min_iv_rank: %w", err)
+	}
 	tradeGap, err := asNumber(values["trade_gap"])
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param trade_gap: %w", err)
@@ -192,6 +212,10 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 		MinOptionProfit:        minOptionProfit,
 		StockSwitchPct:         stockSwitch,
 		CoveredCallPct:         coveredCallPct,
+		ProfitTakePct:          profitTakePct,
+		PutDeltaMax:            putDeltaMax,
+		CallDeltaMax:           callDeltaMax,
+		MinIVRank:              minIVRank,
 		TradeGap:               tradeGap,
 		MinDTE:                 minDTE,
 		MaxDTE:                 maxDTE,
@@ -374,7 +398,7 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 	// deterministic loading-time gate, so avoid sending contracts outside this
 	// bar's configured expiry window through the hot candidate validator.
 	quotes := filterQuotesByExpiry(batch.Quotes, batch.ExpiryOrder, bar.Ts, s.Config)
-	quoteByCode := make(map[string]wheel.OptionQuote, len(quotes))
+	quoteByCode := make(map[string]wheel.OptionQuote, len(batch.Quotes))
 	for _, q := range quotes {
 		code := q.Symbol
 		if code == "" {
@@ -382,6 +406,26 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		}
 		if code != "" {
 			quoteByCode[code] = q
+		}
+	}
+	// Held positions are priced for exits (profit_take_pct) and delta even
+	// when their expiry crossed outside the current DTE window — a position
+	// in its final days must still be closable. Merged quotes enter the
+	// candidate loop too, where the DTE rules reject them as candidates.
+	for code := range st.Options {
+		if _, ok := quoteByCode[code]; ok {
+			continue
+		}
+		for _, q := range batch.Quotes {
+			name := q.Symbol
+			if name == "" {
+				name = q.Code
+			}
+			if name == code {
+				quotes = append(quotes, q)
+				quoteByCode[code] = q
+				break
+			}
 		}
 	}
 	codes := make([]string, 0, len(st.Options))
@@ -412,7 +456,7 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		if lot <= 0 {
 			lot = p.LotSize
 		}
-		positions = append(positions, wheel.OptionPosition{Symbol: code, SignedContracts: p.Contracts, Strike: p.Strike, MarketDelta: delta, Delta: delta, LotSize: lot, OptionType: wheel.OptionType(p.Kind)})
+		positions = append(positions, wheel.OptionPosition{Symbol: code, SignedContracts: p.Contracts, Strike: p.Strike, MarketDelta: delta, Delta: delta, LotSize: lot, OptionType: wheel.OptionType(p.Kind), AvgPremium: p.AvgPremium})
 	}
 	signal, err := wheel.Evaluate(s.Config, wheel.DecisionInput{
 		CurrentPrice: batch.UnderlyingPrice,
@@ -426,12 +470,20 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		HasCashAvailable:       true,
 		LastEffectiveFillPrice: s.lastFillPrice,
 		Quotes:                 quotes,
+		// IVRank comes from the loader (attachIVRanks): unknown rank (0) with
+		// min_iv_rank > 0 masks every candidate inside wheel.Evaluate.
+		IVRank: batch.IVRank,
 	})
 	if err != nil {
 		s.LastSignal = signal
 		return backtest.ActionHold, 0, nil
 	}
-	restoreExpiryRejectedCandidates(&signal, batch.Quotes, quotes, bar.Ts, s.Config)
+	// A close (profit_take_pct) signal is an exit decision on a held leg, not
+	// a candidate selection; restoring expiry-rejected candidates would
+	// misattribute unrelated diagnostics to it.
+	if !signal.ClosePosition {
+		restoreExpiryRejectedCandidates(&signal, batch.Quotes, quotes, bar.Ts, s.Config)
+	}
 	s.LastSignal = signal
 	// 急涨急跌直接买卖正股(wheel 既有机制):stock_switch_pct 触发时 Evaluate
 	// 只给正股建议,人工处置在线下由人执行;回测将其机械化为对应方向的持仓调整。
@@ -455,6 +507,54 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 			return backtest.ActionSell, shares, nil
 		}
 		return backtest.ActionBuy, shares, nil
+	}
+	// profit_take_pct exit: buy back the short leg at its settle mark (latest
+	// trusted close, ≤ the triggering ask so realized ≥ threshold). Cash guard
+	// stays fail-closed: never force a buyback the account cannot fund.
+	if signal.ClosePosition {
+		if signal.Quote == nil || signal.Quantity <= 0 {
+			return backtest.ActionHold, 0, nil
+		}
+		q := *signal.Quote
+		pos, ok := st.Options[q.Symbol]
+		if !ok || pos.Contracts >= 0 {
+			return backtest.ActionHold, 0, nil
+		}
+		mark := st.OptPrice[q.Symbol]
+		if mark <= 0 {
+			return backtest.ActionHold, 0, nil
+		}
+		lot := pos.Lot
+		if lot <= 0 {
+			lot = pos.LotSize
+		}
+		if lot <= 0 {
+			lot = q.LotSize
+		}
+		if lot <= 0 {
+			return backtest.ActionHold, 0, nil
+		}
+		qty := float64(signal.Quantity)
+		if qty <= 0 || mark*float64(lot)*qty > st.Cash+1e-9 {
+			return backtest.ActionHold, 0, nil
+		}
+		kind := backtest.OptionKind(string(q.OptionType))
+		if kind != backtest.OptionCall && kind != backtest.OptionPut {
+			return backtest.ActionHold, 0, nil
+		}
+		st.Pending = &backtest.OptionPosition{Code: q.Symbol, Kind: kind, Strike: q.Strike, Expiry: q.Expiry, Lot: lot, Contracts: qty, AvgPremium: mark, MarketDelta: q.Delta}
+		if st.Pending.Code == "" {
+			st.Pending.Code = q.Code
+		}
+		switch signal.Direction {
+		case wheel.DirectionPut:
+			return backtest.ActionBuyPut, qty, nil
+		case wheel.DirectionCall:
+			return backtest.ActionBuyCall, qty, nil
+		default:
+			st.Pending = nil
+			return backtest.ActionHold, 0, nil
+		}
 	}
 	if signal.Action != wheel.ActionAlert || signal.Quote == nil || signal.Quantity <= 0 {
 		return backtest.ActionHold, 0, nil

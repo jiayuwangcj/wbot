@@ -99,6 +99,11 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 	} {
 		prepareOpts := opts
 		prepareOpts.From, prepareOpts.To = spec.window.From, spec.to
+		// min_iv_rank needs a 1-year trailing IV history for every window; widen
+		// the snapshot query so window-edge batches carry a computable rank.
+		if _, tunesIVRank := space.Bounds["min_iv_rank"]; tunesIVRank {
+			prepareOpts.QuoteFrom = spec.window.From.Add(-backtest.IVRankWindow)
+		}
 		p, err := backtestexec.Prepare(context.Background(), database, prepareOpts)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %s preparation: %v\n", spec.name, err)

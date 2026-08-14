@@ -384,6 +384,10 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		CashAvailable:    0,
 		HasCashAvailable: false,
 		Pending:          mapPending(pending),
+		// IVRank stays 0 live: no one-year IV history source exists for the
+		// running process, so min_iv_rank > 0 makes live evaluation HOLD
+		// (fail-closed) until a rank data source lands.
+		IVRank: 0,
 	}
 	if r.deps.Funds != nil {
 		if cash, err := r.deps.Funds(ctx); err == nil {

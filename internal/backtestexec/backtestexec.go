@@ -52,6 +52,10 @@ type Options struct {
 	FeeModel *backtest.FeeModel
 	// Seed seeds the unfilled-attempt draws (0 = backtest default 42).
 	Seed int64
+	// QuoteFrom overrides the option snapshot query start when non-zero. ES
+	// training windows use it to widen history when the search space tunes
+	// min_iv_rank, which needs a 1-year IV window (backtest.IVRankWindow).
+	QuoteFrom time.Time
 }
 
 // SaveParams returns the run inputs persisted by `wbot backtest -save` and
@@ -149,6 +153,9 @@ func Prepare(ctx context.Context, db *sql.DB, o Options) (*Prepared, error) {
 		// database contains several underlyings: truncating a global stream
 		// first can otherwise manufacture an ErrNoOptionData.
 		quoteFrom := quoteRangeStart(o.From, s)
+		if !o.QuoteFrom.IsZero() {
+			quoteFrom = o.QuoteFrom
+		}
 		rows, err := wheelstore.New(db).QueryUnderlyingQuoteSnapshots(ctx, o.Symbol, quoteFrom, o.To, o.Limit)
 		if err != nil {
 			return nil, err
@@ -263,7 +270,13 @@ func sourceHash(bars []ingest.Bar, opts *backtest.OptionsData) (string, error) {
 
 func quoteRangeStart(from time.Time, s backtest.Strategy) time.Time {
 	if wheelStrategy, ok := s.(*strategy.WheelStrategy); ok && !from.IsZero() {
-		return from.Add(-wheelStrategy.Config.QuoteMaxAge())
+		lookback := wheelStrategy.Config.QuoteMaxAge()
+		// min_iv_rank needs a 1-year trailing IV window (ivrank.go); without it
+		// every batch carries an unknown rank and the gate masks all candidates.
+		if wheelStrategy.Config.MinIVRank > 0 {
+			lookback = max(lookback, backtest.IVRankWindow)
+		}
+		return from.Add(-lookback)
 	}
 	return from
 }
