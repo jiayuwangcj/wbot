@@ -24,8 +24,10 @@ const (
 	// telegramPushInterval is the wheel ALERT poll cadence.
 	telegramPushInterval = 30 * time.Second
 	// signalFreshWindow bounds how old an ALERT may be before yes is refused.
-	signalFreshWindow = 10 * time.Minute
-	// llmReviewRetryWindow: runner 在 gate 失败后 sleep 3s 同步重试一次
+	// wheelrun 审核已异步化(2026-08-14):审核在 run 循环外排队执行,300s
+	// http.Client 超时 + 失败重试一次最坏 ~10 分钟,窗口必须覆盖之。
+	signalFreshWindow = 15 * time.Minute
+	// llmReviewRetryWindow: worker 在 gate 失败后 sleep 3s 同步重试一次
 	// (300s http.Client 超时, internal/llmreview/llmreview.go:78, 97e769b
 	// 变更);窗口内 LLM_REVIEW_FAILED 视为重试进行中,推送器保持游标等重试
 	// 落记录(2026-08-14: 772/764 重试成功也丢卡)。重试最长时间 = 3s sleep

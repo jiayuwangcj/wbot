@@ -549,7 +549,7 @@ func TestCallbackYesExpiredRejected(t *testing.T) {
 	fake, server := startFakeTG(t)
 	now := openMarketNow
 	store := newFakeTGStore()
-	store.signals[7] = signalFixture(7, "US.AAPL", now.Add(-11*time.Minute))
+	store.signals[7] = signalFixture(7, "US.AAPL", now.Add(-16*time.Minute)) // beyond signalFreshWindow (15m)
 	store.reviews[7] = approvedReview()
 	placer := &fakePlacer{}
 	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)

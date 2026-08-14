@@ -12,6 +12,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -114,6 +115,7 @@ func (f fakeChain) OptionChain(ctx context.Context, symbol string, begin, end ti
 }
 
 type fakeStore struct {
+	mu              sync.Mutex
 	configs         map[string]*wheelstore.ConfigRecord
 	signals         []wheelstore.SignalRecord
 	actions         []wheelstore.ActionRecord
@@ -123,6 +125,8 @@ type fakeStore struct {
 }
 
 func (f *fakeStore) LatestConfig(ctx context.Context, symbol string) (*wheelstore.ConfigRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	rec, ok := f.configs[symbol]
 	if !ok {
 		return nil, wheelstore.ErrNotFound
@@ -131,6 +135,8 @@ func (f *fakeStore) LatestConfig(ctx context.Context, symbol string) (*wheelstor
 }
 
 func (f *fakeStore) AppendSignal(ctx context.Context, r wheelstore.SignalRecord) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.appendErr != nil {
 		return 0, f.appendErr
 	}
@@ -139,6 +145,8 @@ func (f *fakeStore) AppendSignal(ctx context.Context, r wheelstore.SignalRecord)
 }
 
 func (f *fakeStore) AppendAction(ctx context.Context, r wheelstore.ActionRecord) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.appendActionErr != nil {
 		return 0, f.appendActionErr
 	}
@@ -147,6 +155,8 @@ func (f *fakeStore) AppendAction(ctx context.Context, r wheelstore.ActionRecord)
 }
 
 func (f *fakeStore) ListSignals(ctx context.Context, symbol, action, capability string, limit int) ([]wheelstore.SignalRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	out := make([]wheelstore.SignalRecord, 0, len(f.signals))
 	for _, signal := range f.signals {
 		if symbol != "" && signal.Symbol != symbol {
@@ -243,18 +253,41 @@ func (f *fakeStore) IsDismissed(_ context.Context, symbol string, date time.Time
 	return f.dismissed[symbol+"|"+date.UTC().Format("2006-01-02")], nil
 }
 
+// signalCount/actionCount return the store sizes under lock (the review
+// workers append actions concurrently with the test's waitFor polling).
+func (f *fakeStore) signalCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.signals)
+}
+
+func (f *fakeStore) actionCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.actions)
+}
+
 type fakeReviewer struct {
+	mu       sync.Mutex
 	results  map[string]llmreview.ReviewResult
 	errors   map[string]error
 	requests []llmreview.ReviewRequest
 }
 
 func (f *fakeReviewer) Review(ctx context.Context, req llmreview.ReviewRequest) (llmreview.ReviewResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.requests = append(f.requests, req)
 	if err, ok := f.errors[req.Symbol]; ok {
 		return llmreview.ReviewResult{}, err
 	}
 	return f.results[req.Symbol], nil
+}
+
+func (f *fakeReviewer) requestCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.requests)
 }
 
 type statusCall struct {
@@ -303,6 +336,21 @@ func testRunner(t *testing.T, deps Dependencies) *Runner {
 		deps.Watchlist = &fakeWatchlist{}
 	}
 	return NewRunner(deps)
+}
+
+// waitFor polls cond for up to 5s. LLM reviews run on the runner's worker
+// goroutines (as of the async-review fix), so assertions on review requests
+// and their persisted actions must poll instead of reading synchronously.
+func waitFor(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("waitFor: %s", msg)
 }
 
 // TestRunOnceAlertReady: a full quote snapshot with a short-inventory gap
@@ -504,16 +552,13 @@ func TestRunOnceLLMGateStates(t *testing.T) {
 	if len(store.signals) != len(symbols) {
 		t.Fatalf("signals = %d; want %d", len(store.signals), len(symbols))
 	}
+	// reviews run off the pass loop now; wait for the worker to land them.
 	// failed 场景重试也失败:首次 + 重试各落一条 LLM_REVIEW_FAILED(审计保留
 	// 两次错误),其余各一条 → 总动作 = 标的数 + 1。
-	if len(store.actions) != len(symbols)+1 {
-		t.Fatalf("actions = %d; want %d", len(store.actions), len(symbols)+1)
-	}
-	// failed 场景的审核请求失败会同步重试一次(2026-08-13 修复),所以
-	// 请求数 = 标的数 + 1;其余标的一次通过。
-	if len(reviewer.requests) != len(symbols)+1 {
-		t.Fatalf("review requests = %d; want %d", len(reviewer.requests), len(symbols)+1)
-	}
+	waitFor(t, func() bool { return reviewer.requestCount() == len(symbols)+1 },
+		fmt.Sprintf("expected %d review requests", len(symbols)+1))
+	waitFor(t, func() bool { return store.actionCount() == len(symbols)+1 },
+		fmt.Sprintf("expected %d review actions", len(symbols)+1))
 	for _, req := range reviewer.requests {
 		if req.RulesText == "" || req.StrategyConfig == nil || req.Signal == nil || req.Positions == nil {
 			t.Fatalf("review request missing audit input: %+v", req)
@@ -592,6 +637,190 @@ func TestReviewAlertDirectionReversalIsRejected(t *testing.T) {
 	reasons, ok := store.actions[0].Details["reasons"].([]string)
 	if !ok || len(reasons) != 1 || !strings.Contains(reasons[0], "方向反转") {
 		t.Fatalf("reasons = %#v; want direction reversal", store.actions[0].Details["reasons"])
+	}
+}
+
+// blockingReviewer starts once and then blocks until the context is
+// cancelled — the shape of a real LLM call that takes minutes.
+type blockingReviewer struct {
+	mu      sync.Mutex
+	calls   int
+	started chan struct{}
+}
+
+func (b *blockingReviewer) Review(ctx context.Context, req llmreview.ReviewRequest) (llmreview.ReviewResult, error) {
+	b.mu.Lock()
+	b.calls++
+	b.mu.Unlock()
+	select {
+	case b.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return llmreview.ReviewResult{}, ctx.Err()
+}
+
+func (b *blockingReviewer) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+// TestRunOnceAlertReviewDoesNotBlock: an in-flight audit must not stall the
+// run loop (2026-08-14: the synchronous reviewAlert stalled every symbol for
+// the LLM call duration; signals 868/870/871).
+func TestRunOnceAlertReviewDoesNotBlock(t *testing.T) {
+	const symbol = "HK.00700"
+	now := time.Now()
+	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	ctx, cancel := context.WithCancel(context.Background())
+	reviewer := &blockingReviewer{started: make(chan struct{}, 1)}
+	r := testRunner(t, Dependencies{
+		Quoter: &fakeQuoter{
+			prices: map[string]float64{symbol: 600},
+			opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+		},
+		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Chain:       fakeChain{contracts: []futu.OptionContract{contract}},
+		Store:       &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}},
+		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
+		LLMReviewer: reviewer,
+		LLMModel:    "test-model",
+	})
+
+	done := make(chan error, 1)
+	go func() { done <- r.RunOnce(ctx) }()
+	select {
+	case <-reviewer.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("review never started")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunOnce blocked on the in-flight LLM review")
+	}
+	cancel()
+	r.Close()
+}
+
+// TestReviewInFlightDedup: a symbol that keeps ALERTing (candidate stays in
+// range) must not queue one audit per pass while one is in flight — only the
+// first ALERT is reviewed. 2026-08-14 JD: every pass re-alerted and every
+// round spawned a fresh 4-minute audit.
+func TestReviewInFlightDedup(t *testing.T) {
+	const symbol = "HK.00700"
+	now := time.Now()
+	contractA := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	ctx, cancel := context.WithCancel(context.Background())
+	reviewer := &blockingReviewer{started: make(chan struct{}, 1)}
+	r := testRunner(t, Dependencies{
+		Quoter: &fakeQuoter{
+			prices: map[string]float64{symbol: 600},
+			opts:   map[string]futu.OptionQuoteEx{contractA.Symbol: fullCallQuote(contractA.Symbol, 335, contractA.Expiry, now)},
+		},
+		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Chain:       fakeChain{contracts: []futu.OptionContract{contractA}},
+		Store:       &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}},
+		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
+		LLMReviewer: reviewer,
+		LLMModel:    "test-model",
+	})
+
+	if err := r.RunOnce(ctx); err != nil {
+		t.Fatalf("first RunOnce: %v", err)
+	}
+	select {
+	case <-reviewer.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("review never started")
+	}
+	// second pass with a different contract: not suppressed (candidate
+	// differs) but the in-flight audit dedupes it.
+	contractB := callContract("HK.TCH260901C345000", symbol, 345, now.AddDate(0, 0, 7))
+	r.deps.Chain = fakeChain{contracts: []futu.OptionContract{contractB}}
+	r.deps.Quoter = &fakeQuoter{
+		prices: map[string]float64{symbol: 600},
+		opts:   map[string]futu.OptionQuoteEx{contractB.Symbol: fullCallQuote(contractB.Symbol, 345, contractB.Expiry, now)},
+	}
+	if err := r.RunOnce(ctx); err != nil {
+		t.Fatalf("second RunOnce: %v", err)
+	}
+	// give a wrongly-enqueued second review a chance to start, then assert
+	// only the first ALERT was audited.
+	time.Sleep(200 * time.Millisecond)
+	if n := reviewer.callCount(); n != 1 {
+		t.Fatalf("review calls = %d; want 1 (in-flight dedup)", n)
+	}
+	cancel()
+	r.Close()
+}
+
+// TestRepeatAlertSuppression: the same symbol+contract ALERTing again inside
+// repeatAlertWindow is downgraded to HOLD (window not extended); a different
+// contract still ALERTs; once the window expires the candidate ALERTs again
+// (and is re-audited).
+func TestRepeatAlertSuppression(t *testing.T) {
+	const symbol = "HK.00700"
+	now := time.Now()
+	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	quoter := &fakeQuoter{
+		prices: map[string]float64{symbol: 600},
+		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+	}
+	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
+	r := testRunner(t, Dependencies{
+		Quoter:    quoter,
+		Positions: fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Chain:     fakeChain{contracts: []futu.OptionContract{contract}},
+		Store:     store,
+		Watchlist: &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
+		LLMReviewer: &fakeReviewer{results: map[string]llmreview.ReviewResult{
+			symbol: {Verdict: "APPROVE", Reasons: []string{"ok"}},
+		}},
+		LLMModel: "test-model",
+	})
+	defer r.Close()
+	run := func() error { return r.RunOnce(context.Background()) }
+
+	if err := run(); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if store.signalCount() != 1 || store.signals[0].Action != "ALERT" {
+		t.Fatalf("signals after pass 1 = %+v; want one ALERT", store.signals)
+	}
+	if err := run(); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	if store.signalCount() != 2 || store.signals[1].Action != "HOLD" ||
+		!strings.Contains(store.signals[1].Reason, "重复候选抑制") {
+		t.Fatalf("signals after pass 2 = %+v; want HOLD (repeat candidate)", store.signals)
+	}
+	// a different contract is not suppressed.
+	contractB := callContract("HK.TCH260901C345000", symbol, 345, now.AddDate(0, 0, 7))
+	r.deps.Chain = fakeChain{contracts: []futu.OptionContract{contractB}}
+	r.deps.Quoter = &fakeQuoter{
+		prices: map[string]float64{symbol: 600},
+		opts:   map[string]futu.OptionQuoteEx{contractB.Symbol: fullCallQuote(contractB.Symbol, 345, contractB.Expiry, now)},
+	}
+	if err := run(); err != nil {
+		t.Fatalf("pass 3: %v", err)
+	}
+	if store.signalCount() != 3 || store.signals[2].Action != "ALERT" {
+		t.Fatalf("signals after pass 3 = %+v; want ALERT (different contract)", store.signals)
+	}
+	// window expired: the original contract alerts again (and is re-audited).
+	r.lastAlert[symbol] = lastAlertInfo{at: time.Now().Add(-repeatAlertWindow - time.Minute), contract: contract.Symbol}
+	r.deps.Chain = fakeChain{contracts: []futu.OptionContract{contract}}
+	r.deps.Quoter = quoter
+	if err := run(); err != nil {
+		t.Fatalf("pass 4: %v", err)
+	}
+	if store.signalCount() != 4 || store.signals[3].Action != "ALERT" {
+		t.Fatalf("signals after pass 4 = %+v; want ALERT (window expired)", store.signals)
 	}
 }
 
@@ -807,10 +1036,16 @@ func TestRunOnceLLMReviewVisibleToLatestLLMReview(t *testing.T) {
 	if err != nil || len(signals) != 1 {
 		t.Fatalf("ListSignals = %+v, err=%v; want one ALERT", signals, err)
 	}
-	review, err := store.LatestLLMReview(ctx, signals[0].ID)
-	if err != nil {
-		t.Fatalf("LatestLLMReview: %v", err)
-	}
+	// the audit lands on a worker goroutine now; poll until it is persisted.
+	var review *wheelstore.ActionRecord
+	waitFor(t, func() bool {
+		got, err := store.LatestLLMReview(ctx, signals[0].ID)
+		if err != nil {
+			return false
+		}
+		review = got
+		return true
+	}, "LLM review persisted")
 	if review.Actor != "llm:pg-test" || review.Details["verdict"] != "APPROVE" || review.Details["input_summary"] == nil {
 		t.Fatalf("review = %+v; want persisted APPROVE audit", review)
 	}

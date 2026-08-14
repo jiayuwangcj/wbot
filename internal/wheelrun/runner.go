@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jiayu/wbot/internal/datacheck"
@@ -68,10 +69,73 @@ type Dependencies struct {
 
 // Runner evaluates every wheel binding on one sequential pass. It is not
 // safe for concurrent use; a single goroutine owns it (Run).
+//
+// LLM audits run off the pass loop: reviewAlert can take minutes (300s HTTP
+// timeout) and a synchronous call inside runSymbol stalled every symbol
+// while one audit was in flight (2026-08-14: signals 868/870/871). ALERTs
+// are handed to a bounded review queue drained by reviewWorkers; the audit
+// result lands as an LLM_REVIEW/REJECTED action exactly as before, so the
+// push gate's semantics are unchanged.
 type Runner struct {
 	deps      Dependencies
 	snapshots *asyncSnapshotRecorder
+
+	// reviewCh is the bounded queue of pending audits. reviewInflight tracks
+	// symbols with a queued or running audit so a symbol that keeps ALERTing
+	// (candidate stays in range) does not pile up one audit per pass — the
+	// audit the push gate waits on is already in flight.
+	reviewCh       chan reviewTask
+	reviewInflight map[string]bool
+	reviewMu       sync.Mutex
+	reviewWG       sync.WaitGroup
+	closeOnce      sync.Once
+
+	// lastAlert is the per-symbol suppression baseline for repeat ALERTs of
+	// the same contract (see suppressRepeatAlert). Owned by the pass loop;
+	// the review workers never touch it.
+	lastAlert map[string]lastAlertInfo
 }
+
+// reviewTask snapshots everything reviewAlert needs so the worker can run
+// after the pass has moved on (cfg/sig/record are values; positions is the
+// pass's slice, read-only after enqueue).
+type reviewTask struct {
+	ctx           context.Context
+	symbol        string
+	signalID      int64
+	configVersion int
+	cfg           wheel.Config
+	sig           wheel.Signal
+	record        wheelstore.SignalRecord
+	positions     []Position
+	price         float64
+	cash          float64
+	hasCash       bool
+}
+
+// lastAlertInfo is the suppression baseline: the contract that last alerted
+// for a symbol and when. A suppressed round does not update it, so the
+// window expires and the candidate alerts (and is re-audited) again.
+type lastAlertInfo struct {
+	at       time.Time
+	contract string
+}
+
+const (
+	// reviewWorkers bounds concurrent LLM audits. A serial queue would age
+	// later signals out of the push gate's freshness window once several
+	// symbols alert in the same pass (each audit takes minutes).
+	reviewWorkers = 2
+	// reviewQueueDepth caps queued audits; entries beyond it are dropped
+	// with a log line (defensive only: per-symbol dedup already bounds the
+	// queue to one entry per symbol).
+	reviewQueueDepth = 8
+	// repeatAlertWindow: a second ALERT for the same symbol and contract
+	// inside this window is downgraded to HOLD. JD 2026-08-14: the 28/29P
+	// candidate stayed in range, every pass re-alerted and every round
+	// spawned a fresh 4-minute audit.
+	repeatAlertWindow = 30 * time.Minute
+)
 
 func NewRunner(deps Dependencies) *Runner {
 	recorder := deps.SnapshotRecorder
@@ -80,19 +144,33 @@ func NewRunner(deps Dependencies) *Runner {
 			recorder = candidate
 		}
 	}
-	return &Runner{
-		deps:      deps,
-		snapshots: newAsyncSnapshotRecorder(recorder, deps.SnapshotQueueSize),
+	r := &Runner{
+		deps:           deps,
+		snapshots:      newAsyncSnapshotRecorder(recorder, deps.SnapshotQueueSize),
+		reviewCh:       make(chan reviewTask, reviewQueueDepth),
+		reviewInflight: map[string]bool{},
+		lastAlert:      map[string]lastAlertInfo{},
 	}
+	for i := 0; i < reviewWorkers; i++ {
+		r.reviewWG.Add(1)
+		go r.reviewWorker()
+	}
+	return r
 }
 
-// Close drains the bounded snapshot side channel. Run calls it automatically;
-// callers that use RunOnce directly can close explicitly when they need to
-// wait for queued observations to finish.
+// Close drains the bounded snapshot side channel and stops the review
+// workers after queued audits complete. Run calls it automatically; callers
+// that use RunOnce directly can close explicitly when they need to wait for
+// queued observations and audits to finish.
 func (r *Runner) Close() {
-	if r != nil {
-		r.snapshots.close()
+	if r == nil {
+		return
 	}
+	r.closeOnce.Do(func() {
+		close(r.reviewCh)
+		r.reviewWG.Wait()
+		r.snapshots.close()
+	})
 }
 
 func (r *Runner) now() time.Time {
@@ -100,6 +178,30 @@ func (r *Runner) now() time.Time {
 		return r.deps.Now()
 	}
 	return time.Now()
+}
+
+// reviewWorker drains the review queue. The audit uses the enqueue-time
+// context, so a cancelled run loop fails in-flight audits promptly (the
+// failure lands as an audit action, same as the synchronous path). A panic
+// inside the audit must not kill the worker: it is recovered, the
+// suppression baseline is cleared (the audit never produced a verdict) and
+// the next pass re-audits.
+func (r *Runner) reviewWorker() {
+	defer r.reviewWG.Done()
+	for task := range r.reviewCh {
+		func() {
+			defer func() {
+				if p := recover(); p != nil {
+					fmt.Fprintf(os.Stderr, "wheelrun: %s: review worker panic: %v\n", task.symbol, p)
+					r.clearSuppression(task.symbol)
+				}
+				r.reviewMu.Lock()
+				delete(r.reviewInflight, task.symbol)
+				r.reviewMu.Unlock()
+			}()
+			r.reviewAlert(task.ctx, task.symbol, task.signalID, task.configVersion, task.cfg, task.sig, task.record, task.positions, task.price, task.cash, task.hasCash)
+		}()
+	}
 }
 
 // fallbackBlocker keeps the validateSignal contract (DATA_BLOCKED must have
@@ -153,10 +255,12 @@ func (r *Runner) RunOnce(ctx context.Context) error {
 // cancelled. Interval must be positive; per-pass errors are logged and never
 // abort the loop.
 func (r *Runner) Run(ctx context.Context, interval time.Duration) error {
+	// Close before the interval check: Run(ctx, 0) must not leak the review
+	// workers it already spawned in NewRunner.
+	defer r.Close()
 	if interval <= 0 {
 		return errors.New("wheelrun: interval must be positive")
 	}
-	defer r.Close()
 	pass := func() {
 		if err := r.RunOnce(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "wheelrun: %v\n", err)
@@ -290,12 +394,21 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		return fmt.Errorf("evaluate: %w", err)
 	}
 	record, status, reason := mapSignal(symbol, rec.Version, sig, price)
+	if record.Action == "ALERT" && r.suppressRepeatAlert(symbol, sig, now) {
+		// 同候选在窗口内重复:降为 HOLD,不落 ALERT、不触发审核。窗口不滚动,
+		// 期满后候选重新 ALERT 并重新审核。原策略原因保留在文案中,不覆盖。
+		record.Action = "HOLD"
+		record.Reason = fmt.Sprintf("重复候选抑制: %s 在 %v 窗口内已 ALERT 过, 降为 HOLD; %s", sig.Quote.Symbol, repeatAlertWindow, sig.Reason)
+	}
 	id, err := r.deps.Store.AppendSignal(ctx, record)
 	if err != nil {
 		return fmt.Errorf("append signal: %w", err)
 	}
 	if record.Action == "ALERT" {
-		r.reviewAlert(ctx, symbol, id, rec.Version, cfg, sig, record, filteredPositions, price, in.CashAvailable, in.HasCashAvailable)
+		// 基线在信号落库成功后才写:落库失败的 ALERT 从未发生,不应进入
+		// 抑制窗口(否则下一 pass 会被静默降 HOLD)。
+		r.commitAlertBaseline(symbol, sig, now)
+		r.enqueueReview(ctx, symbol, id, rec.Version, cfg, sig, record, filteredPositions, price, in.CashAvailable, in.HasCashAvailable)
 	}
 	if err := r.deps.Watchlist.SetExecutionStatus(ctx, symbol, status, reason); err != nil {
 		return fmt.Errorf("signal %d stored, watchlist status sync: %w", id, err)
@@ -325,6 +438,100 @@ func (r *Runner) persistDataBlocked(ctx context.Context, symbol string, version 
 	return fmt.Errorf("%s; signal %d DATA_BLOCKED", reason, id)
 }
 
+// enqueueReview hands an ALERT to the review queue without blocking the run
+// loop. Per-symbol dedup: a symbol whose audit is already queued or running
+// skips further reviews (the audit the push gate waits on is in flight, a
+// second one would only delay the queue). A full queue drops the entry with
+// a log line — the push gate then skips this signal and the next windowed
+// ALERT audits again.
+func (r *Runner) enqueueReview(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64, cash float64, hasCash bool) {
+	if r.deps.LLMReviewer == nil {
+		return
+	}
+	r.reviewMu.Lock()
+	if r.reviewInflight[symbol] {
+		r.reviewMu.Unlock()
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: LLM review already in flight; skipping review signal=%d\n", symbol, signalID)
+		return
+	}
+	r.reviewInflight[symbol] = true
+	r.reviewMu.Unlock()
+	task := reviewTask{
+		ctx:           ctx,
+		symbol:        symbol,
+		signalID:      signalID,
+		configVersion: configVersion,
+		cfg:           cfg,
+		sig:           sig,
+		record:        record,
+		positions:     positions,
+		price:         price,
+		cash:          cash,
+		hasCash:       hasCash,
+	}
+	select {
+	case r.reviewCh <- task:
+	default:
+		r.reviewMu.Lock()
+		delete(r.reviewInflight, symbol)
+		r.reviewMu.Unlock()
+		// 队列满丢弃 = 审核未发生:清抑制基线,下一 pass 的重复 ALERT 重新
+		// 入队重试(否则该 symbol 在窗口内静默降 HOLD,通知最长丢 30 分钟)。
+		r.clearSuppression(symbol)
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: review queue full; dropping review signal=%d\n", symbol, signalID)
+	}
+}
+
+// suppressRepeatAlert downgrades an ALERT when the same contract already
+// alerted for this symbol within repeatAlertWindow: the candidate stays in
+// range pass after pass and every round would otherwise re-alert and spawn a
+// fresh audit (JD 28/29P, 2026-08-14). It is a read-only check — the
+// baseline is committed by commitAlertBaseline only after the ALERT lands in
+// the store; suppressed rounds do not extend it, so the candidate alerts
+// again once the window expires. sig.Quote must be non-nil for ALERTs.
+func (r *Runner) suppressRepeatAlert(symbol string, sig wheel.Signal, now time.Time) bool {
+	if sig.Quote == nil {
+		return false
+	}
+	contract := sig.Quote.Symbol
+	r.reviewMu.Lock()
+	last, ok := r.lastAlert[symbol]
+	r.reviewMu.Unlock()
+	if ok && last.contract == contract && now.Sub(last.at) < repeatAlertWindow {
+		fmt.Fprintf(os.Stderr, "wheelrun: %s: repeat candidate %s within %v; HOLD instead of ALERT\n", symbol, contract, repeatAlertWindow)
+		return true
+	}
+	return false
+}
+
+// commitAlertBaseline records the contract+time baseline for a persisted
+// ALERT. Called by the pass loop after AppendSignal succeeds; workers clear
+// it (clearSuppression) when an audit fails on the infrastructure side.
+func (r *Runner) commitAlertBaseline(symbol string, sig wheel.Signal, now time.Time) {
+	if sig.Quote == nil {
+		return
+	}
+	r.reviewMu.Lock()
+	r.lastAlert[symbol] = lastAlertInfo{at: now, contract: sig.Quote.Symbol}
+	r.reviewMu.Unlock()
+}
+
+// clearSuppression removes the repeat-alert baseline for a symbol. Used by
+// the review path when an audit never produced a verdict (gate failure after
+// retry, dropped queue entry, worker panic): the next pass must re-ALERT and
+// re-audit instead of being silently HOLD for the rest of the window.
+func (r *Runner) clearSuppression(symbol string) {
+	r.reviewMu.Lock()
+	delete(r.lastAlert, symbol)
+	r.reviewMu.Unlock()
+}
+
+// reviewAlert runs the LLM audit for one signal (on a review worker; the
+// enqueue-time context is the deadline). The gate is fail-closed: pending
+// orders and cash availability are mandatory audit inputs, a transient gate
+// failure is retried once (2026-08-13: signal 741 a DNS timeout was hard
+// recorded as REJECTED), and any remaining failure lands as an audit action
+// the push gate skips.
 func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64, configVersion int, cfg wheel.Config, sig wheel.Signal, record wheelstore.SignalRecord, positions []Position, price float64, cash float64, hasCash bool) {
 	if r.deps.LLMReviewer == nil {
 		fmt.Fprintf(os.Stderr, "wheelrun: %s: LLM reviewer unavailable; skipping review signal=%d\n", symbol, signalID)
@@ -390,6 +597,11 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 			return
 		}
 		_, action, err = gate()
+	}
+	if action == "LLM_REVIEW_FAILED" {
+		// 审核基础设施失败(重试后仍失败):本次审核从未产生 verdict,清除
+		// 抑制基线,下一 pass 重新 ALERT 并重新审核(P1-1)。
+		r.clearSuppression(symbol)
 	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "wheelrun: %s: append LLM gate action %s: %v\n", symbol, action, err)
