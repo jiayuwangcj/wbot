@@ -68,6 +68,7 @@ describe("toRerunWheelParams", () => {
         move_interval_pct: 0.018,
 		min_premium_per_share: 1.2,
 		stock_switch_pct: 0.03,
+		covered_call_pct: 0.05,
 		trade_gap: 50,
         min_dte: 5,
         max_dte: 10,
@@ -79,6 +80,7 @@ describe("toRerunWheelParams", () => {
 	expect(params?.full_position_price).toBe(400);
 	expect(params?.zero_position_price).toBe(500);
     expect(params?.max_inventory).toBe(100);
+	expect(params?.covered_call_pct).toBe(0.05);
     expect(params?.strategic_state).toBe("CAUTION");
   });
 

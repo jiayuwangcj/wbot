@@ -131,7 +131,7 @@ func TestBacktestPushFailureRetryAndDuplicateCLI(t *testing.T) {
 	if first.Nonce == "" || first.Nonce != second.Nonce || !first.EnforceNonce || !second.EnforceNonce {
 		t.Fatalf("nonce retry contract = %#v / %#v", first, second)
 	}
-	if len(second.Embeds) != 1 || len(second.Embeds[0].Fields) != 7 {
+	if len(second.Embeds) != 1 || len(second.Embeds[0].Fields) != 8 {
 		t.Fatalf("embed fields = %#v", second.Embeds)
 	}
 	reportFiles, _ := filepath.Glob(filepath.Join(reportDir, "*.json"))

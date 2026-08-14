@@ -21,11 +21,12 @@ import (
 )
 
 const (
+	// 1.5:在 1.4 权利金评价口径旁并列恢复全量已实现收益及各自年化口径。
 	// 1.4:net_return_*/annualized/gross 改为权利金净收益口径(2026-08-14 老板指令
 	// 「忽略掉正股价差收益,仅以权利金为最大目标」):期权腿净收益 = 权利金收入 −
 	// 平仓成本 − 期权/行权交割费,剔除正股已实现盈亏;市值标记与已实现全量分别留
 	// 在 window_mark_to_market_* 与 attribution(审计)。
-	SchemaVersion           = "1.4"
+	SchemaVersion           = "1.5"
 	ParamsDictionaryVersion = "params-1.0"
 	orderAssumption         = "卖出期权,按 Bid 价尝试成交,有效时长=bar 内"
 )
@@ -68,8 +69,12 @@ type MoneyResult struct {
 	NetReturnAmount             *float64      `json:"net_return_amount"`
 	PremiumNetReturnPct         *float64      `json:"premium_net_return_pct,omitempty"`
 	PremiumNetReturnAmount      *float64      `json:"premium_net_return_amount,omitempty"`
+	RealizedReturnPct           *float64      `json:"realized_return_pct"`
+	RealizedReturnAmount        *float64      `json:"realized_return_amount"`
 	FinalEquityAmount           *float64      `json:"final_equity_amount"`
 	AnnualizedReturnPct         *float64      `json:"annualized_return_pct"`
+	PremiumAnnualizedReturnPct  *float64      `json:"premium_annualized_return_pct,omitempty"`
+	RealizedAnnualizedReturnPct *float64      `json:"realized_annualized_return_pct"`
 	GrossReturnPct              *float64      `json:"gross_return_pct"`
 	GrossReturnAmount           *float64      `json:"gross_return_amount"`
 	StockMarketValuePct         *float64      `json:"stock_market_value_pct"`
@@ -416,7 +421,7 @@ func Build(in Input) (*Report, error) {
 	// 期权腿(权利金收入 − 平仓 − 期权/行权费),忽略正股已实现盈亏;已实现全量与
 	// 市值标记分别留在 attribution 与 window_mark_to_market_* 审计。
 	premiumNetAmount, premiumNetPct := a.PremiumNetAmount, a.PremiumNetAmount/in.InitialCash
-	var netReturnAmount, netReturnPct, premiumNetReturnAmount, premiumNetReturnPct, excessReturnPct *float64
+	var netReturnAmount, netReturnPct, premiumNetReturnAmount, premiumNetReturnPct, realizedReturnAmount, realizedReturnPct, excessReturnPct *float64
 	returnStatus := "not_applicable_data_blocked"
 	if in.Strategy == "wheel" {
 		// wheel 评价口径 = 权利金净收益(schema 1.4):正股仅急涨急跌应急操作,其
@@ -425,12 +430,16 @@ func Build(in Input) (*Report, error) {
 			returnStatus = "research_only"
 			netReturnAmount, netReturnPct = &premiumNetAmount, &premiumNetPct
 			premiumNetReturnAmount, premiumNetReturnPct = &premiumNetAmount, &premiumNetPct
+			realizedAmount, realizedPct := in.Result.RealizedReturnAmount, in.Result.RealizedReturnPct
+			realizedReturnAmount, realizedReturnPct = &realizedAmount, &realizedPct
 		}
 	} else if windowReturnAmount != nil && windowReturnPct != nil {
 		// 非 wheel 基准(hold/buy-hold 等)无战略参数与期权腿,市值收益即其真实
 		// 口径,不参与权利金口径切换(该口径作用于 wheel/ES 评价)。
 		returnStatus = "complete"
 		netReturnAmount, netReturnPct = windowReturnAmount, windowReturnPct
+		realizedAmount, realizedPct := in.Result.RealizedReturnAmount, in.Result.RealizedReturnPct
+		realizedReturnAmount, realizedReturnPct = &realizedAmount, &realizedPct
 	}
 	if netReturnPct != nil {
 		excess := *netReturnPct - in.BaselineReturnPct
@@ -463,6 +472,8 @@ func Build(in Input) (*Report, error) {
 		grossReturnAmount, grossReturnPct = &grossAmount, &grossPct
 	}
 	annualizedReturnPct := annualizedReturn(in.Start, in.End, netReturnPct)
+	premiumAnnualizedReturnPct := annualizedReturn(in.Start, in.End, premiumNetReturnPct)
+	realizedAnnualizedReturnPct := annualizedReturn(in.Start, in.End, realizedReturnPct)
 	costDrag := CostDrag{TotalFeesAmount: in.Result.Fees.TotalAmount, CostDragPct: costDragPct, CostDragReturnPct: costDragReturnPct, GrossReturnPct: grossReturnPct, GrossReturnAmount: grossReturnAmount}
 	r := &Report{
 		SchemaVersion: SchemaVersion,
@@ -479,7 +490,9 @@ func Build(in Input) (*Report, error) {
 		Result: MoneyResult{
 			ReturnStatus: returnStatus, NetReturnPct: netReturnPct, NetReturnAmount: netReturnAmount,
 			PremiumNetReturnPct: premiumNetReturnPct, PremiumNetReturnAmount: premiumNetReturnAmount,
+			RealizedReturnPct: realizedReturnPct, RealizedReturnAmount: realizedReturnAmount,
 			FinalEquityAmount: finalEquityAmount, AnnualizedReturnPct: annualizedReturnPct,
+			PremiumAnnualizedReturnPct: premiumAnnualizedReturnPct, RealizedAnnualizedReturnPct: realizedAnnualizedReturnPct,
 			GrossReturnPct: grossReturnPct, GrossReturnAmount: grossReturnAmount,
 			StockMarketValuePct: stockMarketValuePct, OptionMarketValuePct: optionMarketValuePct, HoldingsMarketValuePct: holdingsMarketValuePct,
 			FinalEquityPct: finalEquityPct, MaxStockMarketValuePct: maxStockMarketValuePct, MaxPositionPct: maxPositionPct,

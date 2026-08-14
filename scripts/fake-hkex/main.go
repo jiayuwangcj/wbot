@@ -69,12 +69,16 @@ func settlements(date time.Time) (call, put float64) {
 	return 8 + float64(day)/4, 20 - float64(day)/2
 }
 
+// DTOP settles one strike per record; the acceptance bars hold at 500 (and
+// 490 on the last day), so OTM strikes are 490 (put) and 510 (call). Strikes
+// at or above/below parity would be masked by the wheel OTM hard mask.
 func dtop(class string, date time.Time) string {
 	call, put := settlements(date)
 	business := date.Format("20060102")
 	return fmt.Sprintf("\"H\",\"DTOP\",\"DCASS\",\"%s\",\"%s195046\",\"SEOCH\",1\r\n"+
-		"\"01\",\"SOM\",\"STOCK OPTIONS\",\"%s\",\"17\",\"JUL\",\"26\",500.00,5000,4500,0,5000,100,%.2f,0.00,6000,5500,0,5000,100,%.2f,0.00\r\n"+
-		"\"T\",2,\"EOF\"\r\n", business, business, class, call, put)
+		"\"01\",\"SOM\",\"STOCK OPTIONS\",\"%s\",\"17\",\"JUL\",\"26\",490.00,5000,4500,0,5000,100,%.2f,0.00,6000,5500,0,5000,100,%.2f,0.00\r\n"+
+		"\"01\",\"SOM\",\"STOCK OPTIONS\",\"%s\",\"17\",\"JUL\",\"26\",510.00,5000,4500,0,5000,100,%.2f,0.00,6000,5500,0,5000,100,%.2f,0.00\r\n"+
+		"\"T\",3,\"EOF\"\r\n", business, business, class, call, put, class, call, put)
 }
 
 func rp006(class string, date time.Time) string {
@@ -82,8 +86,8 @@ func rp006(class string, date time.Time) string {
 	business := date.Format("20060102")
 	return fmt.Sprintf("\"H\",\"RP006-FINAL\",\"DCASS\",\"%s\",\"%s195046\",\"SEOCH\",01\r\n"+
 		"\"01\",\"%sSP\",\"SOM\",\"STOCK OPTIONS\",\"%s\",\"TEST UNDERLYING\",\"HKD\",500.00,500.00,0.00,\r\n"+
-		"\"01\",\"%s500.00G6\",\"SOM\",\"STOCK OPTIONS\",\"%s\",\"TEST UNDERLYING\",\"HKD\",%.2f,%.2f,0.00,25.0000\r\n"+
-		"\"01\",\"%s500.00S6\",\"SOM\",\"STOCK OPTIONS\",\"%s\",\"TEST UNDERLYING\",\"HKD\",%.2f,%.2f,0.00,25.0000\r\n"+
+		"\"01\",\"%s510.00G6\",\"SOM\",\"STOCK OPTIONS\",\"%s\",\"TEST UNDERLYING\",\"HKD\",%.2f,%.2f,0.00,25.0000\r\n"+
+		"\"01\",\"%s490.00S6\",\"SOM\",\"STOCK OPTIONS\",\"%s\",\"TEST UNDERLYING\",\"HKD\",%.2f,%.2f,0.00,25.0000\r\n"+
 		"\"T\",3,\"EOF\"\r\n", business, business, class, class, class, class, call, call, class, class, put, put)
 }
 

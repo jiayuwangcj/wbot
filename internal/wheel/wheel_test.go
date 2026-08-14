@@ -158,8 +158,8 @@ func TestQuoteValidationUsesDTESentinels(t *testing.T) {
 
 func TestEvaluateStateAndDirectionTable(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
-	call := testQuote(string(Call), 500, asOf.AddDate(0, 0, 7))
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
+	call := testQuote(string(Call), 600, asOf.AddDate(0, 0, 7))
 	cases := []struct {
 		name, state, wantAction, wantDirection string
 		price, stock                           float64
@@ -174,7 +174,11 @@ func TestEvaluateStateAndDirectionTable(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := testConfig(tc.state)
-			s, err := Evaluate(cfg, DecisionInput{CurrentPrice: tc.price, AsOf: asOf, StockShares: tc.stock, Quotes: tc.quotes, CashAvailable: 100000, HasCashAvailable: true})
+			stockCost := 0.0
+			if tc.stock > 0 {
+				stockCost = tc.price
+			}
+			s, err := Evaluate(cfg, DecisionInput{CurrentPrice: tc.price, AsOf: asOf, StockShares: tc.stock, StockAverageCost: stockCost, Quotes: tc.quotes, CashAvailable: 100000, HasCashAvailable: true})
 			if err != nil || s.Action != tc.wantAction || s.Direction != tc.wantDirection {
 				t.Fatalf("signal=%+v err=%v", s, err)
 			}
@@ -217,7 +221,7 @@ func TestExpectedGainEstimateAndMissingData(t *testing.T) {
 
 func TestEvaluateAlertIncludesExpectedGain(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
 	signal, err := Evaluate(testConfig(StateNormal), DecisionInput{
 		CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put},
 		HasCashAvailable: true, CashAvailable: 1_000_000,
@@ -230,9 +234,76 @@ func TestEvaluateAlertIncludesExpectedGain(t *testing.T) {
 	}
 }
 
+func TestEvaluateHardMasksNonOTMBeforeScoring(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	cfg := testConfig(StateNormal)
+	atmPut := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	otmPut := testQuote(string(Put), 399, asOf.AddDate(0, 0, 7))
+	atmPut.Symbol, otmPut.Symbol = "ATM-P", "OTM-P"
+	signal, err := Evaluate(cfg, DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{atmPut, otmPut}, HasCashAvailable: true, CashAvailable: 1_000_000})
+	if err != nil || signal.Action != ActionAlert || signal.Quote == nil || signal.Quote.Symbol != "OTM-P" {
+		t.Fatalf("put signal = %+v err=%v; want only OTM put", signal, err)
+	}
+	if signal.Candidates[0].Accepted || signal.Candidates[0].Quality != 0 || !strings.Contains(strings.Join(signal.Candidates[0].Reasons, " "), "must be OTM") {
+		t.Fatalf("ATM put candidate = %+v; want pre-score OTM rejection", signal.Candidates[0])
+	}
+
+	cfg.FullPositionPrice, cfg.ZeroPositionPrice, cfg.MaxInventory, cfg.TradeGap = 400, 550, 100, 0
+	atmCall := testQuote(string(Call), 550, asOf.AddDate(0, 0, 7))
+	otmCall := testQuote(string(Call), 551, asOf.AddDate(0, 0, 7))
+	atmCall.Symbol, otmCall.Symbol = "ATM-C", "OTM-C"
+	signal, err = Evaluate(cfg, DecisionInput{CurrentPrice: 550, AsOf: asOf, StockShares: 100, StockAverageCost: 550, Quotes: []OptionQuote{atmCall, otmCall}})
+	if err != nil || signal.Action != ActionAlert || signal.Quote == nil || signal.Quote.Symbol != "OTM-C" || signal.Candidates[0].Accepted || !strings.Contains(strings.Join(signal.Candidates[0].Reasons, " "), "must be OTM") {
+		t.Fatalf("call signal = %+v err=%v; want only OTM call", signal, err)
+	}
+}
+
+func TestCoveredCallPctAndCostBasisBoundaries(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	base := testConfig(StateNormal)
+	base.FullPositionPrice, base.ZeroPositionPrice, base.MaxInventory, base.TradeGap = 400, 550, 100, 0
+	evaluate := func(cfg Config, strike, cost float64) Signal {
+		quote := testQuote(string(Call), strike, asOf.AddDate(0, 0, 7))
+		signal, err := Evaluate(cfg, DecisionInput{CurrentPrice: 550, AsOf: asOf, StockShares: 100, StockAverageCost: cost, Quotes: []OptionQuote{quote}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return signal
+	}
+
+	base.CoveredCallPct = 0
+	if got := evaluate(base, 579, 580); got.Action != ActionHold || !strings.Contains(strings.Join(got.RejectReasons, " "), "protected minimum") {
+		t.Fatalf("below-cost call = %+v; want HOLD", got)
+	}
+	if got := evaluate(base, 580, 580); got.Action != ActionAlert {
+		t.Fatalf("cost-boundary call = %+v; want ALERT", got)
+	}
+	base.CoveredCallPct = 0.000001
+	if got := evaluate(base, 551, 550); got.Action != ActionAlert {
+		t.Fatalf("tiny-pct call = %+v; want ALERT", got)
+	}
+	base.CoveredCallPct = 1
+	if got := evaluate(base, 1099, 550); got.Action != ActionHold {
+		t.Fatalf("below-large-pct call = %+v; want HOLD", got)
+	}
+	if got := evaluate(base, 1100, 550); got.Action != ActionAlert {
+		t.Fatalf("large-pct boundary call = %+v; want ALERT", got)
+	}
+}
+
+func TestStockSwitchDoesNotSuggestLossMakingSale(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	cfg := testConfig(StateNormal)
+	cfg.StockSwitchPct = 0.05
+	signal, err := Evaluate(cfg, DecisionInput{CurrentPrice: 500, AsOf: asOf, StockShares: 1200, StockAverageCost: 520, LastEffectiveFillPrice: 550})
+	if err != nil || signal.Action != ActionHold || signal.StockSuggestion != nil || !strings.Contains(signal.Reason, "below average cost") {
+		t.Fatalf("loss-making stock sale = %+v err=%v; want protected HOLD", signal, err)
+	}
+}
+
 func TestEvaluateFiltersBelowMinimumOptionProfit(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
 	put.Bid = 1.5
 	put.Ask = 1.6
 	cfg := testConfig(StateNormal)
@@ -260,8 +331,10 @@ func TestEvaluateFiltersBelowMinimumOptionProfit(t *testing.T) {
 // 连续被 REJECT)。
 func TestEvaluatePendingOrderExclusion(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))  // Symbol P-4
-	put2 := testQuote(string(Put), 500, asOf.AddDate(0, 0, 7)) // Symbol P-5
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))  // preferred OTM put
+	put2 := testQuote(string(Put), 380, asOf.AddDate(0, 0, 7)) // alternate OTM put
+	put.Symbol, put2.Symbol = "P390", "P380"
+	put.Bid, put.Ask = 4.5, 4.51
 	cfg := testConfig(StateNormal)
 	base := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
 
@@ -316,8 +389,10 @@ func TestEvaluatePendingOrderExclusion(t *testing.T) {
 // 规则 7 把关),改单不绕过任何闸门(老板指令 2026-08-13)。
 func TestEvaluateReplaceOrder(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))  // P-4,首选
-	put2 := testQuote(string(Put), 500, asOf.AddDate(0, 0, 7)) // P-5
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))  // 首选 OTM
+	put2 := testQuote(string(Put), 380, asOf.AddDate(0, 0, 7)) // 次选 OTM
+	put.Symbol, put2.Symbol = "P390", "P380"
+	put.Bid, put.Ask = 4.5, 4.51
 	cfg := testConfig(StateNormal)
 	base := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
 
@@ -378,7 +453,7 @@ func TestEvaluateReplaceOrder(t *testing.T) {
 	}
 
 	// 挂单候选失效(DTE 3 < 5,仍被报价但过不了结构校验)→ 允许改单。
-	soon := testQuote(string(Put), 400, asOf.AddDate(0, 0, 3))
+	soon := testQuote(string(Put), 390, asOf.AddDate(0, 0, 3))
 	bad := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{soon, put2}, HasCashAvailable: true, CashAvailable: 1_000_000}
 	bad.Pending = []PendingOrder{{Contract: soon.Symbol, Direction: string(Put), OrderID: "100"}}
 	sig, err = Evaluate(cfg, bad)
@@ -395,7 +470,7 @@ func TestEvaluateReplaceOrder(t *testing.T) {
 
 func TestEvaluateTacticalGates(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
 	baseInput := DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 1_000_000}
 
 	cfg := testConfig(StateNormal)
@@ -425,7 +500,7 @@ func TestEvaluateTacticalGates(t *testing.T) {
 func TestEvaluateRiskAndNoDailyLimitTable(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig(StateNormal)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
 	cases := []struct {
 		name  string
 		input DecisionInput
@@ -449,7 +524,7 @@ func TestEvaluateRiskAndNoDailyLimitTable(t *testing.T) {
 func TestCapabilityStatusDistinguishesDataBlockFromRiskHold(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig(StateNormal)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
 
 	alert, err := Evaluate(cfg, DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{put}, HasCashAvailable: true, CashAvailable: 1_000_000})
 	if err != nil || alert.Action != ActionAlert || alert.CapabilityStatus != CapabilityReady || len(alert.BlockedBy) != 0 {
@@ -501,7 +576,7 @@ func TestExistingShortPutCommitmentCountsTowardCashReserve(t *testing.T) {
 func TestExistingShortPutCommitmentCountsTowardMaxInventory(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig(StateNormal)
-	put := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
 	signal, err := Evaluate(cfg, DecisionInput{
 		CurrentPrice: 400,
 		AsOf:         asOf,
@@ -529,7 +604,7 @@ func TestEvaluateStableCandidateOrderingTable(t *testing.T) {
 	far := testQuote(string(Put), 300, asOf.AddDate(0, 0, 7))
 	far.Symbol = "far"
 	far.Delta = -.05
-	near := testQuote(string(Put), 400, asOf.AddDate(0, 0, 7))
+	near := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
 	near.Symbol = "near"
 	near.Delta = -.30
 	s, err := Evaluate(cfg, DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{far, near}, HasCashAvailable: true, CashAvailable: 100000})
@@ -542,7 +617,7 @@ func TestEvaluateStableCandidateOrderingTable(t *testing.T) {
 	low := testQuote(string(Put), 380, asOf.AddDate(0, 0, 7))
 	low.Symbol = "low"
 	low.Delta = -.30
-	high := testQuote(string(Put), 420, asOf.AddDate(0, 0, 7))
+	high := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
 	high.Symbol = "high"
 	high.Delta = -.30
 	s, err = Evaluate(cfg, DecisionInput{CurrentPrice: 400, AsOf: asOf, Quotes: []OptionQuote{high, low}, HasCashAvailable: true, CashAvailable: 100000})
@@ -554,7 +629,7 @@ func TestEvaluateStableCandidateOrderingTable(t *testing.T) {
 func TestCoveredCallAndQualityTable(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	cfg := testConfig(StateNormal)
-	call := testQuote(string(Call), 500, asOf.AddDate(0, 0, 7))
+	call := testQuote(string(Call), 600, asOf.AddDate(0, 0, 7))
 	cases := []struct {
 		name      string
 		positions []OptionPosition
@@ -567,7 +642,11 @@ func TestCoveredCallAndQualityTable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, _ := Evaluate(cfg, DecisionInput{CurrentPrice: 550, AsOf: asOf, StockShares: tc.stock, Positions: tc.positions, Quotes: []OptionQuote{call}, CashAvailable: 100000, HasCashAvailable: true})
+			stockCost := 0.0
+			if tc.stock > 0 {
+				stockCost = 550
+			}
+			s, _ := Evaluate(cfg, DecisionInput{CurrentPrice: 550, AsOf: asOf, StockShares: tc.stock, StockAverageCost: stockCost, Positions: tc.positions, Quotes: []OptionQuote{call}, CashAvailable: 100000, HasCashAvailable: true})
 			if string(s.Action) != tc.want {
 				t.Fatalf("action=%s reason=%s", s.Action, s.Reason)
 			}

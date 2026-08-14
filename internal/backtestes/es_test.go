@@ -62,6 +62,19 @@ func TestParseSpaceIncludesMinimumOptionProfit(t *testing.T) {
 	}
 }
 
+func TestParseSpaceIncludesCoveredCallPct(t *testing.T) {
+	s, err := ParseSpace(`{"covered_call_pct":[0.01,0.15]}`, baseParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Bounds["covered_call_pct"]; got.Unit != "%" || got.Min != 0.01 || got.Max != 0.15 {
+		t.Fatalf("covered_call_pct bound = %+v", got)
+	}
+	if _, err := ParseSpace(`{"covered_call_pct":[0,1.01]}`, baseParams()); err == nil || !strings.Contains(err.Error(), "[0,1]") {
+		t.Fatalf("oversized covered_call_pct error = %v", err)
+	}
+}
+
 func TestSplitWindowsIsChronologicalWithoutLeakage(t *testing.T) {
 	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	w, err := SplitWindows(from, from.Add(100*time.Hour))

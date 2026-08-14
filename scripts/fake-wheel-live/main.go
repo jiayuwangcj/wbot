@@ -147,18 +147,33 @@ func (s *fakeState) handleFutu(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC().AddDate(0, 0, 7)
 		date := now.Format("2006-01-02")
 		codeDate := now.Format("060102")
+		// Underlying quotes at 100, so OTM strikes are put 90 / call 110.
+		// The 100-parity pair stays for breadth; the wheel OTM hard mask
+		// (strike < underlying for puts, > underlying for calls) rejects it.
 		writeFutu(w, map[string]any{"option_chain": []any{map[string]any{
 			"strike_time": date,
-			"option": []any{map[string]any{
-				"call": map[string]any{
-					"basic":          map[string]any{"security": map[string]any{"market": 11, "code": "FAKE" + codeDate + "C100000"}, "lot_size": 100},
-					"option_ex_data": map[string]any{"strike_price": 100.0},
+			"option": []any{
+				map[string]any{
+					"call": map[string]any{
+						"basic":          map[string]any{"security": map[string]any{"market": 11, "code": "FAKE" + codeDate + "C100000"}, "lot_size": 100},
+						"option_ex_data": map[string]any{"strike_price": 100.0},
+					},
+					"put": map[string]any{
+						"basic":          map[string]any{"security": map[string]any{"market": 11, "code": "FAKE" + codeDate + "P100000"}, "lot_size": 100},
+						"option_ex_data": map[string]any{"strike_price": 100.0},
+					},
 				},
-				"put": map[string]any{
-					"basic":          map[string]any{"security": map[string]any{"market": 11, "code": "FAKE" + codeDate + "P100000"}, "lot_size": 100},
-					"option_ex_data": map[string]any{"strike_price": 100.0},
+				map[string]any{
+					"call": map[string]any{
+						"basic":          map[string]any{"security": map[string]any{"market": 11, "code": "FAKE" + codeDate + "C110000"}, "lot_size": 100},
+						"option_ex_data": map[string]any{"strike_price": 110.0},
+					},
+					"put": map[string]any{
+						"basic":          map[string]any{"security": map[string]any{"market": 11, "code": "FAKE" + codeDate + "P90000"}, "lot_size": 100},
+						"option_ex_data": map[string]any{"strike_price": 90.0},
+					},
 				},
-			}},
+			},
 		}}})
 	default:
 		http.NotFound(w, r)

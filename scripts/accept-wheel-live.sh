@@ -37,7 +37,12 @@ serve_pid=""
 fake_pid=""
 serve_base=""
 sym_a="WLA$$.US"
-sym_b="WLB$$.US"
+# sym_b sorts before the CI seed symbols (ACCEPT.US/BTEXEC*.US/US.JD) so the
+# wheel runner evaluates it first in its round. The runner iterates the
+# watchlist ORDER BY symbol and each symbol takes ~10-30s (futu snapshot
+# limiter, 1 req/3s), so a W-prefixed symbol would be processed ~90-150s
+# after the add and miss the 200s window on a seeded CI database.
+sym_b="AAA$$.US"
 pass=0
 failed=0
 
@@ -49,6 +54,10 @@ check() {
   else
     failed=$((failed + 1))
     printf '  \033[31mFAIL\033[0m %s (want %s, got %s)\n' "$description" "$want" "$got"
+    # Failure observability: dump the live-runner logs so a CI failure shows
+    # why wheelrun skipped/blocked instead of hiding behind the check result.
+    sed -n '1,120p' "$tmp/serve-b.log" 2>/dev/null || true
+    sed -n '1,80p' "$tmp/fake.log" 2>/dev/null || true
   fi
 }
 
@@ -149,7 +158,7 @@ params_a='{"strategy":"wheel","params":{"full_position_price":80,"zero_position_
 put_code="$(curl -s -o /dev/null -w '%{http_code}' -X PUT "$serve_base/v1/watchlist/$sym_a" \
   -H 'Content-Type: application/json' -d "$params_a")"
 check "场景 A 绑定有效 wheel 配置" 200 "$put_code"
-signals_a="$(wait_for_signal "$sym_a" 20)"
+signals_a="$(wait_for_signal "$sym_a" 60)"
 check "场景 A 产生 DATA_BLOCKED 信号" 1 "$(count "$signals_a" '"capability_status":"DATA_BLOCKED"')"
 check "场景 A capability 只落 DATA_BLOCKED/READY" 1 "$(signal_capabilities_valid "$signals_a")"
 watchlist_a="$(curl -s -m 5 "$serve_base/v1/watchlist")"
@@ -214,7 +223,7 @@ check "默认补齐 max_inventory=100" 1 "$(printf '%s\n' "$out_b" | grep -c '"m
 check "默认补齐 full_position_price=0.8×P (P=100)" 1 "$(printf '%s\n' "$out_b" | grep -c '"full_position_price":80')"
 check "默认补齐 zero_position_price=1.2×P (P=100)" 1 "$(printf '%s\n' "$out_b" | grep -c '"zero_position_price":120')"
 
-signals_b="$(wait_for_signal "$sym_b" 90)"
+signals_b="$(wait_for_signal "$sym_b" 200)"
 check "场景 B wheel_signals 有 ALERT" 1 "$(count "$signals_b" '"action":"ALERT"')"
 check "场景 B signal capability 合法" 1 "$(signal_capabilities_valid "$signals_b")"
 watchlist_b="$(curl -s -m 5 "$serve_base/v1/watchlist")"
@@ -228,7 +237,7 @@ check "场景 B 有 LLM_REVIEW 记录" 1 "$(count "$actions_b" '"action":"LLM_RE
 check "场景 B fake LLM verdict APPROVE" 1 "$(count "$actions_b" '"verdict":"APPROVE"')"
 
 dismissed="0"
-for _ in $(seq 1 45); do
+for _ in $(seq 1 240); do
   dismissed="$(sql -c "SELECT count(*) FROM wheel_signal_dismissals WHERE symbol = '$sym_b' AND dismiss_date = CURRENT_DATE;")"
   if [[ "$dismissed" == "1" ]]; then
     break

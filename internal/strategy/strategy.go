@@ -66,6 +66,7 @@ var templates = []Template{
 			{Name: "min_premium_per_share", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "最低每股权利金"},
 			{Name: "min_option_profit", Type: "number", Default: wheel.DefaultMinOptionProfit, Min: 0, Max: math.MaxFloat64, Help: "单笔候选期权预期收益总额最低门槛（权利金×张数）"},
 			{Name: "stock_switch_pct", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "切换为正股建议的价格变动比例（小数）"},
+			{Name: "covered_call_pct", Type: "number", Default: wheel.DefaultCoveredCallPct, Min: 0, Max: 1, Help: "covered call 价外幅度（小数），行权价不低于现价×(1+幅度)和接股成本"},
 			{Name: "trade_gap", Type: "number", Default: 50.0, Min: 0, Max: math.MaxFloat64, Help: "库存缺口不超过此值时不交易"},
 			{Name: "min_dte", Type: "number", Default: 5.0, Min: wheel.MinWheelDTE, Max: wheel.MaxWheelDTE, Help: "最小到期天数（DTE）"},
 			{Name: "max_dte", Type: "number", Default: 10.0, Min: wheel.MinWheelDTE, Max: wheel.MaxWheelDTE, Help: "最大到期天数（DTE）"},
@@ -151,6 +152,10 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param stock_switch_pct: %w", err)
 	}
+	coveredCallPct, err := asNumber(values["covered_call_pct"])
+	if err != nil {
+		return wheel.Config{}, fmt.Errorf("strategy wheel: param covered_call_pct: %w", err)
+	}
 	tradeGap, err := asNumber(values["trade_gap"])
 	if err != nil {
 		return wheel.Config{}, fmt.Errorf("strategy wheel: param trade_gap: %w", err)
@@ -186,6 +191,7 @@ func ParseConfig(params map[string]any) (wheel.Config, error) {
 		MinPremiumPerShare:     minPremium,
 		MinOptionProfit:        minOptionProfit,
 		StockSwitchPct:         stockSwitch,
+		CoveredCallPct:         coveredCallPct,
 		TradeGap:               tradeGap,
 		MinDTE:                 minDTE,
 		MaxDTE:                 maxDTE,
@@ -414,6 +420,7 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		// quote's own timestamp; otherwise a stale batch would validate itself.
 		AsOf:                   bar.Ts,
 		StockShares:            st.Position,
+		StockAverageCost:       st.StockAverageCost,
 		Positions:              positions,
 		CashAvailable:          st.Cash,
 		HasCashAvailable:       true,
@@ -434,6 +441,9 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 			return backtest.ActionHold, 0, nil
 		}
 		if signal.StockSuggestion.Side == "SELL" {
+			if st.StockAverageCost > 0 && bar.Close+1e-9 < st.StockAverageCost {
+				return backtest.ActionHold, 0, nil
+			}
 			// 资金安全:正股卖出永不超出实际持仓(不裸卖)。缺口里含期权 delta
 			// 折算的库存,超出实际股数的部分由人工处置线下对齐,回测不代做空。
 			if shares > st.Position {

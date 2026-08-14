@@ -25,6 +25,7 @@
     "min_premium_per_share": 1.2,
     "min_option_profit": 200,
     "stock_switch_pct": 0.03,
+    "covered_call_pct": 0.05,
     "trade_gap": 50,
     "min_dte": 5,
     "max_dte": 10,
@@ -34,7 +35,7 @@
 }
 ```
 
-约束：`full_position_price > 0`，`zero_position_price > full_position_price`，`max_inventory` 为正整数；DTE 范围有效，质量分在 `[0,1]`，其余战术参数非负。候选期权的 `expected_gain = Bid × 合约乘数 × 数量` 低于 `min_option_profit`（默认 200，单位 HKD/笔）时淘汰；它与 `min_premium_per_share` 同时生效，设为 0 可关闭总收益门槛。百分比 JSON/CLI 一律使用小数（`0.018` 表示 `1.8%`）；界面显示 `%` 时乘 100。两价之间按满仓到零仓线性插值，区间外钳制；策略不设每日提醒次数上限。
+约束：`full_position_price > 0`，`zero_position_price > full_position_price`，`max_inventory` 为正整数；DTE 范围有效，质量分和 `covered_call_pct` 在 `[0,1]`，其余战术参数非负。`covered_call_pct` 默认 0.05，covered call 行权价下限为 `max(现价×(1+covered_call_pct), 正股成本)`；存量配置省略该键时使用默认值。候选期权的 `expected_gain = Bid × 合约乘数 × 数量` 低于 `min_option_profit`（默认 200，单位 HKD/笔）时淘汰；它与 `min_premium_per_share` 同时生效，设为 0 可关闭总收益门槛。百分比 JSON/CLI 一律使用小数（`0.018` 表示 `1.8%`）；界面显示 `%` 时乘 100。两价之间按满仓到零仓线性插值并在区间外钳制；策略不设每日提醒次数上限。
 
 战略状态：
 
@@ -74,10 +75,14 @@ inventory_gap       = target_inventory - effective_inventory
 
 每个候选必须同时通过：
 
+- 卖 Put 必须 `strike < 正股现价`，卖 Call 必须 `strike > 正股现价`；OTM 硬过滤先于质量和权利金排序；
+- covered call 行权价必须达到配置的价外幅度并且不低于正股成本；
 - Put 指派后实际库存不超过 `max_inventory`，且现金检查覆盖所有已有空 Put 的行权价×张数×lot 承诺，再加本次候选；不能只检查新的一张；
 - Call 指派后不会形成裸空头；
 - 开仓后的有效库存不比开仓前更偏离目标；
 - 战略状态允许该方向。
+
+正股直接卖出同样不得低于持仓平均成本；`stock_switch_pct` 在急跌时只 HOLD 并保留持仓，价格恢复到成本以上才允许卖出。等于成本的成交只容许手续费级损失。
 
 输出包含方向、数量、报价、质量分、交易前后库存、指派后库存、触发理由和全部拒绝理由。输出的唯一动作是 `ALERT` 或 `HOLD`。
 
@@ -187,7 +192,7 @@ Futu 接入未确认的字段或权限必须留在 `INTEGRATION_BLOCKED`，不�
 当前情况由标的现价、策略配置版本、现金可用额及股票/期权持仓组成；signal 描述提示动作、方向、卖出合约数、候选报价、当前/目标/有效/交易后库存、库存缺口、能力状态和阻断原因；预期收益 expected_gain 是按卖价 Bid × 合约乘数 × 数量估算的毛权利金，不含手续费、滑点、税费及指派损益，不代表保证收益，缺失或为零不得推断为有收益。
 必须逐项审核：
 1. 方向反转检查（硬性项）：核对 signal.direction 与当前持仓、effective_inventory、inventory_gap、target_inventory 及满仓价—清仓价区间一致；缺口为正时卖 Put、缺口为负时卖 Call，卖出/买入符号与目标库存变化必须一致，任何方向反转或符号矛盾都必须 REJECT。
-2. 策略参数：核对 full_position_price/zero_position_price、max_inventory、move_interval_pct、min_premium_per_share、min_option_profit、stock_switch_pct、trade_gap、min_option_quality、min_dte/max_dte、strategic_state 及候选合约参数。
+2. 策略参数：核对 full_position_price/zero_position_price、max_inventory、move_interval_pct、min_premium_per_share、min_option_profit、stock_switch_pct、covered_call_pct、trade_gap、min_option_quality、min_dte/max_dte、strategic_state 及候选合约参数；卖 Put 必须 OTM，卖 Call 必须 OTM 且行权价不低于现价×(1+covered_call_pct)与正股成本。
 3. 数据质量：报价必须完整且新鲜，Bid/Ask 正数且未倒挂，IV/Delta/Theta 合理，Volume/OI 非零；不得用缺失 Greeks 或过期、拼接数据作判断。
 4. 资金与库存：核对现金/保证金预算、最大库存、Put 指派承诺、Call 备兑数量和交易后有效库存；策略不设每日提醒次数上限。
 5. 系统性错误：排查闭市或停牌误判、同一合约重复动作、与现有持仓或历史动作矛盾、合约类型/到期日/乘数错误及 Greeks 缺失。

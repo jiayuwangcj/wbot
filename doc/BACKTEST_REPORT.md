@@ -82,8 +82,14 @@
   "return_status": "not_applicable_data_blocked",
   "net_return_pct": null,
   "net_return_amount": null,
+  "premium_net_return_pct": null,
+  "premium_net_return_amount": null,
+  "realized_return_pct": null,
+  "realized_return_amount": null,
   "final_equity_amount": 996320.0,
   "annualized_return_pct": null,
+  "premium_annualized_return_pct": null,
+  "realized_annualized_return_pct": null,
   "gross_return_pct": null,
   "gross_return_amount": null,
   "stock_market_value_pct": 0.42,
@@ -157,11 +163,11 @@
 口径(与 doc/tasks/2026-08-13-backtest-toolchain.md 一致):
 
 - `unfilled_ratio = unfilled_count / attempt_count`;`attempt_count` **只计真正发出成交尝试的期权动作**;正股建议/HOLD/DATA_BLOCKED/候选淘汰不入分母;分母为 0 时 `unfilled_ratio = null`(返回 `not_applicable`,不得报 0%)。
-- Wheel 能力为 `DATA_BLOCKED` 时，`net_return_pct`、`net_return_amount` 与 `excess_return_pct` 必须为 `null`，`return_status=not_applicable_data_blocked`。同一 HKEX 合约从 DTE ≥10 覆盖到 DTE ≤1、存在可用 bar 且终局估值完整时，能力为 `RESEARCH_ONLY`，净结果字段可写机械模拟数值，但 `return_status=research_only`；它不代表可执行历史收益。`window_mark_to_market_*` 始终只是窗口末账面估值变动。
+- Wheel 能力为 `DATA_BLOCKED` 时，权利金与已实现两套收益字段及 `excess_return_pct` 必须为 `null`，`return_status=not_applicable_data_blocked`。同一 HKEX 合约从 DTE ≥10 覆盖到 DTE ≤1、存在可用 bar 且终局估值完整时，能力为 `RESEARCH_ONLY`：`premium_net_return_*` 是权利金收入减平仓成本及期权/行权费的评价口径，`realized_return_*` 来自引擎全量已实现 P&L（含正股已实现盈亏和全部费用）；两者必须并列展示，各自的 `*_annualized_return_pct` 均按自然日窗口折算。它们不代表可执行历史收益。`window_mark_to_market_*` 始终只是窗口末账面估值变动。
 - `fill_count` 可由 `attempt_count - unfilled_count` 推导,但两者同时输出计数,防舍入/口径不一致。
 - `cost_model.total_fees_amount` 必须等于成交明细 `fee` 之和。类型费率模式下，期权主动买/卖按张计费，正股主动买/卖及 ITM 行权/指派产生的正股交割按手计费；期权行权事件本身不再额外收期权费。`exercise_delivery_fees_amount` 必须包含行权/指派交割费。未成交、HOLD 和 OTM 机械到期事件不收费。旧 `fee_per_trade` 模式仍保留，`legacy=true` 表示向后兼容的固定主动成交费。
 - `cost_drag_pct = total_fees_amount / initial_cash`，`cost_drag_return_pct` 是从毛收益率到净收益率的同额拖累；可得到完整净收益时 `gross_return_amount = net_return_amount + total_fees_amount`、`gross_return_pct = net_return_pct + cost_drag_return_pct`。
-- `annualized_return_pct` 只对完整净收益计算，使用 `data_window` 的自然日秒数，不把交易日数当分母。
+- 所有年化字段只对相应完整收益口径计算，使用 `data_window` 的自然日秒数，不把交易日数当分母；兼容字段 `annualized_return_pct` 与当前评价口径一致。
 - `stock_market_value_pct`、`option_market_value_pct`、`holdings_market_value_pct`、`final_equity_pct` 和最大仓位百分比统一以顶层 `initial_cash` 为分母；对应金额仍保留在 `terminal` 或 `result.final_equity_amount`。
 - `manual_not_executed_count`:模拟成交但人工未执行的条数(与模拟未成交区分)。
 - `hard_violations`:最大库存违规/裸 Call/资金不足/未来泄漏计数;>0 时报告必须显著警示。
@@ -394,7 +400,7 @@
 ## 9. HTML/Discord 投影约束
 
 - HTML 由 Go `html/template` 渲染本 JSON(或内存同构结构),禁止大模型生成 HTML;首屏 = 状态/样本外收益/回撤/未成交率/停止原因,明细折叠卡片;iPhone 16 Pro Max 430px 验收,同时覆盖 390px,正文不得横向滚动。
-- Discord embed 只推 5–7 核心字段 + 状态 + `report_id` 引用（存在可访问报告 URL 时再附链接）；字段超限时**不截断关键风险状态**，而是让推送失败并保留报告供重试。
+- Discord embed 推送少量核心字段，并列包含权利金净额与已实现两种口径，再附状态和 `report_id` 引用（存在可访问报告 URL 时再附链接）；字段超限时**不截断关键风险状态**，而是让推送失败并保留报告供重试。
 - 同一 JSON 重复渲染必须一致;关键汇总可由明细复算(验收脚本对账)。
 
 ## 10. 版本与演进
@@ -403,7 +409,7 @@
 
 S5 在不改动 `single_run` 字段的前提下启用顶层 `train`、`generations`、`candidates` 与 `trajectory`。逐代收益字段保持原始净收益率口径；ES 选择使用版本化奖励 score，原子净收益、回撤、尾损和成交成本权重保存在 `audit.reward`，样本外原始收益分布保存在 `candidates.stats`。`identity.windows` 使用连续、无重叠的时间顺序窗口，`train.seeds` 顺序为训练、验证和至少 5 个测试 seed，训练 seed 不得与测试 seed 相同。
 
-搜索审计只允许八个战术键（含 `min_option_profit`；DTE 两键由一个“最短值 + 非负跨度”约束维表达），战略键不得出现在 `candidates.params`。`audit.search_space` 同时保留范围、中文单位和撞边界标记；没有候选在全部封存 seed 稳定超过基线时，`candidates` 为空，表示“无可推荐参数”，不得回写线上配置。
+搜索审计只允许九个战术键（含 `min_option_profit` 与 `covered_call_pct`；DTE 两键由一个“最短值 + 非负跨度”约束维表达），战略键不得出现在 `candidates.params`。`audit.search_space` 同时保留范围、中文单位和撞边界标记；没有候选在全部封存 seed 稳定超过基线时，`candidates` 为空，表示“无可推荐参数”，不得回写线上配置。
 
 - `schema_version` 1.2 在 1.1 基础上新增本金、期末权益、年化、仓位占比、结构化类型费率和交易损耗字段；新增字段必现，旧消费者应忽略未知键。后续 schema 变更仍需走评审 + 双版本兼容期(读旧写新)。
 - 所有报告产物带 `report_id`;`-push`/`-cache` 为显式动作,重复执行同 ID 幂等。

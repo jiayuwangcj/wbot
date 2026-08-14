@@ -57,7 +57,7 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.SchemaVersion != "1.4" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
+	if r.SchemaVersion != "1.5" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
 		t.Fatalf("identity = %+v", r)
 	}
 	if r.Identity.DataWindow.From != "2024-01-01T00:00:00Z" || r.Identity.DataWindow.To != "2024-01-02T00:00:00Z" {
@@ -134,6 +134,9 @@ func TestBuildCompleteHKEXResearchExposesNonNullReturn(t *testing.T) {
 	if r.Result.PremiumNetReturnPct == nil || *r.Result.PremiumNetReturnPct != 0.0126 || r.Result.PremiumNetReturnAmount == nil || *r.Result.PremiumNetReturnAmount != 126 {
 		t.Fatalf("premium-net return = %+v; want wheel right-based premium gating", r.Result)
 	}
+	if r.Result.RealizedReturnPct == nil || *r.Result.RealizedReturnPct != 0.0123 || r.Result.RealizedReturnAmount == nil || *r.Result.RealizedReturnAmount != 123 {
+		t.Fatalf("realized return = %+v; want engine realized result alongside premium metric", r.Result)
+	}
 	if r.DataQuality.Status != "RESEARCH_ONLY" || r.DataQuality.HistoricalOptionCycleComplete == nil || !*r.DataQuality.HistoricalOptionCycleComplete {
 		t.Fatalf("quality = %+v", r.DataQuality)
 	}
@@ -147,8 +150,8 @@ func TestBuildCompleteHKEXResearchExposesNonNullReturn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(hb, []byte("权利金净收益")) {
-		t.Fatal("research HTML must label the evaluation metric as premium-net under the wheel right gate")
+	if !bytes.Contains(hb, []byte("权利金净额口径")) || !bytes.Contains(hb, []byte("已实现口径")) || !bytes.Contains(hb, []byte("含正股已实现盈亏及全部费用")) {
+		t.Fatal("research HTML must render both premium-net and realized metric definitions")
 	}
 }
 
@@ -185,6 +188,10 @@ func TestBuildAnnualizedReturnCostDragAndPositionPercents(t *testing.T) {
 	wantAnnualized := math.Pow(1.0041, 365) - 1
 	if r.Result.AnnualizedReturnPct == nil || math.Abs(*r.Result.AnnualizedReturnPct-wantAnnualized) > 1e-12 {
 		t.Fatalf("annualized return = %v; want %v", r.Result.AnnualizedReturnPct, wantAnnualized)
+	}
+	wantRealizedAnnualized := math.Pow(1.0123, 365) - 1
+	if r.Result.PremiumAnnualizedReturnPct == nil || math.Abs(*r.Result.PremiumAnnualizedReturnPct-wantAnnualized) > 1e-12 || r.Result.RealizedAnnualizedReturnPct == nil || math.Abs(*r.Result.RealizedAnnualizedReturnPct-wantRealizedAnnualized) > 1e-12 {
+		t.Fatalf("dual annualized returns = %v / %v; want %v / %v", r.Result.PremiumAnnualizedReturnPct, r.Result.RealizedAnnualizedReturnPct, wantAnnualized, wantRealizedAnnualized)
 	}
 	if r.Result.CostDrag.TotalFeesAmount != 161 || r.Result.CostDrag.CostDragPct != 0.0161 || r.Result.CostDrag.CostDragReturnPct != 0.0161 {
 		t.Fatalf("cost drag = %+v", r.Result.CostDrag)

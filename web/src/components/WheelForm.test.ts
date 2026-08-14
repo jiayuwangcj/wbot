@@ -9,6 +9,7 @@ function validValues(): WheelFormValues {
     max_inventory: 1200,
 	move_interval_pct: 1.8,
 	stock_switch_pct: 2.5,
+	covered_call_pct: 5,
   };
 }
 
@@ -22,6 +23,7 @@ describe("WheelForm contract", () => {
       min_premium_per_share: 0,
       min_option_profit: 200,
       stock_switch_pct: 0.025,
+      covered_call_pct: 0.05,
       trade_gap: 50,
       min_dte: 5,
       max_dte: 10,
@@ -39,6 +41,7 @@ describe("WheelForm contract", () => {
 	  ["最低每股权利金必须不小于 0", (v) => { v.min_premium_per_share = -1; }],
 	  ["最低期权收益必须不小于 0", (v) => { v.min_option_profit = -1; }],
 	  ["正股切换阈值必须不小于 0", (v) => { v.stock_switch_pct = -1; }],
+	  ["covered call 价外幅度必须在 0% 到 100% 之间", (v) => { v.covered_call_pct = 101; }],
 	  ["免交易库存差必须不小于 0", (v) => { v.trade_gap = -1; }],
       ["DTE 必须是 5 到 10 之间的有效范围", (v) => { v.min_dte = 4; }],
       ["最低期权质量必须在 0 到 1 之间", (v) => { v.min_option_quality = 2; }],

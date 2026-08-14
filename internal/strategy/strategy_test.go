@@ -63,7 +63,7 @@ func TestContractSchemaRequiredAndDefaults(t *testing.T) {
 	defaults := map[string]any{
 		"move_interval_pct": 0.0, "min_premium_per_share": 0.0,
 		"min_option_profit": 200.0,
-		"stock_switch_pct":  0.0, "trade_gap": 50.0,
+		"stock_switch_pct":  0.0, "covered_call_pct": wheel.DefaultCoveredCallPct, "trade_gap": 50.0,
 		"min_dte": 5.0, "max_dte": 10.0, "min_option_quality": 0.6,
 		"max_quote_age_seconds": 86400.0, "strategic_state": wheel.StateNormal,
 	}
@@ -89,10 +89,28 @@ func TestParseConfigRequiresStrategicInputs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseConfig(defaults) error: %v", err)
 	}
-	if cfg.MoveIntervalPct != 0 || cfg.MinPremiumPerShare != 0 || cfg.StockSwitchPct != 0 || cfg.TradeGap != 50 ||
+	if cfg.MoveIntervalPct != 0 || cfg.MinPremiumPerShare != 0 || cfg.StockSwitchPct != 0 || cfg.CoveredCallPct != wheel.DefaultCoveredCallPct || cfg.TradeGap != 50 ||
 		cfg.MinOptionProfit != 200 || cfg.MinDTE != 5 || cfg.MaxDTE != 10 || cfg.MinOptionQuality != 0.6 || cfg.MaxQuoteAgeSeconds != 86400 ||
 		cfg.StrategicState != wheel.StateNormal {
 		t.Fatalf("defaults = %+v", cfg)
+	}
+}
+
+func TestParseConfigCoveredCallPctBoundaries(t *testing.T) {
+	for _, value := range []float64{0, 0.000001, 1} {
+		params := validParams()
+		params["covered_call_pct"] = value
+		cfg, err := ParseConfig(params)
+		if err != nil || cfg.CoveredCallPct != value {
+			t.Fatalf("covered_call_pct %v = %+v, %v", value, cfg, err)
+		}
+	}
+	for _, value := range []float64{-0.000001, 1.000001} {
+		params := validParams()
+		params["covered_call_pct"] = value
+		if _, err := ParseConfig(params); err == nil || !strings.Contains(err.Error(), "covered_call_pct") {
+			t.Fatalf("covered_call_pct %v error = %v", value, err)
+		}
 	}
 }
 

@@ -22,6 +22,7 @@ func (r *Runner) collectOptionQuotes(
 	price float64,
 	cfg wheel.Config,
 	stockShares float64,
+	stockAverageCost float64,
 	positions []wheel.OptionPosition,
 	now time.Time,
 ) ([]futu.OptionContract, map[string]futu.OptionQuoteEx, error) {
@@ -67,7 +68,7 @@ func (r *Runner) collectOptionQuotes(
 		if quoteAsOf.IsZero() {
 			quoteAsOf = now
 		}
-		if qualityCandidateCount(underlying, selected, quotes, direction, cfg, quoteAsOf) >= minQualityCandidates {
+		if qualityCandidateCount(underlying, selected, quotes, direction, price, stockAverageCost, cfg, quoteAsOf) >= minQualityCandidates {
 			break
 		}
 	}
@@ -93,11 +94,23 @@ func desiredOptionType(cfg wheel.Config, price, stockShares float64, positions [
 	return wheel.Put, true
 }
 
-func qualityCandidateCount(underlying string, contracts []futu.OptionContract, quotes map[string]futu.OptionQuoteEx, direction wheel.OptionType, cfg wheel.Config, asOf time.Time) int {
+func qualityCandidateCount(underlying string, contracts []futu.OptionContract, quotes map[string]futu.OptionQuoteEx, direction wheel.OptionType, underlyingPrice, stockAverageCost float64, cfg wheel.Config, asOf time.Time) int {
 	count := 0
 	for _, quote := range assembleQuotes(underlying, contracts, quotes) {
 		if !strings.EqualFold(string(quote.OptionType), string(direction)) {
 			continue
+		}
+		if direction == wheel.Put && quote.Strike >= underlyingPrice {
+			continue
+		}
+		if direction == wheel.Call {
+			minimumStrike := underlyingPrice * (1 + cfg.CoveredCallPct)
+			if stockAverageCost > minimumStrike {
+				minimumStrike = stockAverageCost
+			}
+			if quote.Strike <= underlyingPrice || quote.Strike < minimumStrike {
+				continue
+			}
 		}
 		if quote.Validate(asOf, cfg) != nil || wheel.QualityScore(quote) < cfg.MinOptionQuality {
 			continue

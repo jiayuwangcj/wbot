@@ -84,6 +84,17 @@ func TestPositionsInput(t *testing.T) {
 	}
 }
 
+func TestStockAverageCostIgnoresOptionsAndWeightsStock(t *testing.T) {
+	positions := []Position{
+		{Symbol: "HK.00700", Code: "00700", Qty: 100, Side: SideLong, AvgCost: 500},
+		{Symbol: "HK.00700", Code: "00700", Qty: 300, Side: SideLong, AvgCost: 520},
+		{Symbol: "HK.TCH260807C650000", Code: "TCH260807C650000", Qty: 1, Side: SideShort, AvgCost: 999},
+	}
+	if got := StockAverageCost(positions); got != 515 {
+		t.Fatalf("StockAverageCost() = %v; want 515", got)
+	}
+}
+
 func TestFilterPositionsBySymbolAndOptionChain(t *testing.T) {
 	positions := []Position{
 		{Symbol: "HK.00700", Code: "00700", Qty: 200, Side: SideLong},

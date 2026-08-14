@@ -30,7 +30,7 @@ const (
 	RewardVersion = "reward-3.0"
 )
 
-var tacticalOrder = []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
+var tacticalOrder = []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "covered_call_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
 
 type Bound struct {
 	Min      float64 `json:"min"`
@@ -57,6 +57,7 @@ func ParseSpace(data string, base map[string]any) (Space, error) {
 	allowed := map[string]Bound{
 		"move_interval_pct": {Unit: "%"}, "min_premium_per_share": {Unit: "币种/股"}, "min_option_profit": {Unit: "币种/笔"},
 		"stock_switch_pct": {Unit: "%"}, "trade_gap": {Unit: "股", Discrete: true},
+		"covered_call_pct":   {Unit: "%"},
 		"min_option_quality": {Unit: "[0,1]"}, "min_dte": {Unit: "自然日", Discrete: true},
 		"max_dte": {Unit: "自然日", Discrete: true},
 	}
@@ -85,6 +86,9 @@ func ParseSpace(data string, base map[string]any) (Space, error) {
 		}
 		if name == "min_option_quality" && hi > 1 {
 			return Space{}, errors.New("train search space: min_option_quality must be in [0,1]")
+		}
+		if name == "covered_call_pct" && hi > 1 {
+			return Space{}, errors.New("train search space: covered_call_pct must be in [0,1]")
 		}
 		if (name == "min_dte" || name == "max_dte") && (lo < wheel.MinWheelDTE || hi > wheel.MaxWheelDTE) {
 			return Space{}, fmt.Errorf("train search space: %s must be within %d..%d", name, wheel.MinWheelDTE, wheel.MaxWheelDTE)
