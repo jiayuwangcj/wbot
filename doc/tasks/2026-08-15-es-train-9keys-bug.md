@@ -21,8 +21,8 @@
 
 - [x] 派单
 - [x] 实施 + verify.sh 全绿(2026-08-15 coder:cmd/wbot/backtest_train.go tacticalParams 改按搜索空间键动态构建 + boundaryHits 缺键防护;单测 3 个;verify.sh ok)
-- [ ] reviewer 评审
-- [ ] 合入主基线
+- [x] reviewer 评审 2026-08-15:3b6892c **无条件通过(bugfix)**,P0/P1 无;P2 报告级 13 键端到端断言(可选排期)、P3×3 观察;测试 3/3 PASS + go test ok + gofmt/vet 干净;9 键空间输出键集合逐字节不变
+- [ ] 合入主基线(PR)
 
 ## Links
 
