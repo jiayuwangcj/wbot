@@ -207,7 +207,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		if !recommendableCandidate(tc.metrics, baseline) {
 			continue
 		}
-		params := tacticalParams(tc.candidate.Params)
+		params := tacticalParams(tc.candidate.Params, space)
 		hits := boundaryHits(space, params)
 		var ratio *float64
 		if len(ratios) > 0 {
@@ -232,7 +232,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 			MaxDrawdownPct: g.Best.MaxDrawdown, UnfilledRatio: g.Best.UnfilledRatio, EffectiveTrades: g.Best.EffectiveTrades, PopulationDispersion: g.Dispersion, MutationScale: g.MutationScale}
 	}
 	searchAudit := make(map[string]backtestreport.SearchBound, len(space.Bounds))
-	selectedHits := boundaryHits(space, tacticalParams(selected.candidate.Params))
+	selectedHits := boundaryHits(space, tacticalParams(selected.candidate.Params, space))
 	for name, b := range space.Bounds {
 		unit := b.Unit
 		if name == "min_premium_per_share" {
@@ -385,12 +385,11 @@ func medianOutcomeIndex(ms []backtestes.Metrics) int {
 	}
 	return best
 }
-func tacticalParams(all map[string]any) map[string]any {
-	keys := []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "covered_call_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
+func tacticalParams(all map[string]any, space backtestes.Space) map[string]any {
 	out := map[string]any{}
-	for _, k := range keys {
-		if v, ok := all[k]; ok {
-			out[k] = v
+	for name := range space.Bounds {
+		if v, ok := all[name]; ok {
+			out[name] = v
 		}
 	}
 	return out
@@ -398,8 +397,12 @@ func tacticalParams(all map[string]any) map[string]any {
 func boundaryHits(space backtestes.Space, params map[string]any) map[string]bool {
 	out := map[string]bool{}
 	for n, b := range space.Bounds {
-		v := asFloat(params[n])
-		out[n] = math.Abs(v-b.Min) < 1e-12 || math.Abs(v-b.Max) < 1e-12
+		v, ok := params[n]
+		if !ok {
+			continue
+		}
+		x := asFloat(v)
+		out[n] = math.Abs(x-b.Min) < 1e-12 || math.Abs(x-b.Max) < 1e-12
 	}
 	return out
 }

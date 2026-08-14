@@ -100,3 +100,82 @@ VALUES ($1, '1d', $2, $3, $3, $3, $3, 1000, 'none', 'train-zero-test')`, symbol,
 		t.Fatalf("zero-coverage training generated reports: %v", matches)
 	}
 }
+
+const space13 = `{"move_interval_pct":[0.005,0.03],"min_premium_per_share":[0.005,0.05],"min_option_profit":[0.5,5],"stock_switch_pct":[0.005,0.05],"covered_call_pct":[0,0.3],"trade_gap":[0,20],"min_option_quality":[0.3,0.9],"min_dte":[7,30],"max_dte":[30,45],"profit_take_pct":[0.1,0.8],"put_delta_max":[0.1,0.5],"call_delta_max":[0.1,0.5],"min_iv_rank":[0,0.8]}`
+
+var candidate13 = map[string]any{
+	"move_interval_pct": 0.012, "min_premium_per_share": 0.02, "min_option_profit": 1.2, "stock_switch_pct": 0.01,
+	"covered_call_pct": 0.0118, "trade_gap": 5.0, "min_option_quality": 0.6, "min_dte": 13, "max_dte": 43,
+	"profit_take_pct": 0.7, "put_delta_max": 0.353, "call_delta_max": 0.2504, "min_iv_rank": 0.0,
+	"full_position_price": 400, "zero_position_price": 600, "max_inventory": 1200,
+}
+
+func TestTacticalParamsCoversFull13KeySpace(t *testing.T) {
+	space, err := backtestes.ParseSpace(space13, map[string]any{"min_dte": 13, "max_dte": 43})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := tacticalParams(candidate13, space)
+	want := []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "covered_call_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte", "profit_take_pct", "put_delta_max", "call_delta_max", "min_iv_rank"}
+	if len(params) != len(want) {
+		t.Fatalf("params keys = %d; want %d: %v", len(params), len(want), params)
+	}
+	for _, k := range want {
+		if _, ok := params[k]; !ok {
+			t.Fatalf("params missing %q: %v", k, params)
+		}
+	}
+	if params["profit_take_pct"] != 0.7 || params["put_delta_max"] != 0.353 || params["call_delta_max"] != 0.2504 || params["min_iv_rank"] != 0.0 {
+		t.Fatalf("new key values lost: %v", params)
+	}
+	if _, ok := params["full_position_price"]; ok {
+		t.Fatalf("strategic key leaked into candidate params: %v", params)
+	}
+}
+
+func TestBoundaryHitsCoversNewKeys(t *testing.T) {
+	space, err := backtestes.ParseSpace(space13, map[string]any{"min_dte": 13, "max_dte": 43})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := map[string]any{
+		"move_interval_pct": 0.005, "min_premium_per_share": 0.02, "min_option_profit": 1.2, "stock_switch_pct": 0.01,
+		"covered_call_pct": 0.0118, "trade_gap": 5.0, "min_option_quality": 0.6, "min_dte": 13, "max_dte": 43,
+		"profit_take_pct": 0.8, "put_delta_max": 0.1, "call_delta_max": 0.2504, "min_iv_rank": 0.0,
+	}
+	hits := boundaryHits(space, at)
+	for _, k := range []string{"profit_take_pct", "put_delta_max", "min_iv_rank"} {
+		if !hits[k] {
+			t.Fatalf("boundary hit on %s not counted: %v", k, hits)
+		}
+	}
+	if hits["call_delta_max"] {
+		t.Fatalf("non-boundary key falsely hit: %v", hits)
+	}
+	without := map[string]any{}
+	for k, v := range at {
+		if k != "min_iv_rank" {
+			without[k] = v
+		}
+	}
+	if boundaryHits(space, without)["min_iv_rank"] {
+		t.Fatal("missing key falsely hit its zero boundary")
+	}
+}
+
+func TestTacticalParamsLegacyNineKeySpaceRegression(t *testing.T) {
+	raw := `{"move_interval_pct":[0.005,0.03],"min_premium_per_share":[0.005,0.05],"min_option_profit":[0.5,5],"stock_switch_pct":[0.005,0.05],"covered_call_pct":[0,0.3],"trade_gap":[0,20],"min_option_quality":[0.3,0.9],"min_dte":[7,30],"max_dte":[30,45]}`
+	space, err := backtestes.ParseSpace(raw, map[string]any{"min_dte": 13, "max_dte": 43})
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := tacticalParams(candidate13, space)
+	if len(params) != 9 {
+		t.Fatalf("9-key space yielded %d keys: %v", len(params), params)
+	}
+	for _, k := range []string{"profit_take_pct", "put_delta_max", "call_delta_max", "min_iv_rank"} {
+		if _, ok := params[k]; ok {
+			t.Fatalf("new key %q leaked into 9-key space report: %v", k, params)
+		}
+	}
+}
