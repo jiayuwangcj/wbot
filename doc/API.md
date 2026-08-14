@@ -156,7 +156,7 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 
 只有 `READY`、完整库存、至少一个通过风控的候选才允许 `ALERT`；系统永不自动调用交易 API。LLM 审核与 Telegram 人工处置只追加审计记录；Telegram `yes` 是受 chat ID 限制的 sim 环境人工操作，不重算或覆盖历史信号，HTTP/UI 仍不能写动作。
 
-`signal.close_position`（2026-08-15 起，`profit_take_pct > 0` 时可能为真）：为真表示该 ALERT 是买回已持空腿的平仓提醒（已收权利金回落到阈值，兑现已收权利金），不是新开仓——方向与卖向相反是平仓固有特征，按平仓审核规则核对持仓空腿/数量/报价/资金，不受卖向方向反转规则约束。平仓 ALERT 不受卖向重复候选 30 分钟抑制窗约束（风险降低动作，每 pass 权利金回落都值得提示）。`params.profit_take_pct` 回测与实盘语义一致：中途平仓计入 `option_close_cost` 与平仓提醒。
+`signal.close_position`（2026-08-15 起，`profit_take_pct > 0` 时可能为真）：为真表示该 ALERT 是买回已持空腿的平仓提醒（已收权利金回落到阈值，兑现已收权利金），不是新开仓——方向与卖向相反是平仓固有特征，按平仓审核规则核对持仓空腿/数量/报价/资金，不受卖向方向反转规则约束。平仓载荷独立落库：`close_qty`=持仓空腿张数，`close_quote`=买回报价快照（Symbol/OptionType/Strike/Expiry/Bid/Ask/Last/Delta/ImpliedVol/OI），推送与 Telegram `yes` 确认走买回（BUY）路径（side=buy、限价=ask、无 ask 退 last），绝不复用卖向候选路径。平仓 ALERT 不受卖向重复候选 30 分钟抑制窗约束，但受自身 90 分钟 `closeAlertCooldown` 冷却窗约束：持仓未平期间窗口内重复平仓 ALERT 降为 `HOLD` 不落库不审核（防平仓审核洪水），窗口不滚动。`params.profit_take_pct` 回测与实盘语义一致：中途平仓计入 `option_close_cost` 与平仓提醒。
 
 ## 回测结果端点
 

@@ -185,38 +185,65 @@ func TestClosePositionLegs(t *testing.T) {
 		{Symbol: "HK.TCH260901C700000", Code: "TCH260901C700000", Qty: 1, Side: -1},
 		// 股票代码解析失败,跳过。
 		{Symbol: "HK.00700", Code: "00700", Qty: 500, Side: SideLong},
-		// 其他标的的空腿也提取(无害:报价永不匹配本标的,域层按 Symbol 去重)。
+		// 其他标的的空腿(评审 P1-A):不属于本标的,不评估、不进审核输入。
 		{Symbol: "US.JD260901C300000", Code: "JD260901C300000", Qty: 1, Side: SideShort, AvgCost: 4},
 	}
-	legs, review := closePositionLegs(unassigned)
-	if len(legs) != 2 {
-		t.Fatalf("legs = %+v; want 2 short legs", legs)
+	legs, review, expiries := closePositionLegs(unassigned, "TCH")
+	if len(legs) != 1 {
+		t.Fatalf("legs = %+v; want 1 short TCH leg (JD 跳过)", legs)
 	}
 	first := legs[0]
 	if first.Symbol != "HK.TCH260901P600000" || first.Strike != 600 || first.OptionType != wheel.Put ||
 		first.SignedContracts != -2 || first.AvgPremium != 12.5 {
 		t.Fatalf("first leg = %+v; want short 2 × 600 put with premium 12.5", first)
 	}
-	second := legs[1]
-	if second.Symbol != "US.JD260901C300000" || second.OptionType != wheel.Call || second.SignedContracts != -1 {
-		t.Fatalf("second leg = %+v; want short 1 × JD 300 call", second)
+	// 到期日从代码解析,供平仓报价通道使用。
+	if want := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC); expiries["HK.TCH260901P600000"] != want {
+		t.Fatalf("expiries = %+v; want 2026-09-01", expiries)
 	}
 	// review 回传原始持仓,LLM 审核据此核对「合约确为持仓空腿」。
-	if len(review) != 2 || review[0].Code != "TCH260901P600000" || review[1].AvgCost != 4 {
-		t.Fatalf("review = %+v; want the two original short positions", review)
+	if len(review) != 1 || review[0].Code != "TCH260901P600000" {
+		t.Fatalf("review = %+v; want only the TCH short position", review)
 	}
 }
 
-func TestClosePositionLegsCodeOnlyAndUnparseable(t *testing.T) {
+func TestClosePositionLegsCodeOnlyUnparseableAndUnderlyingLetters(t *testing.T) {
 	// Code-only position: symbol falls back to the code.
-	legs, review := closePositionLegs([]Position{{Code: "TCH260901P600000", Qty: 1, Side: SideShort, AvgCost: 7}})
-	if len(legs) != 1 || legs[0].Symbol != "TCH260901P600000" || legs[0].AvgPremium != 7 || len(review) != 1 {
-		t.Fatalf("code-only legs = %+v, review %+v; want extracted leg", legs, review)
+	legs, review, expiries := closePositionLegs([]Position{{Code: "TCH260901P600000", Qty: 1, Side: SideShort, AvgCost: 7}}, "TCH")
+	if len(legs) != 1 || legs[0].Symbol != "TCH260901P600000" || legs[0].AvgPremium != 7 || len(review) != 1 || len(expiries) != 1 {
+		t.Fatalf("code-only legs = %+v, review %+v, expiries %+v; want extracted leg", legs, review, expiries)
 	}
 	// 空 code/symbol 与未知 side 都静默跳过。
-	legs, review = closePositionLegs([]Position{{Qty: 1, Side: SideShort}, {Symbol: "HK.00700", Code: "00700", Qty: 1, Side: SideShort}})
-	if len(legs) != 0 || len(review) != 0 {
+	legs, review, expiries = closePositionLegs([]Position{{Qty: 1, Side: SideShort}, {Symbol: "HK.00700", Code: "00700", Qty: 1, Side: SideShort}}, "TCH")
+	if len(legs) != 0 || len(review) != 0 || len(expiries) != 0 {
 		t.Fatalf("unparseable legs = %+v, review %+v; want none", legs, review)
+	}
+	// 链底层字母大小写不敏感;空链字母(无法归属)时 fail-closed 全部跳过。
+	legs, _, _ = closePositionLegs([]Position{{Code: "tch260901P600000", Qty: 1, Side: SideShort, AvgCost: 1}}, "tch")
+	if len(legs) != 1 {
+		t.Fatalf("case-insensitive legs = %+v; want 1", legs)
+	}
+	legs, review, _ = closePositionLegs([]Position{{Code: "TCH260901P600000", Qty: 1, Side: SideShort, AvgCost: 1}}, "")
+	if len(legs) != 0 || len(review) != 0 {
+		t.Fatalf("empty-letters legs = %+v, review %+v; want none (fail closed)", legs, review)
+	}
+}
+
+func TestChainUnderlyingLetters(t *testing.T) {
+	cases := []struct {
+		contracts []string
+		want      string
+	}{
+		{[]string{"HK.TCH260901C650000", "HK.TCH260901P600000"}, "TCH"},
+		{[]string{"TCH260901P600000"}, "TCH"},
+		{[]string{"00700"}, ""}, // 链无期权合约
+		{nil, ""},
+		{[]string{"HK.TCH260901C650000", "JD260901C300000"}, "TCH"}, // 取第一个可解析
+	}
+	for i, tc := range cases {
+		if got := chainUnderlyingLetters(tc.contracts); got != tc.want {
+			t.Fatalf("case %d: chainUnderlyingLetters(%v) = %q; want %q", i, tc.contracts, got, tc.want)
+		}
 	}
 }
 

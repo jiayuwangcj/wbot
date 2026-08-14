@@ -88,7 +88,7 @@ inventory_gap       = target_inventory - effective_inventory
 - 开仓后的有效库存不比开仓前更偏离目标；
 - 战略状态允许该方向。
 
-平仓（`profit_take_pct > 0` 时启用）：已持空腿的当前报价（买回成本）回落到「已收权利金 × (1 − profit_take_pct)」以下时，对最长腿输出买回平仓 `ALERT`（`signal.close_position=true`，方向与卖向相反，计入 `option_close_cost` 与平仓提醒，不进新开仓路径）。平仓属风险降低动作，不受卖向重复 ALERT 的 30 分钟抑制窗约束。链外持仓（到期前最后 `min_dte` 天被 DTE 窗口剔除的空腿）仍纳入平仓评估：它们经 `ClosePositions` 独立传参，报价按腿拉取；**库存口径不因平仓评估改变**——链外腿不计入有效/实际库存，与回测引擎对称。
+平仓（`profit_take_pct > 0` 时启用）：已持空腿的当前报价（买回成本）回落到「已收权利金 × (1 − profit_take_pct)」以下时，对最长腿输出买回平仓 `ALERT`（`signal.close_position=true`，方向与卖向相反，计入 `option_close_cost` 与平仓提醒，不进新开仓路径）。平仓属风险降低动作，不受卖向重复 ALERT 的 30 分钟抑制窗约束；平仓自身独立冷却窗 `closeAlertCooldown`（90 分钟，2026-08-15 第二轮评审）：持仓未平期间同一标的的平仓 ALERT 在窗口内降为 `HOLD`，避免每 pass 重复触发平仓 ALERT 与 LLM 审核洪水（平仓审核无上限成本、挤压卖向审核队列），窗口不滚动，期满后条件仍满足则重新 ALERT。平仓载荷独立落库（`close_position/close_qty/close_quote`），推送/确认走买回（BUY）路径：side=buy、数量=持仓空腿数、限价=买回报价（ask，无 ask 退 last），绝不复用卖向候选的 firstCandidate 卖向路径。链外持仓（到期前最后 `min_dte` 天被 DTE 窗口剔除的空腿）仍纳入平仓评估：它们经 `ClosePositions` 独立传参，报价按腿拉取；**库存口径不因平仓评估改变**——链外腿不计入有效/实际库存，与回测引擎对称。
 
 正股直接卖出同样不得低于持仓平均成本；`stock_switch_pct` 在急跌时只 HOLD 并保留持仓，价格恢复到成本以上才允许卖出。等于成本的成交只容许手续费级损失。
 

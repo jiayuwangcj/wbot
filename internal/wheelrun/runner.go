@@ -116,11 +116,13 @@ type reviewTask struct {
 }
 
 // lastAlertInfo is the suppression baseline: the contract that last alerted
-// for a symbol and when. A suppressed round does not update it, so the
-// window expires and the candidate alerts (and is re-audited) again.
+// for a symbol and when, plus the last close-position alert time (own
+// cooldown — see suppressRepeatAlert). A suppressed round does not update it,
+// so the window expires and the candidate alerts (and is re-audited) again.
 type lastAlertInfo struct {
 	at       time.Time
 	contract string
+	closeAt  time.Time
 }
 
 const (
@@ -137,6 +139,14 @@ const (
 	// candidate stayed in range, every pass re-alerted and every round
 	// spawned a fresh 4-minute audit.
 	repeatAlertWindow = 30 * time.Minute
+	// closeAlertCooldown gates re-alerts of an unanswered close_position
+	// signal (评审 P2,2026-08-15): while the position stays open, every pass
+	// would otherwise re-trigger the close ALERT and a fresh LLM audit — an
+	// unbounded per-symbol cost and review-queue pressure. The sell-side
+	// 30-minute repeat window does not apply (a close is a risk-reducing
+	// action), but a dedicated 90-minute cooldown bounds the flood; the
+	// human is re-prompted as the captured ratio keeps decaying.
+	closeAlertCooldown = 90 * time.Minute
 )
 
 func NewRunner(deps Dependencies) *Runner {
@@ -323,8 +333,11 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 	// Legs outside the chain window (final min_dte days before expiry) cannot
 	// enter the inventory — but they must stay closable: profit_take_pct buys
 	// them back at theta's steepest decay. They ride in ClosePositions (exit
-	// evaluation only) and in the review input (审核核对持仓空腿).
-	closeLegs, closeReviewPositions := closePositionLegs(unassignedOptions)
+	// evaluation only) and in the review input (审核核对持仓空腿). The chain's
+	// underlying letters (00700→TCH) gate which unassigned legs belong to this
+	// symbol: cross-underlying legs are skipped entirely (评审 P1-A), which
+	// also spares their per-pass quote pulls (限频).
+	closeLegs, closeReviewPositions, closeExpiries := closePositionLegs(unassignedOptions, chainUnderlyingLetters(contractSymbols))
 	reviewPositions := append([]Position{}, filteredPositions...)
 	reviewPositions = append(reviewPositions, closeReviewPositions...)
 	for _, p := range unassignedOptions {
@@ -380,6 +393,36 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 			}
 		}
 	}
+	// Chain-external legs are priced for the exit decision too: assembleQuotes
+	// only walks chain contracts, so the close legs' quotes ride in their own
+	// OptionQuote set (expiry parsed from the code) appended to in.Quotes —
+	// otherwise takeProfitSignal's positionQuote can never find them and the
+	// live close never fires (评审 P1-A).
+	closeQuotes := make([]wheel.OptionQuote, 0, len(closeLegs))
+	for _, leg := range closeLegs {
+		q, ok := quotes[leg.Symbol]
+		if !ok {
+			continue
+		}
+		closeQuotes = append(closeQuotes, wheel.OptionQuote{
+			Symbol:       leg.Symbol,
+			Underlying:   symbol,
+			Source:       "futu",
+			OptionType:   leg.OptionType,
+			Expiry:       closeExpiries[leg.Symbol],
+			Strike:       leg.Strike,
+			Delta:        q.Delta,
+			Bid:          q.Bid,
+			Ask:          q.Ask,
+			Last:         q.Last,
+			ImpliedVol:   q.ImpliedVol,
+			Theta:        q.Theta,
+			Volume:       q.Volume,
+			OpenInterest: q.OpenInterest,
+			LotSize:      leg.LotSize,
+			QuoteTime:    q.QuoteTime,
+		})
+	}
 	asOf := r.now()
 	r.enqueueQuoteSnapshots(symbol, price, quoteContracts, quotes, asOf)
 	// Unfilled orders must gate the candidate selection, not just the review:
@@ -396,7 +439,7 @@ func (r *Runner) runSymbol(ctx context.Context, symbol string, now time.Time) er
 		StockShares:      stockShares,
 		StockAverageCost: stockAverageCost,
 		Positions:        opts,
-		Quotes:           assembleQuotes(symbol, quoteContracts, quotes),
+		Quotes:           append(assembleQuotes(symbol, quoteContracts, quotes), closeQuotes...),
 		CashAvailable:    0,
 		HasCashAvailable: false,
 		Pending:          mapPending(pending),
@@ -517,18 +560,23 @@ func (r *Runner) enqueueReview(ctx context.Context, symbol string, signalID int6
 // the store; suppressed rounds do not extend it, so the candidate alerts
 // again once the window expires. sig.Quote must be non-nil for ALERTs.
 func (r *Runner) suppressRepeatAlert(symbol string, sig wheel.Signal, now time.Time) bool {
-	// 平仓是风险降低动作:每 pass 权利金回落都值得提示,不受 30 分钟重复
-	// 抑制窗约束(与卖向候选的「同一合约重复 ALERT」性质不同)。
+	r.reviewMu.Lock()
+	last, ok := r.lastAlert[symbol]
+	r.reviewMu.Unlock()
+	// 平仓是风险降低动作:不受卖向 30 分钟重复抑制窗约束(与卖向候选的
+	// 「同一合约重复 ALERT」性质不同),但受独立冷却窗约束(评审 P2):
+	// 持仓未平期间每 pass 都重发会烧 LLM 审核、挤压卖向审核队列。
 	if sig.ClosePosition {
+		if ok && now.Sub(last.closeAt) < closeAlertCooldown {
+			fmt.Fprintf(os.Stderr, "wheelrun: %s: close_position re-alert within %v cooldown; HOLD instead of ALERT\n", symbol, closeAlertCooldown)
+			return true
+		}
 		return false
 	}
 	if sig.Quote == nil {
 		return false
 	}
 	contract := sig.Quote.Symbol
-	r.reviewMu.Lock()
-	last, ok := r.lastAlert[symbol]
-	r.reviewMu.Unlock()
 	if ok && last.contract == contract && now.Sub(last.at) < repeatAlertWindow {
 		fmt.Fprintf(os.Stderr, "wheelrun: %s: repeat candidate %s within %v; HOLD instead of ALERT\n", symbol, contract, repeatAlertWindow)
 		return true
@@ -538,13 +586,23 @@ func (r *Runner) suppressRepeatAlert(symbol string, sig wheel.Signal, now time.T
 
 // commitAlertBaseline records the contract+time baseline for a persisted
 // ALERT. Called by the pass loop after AppendSignal succeeds; workers clear
-// it (clearSuppression) when an audit fails on the infrastructure side.
+// it (clearSuppression) when an audit fails on the infrastructure side. A
+// close_position ALERT additionally arms its own cooldown (closeAt) so the
+// next pass does not immediately re-alert the same closing leg.
 func (r *Runner) commitAlertBaseline(symbol string, sig wheel.Signal, now time.Time) {
 	if sig.Quote == nil {
 		return
 	}
 	r.reviewMu.Lock()
-	r.lastAlert[symbol] = lastAlertInfo{at: now, contract: sig.Quote.Symbol}
+	last, ok := r.lastAlert[symbol]
+	if !ok {
+		last = lastAlertInfo{}
+	}
+	last.at, last.contract = now, sig.Quote.Symbol
+	if sig.ClosePosition {
+		last.closeAt = now
+	}
+	r.lastAlert[symbol] = last
 	r.reviewMu.Unlock()
 }
 
@@ -711,6 +769,14 @@ func mapSignal(symbol string, version int, sig wheel.Signal, price float64) (whe
 		Candidates:       candidateRecords(sig.Candidates),
 		RejectionReasons: sig.RejectReasons,
 		Reason:           sig.Reason,
+	}
+	if sig.ClosePosition && sig.Quote != nil {
+		// 平仓独立载荷:卖向候选管道(Candidates/firstCandidate)永不复用——
+		// 推送与确认侧走独立 buy 路径,绝不把已空腿当卖向候选(评审 P1-B)。
+		record.ClosePosition = true
+		record.CloseQty = sig.Quantity
+		closeQuote := quoteRecord(*sig.Quote)
+		record.CloseQuote = &closeQuote
 	}
 	if sig.Replace != nil {
 		record.Replace = &wheelstore.ReplaceRecord{OrderID: sig.Replace.OrderID, Contract: sig.Replace.Contract}

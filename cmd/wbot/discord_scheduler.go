@@ -293,10 +293,14 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 		s.logf("push: %s signal=%d: %v", sig.Symbol, sig.ID, err)
 		return false
 	}
+	yesLabel := "✅ 下单"
+	if sig.ClosePosition {
+		yesLabel = "✅ 买回平仓"
+	}
 	msg := discord.Message{
 		Embeds: embeds,
 		Components: [][]discord.Button{{
-			{Type: 2, Style: 3, Label: "✅ 下单", CustomID: fmt.Sprintf("wheel:%d:yes", sig.ID)},
+			{Type: 2, Style: 3, Label: yesLabel, CustomID: fmt.Sprintf("wheel:%d:yes", sig.ID)},
 			{Type: 2, Style: 4, Label: "❌ 拒绝", CustomID: fmt.Sprintf("wheel:%d:no", sig.ID)},
 			{Type: 2, Style: 2, Label: "⚠️ Dismiss", CustomID: fmt.Sprintf("wheel:%d:dismiss", sig.ID)},
 		}},
@@ -315,9 +319,27 @@ const discordCodeLabelWidth = 6
 // 调用方降级为只推状态卡。与 signalDiscordEmbeds 共享
 // firstCandidate/isStockDirection 语义,保证显示与下单执行一致。
 func signalInfoBlocks(sig *wheelstore.SignalRecord, underlying string) ([][]string, error) {
-	c, err := firstCandidate(sig)
+	c, err := orderFacts(sig)
 	if err != nil {
 		return nil, err
+	}
+	// 平仓卡片块(2026-08-15 评审 P1-B):buy 语义,数量/限价取 close 载荷。
+	if sig.ClosePosition {
+		blocks := [][]string{{
+			discordCodeRow("买回平仓", valueOrDash(c.Code)),
+			discordCodeRow("数量", fmt.Sprintf("%s 张", commaInt(int64(c.Quantity)))),
+			discordCodeRow("限价", fmt.Sprintf("%s (买回成本)", positiveDecimal(c.Quote.Last))),
+			fmt.Sprintf("行权  %s  Δ %s", positiveDecimal(c.Quote.Strike), nonZeroDecimal(c.Quote.Delta)),
+			fmt.Sprintf("到期  %s  IV %s", shortExpiry(c.Quote.Expiry), positiveDecimal(c.Quote.ImpliedVol)),
+			fmt.Sprintf("报价  %s  OI %s", bidAsk(c.Quote.Bid, c.Quote.Ask), positiveCount(c.Quote.OpenInterest)),
+		}}
+		blocks = append(blocks, []string{
+			discordCodeRow("标的", underlyingLabel(underlying, sig.Symbol)),
+			discordCodeRow("现价", discordPrice(sig.Inventory.CurrentPrice)),
+			discordCodeRow("缺口", discordShares(sig.Inventory.InventoryGap)),
+			discordCodeRow("目标", fmt.Sprintf("%s / 持仓 %s", discordCount(sig.Inventory.TargetInventory), discordCount(sig.Inventory.ActualInventory))),
+		})
+		return blocks, nil
 	}
 	unit := "张"
 	if isStockDirection(c.Direction) {
@@ -348,7 +370,7 @@ func signalInfoBlocks(sig *wheelstore.SignalRecord, underlying string) ([][]stri
 // sections. It deliberately shares firstCandidate and isStockDirection with
 // the Telegram path so display and order execution keep the same semantics.
 func signalDiscordEmbeds(sig *wheelstore.SignalRecord, underlying string, reasons []string, sentAt time.Time) ([]discord.Embed, error) {
-	c, err := firstCandidate(sig)
+	c, err := orderFacts(sig)
 	if err != nil {
 		return nil, err
 	}
@@ -363,10 +385,17 @@ func signalDiscordEmbeds(sig *wheelstore.SignalRecord, underlying string, reason
 	if sig.Replace != nil && sig.Replace.Contract != "" {
 		replaceLine = fmt.Sprintf("\n↻ 改单:撤销挂单 `%s`(%s),改挂候选", discordInlineCode(sig.Replace.Contract), sig.Replace.OrderID)
 	}
+	title := fmt.Sprintf("🔴 模拟盘 · 📌 信号 #%d · %s · %s · %s", sig.ID, sig.Symbol, directionLabel(c.Direction), strategyBadge(sig.Strategy))
+	description := fmt.Sprintf("LLM 审核 ✅ APPROVE — 候选 `%s` 已就绪,缺口方向一致%s", discordInlineCode(c.Code), replaceLine)
+	if sig.ClosePosition {
+		// 平仓 embed(2026-08-15 评审 P1-B):buy 语义独立标题,不复用卖向文案。
+		title = fmt.Sprintf("🔴 模拟盘 · 📌 信号 #%d · %s · 买回平仓 · %s", sig.ID, sig.Symbol, strategyBadge(sig.Strategy))
+		description = fmt.Sprintf("LLM 审核 ✅ APPROVE — 买回空腿 `%s`(风险降低),限价 %s%s", discordInlineCode(c.Code), positiveDecimal(c.Quote.Last), replaceLine)
+	}
 	embeds := []discord.Embed{{
 		Author:      &discord.EmbedAuthor{Name: "🤖 Wheel Bot"},
-		Title:       fmt.Sprintf("🔴 模拟盘 · 📌 信号 #%d · %s · %s · %s", sig.ID, sig.Symbol, directionLabel(c.Direction), strategyBadge(sig.Strategy)),
-		Description: fmt.Sprintf("LLM 审核 ✅ APPROVE — 候选 `%s` 已就绪,缺口方向一致%s", discordInlineCode(c.Code), replaceLine),
+		Title:       title,
+		Description: description,
 		Color:       discord.ColorApprove,
 		Footer:      &discord.EmbedFooter{Text: fmt.Sprintf("配置 v%d · 信号 #%d · %s", sig.ConfigVersion, sig.ID, created)},
 		Timestamp:   sentAt.UTC().Format(time.RFC3339),
@@ -715,7 +744,7 @@ func (s *discordScheduler) confirmOrderDiscord(ctx context.Context, in *discord.
 		s.rejectDiscord(ctx, in, signalID, "order placer unavailable")
 		return
 	}
-	cand, err := firstCandidate(sig)
+	cand, err := orderFacts(sig)
 	if err != nil {
 		s.rejectDiscord(ctx, in, signalID, "no usable candidate")
 		return

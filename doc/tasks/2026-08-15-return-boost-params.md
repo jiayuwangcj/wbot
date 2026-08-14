@@ -33,6 +33,7 @@
 - [x] 派单(依赖 #86 合入已满足;2026-08-15 codex 额度尽,退回 Claude 侧 coder 执行,codex 额度 08-20 恢复)
 - [x] 实施 + verify.sh 全绿(2026-08-15 分支 feat/return-boost-params;单测:平仓边界/多仓选优/长腿跳过/delta 过滤/IV rank 高-低-未知/e2e 平仓归因 OptionCloseCost=100、IV rank 21 批序列、ES 空间范围校验;PG 集成测因 WBOT_PG_DSN 未设置 skip)
 - [x] 评审:有条件合入(feature),条件 1-3 已修复(2026-08-15 追加提交,verify.sh 全绿)
+- [x] 第二轮复核修复(P1-A 链外腿接线与标的过滤/P1-B 平仓推送确认链路/P2 平仓冷却窗;2026-08-15 追加提交,verify.sh 全绿)
 - [ ] 00700 全历史重训(进 #87 训练范围;训练时空间含 min_iv_rank 自动扩快照查询 1 年窗口)
 
 ## 实施备注(2026-08-15 coder)
@@ -44,6 +45,11 @@
 - 评审条件 2:LLM 审核闸门补平仓语义(wheelReviewRules/llmreview 第 8 条平仓审核,rules_ssot_test 断言,doc/API.md 与 doc/WHEEL_STRATEGY.md 同步)
 - 评审条件 3:实盘链外持仓经 ClosePositions 纳入平仓评估(域层排除出库存口径,库存计算不变);close_position ALERT 豁免 suppressRepeatAlert 30 分钟抑制窗(P3)
 - 评审 P2:ivrank 严格小于百分位(恒定 IV 序列 rank 恒 0 不穿门槛),补平台段/恒定序列测试
+- 第二轮修复(2026-08-15,复核报告 2026-08-15-return-boost-params-r2.md):
+  - P1-A(a):runner 补拉循环把链外腿报价放进 quotes map 仅用于 Delta/LotSize 填充,从未并入 in.Quotes → 实盘链外平仓永不触发(positionQuote 找不到);修复:closeQuotes 并入 in.Quotes(Expiry 从代码解析)
+  - P1-A(b):closePositionLegs 按链底层字母过滤(00700→TCH),其他标的空腿不评估、不进 LLM 审核输入;顺带解决跨标的腿每 pass 限频拉报价浪费
+  - P1-B:平仓载荷独立落库 close_position/close_qty/close_quote(migration 015);Telegram+Discord 走独立 BUY 渲染/确认路径(side=buy、数量=空腿张数、限价=ask 退 last);卖向 firstCandidate/#57 严格化一字未动
+  - P2:平仓独立冷却窗 closeAlertCooldown=90min(closeAt 基线,窗口不滚动),卖向 30min 窗不变;e2e:fake futu 衰减报价 → 平仓 ALERT 落库 → LLM APPROVE → 卡片 buy 语义 → yes 确认 buy 下单
 
 ## Links
 
