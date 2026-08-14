@@ -80,6 +80,12 @@ type QuoteSnapshotBatch struct {
 	Underlying      string
 	UnderlyingPrice float64
 	Quotes          []wheel.OptionQuote
+	// IVRank is the underlying's 1-year IV percentile at ObservedAt
+	// (attachIVRanks, options_data.go): the fraction of trailing-window batch
+	// median IVs ≤ this batch's median IV. Zero when history is insufficient
+	// or the loader did not attach ranks; with min_iv_rank > 0 an unknown
+	// rank masks every candidate (fail-closed HOLD).
+	IVRank float64
 	// ExpiryOrder is a loader-built index into Quotes. Keeping the canonical
 	// quote order untouched preserves report/trade determinism while allowing
 	// the backtest adapter to binary-search the per-bar DTE range. It is an

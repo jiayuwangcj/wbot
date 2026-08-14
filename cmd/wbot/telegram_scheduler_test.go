@@ -378,6 +378,11 @@ func (p *fakePlacer) gotOrder() (string, string, float64) {
 	defer p.mu.Unlock()
 	return p.gotSymbol, p.gotSide, p.gotQty
 }
+func (p *fakePlacer) gotPriceValue() float64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.gotPrice
+}
 
 func startFakeTG(t *testing.T) (*fakeTGServer, *httptest.Server) {
 	t.Helper()
@@ -1656,5 +1661,113 @@ func TestWatchFillOrderNotVisibleWarnsAndCancels(t *testing.T) {
 	}
 	if !foundWarn {
 		t.Fatal("no 订单券商端未确认 warning in push history")
+	}
+}
+
+// closeSignalFixture is a buy-to-close ALERT with its own order facts
+// (CloseQuote/CloseQty); the sell candidate pipeline must not apply.
+func closeSignalFixture(id int64, symbol string, created time.Time) *wheelstore.SignalRecord {
+	sig := signalFixture(id, symbol, created)
+	sig.ClosePosition = true
+	sig.CloseQty = 2
+	sig.Candidates = nil
+	sig.CloseQuote = &wheelstore.Quote{
+		Symbol: "US.AAPL260815P240000", OptionType: "PUT", Strike: 240.0,
+		Expiry: "2026-08-15T00:00:00Z", Bid: 2.9, Ask: 3.0, Last: 2.95, Delta: -0.4,
+		ImpliedVol: 0.3, OpenInterest: 500,
+	}
+	sig.Reason = "profit_take_pct 0.50 reached: received 10.0000, buyback ask 3.0000, captured 70.0% of max profit"
+	return sig
+}
+
+func TestAlertCardClosePositionRendersBuy(t *testing.T) {
+	created := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	sig := closeSignalFixture(7, "US.AAPL", created)
+	text, err := alertMessage(sig, "苹果公司", "持仓空腿,买回平仓 OK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `<b>📌 US.AAPL · 买回平仓 · 信号 #7 · ⚙️ 固化策略</b>
+━━━━━━━━━━━━━━━━━━━━
+🎯 <b>买回平仓(BUY)</b>
+合约      <b><code>US.AAPL260815P240000</code></b>
+行权      <b><code>240.00</code></b>
+到期      <code>2026-08-15</code> (剩 4 天)
+数量      <b><code>2</code></b> 张
+限价      <b><code>3.00</code></b> (买回成本)
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+📊 <b>标的当前</b>
+标的      <b>苹果公司 · AAPL</b>
+正股现价  <b><code>248.50</code></b>
+bid/ask   <code>2.90</code>/<code>3.00</code>
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+🧭 <b>持仓与策略参数</b>
+正股持仓  <code>5,000</code> 股
+目标持仓  <code>4,700</code> 股
+库存缺口  <b><code>-300</code></b> 股
+┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
+💡 <b>平仓原因</b> · LLM 审核 <b>✅ APPROVE</b>
+• 持仓空腿,买回平仓 OK
+━━━━━━━━━━━━━━━━━━━━
+信号 #7 · 配置 v1 · 08-11 15:30`
+	if text != want {
+		t.Fatalf("close alert message mismatch\n--- got ---\n%s\n--- want ---\n%s", text, want)
+	}
+	// 卖向卡片不受影响:close 载荷绝不进 firstCandidate 的卖向路径。
+	if _, err := firstCandidate(sig); err == nil {
+		t.Fatal("firstCandidate(close signal) = nil error; want error (no sell candidates)")
+	}
+}
+
+func TestCallbackYesClosePositionPlacesBuyOrder(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := openMarketNow
+	store := newFakeTGStore()
+	store.signals[7] = closeSignalFixture(7, "US.AAPL", now)
+	store.reviews[7] = approvedReview()
+	placer := &fakePlacer{orderID: 12345, orderIDEx: "ord-12345"}
+	s := newTestScheduler(t, server, store, placer, map[int64]bool{42: true}, now)
+
+	s.handleCallback(context.Background(), callback(42, "wheel:7:yes"))
+	waitFor(t, func() bool { return placer.callsCount() == 1 }, "PlaceOrder never happened")
+	sym, side, qty := placer.gotOrder()
+	if sym != "US.AAPL260815P240000" || side != "buy" || qty != 2 {
+		t.Fatalf("order = %s %s %v; want buy 2 of the held put (never sell)", sym, side, qty)
+	}
+	if price := placer.gotPriceValue(); price != 3.0 {
+		t.Fatalf("order price = %v; want ask 3.0 (买回成本)", price)
+	}
+	act := store.lastAppended(t)
+	if act.Action != "CONFIRM" || act.Details["symbol"] != "US.AAPL260815P240000" || act.Details["side"] != "buy" {
+		t.Fatalf("action = %+v; want CONFIRM buy close", act)
+	}
+	text, _ := fake.waitSend(t)["text"].(string)
+	if !strings.Contains(text, "已下单") || !strings.Contains(text, "买入") {
+		t.Fatalf("push = %q; want 已下单 买入", text)
+	}
+}
+
+func TestPushSignalClosePositionRendersBuyCard(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := closeSignalFixture(7, "US.AAPL", now)
+	store.reviews[7] = &wheelstore.ActionRecord{Details: map[string]any{
+		"verdict": "APPROVE", "reasons": []any{"持仓空腿,买回平仓 OK"},
+	}}
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	s.pushSignal(context.Background(), *sig, nil)
+	payload := fake.lastSend(t)
+	text, _ := payload["text"].(string)
+	if !strings.Contains(text, "买回平仓") || !strings.Contains(text, "BUY") || !strings.Contains(text, "3.00") {
+		t.Fatalf("close push text missing buy semantics:\n%s", text)
+	}
+	markup, _ := payload["reply_markup"].(map[string]any)
+	rows, _ := markup["inline_keyboard"].([]any)
+	buttons, _ := rows[0].([]any)
+	first, _ := buttons[0].(map[string]any)
+	if first["text"] != "✅ 买回平仓" || first["callback_data"] != "wheel:7:yes" {
+		t.Fatalf("close button = %#v; want 买回平仓", first)
 	}
 }

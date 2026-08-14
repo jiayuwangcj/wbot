@@ -30,12 +30,16 @@
     "min_dte": 5,
     "max_dte": 10,
     "min_option_quality": 0.6,
+    "profit_take_pct": 0,
+    "put_delta_max": 0,
+    "call_delta_max": 0,
+    "min_iv_rank": 0,
     "strategic_state": "NORMAL"
   }
 }
 ```
 
-约束：`full_position_price > 0`，`zero_position_price > full_position_price`，`max_inventory` 为正整数；DTE 范围有效，质量分和 `covered_call_pct` 在 `[0,1]`，其余战术参数非负。`covered_call_pct` 默认 0.05，covered call 行权价下限为 `max(现价×(1+covered_call_pct), 正股成本)`；存量配置省略该键时使用默认值。候选期权的 `expected_gain = Bid × 合约乘数 × 数量` 低于 `min_option_profit`（默认 200，单位 HKD/笔）时淘汰；它与 `min_premium_per_share` 同时生效，设为 0 可关闭总收益门槛。百分比 JSON/CLI 一律使用小数（`0.018` 表示 `1.8%`）；界面显示 `%` 时乘 100。两价之间按满仓到零仓线性插值并在区间外钳制；策略不设每日提醒次数上限。
+约束：`full_position_price > 0`，`zero_position_price > full_position_price`，`max_inventory` 为正整数；DTE 范围有效，质量分和 `covered_call_pct` 在 `[0,1]`，其余战术参数非负。`covered_call_pct` 默认 0.05，covered call 行权价下限为 `max(现价×(1+covered_call_pct), 正股成本)`；存量配置省略该键时使用默认值。候选期权的 `expected_gain = Bid × 合约乘数 × 数量` 低于 `min_option_profit`（默认 200，单位 HKD/笔）时淘汰；它与 `min_premium_per_share` 同时生效，设为 0 可关闭总收益门槛。收益提升参数（2026-08-15 起默认 0 = 现行为，缺失兼容旧配置）：`profit_take_pct ∈ [0,0.8]` 已收权利金回落到最大利润该比例时买回平仓，0 = 持有到期；`put_delta_max/call_delta_max ∈ [0,1]` 卖 put/call 的 delta 绝对值上限，0 = 不限制；`min_iv_rank ∈ [0,1]` 标的 1 年 IV 百分位下限（严格小于该百分位的低 IV 不卖），0 = 不过滤。百分比 JSON/CLI 一律使用小数（`0.018` 表示 `1.8%`）；界面显示 `%` 时乘 100。两价之间按满仓到零仓线性插值并在区间外钳制；策略不设每日提醒次数上限。
 
 战略状态：
 
@@ -76,11 +80,15 @@ inventory_gap       = target_inventory - effective_inventory
 每个候选必须同时通过：
 
 - 卖 Put 必须 `strike < 正股现价`，卖 Call 必须 `strike > 正股现价`；OTM 硬过滤先于质量和权利金排序；
+- `put_delta_max > 0` 时卖 Put 候选的 |delta| 必须 ≤ 上限，`call_delta_max > 0` 时卖 Call 候选的 delta 必须 ≤ 上限（0 = 不过滤，保持现行为）；
+- `min_iv_rank > 0` 时标的 1 年 IV 百分位必须严格大于阈值（同一窗口内 IV 相等落在平台段的候选 rank 取严格小于计数，恒定 IV 序列 rank 恒为 0，fail-closed 不穿门槛）；
 - covered call 行权价必须达到配置的价外幅度并且不低于正股成本；
 - Put 指派后实际库存不超过 `max_inventory`，且现金检查覆盖所有已有空 Put 的行权价×张数×lot 承诺，再加本次候选；不能只检查新的一张；
 - Call 指派后不会形成裸空头；
 - 开仓后的有效库存不比开仓前更偏离目标；
 - 战略状态允许该方向。
+
+平仓（`profit_take_pct > 0` 时启用）：已持空腿的当前报价（买回成本）回落到「已收权利金 × (1 − profit_take_pct)」以下时，对最长腿输出买回平仓 `ALERT`（`signal.close_position=true`，方向与卖向相反，计入 `option_close_cost` 与平仓提醒，不进新开仓路径）。平仓属风险降低动作，不受卖向重复 ALERT 的 30 分钟抑制窗约束；平仓自身独立冷却窗 `closeAlertCooldown`（90 分钟，2026-08-15 第二轮评审）：持仓未平期间同一标的的平仓 ALERT 在窗口内降为 `HOLD`，避免每 pass 重复触发平仓 ALERT 与 LLM 审核洪水（平仓审核无上限成本、挤压卖向审核队列），窗口不滚动，期满后条件仍满足则重新 ALERT。平仓载荷独立落库（`close_position/close_qty/close_quote`），推送/确认走买回（BUY）路径：side=buy、数量=持仓空腿数、限价=买回报价（ask，无 ask 退 last），绝不复用卖向候选的 firstCandidate 卖向路径。链外持仓（到期前最后 `min_dte` 天被 DTE 窗口剔除的空腿）仍纳入平仓评估：它们经 `ClosePositions` 独立传参，报价按腿拉取；**库存口径不因平仓评估改变**——链外腿不计入有效/实际库存，与回测引擎对称。
 
 正股直接卖出同样不得低于持仓平均成本；`stock_switch_pct` 在急跌时只 HOLD 并保留持仓，价格恢复到成本以上才允许卖出。等于成本的成交只容许手续费级损失。
 
@@ -198,3 +206,4 @@ Futu 接入未确认的字段或权限必须留在 `INTEGRATION_BLOCKED`，不�
 5. 系统性错误：排查闭市或停牌误判、同一合约重复动作、与现有持仓或历史动作矛盾、合约类型/到期日/乘数错误及 Greeks 缺失。
 6. 数据不足：capability_status 为 DATA_BLOCKED、blocked_by 非空，或任一关键字段不足时必须 REJECT；不得以 expected_gain 补偿或放宽任何校验。
 7. 改单（signal.replace 非空，硬性项）：改单=撤销 pending_orders 中旧挂单（replace.order_id/replace.contract）改挂首选候选，是写操作、同样需要审核。必须核对：a) 新合约不要求严格优于旧合约：允许价格稍差的调整（如权利金略低、质量相当），若理由合理——更快成交、流动性更好、更接近目标库存——应予批准；但新合约明显劣化（质量/流动性显著更差、风险显著增大）或调整无任何依据时必须 REJECT；b) 旧挂单确在 pending_orders 中且方向一致；c) 改单后库存偏差不增大；d) 频繁改单（同标的短时多次）必须 REJECT——避免反复撤换浪费与不确定性。
+8. 平仓（signal.close_position 为真，硬性项）：平仓=买回已持空腿以兑现已收权利金（profit_take_pct 达到阈值），属风险降低动作，方向与库存缺口相反是其固有特征，不受第 1 条方向反转规则约束。必须核对：a) 合约确为当前持仓空腿（positions 中该合约数量为负），且平仓数量 ≤ 持仓数量；b) 报价合理（Bid/Ask 正数且未倒挂、非陈旧），平仓价显著高于持仓成本或明显不合理时必须 REJECT；c) 买回成本 ≤ 可用现金/保证金（不足时必须 REJECT）；d) 平仓后不遗留反向裸仓（不得把平仓当成反手开新仓）。

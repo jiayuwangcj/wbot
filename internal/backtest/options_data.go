@@ -71,6 +71,7 @@ func OptionsDataFromQuoteSnapshots(rows []wheelstore.QuoteSnapshotRecord) (*Opti
 		}
 		return out[i].SnapshotKey < out[j].SnapshotKey
 	})
+	attachIVRanks(out)
 	data := &OptionsData{Chain: OptionChain{}, Bars: OptionBars{}, QuoteBatches: out, Snapshots: out, QuoteSnapshots: out}
 	for _, b := range out {
 		for _, q := range b.Quotes {

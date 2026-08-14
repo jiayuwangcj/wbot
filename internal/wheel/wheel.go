@@ -119,16 +119,31 @@ type PricePoint struct {
 // anchors are deliberately separate from tactical parameters: callers choose
 // the former, while optimizers may tune only the latter.
 type Config struct {
-	Strategy               string          `json:"strategy" yaml:"strategy"`
-	PricePositionCurve     []PricePoint    `json:"price_position_curve,omitempty" yaml:"price_position_curve,omitempty"`
-	FullPositionPrice      float64         `json:"full_position_price" yaml:"full_position_price"`
-	ZeroPositionPrice      float64         `json:"zero_position_price" yaml:"zero_position_price"`
-	MaxInventory           float64         `json:"max_inventory" yaml:"max_inventory"`
-	MoveIntervalPct        float64         `json:"move_interval_pct" yaml:"move_interval_pct"`
-	MinPremiumPerShare     float64         `json:"min_premium_per_share" yaml:"min_premium_per_share"`
-	MinOptionProfit        float64         `json:"min_option_profit" yaml:"min_option_profit"`
-	StockSwitchPct         float64         `json:"stock_switch_pct" yaml:"stock_switch_pct"`
-	CoveredCallPct         float64         `json:"covered_call_pct" yaml:"covered_call_pct"`
+	Strategy           string       `json:"strategy" yaml:"strategy"`
+	PricePositionCurve []PricePoint `json:"price_position_curve,omitempty" yaml:"price_position_curve,omitempty"`
+	FullPositionPrice  float64      `json:"full_position_price" yaml:"full_position_price"`
+	ZeroPositionPrice  float64      `json:"zero_position_price" yaml:"zero_position_price"`
+	MaxInventory       float64      `json:"max_inventory" yaml:"max_inventory"`
+	MoveIntervalPct    float64      `json:"move_interval_pct" yaml:"move_interval_pct"`
+	MinPremiumPerShare float64      `json:"min_premium_per_share" yaml:"min_premium_per_share"`
+	MinOptionProfit    float64      `json:"min_option_profit" yaml:"min_option_profit"`
+	StockSwitchPct     float64      `json:"stock_switch_pct" yaml:"stock_switch_pct"`
+	CoveredCallPct     float64      `json:"covered_call_pct" yaml:"covered_call_pct"`
+	// ProfitTakePct closes a short leg early once the received credit decays
+	// to (1 − profit_take_pct) of its fill premium: the premium captured as a
+	// fraction of max profit reaches the threshold and the leg is bought back
+	// (releases cash/margin). 0 = hold to expiry (compat default).
+	ProfitTakePct float64 `json:"profit_take_pct,omitempty" yaml:"profit_take_pct,omitempty"`
+	// PutDeltaMax/CallDeltaMax cap the absolute sell-side delta of candidate
+	// contracts; the OTM hard constraint stays the primary gate, delta is the
+	// secondary guard (deep-OTM low-premium contracts are pointless). 0 = no
+	// delta limit; a large value is equivalent.
+	PutDeltaMax  float64 `json:"put_delta_max,omitempty" yaml:"put_delta_max,omitempty"`
+	CallDeltaMax float64 `json:"call_delta_max,omitempty" yaml:"call_delta_max,omitempty"`
+	// MinIVRank requires the underlying's 1-year IV percentile (DecisionInput
+	// IVRank) to reach the threshold before any sell candidate is accepted;
+	// below it every candidate is masked → HOLD. 0 = no IV-rank filter.
+	MinIVRank              float64         `json:"min_iv_rank,omitempty" yaml:"min_iv_rank,omitempty"`
 	TradeGap               float64         `json:"trade_gap" yaml:"trade_gap"`
 	MinOptionQuality       float64         `json:"min_option_quality" yaml:"min_option_quality"`
 	MinDTE                 int             `json:"min_dte" yaml:"min_dte"`
@@ -183,6 +198,18 @@ func (c Config) Validate() error {
 	}
 	if !finite(c.CoveredCallPct) || c.CoveredCallPct < 0 || c.CoveredCallPct > 1 {
 		return fmt.Errorf("wheel: covered_call_pct must be in [0,1]")
+	}
+	if !finite(c.ProfitTakePct) || c.ProfitTakePct < 0 || c.ProfitTakePct > 0.8 {
+		return fmt.Errorf("wheel: profit_take_pct must be in [0,0.8]")
+	}
+	if !finite(c.PutDeltaMax) || c.PutDeltaMax < 0 || c.PutDeltaMax > 1 {
+		return fmt.Errorf("wheel: put_delta_max must be in [0,1]")
+	}
+	if !finite(c.CallDeltaMax) || c.CallDeltaMax < 0 || c.CallDeltaMax > 1 {
+		return fmt.Errorf("wheel: call_delta_max must be in [0,1]")
+	}
+	if !finite(c.MinIVRank) || c.MinIVRank < 0 || c.MinIVRank > 1 {
+		return fmt.Errorf("wheel: min_iv_rank must be in [0,1]")
 	}
 	if !finite(c.TradeGap) || c.TradeGap < 0 {
 		return fmt.Errorf("wheel: trade_gap must be non-negative")
@@ -284,6 +311,11 @@ type OptionPosition struct {
 	Delta           float64    `json:"delta,omitempty"`
 	LotSize         int        `json:"lot_size,omitempty"`
 	OptionType      OptionType `json:"option_type,omitempty"`
+	// AvgPremium is the per-share fill premium of the position: the received
+	// credit for short legs (the profit_take_pct basis), the paid debit for
+	// long legs. Zero when the caller has no fill-basis data; profit taking
+	// then cannot be evaluated and stays off for that leg.
+	AvgPremium float64 `json:"avg_premium,omitempty"`
 }
 
 type Position = OptionPosition
@@ -601,6 +633,16 @@ type DecisionInput struct {
 	LastEffectiveFillPrice float64
 	CashAvailable          float64
 	HasCashAvailable       bool
+	// IVRank is the underlying's 1-year implied-volatility percentile in
+	// [0,1]. Zero means unknown (no history source wired); with min_iv_rank
+	// > 0 an unknown rank masks every candidate (fail-closed HOLD).
+	IVRank float64
+	// ClosePositions extends the short-leg set considered for profit_take_pct
+	// buybacks only. It is deliberately excluded from the inventory math:
+	// positions held outside the DTE window (final min_dte days before expiry)
+	// must stay closable live, yet must not change the effective inventory.
+	// nil preserves the Positions-only behavior.
+	ClosePositions []OptionPosition
 	// Pending lists unfilled orders already resting for this symbol.
 	// Candidates whose contract+direction match an entry are excluded:
 	// re-alerting the same contract while a prior order is unfilled would
@@ -675,9 +717,14 @@ type Signal struct {
 	// direction, different contract) with the chosen candidate. Set only
 	// when exactly one same-direction pending order exists and the chosen
 	// contract differs from it; multiple pendings are left alone.
-	Replace          *ReplaceOrder `json:"replace,omitempty"`
-	CapabilityStatus string        `json:"capability_status"`
-	BlockedBy        []string      `json:"blocked_by,omitempty"`
+	Replace *ReplaceOrder `json:"replace,omitempty"`
+	// ClosePosition marks an ALERT as a buy-to-close of a held short leg
+	// (profit_take_pct reached): Quantity is the buy-back contract count,
+	// Direction is the held leg's option type. The human confirmation loop
+	// is unchanged — the alert is a suggestion, never an order.
+	ClosePosition    bool     `json:"close_position,omitempty"`
+	CapabilityStatus string   `json:"capability_status"`
+	BlockedBy        []string `json:"blocked_by,omitempty"`
 }
 
 type Decision = Signal
@@ -720,6 +767,13 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	inv := CalculateInventory(in.StockShares, in.FuturesEquivalentShares, in.Positions, candidateLotSize(in.Quotes))
 	gap := target - inv.EffectiveInventory
 	base := Signal{Action: ActionHold, Direction: DirectionHold, TargetInventory: target, InventoryGap: gap, ActualInventory: inv.ActualInventory, OptionDeltaStock: inv.OptionDeltaStock, EffectiveInventory: inv.EffectiveInventory, CapabilityStatus: CapabilityReady}
+	// profit_take_pct exits a short leg when the captured premium reaches the
+	// threshold. It is a risk-reducing exit, so it runs before every entry
+	// gate (gap band, move interval, stock switch, IV rank): a within-band
+	// inventory gap must not suppress the close.
+	if sig, ok := takeProfitSignal(cfg, in, base); ok {
+		return sig, nil
+	}
 	if math.Abs(gap) <= cfg.TradeGap {
 		return hold("inventory gap is within no-trade band", base), nil
 	}
@@ -757,6 +811,16 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	case StatePauseBuy, StateExit:
 		if direction == DirectionPut {
 			return hold("strategic state does not permit new puts", base), nil
+		}
+	}
+	// IV-rank gate: below the threshold (or unknown history) every candidate
+	// is masked → HOLD. The exit path above is deliberately unaffected.
+	if cfg.MinIVRank > 0 {
+		if in.IVRank <= 0 {
+			return hold("wheel: IV rank is unavailable (needs one-year underlying IV history); cannot confirm min_iv_rank", base), nil
+		}
+		if in.IVRank < cfg.MinIVRank {
+			return hold(fmt.Sprintf("wheel: IV rank %.4f below min_iv_rank %.4f", in.IVRank, cfg.MinIVRank), base), nil
 		}
 	}
 	validDirectionQuoteCount := 0
@@ -826,6 +890,15 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 				if q.Strike+1e-9 < minimumStrike {
 					candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: covered call strike %.4f below protected minimum %.4f", q.Strike, minimumStrike))
 				}
+			}
+			// Delta cap rides on top of the OTM/moneyness hard masks: puts
+			// compare the absolute delta (market delta is negative), calls the
+			// positive delta. 0 disables the filter.
+			if len(candidate.Reasons) == 0 && direction == DirectionPut && cfg.PutDeltaMax > 0 && math.Abs(q.delta()) > cfg.PutDeltaMax {
+				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: sell put delta %.4f exceeds put_delta_max %.4f", math.Abs(q.delta()), cfg.PutDeltaMax))
+			}
+			if len(candidate.Reasons) == 0 && direction == DirectionCall && cfg.CallDeltaMax > 0 && q.delta() > cfg.CallDeltaMax {
+				candidate.Reasons = append(candidate.Reasons, fmt.Sprintf("wheel: sell call delta %.4f exceeds call_delta_max %.4f", q.delta(), cfg.CallDeltaMax))
 			}
 			if len(candidate.Reasons) == 0 {
 				candidate.Quality = QualityScore(q)
@@ -922,6 +995,88 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 		}
 	}
 	return base, nil
+}
+
+// takeProfitSignal looks for a short leg whose captured premium ratio
+// (fill credit − current ask) / fill credit has reached profit_take_pct and
+// returns its buy-to-close ALERT. The most profitable leg wins; ties break on
+// symbol for determinism. Legs without a fill basis (AvgPremium zero), without
+// a priced quote, or already expiring this bar are skipped. The exit never
+// depends on inventory-gap direction or IV rank — it is a risk-reducing close.
+func takeProfitSignal(cfg Config, in DecisionInput, base Signal) (Signal, bool) {
+	if cfg.ProfitTakePct <= 0 {
+		return Signal{}, false
+	}
+	type candidate struct {
+		quote     OptionQuote
+		pos       OptionPosition
+		contracts float64
+		ratio     float64
+	}
+	var best *candidate
+	// ClosePositions augments Positions for exits only (held legs outside the
+	// DTE window stay closable); same-symbol entries collapse to one leg.
+	closeSet := make(map[string]OptionPosition, len(in.Positions)+len(in.ClosePositions))
+	for _, p := range in.Positions {
+		if p.Symbol != "" {
+			closeSet[p.Symbol] = p
+		}
+	}
+	for _, p := range in.ClosePositions {
+		if p.Symbol != "" {
+			closeSet[p.Symbol] = p
+		}
+	}
+	for _, p := range closeSet {
+		contracts := p.SignedContracts
+		if contracts == 0 {
+			contracts = p.Contracts
+		}
+		if contracts >= 0 || p.AvgPremium <= 0 {
+			continue
+		}
+		if strings.TrimSpace(p.Symbol) == "" {
+			continue // no symbol to match against the quote set
+		}
+		quote, ok := positionQuote(in.Quotes, p.Symbol)
+		if !ok || !finite(quote.Ask) || quote.Ask <= 0 || quote.Ask >= p.AvgPremium {
+			continue
+		}
+		if !in.AsOf.IsZero() && !quote.Expiry.After(in.AsOf) {
+			continue // settling this bar; do not race the expiry settlement
+		}
+		ratio := (p.AvgPremium - quote.Ask) / p.AvgPremium
+		if ratio+1e-12 < cfg.ProfitTakePct {
+			continue
+		}
+		if best == nil || ratio > best.ratio || (ratio == best.ratio && p.Symbol < best.pos.Symbol) {
+			best = &candidate{quote: quote, pos: p, contracts: contracts, ratio: ratio}
+		}
+	}
+	if best == nil {
+		return Signal{}, false
+	}
+	qty := int(-best.contracts)
+	if qty <= 0 {
+		return Signal{}, false
+	}
+	sig := base
+	sig.Action, sig.Direction, sig.Quantity, sig.SignedContracts = ActionAlert, Direction(strings.ToUpper(string(best.pos.optionType()))), qty, qty
+	sig.Quote = &best.quote
+	sig.ClosePosition = true
+	sig.Reason = fmt.Sprintf("profit_take_pct %.2f reached: received %.4f, buyback ask %.4f, captured %.1f%% of max profit", cfg.ProfitTakePct, best.pos.AvgPremium, best.quote.Ask, best.ratio*100)
+	sig.Reasons = []string{sig.Reason}
+	return sig, true
+}
+
+// positionQuote finds a quote for the held contract by symbol name.
+func positionQuote(quotes []OptionQuote, symbol string) (OptionQuote, bool) {
+	for _, q := range quotes {
+		if q.name() == symbol {
+			return q, true
+		}
+	}
+	return OptionQuote{}, false
 }
 
 func dteRejectionReason(q OptionQuote, asOfDate time.Time, cfg Config) string {

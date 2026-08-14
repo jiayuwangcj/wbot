@@ -25,11 +25,14 @@ const (
 // Position is one broker position in the futu-neutral shape. Qty is always
 // positive; the side gives the sign (short positions are negative on input).
 type Position struct {
-	Symbol  string  // market-qualified, e.g. HK.TCH260807C335000
-	Code    string  // bare code, e.g. TCH260807C335000 or 00700
-	Qty     float64 // shares (stocks) or contracts (options)
-	Side    int     // PositionSide: 0 long, 1 short, -1 unknown
-	AvgCost float64 // broker-reported stock acquisition basis; options ignore it
+	Symbol string  // market-qualified, e.g. HK.TCH260807C335000
+	Code   string  // bare code, e.g. TCH260807C335000 or 00700
+	Qty    float64 // shares (stocks) or contracts (options)
+	Side   int     // PositionSide: 0 long, 1 short, -1 unknown
+	// AvgCost is the broker-reported acquisition basis: average cost for
+	// stock, received premium per contract for short options (futu
+	// GetCostPrice), which feeds wheel's profit_take_pct buyback math.
+	AvgCost float64
 }
 
 // TradePositions is the injectable position source for the runner (fakes in
@@ -80,6 +83,77 @@ func filterPositions(symbol string, positions []Position, contractSymbols []stri
 		}
 	}
 	return matched, unassignedOptions
+}
+
+// chainUnderlyingLetters extracts the underlying letters of the evaluated
+// symbol's option chain (00700 → TCH) from its contract symbols, or "" when
+// the chain carries no parseable option code. Broker position codes share the
+// same letter convention, so the letters gate which unassigned legs belong to
+// this symbol (2026-08-15 评审 P1-A: 跨标的空腿不得进本标的平仓评估/审核)。
+func chainUnderlyingLetters(contractSymbols []string) string {
+	for _, contractSymbol := range contractSymbols {
+		if contractSymbol == "" {
+			continue
+		}
+		m := optionCodeRE.FindStringSubmatch(bareSecurityCode(contractSymbol))
+		if m == nil {
+			continue
+		}
+		return strings.ToUpper(m[1])
+	}
+	return ""
+}
+
+// closePositionLegs extracts short option legs held outside the option chain
+// window (the final min_dte days before expiry) for profit_take_pct exit
+// evaluation only. The wheel legs go to DecisionInput.ClosePositions — which
+// the domain layer excludes from inventory math — and the original broker
+// positions come back for LLM review visibility (审核必须能核对「合约确为
+// 持仓空腿」). Only legs whose code underlying matches the chain's
+// (underlyingLetters, 00700→TCH) are extracted: other underlyings' short legs
+// must neither be evaluated here nor leak into the per-symbol review input.
+// Long legs and unknown-side positions are skipped (they can never be
+// profit-take exits). expiries returns the code-parsed expiry per extracted
+// symbol — the live quote channel needs it because chain contracts outside
+// the DTE window carry no futu contract metadata.
+func closePositionLegs(unassigned []Position, underlyingLetters string) (legs []wheel.OptionPosition, review []Position, expiries map[string]time.Time) {
+	for _, p := range unassigned {
+		code := p.Code
+		if code == "" {
+			code = p.Symbol
+		}
+		if code == "" {
+			continue
+		}
+		m := optionCodeRE.FindStringSubmatch(bareSecurityCode(code))
+		if m == nil {
+			continue
+		}
+		// 链上无可解析期权合约(字母为空)时无法归属任何链外腿:fail-closed
+		// 全部跳过,绝不把其他标的的空腿当本标的平仓候选。
+		if underlyingLetters == "" || !strings.EqualFold(m[1], underlyingLetters) {
+			continue // 其他标的的链外空腿:不评估、不进审核输入
+		}
+		strike, expiry, typ, err := parseOptionCode(code)
+		if err != nil {
+			continue
+		}
+		signed, err := signedQty(p)
+		if err != nil || signed >= 0 {
+			continue
+		}
+		sym := p.Symbol
+		if sym == "" {
+			sym = code
+		}
+		legs = append(legs, wheel.OptionPosition{Symbol: sym, SignedContracts: signed, Strike: strike, OptionType: typ, AvgPremium: p.AvgCost})
+		review = append(review, p)
+		if expiries == nil {
+			expiries = map[string]time.Time{}
+		}
+		expiries[sym] = expiry
+	}
+	return legs, review, expiries
 }
 
 func optionCodeInChain(p Position, chainCodes map[string]struct{}) bool {
@@ -178,6 +252,7 @@ func PositionsInput(positions []Position) (stockShares float64, opts []wheel.Opt
 				SignedContracts: signed,
 				Strike:          strike,
 				OptionType:      typ,
+				AvgPremium:      p.AvgCost,
 			})
 			continue
 		} else if errors.Is(perr, errUnsupportedOption) {

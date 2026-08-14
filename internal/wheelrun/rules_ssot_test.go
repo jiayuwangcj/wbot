@@ -24,6 +24,9 @@ func TestWheelReviewRulesCoverRequiredAuditDimensions(t *testing.T) {
 		"wheel 区间策略", "当前情况", "expected_gain", "预期", "方向反转检查（硬性项）",
 		"inventory_gap", "满仓价—清仓价区间", "min_dte/max_dte", "Bid/Ask",
 		"Volume/OI", "资金与库存", "系统性错误", "DATA_BLOCKED", "必须 REJECT",
+		// 平仓语义核对项(2026-08-15 评审条件 2):close_position 必须出现且
+		// 带完整核对清单——持仓空腿、数量上限、方向反转豁免。
+		"close_position", "持仓空腿", "平仓数量 ≤ 持仓数量", "不受第 1 条方向反转规则约束",
 	} {
 		if !strings.Contains(wheelReviewRules, want) {
 			t.Errorf("wheelReviewRules missing %q", want)

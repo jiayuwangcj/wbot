@@ -444,6 +444,95 @@ func TestRunOnceAlertReady(t *testing.T) {
 	}
 }
 
+// TestRunOnceClosePositionPersistsCloseFacts: runner 级平仓 e2e(评审 P1-B
+// 前半段)——fake futu 衰减报价(ask 4.1 < 阈值)触发链外空腿买回平仓 ALERT;
+// 落库记录带独立 close 载荷(ClosePosition/CloseQty/CloseQuote, Candidates
+// 为空),LLM 审核 APPROVE 且审核输入含该持仓空腿;链外腿不进库存口径。
+func TestRunOnceClosePositionPersistsCloseFacts(t *testing.T) {
+	const symbol = "HK.00700"
+	now := time.Now()
+	chainContract := callContract("HK.TCH260901C650000", symbol, 650, now.AddDate(0, 0, 7))
+	// 链外空腿:到期在链窗口(now+5~10d)之外,仍可平仓。
+	closeExpiry := now.AddDate(0, 0, 3)
+	closeCode := "TCH" + closeExpiry.Format("060102") + "P600000"
+	closeSym := "HK." + closeCode
+	params := wheelParams()
+	params["params"].(map[string]any)["profit_take_pct"] = 0.5
+	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{
+		symbol: {Symbol: symbol, Version: 1, Config: params},
+	}}
+	quoter := &fakeQuoter{
+		prices: map[string]float64{symbol: 600},
+		opts: map[string]futu.OptionQuoteEx{
+			chainContract.Symbol: fullCallQuote(chainContract.Symbol, 650, chainContract.Expiry, now),
+			// 衰减报价:ask 4.1 相对已收权利金 10 → captured 59% ≥ 50%。
+			closeSym: fullCallQuote(closeSym, 600, closeExpiry, now),
+		},
+	}
+	reviewer := &fakeReviewer{results: map[string]llmreview.ReviewResult{
+		symbol: {Verdict: "APPROVE", Reasons: []string{"持仓空腿,买回平仓 OK"}},
+	}}
+	r := testRunner(t, Dependencies{
+		Quoter: quoter,
+		Positions: fakePositions{
+			{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong, AvgCost: 500},
+			{Symbol: closeSym, Code: closeCode, Qty: 2, Side: SideShort, AvgCost: 10},
+		},
+		Chain:       fakeChain{contracts: []futu.OptionContract{chainContract}},
+		Store:       store,
+		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
+		LLMReviewer: reviewer,
+		LLMModel:    "test-model",
+	})
+	defer r.Close()
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce() error: %v", err)
+	}
+	if store.signalCount() != 1 {
+		t.Fatalf("signals = %d; want 1 close ALERT", store.signalCount())
+	}
+	sig := store.signals[0]
+	if sig.Action != "ALERT" || !sig.ClosePosition {
+		t.Fatalf("signal = %+v; want close_position ALERT", sig)
+	}
+	if sig.CloseQty != 2 {
+		t.Fatalf("CloseQty = %d; want 2 (held short legs)", sig.CloseQty)
+	}
+	if sig.CloseQuote == nil || sig.CloseQuote.Symbol != closeSym || sig.CloseQuote.Ask != 4.1 {
+		t.Fatalf("CloseQuote = %+v; want %s ask 4.1", sig.CloseQuote, closeSym)
+	}
+	if len(sig.Candidates) != 0 {
+		t.Fatalf("Candidates = %+v; want none on the close path", sig.Candidates)
+	}
+	if !strings.Contains(sig.Reason, "profit_take_pct") {
+		t.Fatalf("reason = %q; want profit_take_pct explanation", sig.Reason)
+	}
+	// 库存口径不变:500 股正股,链外空腿不进库存。
+	if sig.Inventory.ActualInventory == nil || *sig.Inventory.ActualInventory != 500 || sig.Inventory.OptionDeltaStock == nil || *sig.Inventory.OptionDeltaStock != 0 {
+		t.Fatalf("inventory = %+v; want stock 500 and zero option delta stock", sig.Inventory)
+	}
+	// LLM APPROVE:审核请求发出且输入含该持仓空腿(核对「合约确为持仓空腿」)。
+	waitFor(t, func() bool { return reviewer.requestCount() == 1 }, "close review never ran")
+	waitFor(t, func() bool { return store.actionCount() == 1 }, "close LLM review action never persisted")
+	req := reviewer.requests[0]
+	found := false
+	if positions, ok := req.Positions.([]Position); ok {
+		for _, p := range positions {
+			if p.Code == closeCode && p.Symbol == closeSym {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("review positions = %+v; want the held short leg %s", req.Positions, closeCode)
+	}
+	action := store.actions[0]
+	if action.Action != "LLM_REVIEW" || action.Details["verdict"] != "APPROVE" {
+		t.Fatalf("review action = %+v; want LLM_REVIEW APPROVE", action)
+	}
+}
+
 func TestRunOnceInventoryIsolatedPerSymbol(t *testing.T) {
 	const hkSymbol = "HK.00700"
 	const usSymbol = "US.JD"
@@ -823,6 +912,41 @@ func TestRepeatAlertSuppression(t *testing.T) {
 	}
 	if store.signalCount() != 4 || store.signals[3].Action != "ALERT" {
 		t.Fatalf("signals after pass 4 = %+v; want ALERT (window expired)", store.signals)
+	}
+}
+
+// TestSuppressRepeatAlertClosePositionCooldown: 平仓 ALERT 不受卖向 30 分钟
+// 重复抑制窗约束(风险降低动作),但受独立冷却窗约束(评审 P2)——持仓未平
+// 期间每 pass 都重发会烧 LLM 审核、挤压卖向审核队列;冷却窗过期后才重发。
+func TestSuppressRepeatAlertClosePositionCooldown(t *testing.T) {
+	const symbol = "HK.00700"
+	now := time.Now()
+	contract := "HK.TCH260901P600000"
+	r := &Runner{lastAlert: map[string]lastAlertInfo{}}
+	closeSig := wheel.Signal{ClosePosition: true, Quote: &wheel.OptionQuote{Symbol: contract}}
+	// 首次平仓 ALERT 落库,写入冷却基线。
+	r.commitAlertBaseline(symbol, closeSig, now)
+	// 冷却窗内重发被降 HOLD。
+	if !r.suppressRepeatAlert(symbol, closeSig, now.Add(closeAlertCooldown-time.Minute)) {
+		t.Fatal("suppressRepeatAlert(close within cooldown) = false; want true (cooldown)")
+	}
+	// 冷却窗过期后恢复平仓 ALERT(权利金继续回落值得再提示)。
+	if r.suppressRepeatAlert(symbol, closeSig, now.Add(closeAlertCooldown+time.Minute)) {
+		t.Fatal("suppressRepeatAlert(close after cooldown) = true; want false (expired)")
+	}
+	// 卖向候选不受平仓冷却影响:同一合约 30 分钟内重复仍被抑制,过期恢复。
+	sellSig := wheel.Signal{Quote: &wheel.OptionQuote{Symbol: contract}}
+	if !r.suppressRepeatAlert(symbol, sellSig, now.Add(time.Minute)) {
+		t.Fatal("suppressRepeatAlert(sell in window after close) = false; want true (suppressed)")
+	}
+	if r.suppressRepeatAlert(symbol, sellSig, now.Add(repeatAlertWindow+time.Minute)) {
+		t.Fatal("suppressRepeatAlert(sell after window) = true; want false (expired)")
+	}
+	// 卖向 ALERT 不写平仓冷却基线。
+	r2 := &Runner{lastAlert: map[string]lastAlertInfo{}}
+	r2.commitAlertBaseline(symbol, sellSig, now)
+	if r2.suppressRepeatAlert(symbol, closeSig, now.Add(time.Minute)) {
+		t.Fatal("suppressRepeatAlert(close after sell alert) = true; want false (sell does not arm close cooldown)")
 	}
 }
 

@@ -65,13 +65,17 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
       {"name":"min_dte","type":"number","default":5},
       {"name":"max_dte","type":"number","default":10},
       {"name":"min_option_quality","type":"number","default":0.6},
+      {"name":"profit_take_pct","type":"number","default":0},
+      {"name":"put_delta_max","type":"number","default":0},
+      {"name":"call_delta_max","type":"number","default":0},
+      {"name":"min_iv_rank","type":"number","default":0},
       {"name":"strategic_state","type":"choice","default":"NORMAL","choices":["NORMAL","CAUTION","PAUSE_BUY","EXIT"]}
     ]
   }
 ]
 ```
 
-满仓价必须大于 0，清仓价必须大于满仓价，最大库存为正整数；DTE 必须位于 5–45，质量分在 `[0,1]`，其余战术参数非负。百分比输入使用小数（`0.018` 表示 `1.8%`）。新战术键可省略且 0 表示关闭相应门槛；策略不设每日提醒次数上限。缺少三个 required 字段、未知字段、类型或范围非法时返回 `400 invalid_request`。
+满仓价必须大于 0，清仓价必须大于满仓价，最大库存为正整数；DTE 必须位于 5–45，质量分在 `[0,1]`，其余战术参数非负。百分比输入使用小数（`0.018` 表示 `1.8%`）。新战术键可省略且 0 表示关闭相应门槛：`profit_take_pct ∈ [0,0.8]`（0 = 持有到期）、`put_delta_max/call_delta_max ∈ [0,1]`（0 = 不限 delta）、`min_iv_rank ∈ [0,1]`（0 = 不过滤 IV 百分位）。策略不设每日提醒次数上限。缺少三个 required 字段、未知字段、类型或范围非法时返回 `400 invalid_request`。
 
 ## GET /v1/watchlist
 
@@ -95,6 +99,10 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
       "min_dte":5,
       "max_dte":10,
       "min_option_quality":0.6,
+      "profit_take_pct":0,
+      "put_delta_max":0,
+      "call_delta_max":0,
+      "min_iv_rank":0,
       "strategic_state":"NORMAL"
     },
     "created_at":"2026-08-10T01:00:00Z",
@@ -112,7 +120,7 @@ ALERT 只有在配置完整的 LLM 审核器后才进入提醒链路。`LLM_BASE
 ```bash
 curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
   -H 'Content-Type: application/json' \
-  -d '{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200,"move_interval_pct":0.018,"min_premium_per_share":1.2,"min_option_profit":200,"stock_switch_pct":0.03,"trade_gap":50,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"strategic_state":"NORMAL"}}'
+  -d '{"strategy":"wheel","params":{"full_position_price":400,"zero_position_price":550,"max_inventory":1200,"move_interval_pct":0.018,"min_premium_per_share":1.2,"min_option_profit":200,"stock_switch_pct":0.03,"trade_gap":50,"min_dte":5,"max_dte":10,"min_option_quality":0.6,"profit_take_pct":0,"put_delta_max":0,"call_delta_max":0,"min_iv_rank":0,"strategic_state":"NORMAL"}}'
 ```
 
 成功返回 `200` 和存储后的 watchlist 行。`400 invalid_request` 覆盖缺 symbol/strategy、strategy 不是 `wheel`、缺 required 字段、非法曲线、未知字段、类型/范围错误或非 JSON body；`405` 表示方法不允许。`DELETE /v1/watchlist/{symbol}` 只删除关注绑定，不删除配置/快照/信号审计；不存在返回 `404`。
@@ -147,6 +155,8 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 ```
 
 只有 `READY`、完整库存、至少一个通过风控的候选才允许 `ALERT`；系统永不自动调用交易 API。LLM 审核与 Telegram 人工处置只追加审计记录；Telegram `yes` 是受 chat ID 限制的 sim 环境人工操作，不重算或覆盖历史信号，HTTP/UI 仍不能写动作。
+
+`signal.close_position`（2026-08-15 起，`profit_take_pct > 0` 时可能为真）：为真表示该 ALERT 是买回已持空腿的平仓提醒（已收权利金回落到阈值，兑现已收权利金），不是新开仓——方向与卖向相反是平仓固有特征，按平仓审核规则核对持仓空腿/数量/报价/资金，不受卖向方向反转规则约束。平仓载荷独立落库：`close_qty`=持仓空腿张数，`close_quote`=买回报价快照（Symbol/OptionType/Strike/Expiry/Bid/Ask/Last/Delta/ImpliedVol/OI），推送与 Telegram `yes` 确认走买回（BUY）路径（side=buy、限价=ask、无 ask 退 last），绝不复用卖向候选路径。平仓 ALERT 不受卖向重复候选 30 分钟抑制窗约束，但受自身 90 分钟 `closeAlertCooldown` 冷却窗约束：持仓未平期间窗口内重复平仓 ALERT 降为 `HOLD` 不落库不审核（防平仓审核洪水），窗口不滚动。`params.profit_take_pct` 回测与实盘语义一致：中途平仓计入 `option_close_cost` 与平仓提醒。
 
 ## 回测结果端点
 

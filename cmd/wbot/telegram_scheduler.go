@@ -439,8 +439,12 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 		s.logf("push: %s signal=%d: %v", sig.Symbol, sig.ID, err)
 		return
 	}
+	yesLabel := "✅ 下单"
+	if sig.ClosePosition {
+		yesLabel = "✅ 买回平仓"
+	}
 	buttons := []telegram.Button{
-		{Text: "✅ 下单", Data: fmt.Sprintf("wheel:%d:yes", sig.ID)},
+		{Text: yesLabel, Data: fmt.Sprintf("wheel:%d:yes", sig.ID)},
 		{Text: "❌ 拒绝", Data: fmt.Sprintf("wheel:%d:no", sig.ID)},
 		{Text: "⚠️ Dismiss", Data: fmt.Sprintf("wheel:%d:dismiss", sig.ID)},
 	}
@@ -558,13 +562,14 @@ func (s *telegramScheduler) confirmOrder(ctx context.Context, cq *telegram.Callb
 		s.reject(ctx, cq, signalID, "order placer unavailable", "下单通道未配置")
 		return
 	}
-	cand, err := firstCandidate(sig)
+	cand, err := orderFacts(sig)
 	if err != nil {
 		s.reject(ctx, cq, signalID, "no usable candidate", "信号缺少可下单候选")
 		return
 	}
 	// 限价单纪律(老板指令 2026-08-12: 所有策略禁止市价单): 限价取候选
-	// 期权最新价(last; LLM 链路 = 注入的 premium), 无价可依则拒绝而非臆造。
+	// 期权最新价(last; LLM 链路 = 注入的 premium; 平仓信号 = ask 买回成本),
+	// 无价可依则拒绝而非臆造。
 	price := cand.Quote.Last
 	if price <= 0 {
 		s.reject(ctx, cq, signalID, "no usable limit price", "候选无可用限价,拒绝下单")
@@ -951,6 +956,30 @@ func firstCandidate(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
 	}, nil
 }
 
+// orderFacts resolves the executable order facts for a signal: sell
+// candidates via firstCandidate (unchanged, #57 严格化逻辑不动), close_position
+// signals via their own buy-to-close payload. The close path never reuses the
+// sell pipeline — re-selling a held short leg would be an inverse add
+// (资金安全级, 2026-08-15 评审 P1-B): side=buy, qty=持仓空腿数, 限价=ask
+// (买回成本;无 ask 才退 last)。
+func orderFacts(sig *wheelstore.SignalRecord) (*candidateOrder, error) {
+	if sig != nil && sig.ClosePosition {
+		if sig.CloseQuote == nil || strings.TrimSpace(sig.CloseQuote.Symbol) == "" || sig.CloseQty < 1 {
+			return nil, errors.New("close_position signal has no usable close facts")
+		}
+		q := sig.CloseQuote
+		limit := q.Ask
+		if limit <= 0 {
+			limit = q.Last
+		}
+		return &candidateOrder{
+			Code: q.Symbol, Side: "buy", Quantity: sig.CloseQty, Direction: "BUY",
+			Quote: candidateQuote{Symbol: q.Symbol, OptionType: q.OptionType, Strike: q.Strike, Expiry: q.Expiry, Bid: q.Bid, Ask: q.Ask, Last: limit, Delta: q.Delta, ImpliedVol: q.ImpliedVol, OpenInterest: q.OpenInterest},
+		}, nil
+	}
+	return firstCandidate(sig)
+}
+
 const (
 	alertOuterRule  = "━━━━━━━━━━━━━━━━━━━━"
 	alertInnerRule  = "┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄"
@@ -970,9 +999,14 @@ func alertMessage(sig *wheelstore.SignalRecord, underlying string, reasons ...st
 // only the LLM review section label and reasons differ per verdict label.
 // underlying is the display name ("" falls back to the bare code).
 func alertCard(sig *wheelstore.SignalRecord, underlying string, verdictLabel string, reasons ...string) (string, error) {
-	c, err := firstCandidate(sig)
+	c, err := orderFacts(sig)
 	if err != nil {
 		return "", err
+	}
+	// 平仓卡片(2026-08-15 评审 P1-B):独立渲染,含 buy 语义——行权/数量/限价
+	// 取自 close 载荷,不再走卖向候选的「卖出」渲染。
+	if sig.ClosePosition {
+		return closeAlertCard(sig, underlying, verdictLabel, c, reasons...), nil
 	}
 	expiry, expiryTime := expiryText(c.Quote.Expiry)
 	dte := "-"
@@ -1056,6 +1090,60 @@ func alertCard(sig *wheelstore.SignalRecord, underlying string, verdictLabel str
 		fmt.Sprintf("信号 #%d · 配置 v%d · %s", sig.ID, sig.ConfigVersion, created),
 	)
 	return strings.Join(lines, "\n"), nil
+}
+
+// closeAlertCard renders the buy-to-close card: side=buy (买回已持空腿,
+// 风险降低),数量 = 持仓空腿数,限价 = ask(买回成本;无 ask 退 last)。
+func closeAlertCard(sig *wheelstore.SignalRecord, underlying string, verdictLabel string, c *candidateOrder, reasons ...string) string {
+	expiry, expiryTime := expiryText(c.Quote.Expiry)
+	dte := "-"
+	if !expiryTime.IsZero() && !sig.CreatedAt.IsZero() {
+		days := int(math.Ceil(expiryTime.Sub(sig.CreatedAt).Hours() / 24))
+		if days < 0 {
+			days = 0
+		}
+		dte = strconv.Itoa(days)
+	}
+	limit := "-"
+	if c.Quote.Last > 0 {
+		limit = fmt.Sprintf("%.2f", c.Quote.Last)
+	}
+	created := "-"
+	if !sig.CreatedAt.IsZero() {
+		created = sig.CreatedAt.Format("01-02 15:04")
+	}
+	lines := []string{
+		fmt.Sprintf("<b>📌 %s · 买回平仓 · 信号 #%d · %s</b>", html.EscapeString(sig.Symbol), sig.ID, strategyBadge(sig.Strategy)),
+		alertOuterRule,
+		"🎯 <b>买回平仓(BUY)</b>",
+		alertRow("合约", fmt.Sprintf("<b><code>%s</code></b>", html.EscapeString(c.Code))),
+		alertRow("行权", fmt.Sprintf("<b><code>%.2f</code></b>", c.Quote.Strike)),
+		alertRow("到期", fmt.Sprintf("<code>%s</code> (剩 %s 天)", html.EscapeString(expiry), dte)),
+		alertRow("数量", fmt.Sprintf("<b><code>%s</code></b> 张", commaInt(int64(c.Quantity)))),
+		alertRow("限价", fmt.Sprintf("<b><code>%s</code></b> (买回成本)", limit)),
+		alertInnerRule,
+		"📊 <b>标的当前</b>",
+		alertRow("标的", fmt.Sprintf("<b>%s</b>", html.EscapeString(underlyingLabel(underlying, sig.Symbol)))),
+		alertRow("正股现价", fmt.Sprintf("<b><code>%s</code></b>", priceText(sig.Inventory.CurrentPrice))),
+		alertRow("bid/ask", fmt.Sprintf("<code>%.2f</code>/<code>%.2f</code>", c.Quote.Bid, c.Quote.Ask)),
+		alertInnerRule,
+		"🧭 <b>持仓与策略参数</b>",
+		alertRow("正股持仓", fmt.Sprintf("<code>%s</code> 股", countText(sig.Inventory.ActualInventory))),
+		alertRow("目标持仓", fmt.Sprintf("<code>%s</code> 股", countText(sig.Inventory.TargetInventory))),
+		alertRow("库存缺口", fmt.Sprintf("<b><code>%s</code></b> 股", countText(sig.Inventory.InventoryGap))),
+		alertInnerRule,
+		fmt.Sprintf("💡 <b>平仓原因</b> · LLM 审核 <b>%s</b>", verdictLabel),
+	}
+	for _, reason := range reasons {
+		if reason = strings.TrimSpace(reason); reason != "" {
+			lines = append(lines, "• "+html.EscapeString(reason))
+		}
+	}
+	lines = append(lines,
+		alertOuterRule,
+		fmt.Sprintf("信号 #%d · 配置 v%d · %s", sig.ID, sig.ConfigVersion, created),
+	)
+	return strings.Join(lines, "\n")
 }
 
 // strategyBadge labels the signal origin on push cards: "llm" (大模型策略)
