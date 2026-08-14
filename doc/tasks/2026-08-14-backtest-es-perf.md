@@ -50,3 +50,40 @@ benchmark(efficiency 实测,HEAD cd9f16d)显示:单次回测 0.62s 很快;ES 训
 ## Next
 
 主会话评审报告 → 合入 `fix/backtest-es-perf` → 按发布流程合批。
+
+---
+
+# 追加:评审 + 合入 + 新口径重训(2026-08-14)
+
+## Reviewer 评审结论(有条件合入,已全部处理)
+
+P0 无;行权 buy-in 记账数学验证通过(covered 按原成本、缺口按 buy-in 价,每股恰好入账一次)。功能类型:**feature(含 1 处 bugfix:行权裸卖空修正)**。
+
+| 级别 | 发现 | 处置 |
+| --- | --- | --- |
+| P1 | accept-backtest-report.sh 硬编码 schema 1.2 + 旧 total_return 字段 → CI 必红(实测 3/14 FAIL) | 已修:同步 schema 1.3 + realized_return/mark_return 字段 |
+| P1 | accept-backtest.sh 断言 CLI total_return= → 必红 | 已修:同步 realized_return=/mark_return= 形状 |
+| P1 | 非 wheel 基准(hold/buy-hold)capability 恒 DATA_BLOCKED → net_return 全 null,失去收益头条 | 已修:非 wheel 保留市值收益口径(无战略参数,不受已实现切换影响);wheel 仍走已实现 |
+| P1 工具 | verify.sh accept 段落忽略退出码 → 假绿掩盖 CI 必红 | 已修:run_accept 逐脚本退出码把关 |
+| P2 | live wheelrun 未接 LastEffectiveFillPrice → 回测激活 stock_switch/move_interval 门而实盘休眠 | 排期:另立任务接线 live 订单成交价 |
+| P2 | hkexHistoricalOptionCycleComplete 闸门仍按 DTE 10 证明覆盖,ES 已允许 45 | 排期:闸门按 wheel.MaxWheelDTE 对齐 |
+| P2 | StockSuggestion BUY 无现金钳制(SELL 有) | 排期:BUY 钳制到可负担股数 |
+| P2 | DTE 窗 5..10→5..45 属独立产品变更,建议拆分提交 | 随批合入,任务记录标注 |
+
+## 合入
+
+- `b83a04c`(fix/backtest-es-perf)→ main **fast-forward** 合入(3fd2fba..b83a04c,共 3 提交:6c851e5/db49c79/b83a04c)
+- 主仓库工作树在途 doc 修改 stash 暂存 → 合入后 pop 恢复,无冲突
+
+## 新口径重训(2026-08-14,reward-2.0 已实现)
+
+命令:HK.00700 全窗(2022-03-09..2026-08-13)1d/fwd、cash 1,000,000、fee 3、seed 123、-params 战略参数 {full_position_price:400, zero_position_price:600, max_inventory:1200}、-train {move_interval_pct:[0.005,0.03], min_option_quality:[0.5,0.8]}、population 20、max_generations 40、budget 840。PG:wbot-pg-ci-test(容器 IP 192.168.215.2:5432)。
+
+结果(报告 bt-HK.00700-123-7e5d56c3,schema 1.3):
+- **早停 9 代 / 204 evals / 840 预算未用满**;train_seed=7045419309623635055, test_seed=1912771454634982101
+- **样本外(测试窗,已实现口径):net_return +14.01%,年化 +3.00%,最大回撤 5.93%,未成交率 9.68%,市值标记 +7.24%**,final_equity 1,072,381(初始 100 万)
+- **buy-hold 基线 +27.44% → excess −13.43%**
+- **无可推荐参数:样本外多 seed 未稳定胜出 buy-hold 基线(candidates 为空)**
+- 费用拖累仅 168 HKD(0.017%):交易极稀疏,期权 21/张成本占比可忽略
+
+解读:新口径(只看已实现)下 ES 诚实输出「无可推荐参数」——2022-03 至今腾讯上行期,满仓持有 +27.4%,wheel 已实现 +14.0%(防守型,回撤 5.9%)。战术参数无法在样本外稳定跑赢 buy-hold,这正是评价口径剥离浮盈后的真实结论(此前 reward-1.0 市值口径会给出参数建议,但建议与战略参数耦合)。不推荐发布参数变更;回测工具链照常可用,报告可复现(同 ID 幂等)。
