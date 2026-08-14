@@ -56,16 +56,16 @@ args=(ingest hkex -dsn "$dsn" -source "$run_source" -symbol "$underlying" -class
 set +e
 first="$($WB "${args[@]}" 2>&1)"; first_code=$?
 set -e
-case "$first" in *trading_days=12*quote_only_days=1*option_quotes=24*snapshots=22*source=hkex*) first_shape=0 ;; *) first_shape=1 ;; esac
-check "首次回填 12 日/24 结算行（1 日仅 DTOP）" "0:0" "$first_code:$first_shape"
+case "$first" in *trading_days=12*quote_only_days=1*option_quotes=48*snapshots=22*source=hkex*) first_shape=0 ;; *) first_shape=1 ;; esac
+check "首次回填 12 日/48 结算行（1 日仅 DTOP）" "0:0" "$first_code:$first_shape"
 
 quote_counts="$(psql "$dsn" -At -v ON_ERROR_STOP=1 -c "SELECT count(*)||':'||count(DISTINCT ts) FROM option_quotes WHERE underlying='${underlying}' AND source='hkex'")"
-check "option_quotes 行数/交易日" "24:12" "$quote_counts"
+check "option_quotes 行数/交易日" "48:12" "$quote_counts"
 
 snapshot_count="$(psql "$dsn" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM option_quote_snapshots WHERE underlying='${underlying}' AND source='hkex'")"
 check "研究 snapshot 行数" "22" "$snapshot_count"
 
-settlement="$(psql "$dsn" -At -v ON_ERROR_STOP=1 -c "SELECT trim(to_char(close,'FM999990.00'))||':'||trim(to_char(implied_vol,'FM0.0000')) FROM option_quotes WHERE underlying='${underlying}' AND option_type='put' ORDER BY ts LIMIT 1")"
+settlement="$(psql "$dsn" -At -v ON_ERROR_STOP=1 -c "SELECT trim(to_char(close,'FM999990.00'))||':'||trim(to_char(implied_vol,'FM0.0000')) FROM option_quotes WHERE underlying='${underlying}' AND option_type='put' AND strike=490 ORDER BY ts LIMIT 1")"
 check "结算价/官方 IV 字段映射" "20.00:0.2500" "$settlement"
 
 projection="$(psql "$dsn" -At -v ON_ERROR_STOP=1 -c "SELECT count(*) FROM option_quote_snapshots WHERE underlying='${underlying}' AND source='hkex' AND bid=ask AND delta IS NOT NULL AND theta IS NOT NULL AND volume>0 AND open_interest>0 AND lot_size=100")"
@@ -78,7 +78,7 @@ case "$second" in *inserted_quotes=0*inserted_snapshots=0*) second_shape=0 ;; *)
 check "重复回填零新增" "0:0" "$second_code:$second_shape"
 
 after_counts="$(psql "$dsn" -At -v ON_ERROR_STOP=1 -c "SELECT (SELECT count(*) FROM option_quotes WHERE underlying='${underlying}' AND source='hkex')||':'||(SELECT count(*) FROM option_quote_snapshots WHERE underlying='${underlying}' AND source='hkex')")"
-check "幂等后两表计数不变" "24:22" "$after_counts"
+check "幂等后两表计数不变" "48:22" "$after_counts"
 
 psql "$dsn" -v ON_ERROR_STOP=1 -q <<SQL
 INSERT INTO bars (symbol,timeframe,ts,open,high,low,close,volume,adjust,source)
