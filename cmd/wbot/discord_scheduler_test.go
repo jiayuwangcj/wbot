@@ -793,7 +793,7 @@ func TestDiscordConfirmExpiredRejected(t *testing.T) {
 	fake, _ := startFakeDC(t)
 	now := openMarketNow
 	store := newFakeTGStore()
-	store.signals[7] = signalFixture(7, "US.AAPL", now.Add(-11*time.Minute))
+	store.signals[7] = signalFixture(7, "US.AAPL", now.Add(-16*time.Minute))
 	store.reviews[7] = approvedReview()
 	placer := &fakePlacer{}
 	s, _ := newTestDiscordScheduler(t, fake, store, placer, now)
