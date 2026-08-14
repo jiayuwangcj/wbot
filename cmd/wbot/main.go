@@ -803,11 +803,15 @@ func runBacktest(prog string, argv []string) int {
 		sourceHash = outcome.SourceHash
 	}
 
+	// 评价口径 = 权利金净收益(reward-3.0):premium_net_return 是期权腿净收益率
+	// (权利金收入 − 平仓 − 期权/行权费)/初始金,忽略正股;realized_return 保留
+	// 已实现全量(含正股)审计。
+	premiumNetReturn := res.Attribution.PremiumNetAmount / btOpts.Cash
 	if res.Unfilled.AttemptCount == 0 {
-		fmt.Printf("final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试)\n", res.Equity, res.RealizedReturnPct, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount)
+		fmt.Printf("final_equity=%v realized_return=%v premium_net_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试)\n", res.Equity, res.RealizedReturnPct, premiumNetReturn, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount)
 	} else {
-		fmt.Printf("final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n",
-			res.Equity, res.RealizedReturnPct, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
+		fmt.Printf("final_equity=%v realized_return=%v premium_net_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n",
+			res.Equity, res.RealizedReturnPct, premiumNetReturn, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
 	}
 	var pushErr error
 	if *report {
