@@ -84,11 +84,27 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		return 1
 	}
 
+	prepared := make(map[backtestes.Window]*backtestexec.Prepared, 3)
+	prepareWindow := func(ctx context.Context, runOpts backtestexec.Options, window backtestes.Window) (*backtestexec.Prepared, error) {
+		if p, ok := prepared[window]; ok {
+			return p, nil
+		}
+		p, err := backtestexec.Prepare(ctx, database, runOpts)
+		if err != nil {
+			return nil, err
+		}
+		prepared[window] = p
+		return p, nil
+	}
 	evaluator := func(ctx context.Context, params map[string]any, window backtestes.Window, seed int64) (backtestes.Metrics, error) {
 		runOpts := opts
 		runOpts.Params, runOpts.Seed, runOpts.From = params, seed, window.From
 		runOpts.To = window.To.Add(-time.Nanosecond) // half-open windows: no bar can cross a split
-		out, err := backtestexec.Run(ctx, database, runOpts)
+		p, err := prepareWindow(ctx, runOpts, window)
+		if err != nil {
+			return backtestes.Metrics{}, err
+		}
+		out, err := p.RunPrepared(ctx, runOpts)
 		if err != nil {
 			return backtestes.Metrics{}, err
 		}
@@ -122,7 +138,12 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 			runOpts := opts
 			runOpts.Params, runOpts.Seed, runOpts.From = candidate.Params, testSeed, windows.Test.From
 			runOpts.To = windows.Test.To
-			out, err := backtestexec.Run(context.Background(), database, runOpts)
+			p, err := prepareWindow(context.Background(), runOpts, windows.Test)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "backtest: sample-out preparation: %v\n", err)
+				return 1
+			}
+			out, err := p.RunPrepared(context.Background(), runOpts)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "backtest: sample-out evaluation: %v\n", err)
 				return 1

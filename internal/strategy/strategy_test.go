@@ -286,3 +286,45 @@ func TestWheelAdapterHoldsWithoutRealTimeSnapshot(t *testing.T) {
 		t.Fatalf("LastSignal.Reason = %q; want snapshot block", ws.LastSignal.Reason)
 	}
 }
+
+func TestFilterQuotesByExpiryUsesLoadedOrderAndPreservesSignalOrder(t *testing.T) {
+	barTs := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	quotes := []wheel.OptionQuote{
+		{Symbol: "late", Expiry: barTs.AddDate(0, 0, 11)},
+		{Symbol: "valid-seven", Expiry: barTs.AddDate(0, 0, 7)},
+		{Symbol: "early", Expiry: barTs.AddDate(0, 0, 3)},
+		{Symbol: "valid-five", Expiry: barTs.AddDate(0, 0, 5)},
+	}
+	// The loader's expiry index is independent from the canonical symbol order.
+	got := filterQuotesByExpiry(quotes, []int{2, 3, 1, 0}, barTs, wheel.Config{MinDTE: 5, MaxDTE: 10})
+	if len(got) != 2 || got[0].Symbol != "valid-seven" || got[1].Symbol != "valid-five" {
+		t.Fatalf("filtered quotes = %+v; want valid-seven, valid-five in source order", got)
+	}
+}
+
+func TestWheelAdapterFiltersExpiryBeforeEvaluation(t *testing.T) {
+	ts := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	theta := -0.1
+	quote := func(symbol string, expiry time.Time) wheel.OptionQuote {
+		return wheel.OptionQuote{Symbol: symbol, Source: "test", OptionType: wheel.Put, Expiry: expiry,
+			Strike: 95, Delta: -0.3, Bid: 2, Ask: 2.1, ImpliedVol: 0.2, Theta: &theta,
+			Volume: 1000, OpenInterest: 2000, LotSize: 100, QuoteTime: ts}
+	}
+	ws := &WheelStrategy{Config: wheel.Config{Strategy: "wheel", FullPositionPrice: 90, ZeroPositionPrice: 110,
+		MaxInventory: 1000, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, TradeGap: 0, StrategicState: wheel.StateNormal}}
+	st := &backtest.State{Cash: 20000, Options: map[string]backtest.OptionPosition{}, QuoteBatch: &backtest.QuoteSnapshotBatch{
+		ObservedAt: ts, SnapshotKey: "batch", UnderlyingPrice: 100,
+		Quotes:      []wheel.OptionQuote{quote("late", ts.AddDate(0, 0, 11)), quote("valid", ts.AddDate(0, 0, 7))},
+		ExpiryOrder: []int{1, 0},
+	}}
+	act, size, err := ws.OnBar(context.Background(), testBar(ts), st)
+	if err != nil || act != backtest.ActionSellPut || size != 1 {
+		t.Fatalf("OnBar() = %v, %v, %v; want sell-put 1", act, size, err)
+	}
+	if len(ws.LastSignal.Candidates) != 2 || ws.LastSignal.Candidates[0].Quote.Symbol != "late" || ws.LastSignal.Candidates[1].Quote.Symbol != "valid" {
+		t.Fatalf("candidates = %+v; want deterministic late rejection followed by valid quote", ws.LastSignal.Candidates)
+	}
+	if got := ws.LastSignal.Candidates[0].Reasons; len(got) != 1 || got[0] != "wheel: DTE 11 outside [5,10]" {
+		t.Fatalf("late rejection = %v; want exact DTE reason", got)
+	}
+}

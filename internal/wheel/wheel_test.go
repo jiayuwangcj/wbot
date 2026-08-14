@@ -2,6 +2,7 @@ package wheel
 
 import (
 	"encoding/json"
+	"errors"
 	"math"
 	"slices"
 	"strings"
@@ -134,6 +135,21 @@ func TestQuoteValidationTable(t *testing.T) {
 				t.Fatalf("error=%v want %v", got, tc.wantErr)
 			}
 		})
+	}
+}
+
+func TestQuoteValidationUsesDTESentinels(t *testing.T) {
+	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	cfg := testConfig(StateNormal)
+	tooSoon := testQuote(string(Put), 400, asOf.AddDate(0, 0, 4))
+	tooSoon.QuoteTime = asOf
+	if err := tooSoon.Validate(asOf, cfg); !errors.Is(err, ErrDTEBelowMinimum) {
+		t.Fatalf("too-soon DTE error = %v; want ErrDTEBelowMinimum", err)
+	}
+	tooLate := testQuote(string(Put), 400, asOf.AddDate(0, 0, 11))
+	tooLate.QuoteTime = asOf
+	if err := tooLate.Validate(asOf, cfg); !errors.Is(err, ErrDTEAboveMaximum) {
+		t.Fatalf("too-late DTE error = %v; want ErrDTEAboveMaximum", err)
 	}
 }
 

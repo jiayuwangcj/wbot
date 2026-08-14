@@ -50,6 +50,15 @@ const (
 	DefaultLotSize = 100
 )
 
+// DTE validation failures are hot-path, expected candidate rejections. Keep
+// them as sentinels so Validate does not format one heap-backed error per
+// out-of-range contract; callers that need a human-readable signal can still
+// use errors.Is and the stable sentinel text.
+var (
+	ErrDTEBelowMinimum = errors.New("wheel: option DTE is below configured minimum")
+	ErrDTEAboveMaximum = errors.New("wheel: option DTE is above configured maximum")
+)
+
 // candidateLotSize returns the contract multiplier of the first quoted
 // candidate that carries one. All contracts of a family share the same lot
 // size, so the first valid quote is representative; DefaultLotSize is the
@@ -389,6 +398,11 @@ func (q OptionQuote) Spread() float64 { return q.Ask - q.Bid }
 
 // Validate verifies all fields required to consider a quote candidate.
 func (q OptionQuote) Validate(asOf time.Time, cfg Config) error {
+	asOfDate, minExpiryDate, maxExpiryDate := validationDates(asOf, cfg)
+	return q.validate(asOf, cfg, asOfDate, minExpiryDate, maxExpiryDate)
+}
+
+func (q OptionQuote) validate(asOf time.Time, cfg Config, asOfDate, minExpiryDate, maxExpiryDate time.Time) error {
 	if q.name() == "" || strings.TrimSpace(q.Source) == "" || q.Expiry.IsZero() || !finite(q.Strike) || q.Strike <= 0 || !finite(q.delta()) || q.delta() < -1 || q.delta() > 1 {
 		return errors.New("wheel: quote missing symbol, source, expiry, strike or delta")
 	}
@@ -422,14 +436,28 @@ func (q OptionQuote) Validate(asOf time.Time, cfg Config) error {
 		return errors.New("wheel: option has expired")
 	}
 	if !asOf.IsZero() {
-		asOfDate := time.Date(asOf.UTC().Year(), asOf.UTC().Month(), asOf.UTC().Day(), 0, 0, 0, 0, time.UTC)
-		expiryDate := time.Date(q.Expiry.UTC().Year(), q.Expiry.UTC().Month(), q.Expiry.UTC().Day(), 0, 0, 0, 0, time.UTC)
-		dte := int(expiryDate.Sub(asOfDate) / (24 * time.Hour))
-		if dte < cfg.MinDTE || dte > cfg.MaxDTE {
-			return fmt.Errorf("wheel: DTE %d outside [%d,%d]", dte, cfg.MinDTE, cfg.MaxDTE)
+		expiryDate := calendarDate(q.Expiry)
+		if expiryDate.Before(minExpiryDate) {
+			return ErrDTEBelowMinimum
+		}
+		if expiryDate.After(maxExpiryDate) {
+			return ErrDTEAboveMaximum
 		}
 	}
 	return nil
+}
+
+func validationDates(asOf time.Time, cfg Config) (asOfDate, minExpiryDate, maxExpiryDate time.Time) {
+	if asOf.IsZero() {
+		return time.Time{}, time.Time{}, time.Time{}
+	}
+	asOfDate = calendarDate(asOf)
+	return asOfDate, asOfDate.AddDate(0, 0, cfg.MinDTE), asOfDate.AddDate(0, 0, cfg.MaxDTE)
+}
+
+func calendarDate(ts time.Time) time.Time {
+	utc := ts.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 func ValidateQuote(q OptionQuote, asOf time.Time, cfg Config) error { return q.Validate(asOf, cfg) }
@@ -705,6 +733,7 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 	pendingContract := ""
 	var pendingCandidate CandidateEvaluation
 	pendingValid := false
+	asOfDate, minExpiryDate, maxExpiryDate := validationDates(in.AsOf, cfg)
 	for _, q := range in.Quotes {
 		// A signal remains one human-reviewed contract suggestion. Removing the
 		// daily cap means later valid evaluations are not suppressed; it does not
@@ -724,11 +753,15 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 				signed := -float64(1)
 				postDelta := inv.OptionDeltaStock + signed*q.delta()*float64(q.LotSize)
 				pendingCandidate = CandidateEvaluation{Quote: q, Direction: direction, Quantity: 1, SignedContracts: -1, Quality: QualityScore(q), PostTradeEffective: EffectiveInventory(inv.ActualInventory, postDelta)}
-				pendingValid = q.Validate(in.AsOf, cfg) == nil
+				pendingValid = q.validate(in.AsOf, cfg, asOfDate, minExpiryDate, maxExpiryDate) == nil
 				pendingContract = q.Symbol
 			}
-		} else if err := q.Validate(in.AsOf, cfg); err != nil {
-			candidate.Reasons = append(candidate.Reasons, err.Error())
+		} else if err := q.validate(in.AsOf, cfg, asOfDate, minExpiryDate, maxExpiryDate); err != nil {
+			reason := err.Error()
+			if errors.Is(err, ErrDTEBelowMinimum) || errors.Is(err, ErrDTEAboveMaximum) {
+				reason = dteRejectionReason(q, asOfDate, cfg)
+			}
+			candidate.Reasons = append(candidate.Reasons, reason)
 		} else {
 			if (direction == DirectionPut && q.optionType() != string(Put)) || (direction == DirectionCall && q.optionType() != string(Call)) {
 				candidate.Reasons = append(candidate.Reasons, "wheel: quote direction does not match inventory gap")
@@ -819,6 +852,11 @@ func Evaluate(cfg Config, in DecisionInput) (Signal, error) {
 		}
 	}
 	return base, nil
+}
+
+func dteRejectionReason(q OptionQuote, asOfDate time.Time, cfg Config) string {
+	dte := int(calendarDate(q.Expiry).Sub(asOfDate) / (24 * time.Hour))
+	return fmt.Sprintf("wheel: DTE %d outside [%d,%d]", dte, cfg.MinDTE, cfg.MaxDTE)
 }
 
 // betterCandidate reports whether candidate a strictly outranks b in
