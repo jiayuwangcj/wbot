@@ -390,13 +390,8 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 			s.logf("push: %s signal=%d: rejected check: %v", sig.Symbol, sig.ID, herr)
 			return true
 		} else if rejected {
-			rejection, rerr := s.store.LatestAction(ctx, sig.ID, "REJECTED")
-			if rerr != nil {
-				s.logf("push: %s signal=%d: rejected action lookup: %v", sig.Symbol, sig.ID, rerr)
-				return true
-			}
-			s.logf("push: %s signal=%d: LLM review REJECTED; pushing reasons", sig.Symbol, sig.ID)
-			s.pushRejectedSignal(ctx, sig, rejection)
+			// 2026-08-14 老板指令:LLM 审核决定是否推送,REJECTED 静默不推卡(审计已落库)。
+			s.logf("push: %s signal=%d: LLM review REJECTED; silent skip", sig.Symbol, sig.ID)
 			return false
 		}
 		// LLM_REVIEW_FAILED: 审核请求失败(网络/DNS/超时)而非模型裁决,不得
@@ -430,9 +425,8 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 		return true
 	}
 	if verdictOf(review) != "APPROVE" {
-		// 老板指令 2026-08-12: LLM 拒绝必须推送,让老板了解策略为何失败。
-		s.logf("push: %s signal=%d: LLM review %s; pushing reasons", sig.Symbol, sig.ID, verdictOf(review))
-		s.pushRejectedSignal(ctx, sig, review)
+		// 2026-08-14 老板指令:LLM 审核决定是否推送,非 APPROVE 静默推进游标。
+		s.logf("push: %s signal=%d: LLM review %s; silent skip", sig.Symbol, sig.ID, verdictOf(review))
 		return false
 	}
 	// 底层资产名字进卡片(老板指令 2026-08-13: 正股价格区多一份名字+编号);
@@ -462,43 +456,6 @@ func (s *telegramScheduler) pushSignal(ctx context.Context, sig wheelstore.Signa
 		}
 	}
 	return retry
-}
-
-// pushRejectedSignal reports a fail-closed LLM disposition using the same
-// signal card as an approval, only the LLM review section shows the rejection
-// and there are no action buttons (老板指令 2026-08-13: 拒绝单与通过单式样统一).
-// REJECTED is the persisted action for LLM rejects, so its Details.reasons
-// are the source of truth when LatestLLMReview has no row.
-func (s *telegramScheduler) pushRejectedSignal(ctx context.Context, sig wheelstore.SignalRecord, rejection *wheelstore.ActionRecord) {
-	reasons := reviewReasons(rejection)
-	if len(reasons) == 0 && rejection != nil && strings.TrimSpace(rejection.Note) != "" {
-		reasons = []string{rejection.Note}
-	}
-	// A review pipeline failure (timeout, upstream error) is not a model
-	// verdict: the fail-closed disposition carries an "error" detail, and the
-	// user should see 审核失败 rather than 被拒绝 (2026-08-13: signal 453 was
-	// REJECTED for a client timeout but displayed as a model rejection).
-	label := "❌ REJECT"
-	if rejection != nil {
-		if e, ok := rejection.Details["error"]; ok && e != nil {
-			label = "⚠️ 审核失败"
-		}
-	}
-	text, err := alertCard(&sig, underlyingName(ctx, s.quoter, sig.Symbol), label, reasons...)
-	if err != nil {
-		// A rejection card cannot be built (missing candidate etc.): fall back
-		// to the minimal fail-closed notice so the disposition is never lost.
-		s.logf("push: %s signal=%d: reject card fallback: %v", sig.Symbol, sig.ID, err)
-		title := fmt.Sprintf("❌ <b>信号 #%d 被 LLM 审核拒绝</b> · %s", sig.ID, s.now().Format("2006-01-02 15:04:05"))
-		lines := []string{title, fmt.Sprintf("%s · <code>%s</code>", html.EscapeString(sig.Symbol), html.EscapeString(label))}
-		for _, reason := range reasons {
-			if reason = strings.TrimSpace(reason); reason != "" {
-				lines = append(lines, "• "+html.EscapeString(reason))
-			}
-		}
-		text = strings.Join(lines, "\n")
-	}
-	s.sendToChats(ctx, text)
 }
 
 // handleCallback routes one inline-button press. from.id must be in the chat
@@ -1007,9 +964,8 @@ func alertMessage(sig *wheelstore.SignalRecord, underlying string, reasons ...st
 	return alertCard(sig, underlying, "✅ APPROVE", reasons...)
 }
 
-// alertCard renders the full signal card shared by approved and rejected
-// pushes (老板指令 2026-08-13: 拒绝单与通过单式样统一,只变底部 LLM 审核区,
-// 拒绝单无按钮): only the LLM review section label and reasons differ.
+// alertCard renders the full signal card (2026-08-14 起仅 APPROVE 推送使用):
+// only the LLM review section label and reasons differ per verdict label.
 // underlying is the display name ("" falls back to the bare code).
 func alertCard(sig *wheelstore.SignalRecord, underlying string, verdictLabel string, reasons ...string) (string, error) {
 	c, err := firstCandidate(sig)

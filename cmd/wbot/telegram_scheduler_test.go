@@ -845,7 +845,9 @@ func TestPushSignalRetriesWhenReviewNotYetRecorded(t *testing.T) {
 	}
 }
 
-func TestPushSignalPushesRejectedReviewReasons(t *testing.T) {
+// TestPushSignalRejectedActionSilentlySkips: REJECTED 已落库(无 LLM_REVIEW 行)时
+// 静默推进游标不推卡(2026-08-14 老板指令:LLM 审核决定是否推送)。
+func TestPushSignalRejectedActionSilentlySkips(t *testing.T) {
 	fake, server := startFakeTG(t)
 	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
 	store := newFakeTGStore()
@@ -862,16 +864,31 @@ func TestPushSignalPushesRejectedReviewReasons(t *testing.T) {
 	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
 
 	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
-		t.Fatal("pushSignal with a REJECTED review must not retry")
+		t.Fatal("pushSignal with a REJECTED review must not retry (cursor advances)")
 	}
-	if len(fake.sends) != 1 {
-		t.Fatalf("rejected signal sends = %d, want 1", len(fake.sends))
+	if len(fake.sends) != 0 {
+		t.Fatalf("rejected signal sends = %d, want 0 (silent skip)", len(fake.sends))
 	}
-	text, _ := fake.lastSend(t)["text"].(string)
-	for _, want := range []string{"信号 #10", "risk limit", "missing cash buffer"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("rejection push = %q; want %q", text, want)
-		}
+}
+
+// TestPushSignalRejectedVerdictSilentlySkips: LLM_REVIEW 已落库但裁决非 APPROVE
+// 时同样静默推进游标(verdictOf != "APPROVE" 分支)。
+func TestPushSignalRejectedVerdictSilentlySkips(t *testing.T) {
+	fake, server := startFakeTG(t)
+	now := time.Date(2026, 8, 11, 15, 30, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(11, "US.AAPL", now)
+	store.reviews[11] = &wheelstore.ActionRecord{Details: map[string]any{
+		"verdict": "REJECT",
+		"reasons": []any{"risk limit"},
+	}}
+	s := newTestScheduler(t, server, store, &fakePlacer{}, map[int64]bool{42: true}, now)
+
+	if retry := s.pushSignal(context.Background(), *sig, nil); retry {
+		t.Fatal("pushSignal with a non-APPROVE review must not retry (cursor advances)")
+	}
+	if len(fake.sends) != 0 {
+		t.Fatalf("non-APPROVE signal sends = %d, want 0 (silent skip)", len(fake.sends))
 	}
 }
 
