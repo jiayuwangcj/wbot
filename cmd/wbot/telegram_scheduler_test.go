@@ -87,6 +87,17 @@ func (f *fakeTGServer) sendCount() int {
 	return len(f.sends)
 }
 
+// waitSend blocks until the async callback push has reached the fake server,
+// then returns it. Callback handlers answer the toast synchronously but push
+// asynchronously (AnswerCallbackQuery → AppendAction → sendToChats), so reading
+// lastSend right after a waitFor on the store/placer races the goroutine's final
+// HTTP call on slow CI machines (observed 2026-08-14).
+func (f *fakeTGServer) waitSend(t *testing.T) map[string]any {
+	t.Helper()
+	waitFor(t, func() bool { return f.sendCount() > 0 }, "sendMessage never received")
+	return f.lastSend(t)
+}
+
 func (f *fakeTGServer) lastSend(t *testing.T) map[string]any {
 	t.Helper()
 	f.mu.Lock()
@@ -470,7 +481,7 @@ func TestCallbackYesPlacesSimOrder(t *testing.T) {
 	if act.Details["order_id"] != uint64(12345) || act.Details["symbol"] != "US.AAPL260815C250000" {
 		t.Fatalf("details = %+v", act.Details)
 	}
-	text, _ := fake.lastSend(t)["text"].(string)
+	text, _ := fake.waitSend(t)["text"].(string)
 	if !strings.Contains(text, "已下单") || !strings.Contains(text, "12345") {
 		t.Fatalf("push = %q; want 已下单 + 订单号", text)
 	}
@@ -527,7 +538,7 @@ func TestCallbackYesReplaceCancelFailureRefuses(t *testing.T) {
 	if act.Action != "REJECTED" || act.Note != "cancel pending order failed" {
 		t.Fatalf("action = %+v; want REJECTED cancel pending order failed", act)
 	}
-	text, _ := fake.lastSend(t)["text"].(string)
+	text, _ := fake.waitSend(t)["text"].(string)
 	if !strings.Contains(text, "撤单失败") {
 		t.Fatalf("push = %q; want 撤单失败", text)
 	}
@@ -548,7 +559,7 @@ func TestCallbackYesRealEnvRejected(t *testing.T) {
 	if act.Action != "REJECTED" || act.Note != "live env not allowed" {
 		t.Fatalf("action = %+v; want REJECTED with live-env reason", act)
 	}
-	text, _ := fake.lastSend(t)["text"].(string)
+	text, _ := fake.waitSend(t)["text"].(string)
 	if !strings.Contains(text, "实盘下单不允许") {
 		t.Fatalf("push = %q; want 实盘下单不允许", text)
 	}
@@ -572,7 +583,7 @@ func TestCallbackYesExpiredRejected(t *testing.T) {
 	if act.Action != "REJECTED" || act.Note != "signal expired" {
 		t.Fatalf("action = %+v; want REJECTED with expired reason", act)
 	}
-	text, _ := fake.lastSend(t)["text"].(string)
+	text, _ := fake.waitSend(t)["text"].(string)
 	if !strings.Contains(text, "已过期") {
 		t.Fatalf("push = %q; want 已过期", text)
 	}
@@ -603,7 +614,7 @@ func TestCallbackYesReviewNotApprovedRejected(t *testing.T) {
 			if act.Action != "REJECTED" || !strings.Contains(act.Note, "llm review") {
 				t.Fatalf("action = %+v; want REJECTED with review reason", act)
 			}
-			text, _ := fake.lastSend(t)["text"].(string)
+			text, _ := fake.waitSend(t)["text"].(string)
 			if !strings.Contains(text, "审核未通过") {
 				t.Fatalf("push = %q; want 审核未通过", text)
 			}
@@ -635,7 +646,7 @@ func TestCallbackNoRecordsAndAnswers(t *testing.T) {
 	if act.Action != "NO" || act.Actor != "telegram:42" || act.SignalID != 9 {
 		t.Fatalf("action = %+v", act)
 	}
-	text, _ := fake.lastSend(t)["text"].(string)
+	text, _ := fake.waitSend(t)["text"].(string)
 	if !strings.Contains(text, "继续等待机会") {
 		t.Fatalf("push = %q; want 继续等待机会", text)
 	}
