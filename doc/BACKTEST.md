@@ -101,7 +101,7 @@ wbot backtest \
 
 当前确定性运行结果的 `Result.Unfilled` 记录期权卖出成交尝试口径：`AttemptCount = FillCount + UnfilledCount`，`UnfilledRatio = UnfilledCount / AttemptCount`；没有成交尝试时比例为 `null`，CLI 显示“未成交 N/A”，不得解释为 0%。`Trade.Filled=false` 表示一次由 `Trade.UnfilledModel` 标识的模拟未成交卖出尝试，不入账、不改变现金或持仓；成交的期权交易为 `Filled=true`。正股交易、HOLD 与 DATA_BLOCKED 不进入该尝试分母。
 
-`-report` 以 [[BACKTEST_REPORT]] schema 1.1 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。Wheel 历史能力为 `DATA_BLOCKED` 时，`net_return_*` 和超额字段为 `null`；只保留明确标为窗口末账面估值变动的 `window_mark_to_market_*`，不得显示成可执行收益。
+`-report` 以 [[BACKTEST_REPORT]] schema 1.1 JSON 为唯一事实源，并用 Go `html/template` 投影同构 HTML。`report_id = bt-{symbol}-{run_seed}-{输入哈希前8位}`；输入不变时 JSON/HTML 字节不变并覆盖原文件。百分比在 JSON 中统一使用小数，时间统一输出 RFC3339 UTC `Z`。Wheel 历史能力为 `DATA_BLOCKED` 时，`net_return_*` 和超额字段为 `null`；只保留明确标为窗口末账面估值变动的 `window_mark_to_market_*`，不得显示成可执行收益。`data_quality` 分开记录实际消费的标的 bars `{source,adjusted,bar_count}` 与 `option_snapshot_sources`，例如腾讯回填必须显示 `tencent/qfq`，不能冒充 Futu 实时期权 snapshot。
 
 `-push` 必须与 `-report` 同用，推送发生在 JSON/HTML 成功落盘之后。embed 由同一内存报告确定性投影 7 个核心字段（标的、窗口、净收益/能力状态、覆盖率、费用、回撤、停止原因），并逐条保留完整 `risk`；超出 Discord 限额时报错，不截断风险状态。每个 `report_id` 派生固定 25 字符 nonce 并请求 Discord 去重；成功后再在 `~/.wbot/backtest-push/discord/` 写本地 sent 标记。Discord 请求失败时 CLI 返回 1、报告仍可查看且不写 sent 标记，原命令重跑会用同一 ID/nonce 重试；成功后的再次执行输出 `push_status=already_sent` 且不发网络请求。未配置 token/channel 时 stderr 给出 `wbot.conf` 设置项，凭证不写报告或日志。测试可用 `DISCORD_API_BASE_URL` 指向本地假 Bot API，生产保持默认 Discord API。
 

@@ -14,10 +14,11 @@
 
 - **PK 含 adjust**：同一 symbol/timeframe/ts 不同复权是不同数据，各自成行
 - 拉取指定复权：`wbot ingest futu -adjust fwd|none`（默认 `fwd`，回测用）；migration 003 之前的存量行 `adjust='none'`（列默认值）
+- 腾讯接口参数 `qfq` 表示前复权，落库映射为 canonical `adjust='fwd'`；报告保留 provider 语义 `adjusted='qfq'`，避免把腾讯参数名误写成 Futu rehab 名。
 
 ## 来源（source）
 
-`source text NOT NULL DEFAULT 'futu'`（数据平台标识：futu / 未来其他平台统一该字段）。PK 含 source：同一 symbol+timeframe+ts+adjust 的多来源数据可共存，按 source 区分做一致性校验。
+`source text NOT NULL DEFAULT 'futu'`（数据平台标识，如 `futu` / `tencent`）。PK 含 source：同一 symbol+timeframe+ts+adjust 的多来源数据可共存，按 source 区分做一致性校验。回测读取对同一 ts 固定择一：`futu` 优先、`tencent` 补缺、其他 source 按字典序，避免多源重叠形成重复时间戳；被实际消费的来源/复权进入报告 `data_quality.underlying_bars`。
 
 ## 时间基准
 
@@ -45,4 +46,5 @@
 
 - `wbot ingest futu-option`：先查 DB（`option_quotes` 按 underlying+adjust+时间窗、`bars` 按 symbol+timeframe+adjust）——窗口内有数据即 **cache hit 跳过拉取**（打印行数），否则拉取落库
 - `wbot ingest futu`：`ON CONFLICT DO NOTHING` 幂等（同键重拉不覆盖）
+- `wbot ingest tencent`：固定 `source=tencent,adjust=fwd(qfq)`，同一 symbol/date 重跑 `ON CONFLICT DO NOTHING`；默认剔除北京时间今日的末行，避免形成 K 被幂等写入冻结，次日运行补入完整值（`-include-forming` 显式保留旧行为）；HK.00700 可一次回填 1000+ 日，美股当前仅一日并依靠每日运行向未来积累。
 - 一致性校验：同 symbol+timeframe+adjust 的不同 source 行可查询对比（各 provider 独立 source 标签：CLI mock/file/url 默认 `cli-mock`/`cli-file`/`cli-url`（`-source` 可覆盖），futu 系写入平台源；dev-up 种子即 mock 写入，与 futu 数据同键共存可对比）

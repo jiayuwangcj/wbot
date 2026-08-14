@@ -109,7 +109,7 @@ func TestBarsOK(t *testing.T) {
 	ts1 := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	ts2 := ts1.Add(24 * time.Hour)
 	store := &fakeStore{bars: []ingest.Bar{
-		{Ts: ts1, Open: 100, High: 101, Low: 99.5, Close: 100.5, Volume: 1000},
+		{Ts: ts1, Open: 100, High: 101, Low: 99.5, Close: 100.5, Volume: 1000, Source: "tencent", Adjusted: "qfq"},
 		{Ts: ts2, Open: 100.5, High: 102, Low: 100, Close: 101.25, Volume: 1100},
 	}}
 
@@ -136,7 +136,7 @@ func TestBarsOK(t *testing.T) {
 			t.Fatalf("bar %d: ts = %s; want %s", i, parsed, want)
 		}
 	}
-	want := barJSON{Ts: ts1.Format(time.RFC3339), Open: 100, High: 101, Low: 99.5, Close: 100.5, Volume: 1000}
+	want := barJSON{Ts: ts1.Format(time.RFC3339), Open: 100, High: 101, Low: 99.5, Close: 100.5, Volume: 1000, Source: "tencent", Adjusted: "qfq"}
 	if got[0] != want {
 		t.Fatalf("bar 0 = %+v; want %+v", got[0], want)
 	}

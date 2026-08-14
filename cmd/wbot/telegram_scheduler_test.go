@@ -489,6 +489,7 @@ func TestCallbackYesReplaceCancelsThenPlaces(t *testing.T) {
 		t.Fatalf("action = %+v; want CONFIRM order 12345", act)
 	}
 	// 改单行随推送消息(卡片)发出,toast 仅简短文。
+	waitFor(t, func() bool { return fake.sendCountTo("42") == 1 }, "replace push never sent")
 	msg := fake.lastSend(t)
 	text, _ := msg["text"].(string)
 	if !strings.Contains(text, "改单") || !strings.Contains(text, "206158430256") {
@@ -1554,6 +1555,7 @@ func TestCallbackYesStubOrderIDRejected(t *testing.T) {
 	if act.Action != "REJECTED" || act.Note != "order unconfirmed" {
 		t.Fatalf("action = %+v; want REJECTED order unconfirmed", act)
 	}
+	waitFor(t, func() bool { return fake.sendCountTo("42") == 1 }, "rejection push never sent")
 	text, _ := fake.lastSend(t)["text"].(string)
 	if !strings.Contains(text, "下单未获券商确认") {
 		t.Fatalf("push = %q; want 下单未获券商确认", text)

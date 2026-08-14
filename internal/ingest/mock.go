@@ -14,9 +14,9 @@ type mockSource struct{}
 func (mockSource) Bars(_ context.Context, _ domain.Symbol, _ string, _, _ time.Time) ([]Bar, error) {
 	base := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	return []Bar{
-		{base, 100, 101, 99.5, 100.5, 1000},
-		{base.Add(24 * time.Hour), 100.5, 102, 100, 101.25, 1100},
-		{base.Add(48 * time.Hour), 101.25, 103, 101, 102, 900},
+		{Ts: base, Open: 100, High: 101, Low: 99.5, Close: 100.5, Volume: 1000},
+		{Ts: base.Add(24 * time.Hour), Open: 100.5, High: 102, Low: 100, Close: 101.25, Volume: 1100},
+		{Ts: base.Add(48 * time.Hour), Open: 101.25, High: 103, Low: 101, Close: 102, Volume: 900},
 	}, nil
 }
 

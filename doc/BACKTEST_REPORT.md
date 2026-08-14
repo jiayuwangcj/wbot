@@ -168,6 +168,10 @@
 {
   "status": "DATA_BLOCKED",
   "option_data_required": true,
+  "underlying_bars": [
+    { "source": "tencent", "adjusted": "qfq", "bar_count": 252 }
+  ],
+  "option_snapshot_sources": ["futu"],
   "total_bar_count": 252,
   "ready_bar_count": 0,
   "blocked_bar_count": 252,
@@ -188,6 +192,8 @@
 ```
 
 - `valid_coverage_ratio = ready_bar_count / total_bar_count`；总 bar 为 0 时是 `null`。零 snapshot 时仍生成逐 bar `DATA_BLOCKED/HOLD` 报告，不能因没有合约行而把缺字段计数或覆盖率解释成已通过。
+- `underlying_bars` 按回测实际消费的标的 bar 聚合 `{source,adjusted,bar_count}`；腾讯 qfq 落库虽使用 canonical `adjust=fwd`，此处必须显示 `source=tencent,adjusted=qfq`。多源同日固定择一，计数之和应等于 `total_bar_count`（文件输入没有平台元数据时数组为空）。
+- `option_snapshot_sources` 只列实际消费的原子期权 snapshot 来源（通常为实时积累的 `futu`），与腾讯标的日 K 分开，禁止让 `source=tencent` 暗示腾讯提供了历史 Greeks/盘口。
 - 缺字段计数按实际 snapshot 合约行统计，字典始终存在；另以批次/合约行数和 `option_quote_snapshots` blocker 区分“零行”与“有行但字段缺失”。
 - 富途现有接口不能回填完整历史原子 snapshot 或真实到期/指派事件；完整到期周期未被数据证据证明前，Wheel 报告的 `status` 与 identity `capability_status` 固定为 `DATA_BLOCKED`。
 

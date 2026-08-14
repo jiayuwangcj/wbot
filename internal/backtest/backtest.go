@@ -220,7 +220,7 @@ func RunOptions(ctx context.Context, bars []ingest.Bar, initialCash float64, fee
 		Unfilled:    unfilled,
 		Fees:        summarizeFees(trades, feePerTrade),
 		Terminal:    terminal,
-		DataQuality: summarizeDataQuality(opts, signals),
+		DataQuality: summarizeDataQuality(bars, opts, signals),
 	}, nil
 }
 

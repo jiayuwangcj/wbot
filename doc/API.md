@@ -168,11 +168,13 @@ curl -X PUT 'http://127.0.0.1:8080/v1/watchlist/HK.00700' \
 
 下列既有端点不改变 Wheel 的提醒边界：
 
+`GET /v1/bars?symbol=&timeframe=&adjust=&from=&to=&limit=&desc=1` 返回 OHLCV bars；默认按时间升序，`desc=1` 时最新在前。若同一 `symbol/timeframe/adjust/ts` 存在多个来源，响应只保留一条，并按 `futu` → `tencent` → 其他 `source` 字典序确定性择一。每条 bar 除 `ts/open/high/low/close/volume` 外还返回 `source` 和 `adjusted`：`source` 是实际选中的平台（如 `futu`、`tencent`），`adjusted` 是该平台的复权语义（例如 Tencent canonical `adjust=fwd` 返回 `qfq`），客户端不得仅凭请求的 `adjust` 猜测来源或供应商复权名称。
+
 | 端点 | 语义 |
 | --- | --- |
 | `GET /v1/health` | DB ping，失败 `503 dependency_failed` |
 | `GET /v1/datacheck` | watchlist bars/期权覆盖快照，只读，不 repair |
-| `GET /v1/runs`、`GET /v1/bars` | ingestion runs 和 OHLCV bars |
+| `GET /v1/runs`、`GET /v1/bars` | ingestion runs 和带逐 bar `source`/`adjusted` provenance 的 OHLCV bars |
 | `GET /v1/account/snapshots` | DB 中的账户资金历史，不走交易网关 |
 | `GET /v1/futu/quote`、`/v1/futu/options` | 网关行情/链只读代理，不能作为完整 Wheel snapshot 的替代 |
 | `GET /v1/futu/account`、`/v1/futu/orders` | 账户/订单只读代理，不提供下单或撤单 |
