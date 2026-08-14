@@ -60,10 +60,17 @@
 
 - [x] 诊断(快照覆盖/轨迹/归因/OnBar 价格源)
 - [x] A 实施 + 单测/verify 全绿(verify.sh 全绿 2026-08-14)
-- [ ] reviewer 评审
-- [ ] 合入 main
+- [x] reviewer 评审(2026-08-14 结论:feature,有条件合入)
+- [x] P1-1 修复(HTML 标签随口径条件渲染)+ P2-1(premium-net 恒等式断言)+ P3-3(单测覆盖)
+- [x] PR #338 合入(CI 绿后)
 - [ ] B 重训 + 推送报告
+
+## 评审结论(2026-08-14)
+
+- reviewer:功能类型 feature;有条件合入。条件 P1-1:HTML「已实现盈利」标签与值(权利金口径)不符,须在重训推送前修复 → 已修复并合入
+- P2 排期:① doc/BACKTEST_REPORT.md 补档 schema 1.4(net_return/premium_net 语义 + gross 随动)② strategy_cache payload 版本判别或 schema_version 入缓存 ③ 候选比较 vs_baseline 语义(权利金 vs buy-hold)文档注明
+- P3 记录:main.go:768 多 symbol summary 行缺 premium_net_return;-cash 0 → NaN(默认 10000 无实害)
 
 ## Next
 
-提交分支 feat/backtest-premium-return → reviewer 评审 → 合入 → 重训推送。
+CI 绿 → 合入 PR #338 → B 重训(命令要素见上)→ 推送结果报告(任务 #81)。
