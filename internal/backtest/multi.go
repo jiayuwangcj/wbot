@@ -23,13 +23,17 @@ type SymbolResult struct {
 
 // MultiResult summarizes a multi-symbol run: per-symbol sub-accounts plus the
 // combined portfolio (equity curve is the pointwise sum over aligned bars).
+// Evaluation basis (2026-08-14 老板指令): RealizedReturn* is the headline;
+// TotalReturn (mark-to-market equity) stays as the audit mark_return.
 type MultiResult struct {
-	PerSymbol   []SymbolResult
-	Equity      float64
-	TotalReturn float64
-	MaxDrawdown float64
-	Bars        int
-	EquityCurve []EquityPoint
+	PerSymbol            []SymbolResult
+	Equity               float64
+	TotalReturn          float64
+	RealizedReturnAmount float64
+	RealizedReturnPct    float64
+	MaxDrawdown          float64
+	Bars                 int
+	EquityCurve          []EquityPoint
 }
 
 // StrategyFactory returns a fresh strategy per multi-symbol sub-account;
@@ -118,13 +122,19 @@ func RunMultiWithFeeModel(ctx context.Context, series []SymbolBars, initialCash 
 		}
 	}
 	final := curve[len(curve)-1].Equity
+	realizedAmount := 0.0
+	for _, sub := range subs {
+		realizedAmount += sub.Result.RealizedReturnAmount
+	}
 	return &MultiResult{
-		PerSymbol:   subs,
-		Equity:      final,
-		TotalReturn: (final - initialCash) / initialCash,
-		MaxDrawdown: maxDD,
-		Bars:        len(curve),
-		EquityCurve: curve,
+		PerSymbol:            subs,
+		Equity:               final,
+		TotalReturn:          (final - initialCash) / initialCash,
+		RealizedReturnAmount: realizedAmount,
+		RealizedReturnPct:    realizedAmount / initialCash,
+		MaxDrawdown:          maxDD,
+		Bars:                 len(curve),
+		EquityCurve:          curve,
 	}, nil
 }
 

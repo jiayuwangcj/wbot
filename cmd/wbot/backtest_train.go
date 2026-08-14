@@ -317,7 +317,8 @@ func trainMetrics(r *backtest.Result, initialCash float64) backtestes.Metrics {
 			filled++
 		}
 	}
-	return backtestes.Metrics{NetReturn: r.TotalReturn, MaxDrawdown: r.MaxDrawdown, TailLoss: tailLoss(r.EquityCurve), CostPct: r.Fees.TotalAmount / initialCash,
+	// 评价口径 = 已实现收益(reward-2.0):市值标记依赖战略参数,不进战术寻优。
+	return backtestes.Metrics{NetReturn: r.RealizedReturnPct, MaxDrawdown: r.MaxDrawdown, TailLoss: tailLoss(r.EquityCurve), CostPct: r.Fees.TotalAmount / initialCash,
 		UnfilledRatio: r.Unfilled.UnfilledRatio, EffectiveTrades: filled}
 }
 

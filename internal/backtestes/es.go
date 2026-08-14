@@ -15,11 +15,16 @@ import (
 	"sort"
 	"strconv"
 	"time"
+
+	"github.com/jiayu/wbot/internal/wheel"
 )
 
 const (
 	AlgorithmVersion = "es-1.0"
-	RewardVersion    = "reward-1.0"
+	// reward-2.0 evaluates on realized P&L only (2026-08-14 老板指令): unrealized
+	// marks depend on the strategic position curve, so strategic choices must
+	// not drive the tactical search. reward-1.0 used mark-to-market net return.
+	RewardVersion = "reward-2.0"
 )
 
 var tacticalOrder = []string{"move_interval_pct", "min_premium_per_share", "min_option_profit", "stock_switch_pct", "trade_gap", "min_option_quality", "min_dte", "max_dte"}
@@ -78,8 +83,8 @@ func ParseSpace(data string, base map[string]any) (Space, error) {
 		if name == "min_option_quality" && hi > 1 {
 			return Space{}, errors.New("train search space: min_option_quality must be in [0,1]")
 		}
-		if (name == "min_dte" || name == "max_dte") && (lo < 5 || hi > 10) {
-			return Space{}, fmt.Errorf("train search space: %s must be within 5..10", name)
+		if (name == "min_dte" || name == "max_dte") && (lo < wheel.MinWheelDTE || hi > wheel.MaxWheelDTE) {
+			return Space{}, fmt.Errorf("train search space: %s must be within %d..%d", name, wheel.MinWheelDTE, wheel.MaxWheelDTE)
 		}
 		proto.Min, proto.Max = lo, hi
 		bounds[name] = proto

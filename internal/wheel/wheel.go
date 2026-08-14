@@ -51,6 +51,12 @@ const (
 	// DefaultMinOptionProfit is the gross premium floor for one candidate
 	// option trade. It is a total premium amount, not a per-share threshold.
 	DefaultMinOptionProfit = 200.0
+	// MinWheelDTE/MaxWheelDTE bound the DTE window the wheel may trade.
+	// The upper bound was widened 10 → 45 on 2026-08-14: the historical 5..10
+	// window was a structural handicap (thin premiums, sparse candidates,
+	// zero-candidate days); configs already deployed stay valid.
+	MinWheelDTE = 5
+	MaxWheelDTE = 45
 )
 
 // DTE validation failures are hot-path, expected candidate rejections. Keep
@@ -153,8 +159,8 @@ func (c Config) Validate() error {
 			return fmt.Errorf("wheel: zero_position_price must be greater than full_position_price")
 		}
 	}
-	if c.MinDTE < 5 || c.MaxDTE > 10 || c.MinDTE > c.MaxDTE {
-		return fmt.Errorf("wheel: DTE must be a valid range within 5..10")
+	if c.MinDTE < MinWheelDTE || c.MaxDTE > MaxWheelDTE || c.MinDTE > c.MaxDTE {
+		return fmt.Errorf("wheel: DTE must be a valid range within %d..%d", MinWheelDTE, MaxWheelDTE)
 	}
 	if !finite(c.MinOptionQuality) || c.MinOptionQuality < 0 || c.MinOptionQuality > 1 {
 		return fmt.Errorf("wheel: min_option_quality must be in [0,1]")

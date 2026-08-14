@@ -21,7 +21,9 @@ import (
 )
 
 const (
-	SchemaVersion           = "1.2"
+	// 1.3:net_return_*/annualized/gross 改为已实现收益口径(2026-08-14 老板指令,
+	// 浮盈浮亏依赖战略参数,评价只看已实现);市值标记留在 window_mark_to_market_*。
+	SchemaVersion           = "1.3"
 	ParamsDictionaryVersion = "params-1.0"
 	orderAssumption         = "卖出期权,按 Bid 价尝试成交,有效时长=bar 内"
 )
@@ -56,7 +58,9 @@ type ReportConfig struct {
 }
 
 type MoneyResult struct {
-	ReturnStatus                string        `json:"return_status"`
+	ReturnStatus string `json:"return_status"`
+	// net_return_* 是评价口径(schema 1.3):已实现收益 = 权利金 − 平仓成本 +
+	// 正股已实现 − 费用,与战略参数无关。市值标记见 window_mark_to_market_*。
 	NetReturnPct                *float64      `json:"net_return_pct"`
 	NetReturnAmount             *float64      `json:"net_return_amount"`
 	FinalEquityAmount           *float64      `json:"final_equity_amount"`
@@ -85,6 +89,7 @@ type MoneyResult struct {
 	CostDrag                    CostDrag      `json:"cost_drag"`
 	CostDragPct                 float64       `json:"cost_drag_pct"`
 	CostDragReturnPct           float64       `json:"cost_drag_return_pct"`
+	Attribution                 Attribution   `json:"attribution"`
 	ManualNotExecutedCount      int64         `json:"manual_not_executed_count"`
 	HardViolations              int64         `json:"hard_violations"`
 	StockAssignmentRate         *float64      `json:"stock_assignment_rate"`
@@ -146,6 +151,22 @@ type StockCostBreakdown struct {
 	Lots       float64 `json:"lots"`
 	Amount     float64 `json:"amount"`
 	TradeCount int64   `json:"trade_count"`
+}
+
+// Attribution decomposes the realized P&L into its sources. The identity
+// realized_pnl_amount = premium_income_amount − option_close_cost_amount +
+// stock_realized_pnl_amount − fees_amount is validated at build time, so a
+// report can never show a realized total that disagrees with the terminal
+// summary. unfilled_attempt_premium_amount is the opportunity cost of the
+// liquidity-heuristic unfilled attempts, never booked into the P&L.
+type Attribution struct {
+	PremiumIncomeAmount    float64 `json:"premium_income_amount"`
+	OptionCloseCostAmount  float64 `json:"option_close_cost_amount"`
+	StockRealizedPnLAmount float64 `json:"stock_realized_pnl_amount"`
+	FeesAmount             float64 `json:"fees_amount"`
+	RealizedPnLAmount      float64 `json:"realized_pnl_amount"`
+	UnfilledAttemptPremium float64 `json:"unfilled_attempt_premium_amount"`
+	UnfilledAttemptCount   int64   `json:"unfilled_attempt_count"`
 }
 
 // CostDrag keeps transaction loss auditable next to the net and gross return.
@@ -321,6 +342,13 @@ func Build(in Input) (*Report, error) {
 	if math.Abs(in.Result.Fees.TotalAmount-in.Result.Fees.StockAmount-in.Result.Fees.OptionAmount) > 1e-9 {
 		return nil, errors.New("backtest report: fee components do not match total")
 	}
+	a := in.Result.Attribution
+	if math.Abs(a.RealizedPnLAmount-(a.PremiumIncomeAmount-a.OptionCloseCostAmount+a.StockRealizedPnLAmount-a.FeesAmount)) > 1e-6*math.Max(1, math.Abs(a.RealizedPnLAmount)) {
+		return nil, errors.New("backtest report: attribution identity does not hold")
+	}
+	if a.UnfilledAttemptCount != in.Result.Unfilled.UnfilledCount {
+		return nil, errors.New("backtest report: attribution unfilled count does not match unfilled stats")
+	}
 	if strings.TrimSpace(in.SourceHash) == "" {
 		return nil, errors.New("backtest report: source hash is required")
 	}
@@ -373,18 +401,26 @@ func Build(in Input) (*Report, error) {
 	hash := hex.EncodeToString(digest[:])
 
 	windowReturnAmount, windowReturnPct := terminalWindowReturn(terminal, in.InitialCash)
+	// 评价口径 = 已实现收益(schema 1.3):net_return_* 只含已实现(权利金 − 平仓 −
+	// 正股已实现 − 费用),与战略参数无关;市值标记留在 window_mark_to_market_* 审计。
+	realizedReturnAmount, realizedReturnPct := in.Result.RealizedReturnAmount, in.Result.RealizedReturnPct
 	var netReturnAmount, netReturnPct, excessReturnPct *float64
 	returnStatus := "not_applicable_data_blocked"
-	if windowReturnAmount == nil || windowReturnPct == nil {
-		returnStatus = "not_applicable_incomplete_valuation"
-	}
-	if windowReturnAmount != nil && windowReturnPct != nil && (in.Strategy != "wheel" || capability == "RESEARCH_ONLY") {
-		returnStatus = "complete"
-		if in.Strategy == "wheel" {
+	if in.Strategy == "wheel" {
+		// wheel 评价口径 = 已实现(schema 1.3):net_return_* 只含已实现,与战略参数
+		// 无关;市值标记留在 window_mark_to_market_* 审计。
+		if capability == "RESEARCH_ONLY" {
 			returnStatus = "research_only"
+			netReturnAmount, netReturnPct = &realizedReturnAmount, &realizedReturnPct
 		}
+	} else if windowReturnAmount != nil && windowReturnPct != nil {
+		// 非 wheel 基准(hold/buy-hold 等)无战略参数与期权腿,市值收益即其真实
+		// 口径,不参与已实现口径切换(该口径作用于 wheel/ES 评价)。
+		returnStatus = "complete"
 		netReturnAmount, netReturnPct = windowReturnAmount, windowReturnPct
-		excess := *windowReturnPct - in.BaselineReturnPct
+	}
+	if netReturnPct != nil {
+		excess := *netReturnPct - in.BaselineReturnPct
 		excessReturnPct = &excess
 	}
 	finalEquityAmount := terminal.FinalEquityAmount
@@ -460,6 +496,15 @@ func Build(in Input) (*Report, error) {
 				Description:        feeDescription(in.Result.Fees.Included, in.Result.Fees.Legacy),
 			},
 			CostDrag: costDrag, CostDragPct: costDragPct, CostDragReturnPct: costDragReturnPct,
+			Attribution: Attribution{
+				PremiumIncomeAmount:    a.PremiumIncomeAmount,
+				OptionCloseCostAmount:  a.OptionCloseCostAmount,
+				StockRealizedPnLAmount: a.StockRealizedPnLAmount,
+				FeesAmount:             a.FeesAmount,
+				RealizedPnLAmount:      a.RealizedPnLAmount,
+				UnfilledAttemptPremium: a.UnfilledAttemptPremium,
+				UnfilledAttemptCount:   a.UnfilledAttemptCount,
+			},
 		},
 		Terminal:    terminal,
 		DataQuality: quality,

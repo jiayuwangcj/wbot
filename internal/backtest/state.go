@@ -131,6 +131,16 @@ type State struct {
 	ExpiryCount      int64
 	ShortExpiryCount int64
 	AssignmentCount  int64
+	// P&L attribution ledger (report §收益归因). PremiumIncome credits every
+	// filled short leg (price×contracts×lot); OptionCloseCost debits filled
+	// closing buys; StockRealizedPnL books each stock sell against the running
+	// basis; UnfilledAttemptPremium totals the premium attempted fills would
+	// have collected (opportunity, never booked). Identity: realized =
+	// PremiumIncome − OptionCloseCost + StockRealizedPnL − total fees.
+	PremiumIncome          float64
+	OptionCloseCost        float64
+	StockRealizedPnL       float64
+	UnfilledAttemptPremium float64
 }
 
 // Equity returns total portfolio value: cash + position at price plus option

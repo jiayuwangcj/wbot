@@ -84,6 +84,56 @@ func TestWheelBacktestMissingAndStaleSnapshotHold(t *testing.T) {
 	}
 }
 
+func TestWheelBacktestStockSwitchSuggestionExecutesStockTrade(t *testing.T) {
+	// 急涨急跌直接买卖正股(wheel 既有机制):stock_switch_pct 触发时 Evaluate
+	// 只给正股建议,线下人工处置;回测将其机械化为正股买卖,不能 HOLD 掉。
+	// 上次有效成交价来自 bar 0 的卖 put 成交(适配器经 FillCount 增量追踪)。
+	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	bid := 2.0
+	row := func(day int, underlying float64) wheelstore.QuoteSnapshotRecord {
+		r := snapshotRow(ts.Add(time.Duration(day)*24*time.Hour), &bid)
+		r.UnderlyingPrice = &underlying
+		return r
+	}
+	// 急跌日 underlying 94.6(-5.4% ≥ stock_switch 5%);急涨日 underlying 200。
+	quotes := []wheelstore.QuoteSnapshotRecord{row(0, 100), row(1, 94.6), row(2, 200)}
+	data, err := backtest.OptionsDataFromQuoteSnapshots(quotes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := wheelBacktestConfig()
+	cfg.FullPositionPrice, cfg.ZeroPositionPrice, cfg.MaxInventory, cfg.TradeGap = 100, 200, 100, 0
+	cfg.StockSwitchPct = 0.05
+	bar := func(day int, close float64) ingest.Bar {
+		return ingest.Bar{Ts: ts.Add(time.Duration(day) * 24 * time.Hour), Open: close, High: close, Low: close, Close: close, Volume: 1}
+	}
+	res, err := backtest.RunOptions(context.Background(),
+		[]ingest.Bar{bar(0, 100), bar(1, 94.6), bar(2, 200)}, 20000, 0, &WheelStrategy{Config: cfg}, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actions []string
+	for _, tr := range res.Trades {
+		actions = append(actions, tr.Action)
+	}
+	want := []string{"sell-put", "buy", "sell"}
+	if len(actions) != len(want) {
+		t.Fatalf("trades = %v; want %v (stock switch must execute, not HOLD)", actions, want)
+	}
+	for i := range want {
+		if actions[i] != want[i] {
+			t.Fatalf("trades = %v; want %v", actions, want)
+		}
+	}
+	if res.Trades[1].Size != 70 { // 目标 100 − 期权 delta 库存 30
+		t.Fatalf("buy size = %v; want 70 (gap after option delta)", res.Trades[1].Size)
+	}
+	// 急涨卖出:建议量 100 含 30 期权 delta 折算,实际持仓 70 → 只卖 70(不裸卖)。
+	if res.Trades[2].Size != 70 || res.Terminal.StockShares != 0 {
+		t.Fatalf("sell size = %v, terminal shares = %v; want 70 / 0 (clamped, no naked short)", res.Trades[2].Size, res.Terminal.StockShares)
+	}
+}
+
 func TestWheelSnapshotBatchSortingAndAtomicSelection(t *testing.T) {
 	ts := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	bid := 2.0

@@ -765,12 +765,12 @@ func runBacktest(prog string, argv []string) int {
 			return 1
 		}
 		mr := mout.Result
-		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d symbols=%d\n",
-			mr.Equity, mr.TotalReturn, mr.MaxDrawdown, mr.Bars, len(mr.PerSymbol))
+		fmt.Printf("final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d symbols=%d\n",
+			mr.Equity, mr.RealizedReturnPct, mr.TotalReturn, mr.MaxDrawdown, mr.Bars, len(mr.PerSymbol))
 		for _, sub := range mr.PerSymbol {
 			r := sub.Result
-			fmt.Printf("  %s: final_equity=%v total_return=%v max_drawdown=%v bars=%d\n",
-				sub.Symbol, r.Equity, r.TotalReturn, r.MaxDrawdown, r.Bars)
+			fmt.Printf("  %s: final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d\n",
+				sub.Symbol, r.Equity, r.RealizedReturnPct, r.TotalReturn, r.MaxDrawdown, r.Bars)
 		}
 		if *maxDrawdown > 0 && mr.MaxDrawdown > *maxDrawdown {
 			fmt.Fprintf(os.Stderr, "backtest: max drawdown %v exceeds limit %v\n", mr.MaxDrawdown, *maxDrawdown)
@@ -804,10 +804,10 @@ func runBacktest(prog string, argv []string) int {
 	}
 
 	if res.Unfilled.AttemptCount == 0 {
-		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试)\n", res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount)
+		fmt.Printf("final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试)\n", res.Equity, res.RealizedReturnPct, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount)
 	} else {
-		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n",
-			res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
+		fmt.Printf("final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n",
+			res.Equity, res.RealizedReturnPct, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
 	}
 	var pushErr error
 	if *report {

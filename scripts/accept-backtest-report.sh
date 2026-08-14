@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acceptance: deterministic schema 1.2 single-run JSON + HTML report.
+# Acceptance: deterministic schema 1.3 single-run JSON + HTML report.
 # Usage: scripts/accept-backtest-report.sh [wbot-bin]
 set -uo pipefail
 
@@ -22,7 +22,7 @@ json_path="$(find "$tmp/reports" -maxdepth 1 -name '*.json' -print -quit)"
 html_path="${json_path%.json}.html"
 check "JSON 与 HTML 文件存在" 1 "$([[ -f "$json_path" && -f "$html_path" ]] && echo 1 || echo 0)"
 
-json_ok="$(node -e 'const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[1])); const top=["schema_version","report_id","report_kind","initial_cash","identity","result","terminal","data_quality","audit","risk"]; process.stdout.write(String(top.every(k=>Object.hasOwn(r,k)) && r.schema_version==="1.2" && r.report_kind==="single_run"));' "$json_path")"
+json_ok="$(node -e 'const fs=require("fs"),r=JSON.parse(fs.readFileSync(process.argv[1])); const top=["schema_version","report_id","report_kind","initial_cash","identity","result","terminal","data_quality","audit","risk"]; process.stdout.write(String(top.every(k=>Object.hasOwn(r,k)) && r.schema_version==="1.3" && r.report_kind==="single_run"));' "$json_path")"
 check "JSON schema 顶层键齐全" true "$json_ok"
 field_ok="$(node -e 'const r=require(process.argv[1]),x=r.result;const ok=r.initial_cash===10000&&x.final_equity_amount===10000&&x.annualized_return_pct===0&&x.cost_drag.total_fees_amount===0&&x.cost_drag.cost_drag_pct===0&&x.cost_drag_return_pct===0;process.stdout.write(String(ok));' "$json_path")"
 check "本金/期末权益/年化/损耗字段可复算" true "$field_ok"
@@ -34,7 +34,7 @@ model_ok="$(node -e 'const r=require(process.argv[1]);const m=r.result.unfilled_
 check "unfilled_model 对象形状" true "$model_ok"
 recompute_ok="$(node -e 'const r=require(process.argv[1]).result;const ok=r.attempt_count===r.fill_count+r.unfilled_count&&(r.attempt_count===0?r.unfilled_ratio===null:r.unfilled_ratio===r.unfilled_count/r.attempt_count);process.stdout.write(String(ok));' "$json_path")"
 check "未成交口径可复算且零分母为 null" true "$recompute_ok"
-summary_ok="$(node -e 'const r=require(process.argv[1]).result,o=process.argv[2];const amount=Math.abs(r.net_return_amount-r.net_return_pct*10000)<1e-9;const line=o.includes(`total_return=${r.net_return_pct}`)&&o.includes(`max_drawdown=${r.max_drawdown_pct}`);process.stdout.write(String(amount&&line));' "$json_path" "$out1")"
+summary_ok="$(node -e 'const r=require(process.argv[1]).result,o=process.argv[2];const amount=Math.abs(r.net_return_amount-r.net_return_pct*10000)<1e-9;const line=o.includes(`realized_return=${r.net_return_pct}`)&&o.includes(`mark_return=${r.window_mark_to_market_return_pct}`)&&o.includes(`max_drawdown=${r.max_drawdown_pct}`);process.stdout.write(String(amount&&line));' "$json_path" "$out1")"
 check "JSON 收益金额与 CLI 汇总可复算" true "$summary_ok"
 html="$(<"$html_path")"
 html_one_line="$(tr '\n' ' ' <<<"$html")"

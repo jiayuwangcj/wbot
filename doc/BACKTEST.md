@@ -106,6 +106,15 @@ wbot backtest \
 
 事件驱动的到期、指派、人工确认和成交回填指标仍是 `DATA_BLOCKED`：它们需要覆盖目标日期/DTE 的完整历史 snapshot、quote/成交事件顺序和人工审计事实。已保留 snapshot schema、runner trace、机械到期结算和 deterministic fixtures；解锁证据必须包含供应商/历史数据字段映射、原子性/新鲜度测试、端到端可复现 trace 和最大库存违规为零。禁止用 OHLC、固定 Delta、默认流动性、事后中间价或 bar-time replay 冒充事件证据。
 
+### 机械到期结算语义(2026-08-14 老板指令核对)
+
+期权成交成本只有 21/张(买/卖期权,按合约数计);被行权才承担行权价交割,价外直接归零:
+
+- **ITM 判定**:到期日(ts ≥ expiry)当根 bar close 与行权价严格比较——call `close > strike`、put `close < strike` 才行权;等于行权价(ATM)不触发。
+- **行权交割**:按行权价现金交割,并收行权交割费 70/手。卖 put 被行权按 strike 买入正股(承担行权价);covered call 被行权按 strike 卖出正股(退出机制,`exercise-call` 实现盈亏按持仓成本基础)。
+- **价外归零**:OTM 到期腿直接作废(`expire-otm`),无现金变动、无费用;已收/已付权利金不回收。
+- **缺口 buy-in(不裸卖)**:short call 被行权或 long put 行权卖出而持仓不足交付量时,缺口按当根 bar close 强制买入(`exercise-buyin`,按股票费率 70/手)再按行权价全额交割——被行权方必须交付每一股合约股,引擎绝不裸卖空;buy-in 成本并入持仓基础后统一实现盈亏。
+
 ## 指标与 trace
 
 事件回测完成后，若数据闸门已启用，至少报告：总收益、最大回撤、指派率、Call 被行权机会成本、订单/提醒频率、库存偏差和最大库存违规数。trace 至少区分：信号、未执行信号、人工确认、人工回填成交、到期和指派；系统不生成 broker order id，也不调用交易 API。

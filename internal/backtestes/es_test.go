@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jiayu/wbot/internal/wheel"
 )
 
 func baseParams() map[string]any {
@@ -30,6 +33,18 @@ func TestParseSpaceOnlyTacticalAndConstrainedDTE(t *testing.T) {
 	}
 	if p["trade_gap"].(float64) != 102 || p["max_dte"].(int) < p["min_dte"].(int) {
 		t.Fatalf("decoded params = %#v", p)
+	}
+}
+
+func TestParseSpaceWidenedDTEUpperBound(t *testing.T) {
+	// 2026-08-14: the wheel DTE window widened 5..10 → 5..45. The ES space must
+	// accept the widened range and still reject anything beyond MaxWheelDTE.
+	want := int(wheel.MaxWheelDTE)
+	if _, err := ParseSpace(`{"min_dte":[5,10],"max_dte":[5,`+fmt.Sprint(want)+`]}`, baseParams()); err != nil {
+		t.Fatalf("widened DTE range rejected: %v", err)
+	}
+	if _, err := ParseSpace(`{"min_dte":[5,10],"max_dte":[5,`+fmt.Sprint(want+1)+`]}`, baseParams()); err == nil || !strings.Contains(err.Error(), "within") {
+		t.Fatalf("DTE above MaxWheelDTE error = %v", err)
 	}
 }
 

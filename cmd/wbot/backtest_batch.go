@@ -236,11 +236,12 @@ func runBacktestBatch(dsn, file, symbol, strategyName string, groups []map[strin
 }
 
 func printFixedBacktestSummary(index int, paramsJSON []byte, res *backtest.Result) {
+	attr := res.Attribution
 	if res.Unfilled.AttemptCount == 0 {
-		fmt.Printf("params[%d] params=%s final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试)\n", index, paramsJSON, res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount)
+		fmt.Printf("params[%d] params=%s final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 N/A(无成交尝试) premium_income=%v stock_realized=%v\n", index, paramsJSON, res.Equity, res.RealizedReturnPct, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, attr.PremiumIncomeAmount, attr.StockRealizedPnLAmount)
 		return
 	}
-	fmt.Printf("params[%d] params=%s final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n", index, paramsJSON, res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
+	fmt.Printf("params[%d] params=%s final_equity=%v realized_return=%v mark_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%) premium_income=%v stock_realized=%v unfilled_premium=%v\n", index, paramsJSON, res.Equity, res.RealizedReturnPct, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100, attr.PremiumIncomeAmount, attr.StockRealizedPnLAmount, attr.UnfilledAttemptPremium)
 }
 
 func buildFixedBacktestReport(item fixedBacktestResult, flags backtestBatchFlags) (*backtestreport.Report, error) {

@@ -17,9 +17,16 @@ import (
 // Result summarizes one backtest run; EquityCurve/Trades are the deterministic
 // per-bar trace (draft 2026-08-02 S1: same input, same trace). Unfilled
 // reports the liquidity-heuristic fill accounting (unfilled.go).
+//
+// Evaluation basis (2026-08-14 老板指令): RealizedReturn* is the headline.
+// Unrealized marks (Equity/TotalReturn) depend on the strategic position
+// curve (满仓/清仓/最大持股 decide end-of-window holdings), so evaluation
+// uses only booked P&L; the mark-to-market fields remain as audit.
 type Result struct {
 	Equity                    float64
 	TotalReturn               float64
+	RealizedReturnAmount      float64
+	RealizedReturnPct         float64
 	MaxDrawdown               float64
 	MaxStockMarketValueAmount float64
 	Bars                      int
@@ -28,6 +35,7 @@ type Result struct {
 	Signals                   []SignalTrace
 	Unfilled                  UnfilledStats
 	Fees                      FeeSummary
+	Attribution               PnLAttribution
 	Terminal                  TerminalSummary
 	DataQuality               DataQualitySummary
 }
@@ -113,7 +121,7 @@ type EquityPoint struct {
 // slice, plan §二).
 type Trade struct {
 	Ts            time.Time `json:"ts"`
-	Action        string    `json:"action"` // buy/sell/*-call/*-put/exercise-call/exercise-put/expire-otm
+	Action        string    `json:"action"` // buy/sell/*-call/*-put/exercise-call/exercise-put/exercise-buyin/expire-otm
 	Symbol        string    `json:"symbol"`
 	Size          float64   `json:"size"`  // shares for stock/exercise, contracts for option fills
 	Price         float64   `json:"price"` // close, premium, or strike
@@ -236,13 +244,17 @@ func RunOptionsWithFeeModel(ctx context.Context, bars []ingest.Bar, initialCash 
 		ModelKind:     modelKind,
 		ModelVersion:  modelVersion,
 	}
+	fees := summarizeFees(trades, feeModel)
 	if st.AttemptCount > 0 {
 		ratio := float64(st.UnfilledCount) / float64(st.AttemptCount)
 		unfilled.UnfilledRatio = &ratio
 	}
+	attr := attributionOf(st, fees, unfilled)
 	return &Result{
 		Equity:                    final,
 		TotalReturn:               (final - initialCash) / initialCash,
+		RealizedReturnAmount:      attr.RealizedPnLAmount,
+		RealizedReturnPct:         attr.RealizedPnLAmount / initialCash,
 		MaxDrawdown:               maxDD,
 		MaxStockMarketValueAmount: maxStockMarketValue,
 		Bars:                      len(bars),
@@ -250,7 +262,8 @@ func RunOptionsWithFeeModel(ctx context.Context, bars []ingest.Bar, initialCash 
 		Trades:                    trades,
 		Signals:                   signals,
 		Unfilled:                  unfilled,
-		Fees:                      summarizeFees(trades, feeModel),
+		Fees:                      fees,
+		Attribution:               attr,
 		Terminal:                  terminal,
 		DataQuality:               summarizeDataQuality(bars, opts, signals),
 	}, nil
@@ -423,6 +436,7 @@ func settleAction(st *State, act Action, size float64, b ingest.Bar, feeModel Fe
 		}
 		fee := feeModel.fee("sell", size)
 		st.Cash += size*b.Close - fee
+		st.StockRealizedPnL += size * (b.Close - st.StockAverageCost)
 		applyStockPosition(st, -size, b.Close)
 		*trades = append(*trades, Trade{Ts: b.Ts, Action: "sell", Size: size, Price: b.Close, CashAfter: st.Cash, Fee: fee, Filled: true})
 	case ActionSellCall, ActionBuyCall, ActionSellPut, ActionBuyPut:
@@ -504,11 +518,16 @@ func settleOptionTrade(st *State, act Action, size float64, b ingest.Bar, feeMod
 		bid, ask, vol, oi, _ := fillQuote(st, p.Code)
 		if attemptDraw(seed, symbol, p.Code, b.Ts, st.AttemptsByContract[p.Code]) < failProb(bid, ask, vol, oi) {
 			st.UnfilledCount++
+			st.UnfilledAttemptPremium += size * p.AvgPremium * float64(lot)
 			*trades = append(*trades, Trade{Ts: b.Ts, Action: act.String(), Symbol: p.Code, Size: size, Price: p.AvgPremium, CashAfter: st.Cash, Filled: false, UnfilledModel: unfilledModelLabel()})
 			st.Pending = nil
 			return nil
 		}
 		st.FillCount++
+		st.PremiumIncome += size * p.AvgPremium * float64(lot)
+	} else {
+		// Filled closing buys are never sampled; debit their cost for the ledger.
+		st.OptionCloseCost += size * p.AvgPremium * float64(lot)
 	}
 	pos := OptionPosition{
 		Code: p.Code, Kind: p.Kind, Strike: p.Strike, Expiry: p.Expiry,
@@ -598,6 +617,25 @@ func settleExpired(st *State, ts time.Time, feeModel FeeModel, trades *[]Trade) 
 				if p.Contracts < 0 {
 					st.AssignmentCount++
 				}
+				if shares < 0 {
+					// Short-call delivery sells shares out at the strike: realize
+					// against the running stock basis. This is the wheel's covered
+					// call exit (inventory above target sells calls; exercise
+					// delivers the stock out at strike).
+					// A position that does not cover the whole delivery buys in
+					// the shortfall at market first (exchange buy-in): the
+					// assigned seller must deliver every contract share, never
+					// open a naked short. Buy-in cost becomes part of the basis,
+					// so the realized line below prices all deliver shares.
+					deliver := -shares
+					if gap := deliver - st.Position; gap > 0 {
+						buyInFee := feeModel.fee("exercise-buyin", gap)
+						st.Cash -= gap*st.Price + buyInFee
+						applyStockPosition(st, gap, st.Price)
+						*trades = append(*trades, Trade{Ts: ts, Action: "exercise-buyin", Symbol: code, Size: gap, Price: st.Price, CashAfter: st.Cash, Fee: buyInFee})
+					}
+					st.StockRealizedPnL += deliver * (p.Strike - st.StockAverageCost)
+				}
 				applyStockPosition(st, shares, p.Strike)
 				fee := feeModel.fee("exercise-call", shares)
 				st.Cash -= shares*p.Strike + fee
@@ -609,6 +647,20 @@ func settleExpired(st *State, ts time.Time, feeModel FeeModel, trades *[]Trade) 
 			if st.Price < p.Strike {
 				if p.Contracts < 0 {
 					st.AssignmentCount++
+				}
+				if p.Contracts > 0 {
+					// Long-put exercise sells the stock out at strike (the
+					// holder's right to put it). Undercovered positions buy in
+					// the shortfall at market first, same delivery rule as the
+					// short-call assignment above.
+					deliver := shares
+					if gap := deliver - st.Position; gap > 0 {
+						buyInFee := feeModel.fee("exercise-buyin", gap)
+						st.Cash -= gap*st.Price + buyInFee
+						applyStockPosition(st, gap, st.Price)
+						*trades = append(*trades, Trade{Ts: ts, Action: "exercise-buyin", Symbol: code, Size: gap, Price: st.Price, CashAfter: st.Cash, Fee: buyInFee})
+					}
+					st.StockRealizedPnL += deliver * (p.Strike - st.StockAverageCost)
 				}
 				applyStockPosition(st, -shares, p.Strike)
 				fee := feeModel.fee("exercise-put", shares)

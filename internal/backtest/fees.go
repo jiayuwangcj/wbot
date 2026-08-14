@@ -114,7 +114,7 @@ func isOptionTrade(action string) bool {
 }
 
 func isExerciseTrade(action string) bool {
-	return action == "exercise-call" || action == "exercise-put"
+	return action == "exercise-call" || action == "exercise-put" || action == "exercise-buyin"
 }
 
 func isActiveTrade(action string) bool { return isStockTrade(action) || isOptionTrade(action) }

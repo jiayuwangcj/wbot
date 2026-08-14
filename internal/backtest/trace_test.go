@@ -176,11 +176,15 @@ func TestRunTraceSameDayExpiryDeterministic(t *testing.T) {
 			},
 		}
 	}
+	// No stock is held, so each assignment buys in its whole delivery at market
+	// (110) before delivering at strike; the ledger never goes short.
 	want := []Trade{
 		{Ts: expiryAt(0), Action: "sell-call", Symbol: "A", Size: 1, Price: 1, CashAfter: 10100, Filled: true},
 		{Ts: expiryAt(1), Action: "sell-call", Symbol: "B", Size: 1, Price: 0.25, CashAfter: 10125, Filled: true},
-		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "A", Size: -100, Price: 90, CashAfter: 19125},
-		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "B", Size: -100, Price: 100, CashAfter: 29125},
+		{Ts: expiryAt(1), Action: "exercise-buyin", Symbol: "A", Size: 100, Price: 110, CashAfter: -875},
+		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "A", Size: -100, Price: 90, CashAfter: 8125},
+		{Ts: expiryAt(1), Action: "exercise-buyin", Symbol: "B", Size: 100, Price: 110, CashAfter: -2875},
+		{Ts: expiryAt(1), Action: "exercise-call", Symbol: "B", Size: -100, Price: 100, CashAfter: 7125},
 	}
 	for i := 0; i < 20; i++ {
 		res, err := RunOptions(context.Background(), mkBars(100, 110), 10000, 0, newScript(), opts)

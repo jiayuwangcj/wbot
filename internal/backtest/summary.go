@@ -46,6 +46,34 @@ type TerminalSummary struct {
 	BrokerAssignmentCount        *int64   `json:"broker_assignment_count"`
 }
 
+// PnLAttribution splits the realized P&L into its sources so a report can show
+// where the money came from instead of one residual number. The identity
+// RealizedPnLAmount = PremiumIncomeAmount − OptionCloseCostAmount +
+// StockRealizedPnLAmount − FeesAmount is asserted by the report builder;
+// UnfilledAttemptPremium is the premium attempted fills would have collected
+// (opportunity cost, never booked into any P&L line).
+type PnLAttribution struct {
+	PremiumIncomeAmount    float64 `json:"premium_income_amount"`
+	OptionCloseCostAmount  float64 `json:"option_close_cost_amount"`
+	StockRealizedPnLAmount float64 `json:"stock_realized_pnl_amount"`
+	FeesAmount             float64 `json:"fees_amount"`
+	RealizedPnLAmount      float64 `json:"realized_pnl_amount"`
+	UnfilledAttemptPremium float64 `json:"unfilled_attempt_premium_amount"`
+	UnfilledAttemptCount   int64   `json:"unfilled_attempt_count"`
+}
+
+func attributionOf(st *State, fees FeeSummary, unfilled UnfilledStats) PnLAttribution {
+	return PnLAttribution{
+		PremiumIncomeAmount:    st.PremiumIncome,
+		OptionCloseCostAmount:  st.OptionCloseCost,
+		StockRealizedPnLAmount: st.StockRealizedPnL,
+		FeesAmount:             fees.TotalAmount,
+		RealizedPnLAmount:      st.PremiumIncome - st.OptionCloseCost + st.StockRealizedPnL - fees.TotalAmount,
+		UnfilledAttemptPremium: st.UnfilledAttemptPremium,
+		UnfilledAttemptCount:   unfilled.UnfilledCount,
+	}
+}
+
 // DataQualitySummary is computed from the exact option snapshot batches
 // consumed by the run. MissingRequiredFieldCounts is always present and uses
 // zero counts when there are no rows, so zero coverage cannot masquerade as a
@@ -215,7 +243,7 @@ func summarizeDataQuality(bars []ingest.Bar, opts *OptionsData, signals []Signal
 
 // hkexHistoricalOptionCycleComplete proves at least one contract was observed
 // from DTE >=10 through DTE <=1 in complete source=hkex EOD batches. This is
-// the narrow gate needed by the Wheel's configured 5..10 DTE research window;
+// the narrow gate needed by the Wheel's DTE research window (5..MaxWheelDTE);
 // it does not claim event-level fills or broker assignment evidence.
 func hkexHistoricalOptionCycleComplete(batches []QuoteSnapshotBatch) bool {
 	type coverage struct {

@@ -37,7 +37,9 @@ func testInput(attempts, fills, unfilled int64) Input {
 		InitialCash: 10000, Start: start, End: end, BaselineReturnPct: 0.008,
 		SourceHash: "sha256-test-source",
 		Result: &backtest.Result{Equity: 10123, TotalReturn: 0.0123, MaxDrawdown: 0.05, Bars: 2, Unfilled: stats,
-			Fees: backtest.FeeSummary{Included: true, PerTrade: 3, TotalAmount: 9, StockAmount: 3, OptionAmount: 6, ChargedTradeCount: 3},
+			RealizedReturnAmount: 123, RealizedReturnPct: 0.0123,
+			Fees:        backtest.FeeSummary{Included: true, PerTrade: 3, TotalAmount: 9, StockAmount: 3, OptionAmount: 6, ChargedTradeCount: 3},
+			Attribution: backtest.PnLAttribution{PremiumIncomeAmount: 132, StockRealizedPnLAmount: 0, FeesAmount: 9, RealizedPnLAmount: 123, UnfilledAttemptPremium: 30, UnfilledAttemptCount: unfilled},
 			Terminal: backtest.TerminalSummary{ValuationStatus: backtest.ValuationComplete, SettlementStatus: backtest.SettlementOpenOptionLegs, CashAmount: 10000,
 				OptionMarketValueAmount: &optionValue, HoldingsMarketValueAmount: &holdings, FinalEquityAmount: &finalEquity, OpenOptionLegCount: 1,
 				RealizedPnLAmount: &realized, UnrealizedPnLAmount: &unrealized, EventBasis: "mechanical_backtest", PnLStatus: backtest.ValuationComplete},
@@ -53,7 +55,7 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.SchemaVersion != "1.2" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
+	if r.SchemaVersion != "1.3" || r.ReportKind != "single_run" || !strings.HasPrefix(r.ReportID, "bt-HK.00883-42-") {
 		t.Fatalf("identity = %+v", r)
 	}
 	if r.Identity.DataWindow.From != "2024-01-01T00:00:00Z" || r.Identity.DataWindow.To != "2024-01-02T00:00:00Z" {

@@ -295,6 +295,123 @@ func TestTypedFeeModelChargesOptionRollAndExerciseDelivery(t *testing.T) {
 	}
 }
 
+func TestAttributionLedgerClosesOverFullWheelLifecycle(t *testing.T) {
+	// Sell put → assigned at expiry → stock sold below basis. The attribution
+	// identity realized = premium − close cost + stock realized − fees must
+	// agree with the terminal residual on every leg of the wheel lifecycle.
+	chain := map[string]OptionContract{"P95": {Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2)}}
+	sc := &scriptStrategy{
+		actions: []Action{ActionSellPut, ActionHold, ActionHold, ActionSell},
+		sizes:   []float64{1, 0, 0, 100},
+		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 3}, nil, nil, nil},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"P95": {3, 3, 3, 3}})
+	opts.RunSeed = 0
+	res, err := RunOptionsWithFeeModel(context.Background(), mkBars(100, 90, 90, 90), 10000, HKFeeModel(21, 70, 100), sc, opts)
+	if err != nil {
+		t.Fatalf("lifecycle run error: %v", err)
+	}
+	attr := res.Attribution
+	want := PnLAttribution{
+		PremiumIncomeAmount:    300, // 1 contract × 3 premium × lot 100
+		OptionCloseCostAmount:  0,
+		StockRealizedPnLAmount: -500, // 100 shares sold at 90 vs basis 95
+		FeesAmount:             161,  // option 21 + exercise delivery 70 + stock sell 70
+		RealizedPnLAmount:      -361,
+	}
+	if attr.PremiumIncomeAmount != want.PremiumIncomeAmount || attr.StockRealizedPnLAmount != want.StockRealizedPnLAmount ||
+		attr.FeesAmount != want.FeesAmount || attr.RealizedPnLAmount != want.RealizedPnLAmount ||
+		math.Abs(attr.RealizedPnLAmount-(attr.PremiumIncomeAmount-attr.OptionCloseCostAmount+attr.StockRealizedPnLAmount-attr.FeesAmount)) > 1e-9 {
+		t.Fatalf("attribution = %+v; want %+v with identity", attr, want)
+	}
+	if res.Terminal.RealizedPnLAmount == nil || math.Abs(*res.Terminal.RealizedPnLAmount-attr.RealizedPnLAmount) > 1e-9 {
+		t.Fatalf("terminal realized %v disagrees with attribution %v", res.Terminal.RealizedPnLAmount, attr.RealizedPnLAmount)
+	}
+	if attr.UnfilledAttemptCount != 0 || attr.UnfilledAttemptPremium != 0 {
+		t.Fatalf("attribution unfilled = %d/%v; want zero on a fully-filled run", attr.UnfilledAttemptCount, attr.UnfilledAttemptPremium)
+	}
+}
+
+func TestUnfilledAttemptPremiumIsOpportunityCost(t *testing.T) {
+	// No quote row for the attempted contract ⇒ maximally illiquid ⇒ failProb
+	// clamped to 0.95. The unfilled attempt must book zero P&L but ledger the
+	// premium it would have collected.
+	chain := map[string]OptionContract{"P95": {Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2)}}
+	opts := &OptionsData{Chain: OptionChain{}, Bars: OptionBars{}, RunSeed: 0}
+	opts.Chain["P95"] = chain["P95"]
+	opts.Bars["P95"] = []ingest.Bar{{Ts: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), Open: 3, High: 3, Low: 3, Close: 3, Volume: 100}}
+	// Quote batch carries only an unrelated contract: fillQuote(P95) misses.
+	opts.QuoteBatches = []QuoteSnapshotBatch{{ObservedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), SnapshotKey: "fixture", Underlying: "U.US", UnderlyingPrice: 100,
+		Quotes: []wheel.OptionQuote{{Symbol: "P90", Code: "P90", Bid: 1, Ask: 1.001, Volume: 100_000, OpenInterest: 1_000_000}}}}
+	opts.Snapshots = opts.QuoteBatches
+	opts.QuoteSnapshots = opts.QuoteBatches
+	sc := &scriptStrategy{
+		actions: []Action{ActionSellPut, ActionHold},
+		sizes:   []float64{1, 0},
+		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 3}, nil},
+	}
+	res, err := RunOptionsWithFeeModel(context.Background(), mkBars(100, 100), 10000, HKFeeModel(21, 70, 100), sc, opts)
+	if err != nil {
+		t.Fatalf("unfilled run error: %v", err)
+	}
+	if res.Unfilled.UnfilledCount != 1 || len(res.Trades) != 1 || res.Trades[0].Filled {
+		t.Fatalf("trades = %+v; want one unfilled attempt", res.Trades)
+	}
+	attr := res.Attribution
+	if attr.UnfilledAttemptCount != 1 || attr.UnfilledAttemptPremium != 300 || attr.PremiumIncomeAmount != 0 || attr.RealizedPnLAmount != 0 {
+		t.Fatalf("attribution = %+v; want unfilled premium 300, zero booked P&L", attr)
+	}
+}
+
+func TestCoveredCallExerciseDeliversStockAtStrike(t *testing.T) {
+	// wheel 既有退出机制:持正股 → 卖 covered call → 到期 ITM 被行权,按行权价
+	// 卖出股票,相对持仓成本实现盈亏(行权价 100 vs 成本 90 → +1000)。
+	chain := map[string]OptionContract{"C100": {Code: "C100", Kind: OptionCall, Strike: 100, Expiry: expiryAt(2)}}
+	sc := &scriptStrategy{
+		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
+		sizes:   []float64{100, 1, 0},
+		pending: []*OptionPosition{nil, {Code: "C100", Kind: OptionCall, Strike: 100, Expiry: expiryAt(2), Lot: 100, AvgPremium: 3}, nil},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"C100": {3, 3, 3}})
+	opts.RunSeed = 0
+	res, err := RunOptionsWithFeeModel(context.Background(), mkBars(90, 90, 110), 10000, HKFeeModel(21, 70, 100), sc, opts)
+	if err != nil {
+		t.Fatalf("covered call run error: %v", err)
+	}
+	var got []string
+	for _, tr := range res.Trades {
+		got = append(got, tr.Action)
+	}
+	want := []string{"buy", "sell-call", "exercise-call"}
+	if len(got) != len(want) {
+		t.Fatalf("trades = %v; want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("trades = %v; want %v", got, want)
+		}
+	}
+	if res.Terminal.StockShares != 0 {
+		t.Fatalf("terminal stock shares = %v; want 0 (called away)", res.Terminal.StockShares)
+	}
+	attr := res.Attribution
+	wantAttr := PnLAttribution{
+		PremiumIncomeAmount:    300, // 1 张 × 3 权利金 × lot 100
+		OptionCloseCostAmount:  0,
+		StockRealizedPnLAmount: 1000, // 100 股 × (行权价 100 − 成本 90)
+		FeesAmount:             161,  // 买股 70 + 卖 call 21 + 行权交割 70
+		RealizedPnLAmount:      1139,
+	}
+	if attr.PremiumIncomeAmount != wantAttr.PremiumIncomeAmount || attr.StockRealizedPnLAmount != wantAttr.StockRealizedPnLAmount ||
+		attr.FeesAmount != wantAttr.FeesAmount || attr.RealizedPnLAmount != wantAttr.RealizedPnLAmount ||
+		math.Abs(attr.RealizedPnLAmount-(attr.PremiumIncomeAmount-attr.OptionCloseCostAmount+attr.StockRealizedPnLAmount-attr.FeesAmount)) > 1e-9 {
+		t.Fatalf("attribution = %+v; want %+v with identity", attr, wantAttr)
+	}
+	if res.RealizedReturnAmount != wantAttr.RealizedPnLAmount || math.Abs(res.RealizedReturnPct-0.1139) > 1e-9 {
+		t.Fatalf("realized return = %v / %v; want 1139 / 0.1139", res.RealizedReturnAmount, res.RealizedReturnPct)
+	}
+}
+
 func TestTypedFeeModelChargesStockByLots(t *testing.T) {
 	result, err := RunWithFeeModel(context.Background(), mkBars(100, 100), 100000, HKFeeModel(21, 70, 100), &scriptStrategy{
 		actions: []Action{ActionBuy, ActionSell},
@@ -363,16 +480,18 @@ func TestLongPutExercise(t *testing.T) {
 		sizes:   []float64{1, 0, 0},
 		pending: []*OptionPosition{{Code: "P95", Kind: OptionPut, Strike: 95, Expiry: expiryAt(2), Lot: 100, AvgPremium: 1.5}, nil, nil},
 	}
-	// long put: paid 150, exercise at 95 on close 90 -> sell 100 shares short.
+	// long put: paid 150, exercise at 95 on close 90 -> sell 100 shares. With
+	// no stock held the whole delivery is bought in at market (90) first, then
+	// delivered at strike; the position never goes short. Realized 100*(95-90).
 	res, err := RunOptions(context.Background(), mkBars(100, 95, 90), 20000, 0, sc, mkOptionsData(chain, map[string][]float64{"P95": {1.5, 1.5}}))
 	if err != nil {
 		t.Fatalf("RunOptions() error: %v", err)
 	}
 	if math.Abs(res.Equity-20350) > 1e-9 {
-		t.Fatalf("RunOptions() = %+v; want Equity 20350 (cash 29350 - 100*90)", res)
+		t.Fatalf("RunOptions() = %+v; want Equity 20350 (cash 20350, no naked short)", res)
 	}
-	if sc.st.Position != -100 || math.Abs(sc.st.Cash-29350) > 1e-9 {
-		t.Fatalf("post-settle state = %+v; want position -100, cash 29350", sc.st)
+	if sc.st.Position != 0 || math.Abs(sc.st.Cash-20350) > 1e-9 || math.Abs(sc.st.StockRealizedPnL-500) > 1e-9 {
+		t.Fatalf("post-settle state = %+v; want position 0, cash 20350, stock realized 500", sc.st)
 	}
 }
 
@@ -485,5 +604,115 @@ func TestOptionsDataFromQuotes(t *testing.T) {
 	}
 	if _, err := OptionsDataFromQuotes([]ingest.OptionQuoteRow{{Symbol: "X", OptionType: "straddle"}}); err == nil {
 		t.Fatal("OptionsDataFromQuotes(bad type) = nil error; want error")
+	}
+}
+
+func TestShortCallAssignedUndercoveredBuysInShortfall(t *testing.T) {
+	// 50 shares held, 1 short call (100 shares) assigned ITM at 120: the
+	// shortfall is bought in at market (close 120) before the strike delivery,
+	// never opening a naked short. Realized = covered 50*(105-100) + gap
+	// 50*(105-120) = -500; cash 10000-5000+200-6000+10500 = 9700.
+	chain := map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
+	sc := &scriptStrategy{
+		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
+		sizes:   []float64{50, 1, 0},
+		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"C105": {2, 2}})
+	opts.RunSeed = 1
+	res, err := RunOptions(context.Background(), mkBars(100, 110, 120), 10000, 0, sc, opts)
+	if err != nil {
+		t.Fatalf("RunOptions() error: %v", err)
+	}
+	if sc.st.Position != 0 || math.Abs(sc.st.Cash-9700) > 1e-9 || math.Abs(sc.st.StockRealizedPnL+500) > 1e-9 {
+		t.Fatalf("post-settle state = %+v; want position 0, cash 9700, stock realized -500", sc.st)
+	}
+	want := []string{"buy", "sell-call", "exercise-buyin", "exercise-call"}
+	if len(res.Trades) != len(want) {
+		t.Fatalf("trades = %+v; want %v", res.Trades, want)
+	}
+	for i, action := range want {
+		if res.Trades[i].Action != action {
+			t.Fatalf("trade[%d] action = %q; want %q", i, res.Trades[i].Action, action)
+		}
+	}
+	buyIn, deliver := res.Trades[2], res.Trades[3]
+	if math.Abs(buyIn.Size-50) > 1e-9 || math.Abs(buyIn.Price-120) > 1e-9 || math.Abs(deliver.Size+100) > 1e-9 || math.Abs(deliver.Price-105) > 1e-9 {
+		t.Fatalf("buy-in/delivery legs = %+v / %+v; want 50@120 then -100@105", buyIn, deliver)
+	}
+	if res.Terminal.AssignmentCount != 1 || sc.st.Position != 0 {
+		t.Fatalf("terminal assignment = %+v; want one assignment, no naked short", res.Terminal)
+	}
+}
+
+func TestShortCallAssignedBareBuysInWholeDelivery(t *testing.T) {
+	// No stock at all: the assigned call buys in the entire 100 shares at
+	// market before delivering at strike. Realized = 100*(105-120) = -1500.
+	chain := map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
+	sc := &scriptStrategy{
+		actions: []Action{ActionSellCall, ActionHold},
+		sizes:   []float64{1, 0},
+		pending: []*OptionPosition{{Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"C105": {2, 2}})
+	opts.RunSeed = 1
+	res, err := RunOptions(context.Background(), mkBars(100, 110, 120), 10000, 0, sc, opts)
+	if err != nil {
+		t.Fatalf("RunOptions() error: %v", err)
+	}
+	if sc.st.Position != 0 || math.Abs(sc.st.Cash-8700) > 1e-9 || math.Abs(sc.st.StockRealizedPnL+1500) > 1e-9 {
+		t.Fatalf("post-settle state = %+v; want position 0, cash 8700 (10000+200-12000+10500), stock realized -1500", sc.st)
+	}
+	if len(res.Trades) != 3 || res.Trades[1].Action != "exercise-buyin" || res.Trades[2].Action != "exercise-call" {
+		t.Fatalf("trades = %+v; want buy-in then exercise-call", res.Trades)
+	}
+}
+
+func TestLongPutExerciseUndercoveredBuysInShortfall(t *testing.T) {
+	// Long put exercised at 105 on close 90 while only 50 shares are held: the
+	// holder's right to sell 100 must deliver, so the 50-share shortfall is
+	// bought in at market first. Realized = 100*(105-95) = 1000, position 0,
+	// cash 10000-5000-200+10500-4500 = 10800.
+	chain := map[string]OptionContract{"P105": {Code: "P105", Kind: OptionPut, Strike: 105, Expiry: expiryAt(2)}}
+	sc := &scriptStrategy{
+		actions: []Action{ActionBuy, ActionBuyPut, ActionHold},
+		sizes:   []float64{50, 1, 0},
+		pending: []*OptionPosition{nil, {Code: "P105", Kind: OptionPut, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"P105": {2, 2}})
+	opts.RunSeed = 0
+	res, err := RunOptions(context.Background(), mkBars(100, 95, 90), 10000, 0, sc, opts)
+	if err != nil {
+		t.Fatalf("RunOptions() error: %v", err)
+	}
+	if sc.st.Position != 0 || math.Abs(sc.st.Cash-10800) > 1e-9 || math.Abs(sc.st.StockRealizedPnL-1000) > 1e-9 {
+		t.Fatalf("post-settle state = %+v; want position 0, cash 10800, stock realized 1000", sc.st)
+	}
+	if len(res.Trades) != 4 || res.Trades[2].Action != "exercise-buyin" || res.Trades[3].Action != "exercise-put" {
+		t.Fatalf("trades = %+v; want buy-in then exercise-put", res.Trades)
+	}
+}
+
+func TestShortCallAssignedUndercoveredChargesDeliveryFees(t *testing.T) {
+	// Typed fee model: buy-in is a stock trade (70/lot) and the strike delivery
+	// charges exercise delivery (70/lot) on top of the 21/contract option fee.
+	chain := map[string]OptionContract{"C105": {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2)}}
+	sc := &scriptStrategy{
+		actions: []Action{ActionBuy, ActionSellCall, ActionHold},
+		sizes:   []float64{50, 1, 0},
+		pending: []*OptionPosition{nil, {Code: "C105", Kind: OptionCall, Strike: 105, Expiry: expiryAt(2), Lot: 100, AvgPremium: 2}, nil},
+	}
+	opts := mkOptionsData(chain, map[string][]float64{"C105": {2, 2}})
+	opts.RunSeed = 1
+	res, err := RunOptionsWithFeeModel(context.Background(), mkBars(100, 110, 120), 10000, HKFeeModel(21, 70, 100), sc, opts)
+	if err != nil {
+		t.Fatalf("RunOptions() error: %v", err)
+	}
+	// cash 10000 -5000 -70(buy) -21 +200 -6000 -70(buy-in) +10500 -70(delivery) = 9469.
+	if sc.st.Position != 0 || math.Abs(sc.st.Cash-9469) > 1e-9 {
+		t.Fatalf("post-settle state = %+v; want position 0, cash 9469", sc.st)
+	}
+	if res.Fees.TotalAmount != 231 || res.Fees.OptionAmount != 21 || res.Fees.StockAmount != 210 || res.Fees.ExerciseDeliveryAmount != 140 || res.Fees.ExerciseDeliveryLots != 2 || res.Fees.ExerciseDeliveryTradeCount != 2 {
+		t.Fatalf("fees = %+v; want option 21 + stock 70 + two delivery lots 140", res.Fees)
 	}
 }

@@ -67,8 +67,8 @@ var templates = []Template{
 			{Name: "min_option_profit", Type: "number", Default: wheel.DefaultMinOptionProfit, Min: 0, Max: math.MaxFloat64, Help: "单笔候选期权预期收益总额最低门槛（权利金×张数）"},
 			{Name: "stock_switch_pct", Type: "number", Default: 0.0, Min: 0, Max: math.MaxFloat64, Help: "切换为正股建议的价格变动比例（小数）"},
 			{Name: "trade_gap", Type: "number", Default: 50.0, Min: 0, Max: math.MaxFloat64, Help: "库存缺口不超过此值时不交易"},
-			{Name: "min_dte", Type: "number", Default: 5.0, Min: 5, Max: 10, Help: "最小到期天数（DTE）"},
-			{Name: "max_dte", Type: "number", Default: 10.0, Min: 5, Max: 10, Help: "最大到期天数（DTE）"},
+			{Name: "min_dte", Type: "number", Default: 5.0, Min: wheel.MinWheelDTE, Max: wheel.MaxWheelDTE, Help: "最小到期天数（DTE）"},
+			{Name: "max_dte", Type: "number", Default: 10.0, Min: wheel.MinWheelDTE, Max: wheel.MaxWheelDTE, Help: "最大到期天数（DTE）"},
 			{Name: "min_option_quality", Type: "number", Default: 0.6, Min: 0, Max: 1, Help: "候选期权质量最低门槛"},
 			{Name: "max_quote_age_seconds", Type: "number", Default: 86400.0, Min: 1, Max: math.MaxFloat64, Help: "候选期权报价最大可接受年龄（秒），超出视为陈旧"},
 			{Name: "strategic_state", Type: "choice", Default: wheel.StateNormal, Allowed: []string{wheel.StateNormal, wheel.StateCaution, wheel.StatePauseBuy, wheel.StateExit}, Help: "战略状态"},
@@ -323,6 +323,11 @@ func ContractTemplates() []ContractTemplate {
 type WheelStrategy struct {
 	Config     wheel.Config
 	LastSignal wheel.Signal
+	// Live trade gates need the last effective fill price; the adapter tracks
+	// it from FillCount increments (settlement only counts option fills).
+	seenFillCount int64
+	prevBarClose  float64
+	lastFillPrice float64
 }
 
 // Wheel is retained as a concise exported type name for callers that want to
@@ -344,6 +349,14 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		s.LastSignal = wheel.Signal{Action: wheel.ActionHold, Direction: wheel.DirectionHold, Reason: "wheel: backtest state is missing", Reasons: []string{"wheel: backtest state is missing"}, CapabilityStatus: wheel.CapabilityDataBlocked, BlockedBy: []string{"backtest_state"}}
 		return backtest.ActionHold, 0, nil
 	}
+	// OnBar runs before this bar's settlement: a FillCount above what the
+	// previous bar saw means the previous bar's option attempt filled, so its
+	// close becomes the last effective fill price (live gate semantics).
+	if st.FillCount > s.seenFillCount {
+		s.seenFillCount = st.FillCount
+		s.lastFillPrice = s.prevBarClose
+	}
+	s.prevBarClose = bar.Close
 	batch := st.QuoteBatch
 	if batch == nil || batch.ObservedAt.IsZero() || batch.SnapshotKey == "" || batch.UnderlyingPrice <= 0 || len(batch.Quotes) == 0 {
 		const reason = "wheel: complete atomic quote snapshot unavailable (underlying_price, bid/ask, delta, implied_vol, volume, open_interest, quote_time); backtest is DATA_BLOCKED"
@@ -399,12 +412,13 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 		CurrentPrice: batch.UnderlyingPrice,
 		// Validate freshness and DTE against the bar being replayed, not the
 		// quote's own timestamp; otherwise a stale batch would validate itself.
-		AsOf:             bar.Ts,
-		StockShares:      st.Position,
-		Positions:        positions,
-		CashAvailable:    st.Cash,
-		HasCashAvailable: true,
-		Quotes:           quotes,
+		AsOf:                   bar.Ts,
+		StockShares:            st.Position,
+		Positions:              positions,
+		CashAvailable:          st.Cash,
+		HasCashAvailable:       true,
+		LastEffectiveFillPrice: s.lastFillPrice,
+		Quotes:                 quotes,
 	})
 	if err != nil {
 		s.LastSignal = signal
@@ -412,6 +426,26 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 	}
 	restoreExpiryRejectedCandidates(&signal, batch.Quotes, quotes, bar.Ts, s.Config)
 	s.LastSignal = signal
+	// 急涨急跌直接买卖正股(wheel 既有机制):stock_switch_pct 触发时 Evaluate
+	// 只给正股建议,人工处置在线下由人执行;回测将其机械化为对应方向的持仓调整。
+	if signal.StockSuggestion != nil {
+		shares := signal.StockSuggestion.Shares
+		if shares <= 0 || (signal.StockSuggestion.Side != "BUY" && signal.StockSuggestion.Side != "SELL") {
+			return backtest.ActionHold, 0, nil
+		}
+		if signal.StockSuggestion.Side == "SELL" {
+			// 资金安全:正股卖出永不超出实际持仓(不裸卖)。缺口里含期权 delta
+			// 折算的库存,超出实际股数的部分由人工处置线下对齐,回测不代做空。
+			if shares > st.Position {
+				shares = st.Position
+			}
+			if shares <= 0 {
+				return backtest.ActionHold, 0, nil
+			}
+			return backtest.ActionSell, shares, nil
+		}
+		return backtest.ActionBuy, shares, nil
+	}
 	if signal.Action != wheel.ActionAlert || signal.Quote == nil || signal.Quantity <= 0 {
 		return backtest.ActionHold, 0, nil
 	}

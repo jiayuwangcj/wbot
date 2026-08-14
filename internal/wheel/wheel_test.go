@@ -72,6 +72,8 @@ func TestConfigValidateTable(t *testing.T) {
 		{"zero not above full", func(c *Config) { c.ZeroPositionPrice = c.FullPositionPrice }, true},
 		{"fractional max inventory", func(c *Config) { c.MaxInventory = 1200.5 }, true},
 		{"DTE outside wheel window", func(c *Config) { c.MinDTE = 4 }, true},
+		{"DTE above widened max", func(c *Config) { c.MaxDTE = MaxWheelDTE + 1 }, true},
+		{"DTE at widened max", func(c *Config) { c.MaxDTE = MaxWheelDTE }, false},
 		{"quality outside bounds", func(c *Config) { c.MinOptionQuality = 1.1 }, true},
 		{"negative option profit", func(c *Config) { c.MinOptionProfit = -1 }, true},
 		{"negative move interval", func(c *Config) { c.MoveIntervalPct = -0.01 }, true},
