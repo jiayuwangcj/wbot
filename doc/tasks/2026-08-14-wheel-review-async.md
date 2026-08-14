@@ -47,3 +47,18 @@
 ## Next
 
 评审 → 合入 → 部署。部署时机:交易时段重启 30s,可与 #338 合入后一起部署。
+
+## 收口(2026-08-14 晚)
+
+- reviewer 评审通过(有条件):① rebase 到 main + 重新跑 CI ② P1-1 紧随排期
+- P1-1(556d85a)+ 异步审核(b87cd53)+ 测试适配(2dc3f13)已 rebase 到 main 之上,verify.sh 全绿
+- rebase 合并细节:main 的 funds/pending_orders/AsOf/gate 重试(735/736/741 修复)与 filterPositions/MarketOpen/异步快照 recorder 已并入;异步 worker 保留 gate 重试语义(失败=LLM_REVIEW_FAILED ×2,推送器跳过);P1-1 清基线接在重试后仍失败分支
+- signalFreshWindow 10m→15m;llmReviewRetryWindow 6m 保留(推送器游标保持);discord 过期用例改 -16m
+- PR #339 已开;CI 通过后合并 + 部署(serve 重启)
+
+## State
+
+- [x] 实施 + 单测
+- [x] verify.sh 全绿
+- [x] reviewer 评审(条件① rebase+CI 已满足,② P1-1 已折叠)
+- [ ] 合入 main + 部署(serve 重启)
