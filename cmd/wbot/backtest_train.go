@@ -84,25 +84,35 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		return 1
 	}
 
+	// Prepare each window before any worker starts. After this point the map is
+	// read-only and each Prepared value contains immutable market inputs, so
+	// concurrent evaluators never race on lazy map initialization or RunSeed.
 	prepared := make(map[backtestes.Window]*backtestexec.Prepared, 3)
-	prepareWindow := func(ctx context.Context, runOpts backtestexec.Options, window backtestes.Window) (*backtestexec.Prepared, error) {
-		if p, ok := prepared[window]; ok {
-			return p, nil
-		}
-		p, err := backtestexec.Prepare(ctx, database, runOpts)
+	for _, spec := range []struct {
+		name   string
+		window backtestes.Window
+		to     time.Time
+	}{
+		{name: "train", window: windows.Train, to: windows.Train.To.Add(-time.Nanosecond)},
+		{name: "validation", window: windows.Valid, to: windows.Valid.To.Add(-time.Nanosecond)},
+		{name: "sample-out", window: windows.Test, to: windows.Test.To},
+	} {
+		prepareOpts := opts
+		prepareOpts.From, prepareOpts.To = spec.window.From, spec.to
+		p, err := backtestexec.Prepare(context.Background(), database, prepareOpts)
 		if err != nil {
-			return nil, err
+			fmt.Fprintf(os.Stderr, "backtest: %s preparation: %v\n", spec.name, err)
+			return 1
 		}
-		prepared[window] = p
-		return p, nil
+		prepared[spec.window] = p
 	}
 	evaluator := func(ctx context.Context, params map[string]any, window backtestes.Window, seed int64) (backtestes.Metrics, error) {
 		runOpts := opts
 		runOpts.Params, runOpts.Seed, runOpts.From = params, seed, window.From
 		runOpts.To = window.To.Add(-time.Nanosecond) // half-open windows: no bar can cross a split
-		p, err := prepareWindow(ctx, runOpts, window)
-		if err != nil {
-			return backtestes.Metrics{}, err
+		p, ok := prepared[window]
+		if !ok {
+			return backtestes.Metrics{}, fmt.Errorf("missing prepared window %v", window)
 		}
 		out, err := p.RunPrepared(ctx, runOpts)
 		if err != nil {
@@ -131,25 +141,38 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		outcomes    []*backtestexec.Outcome
 		medianScore float64
 	}
-	tested := make([]testedCandidate, 0, candidateCount)
+	type sampleEvaluation struct {
+		outcome *backtestexec.Outcome
+		metrics backtestes.Metrics
+	}
+	sampleTasks := make([]func(context.Context) (sampleEvaluation, error), 0, candidateCount*testSeedCount)
 	for _, candidate := range search.Candidates[:candidateCount] {
-		tc := testedCandidate{candidate: candidate}
 		for _, testSeed := range testSeeds {
-			runOpts := opts
-			runOpts.Params, runOpts.Seed, runOpts.From = candidate.Params, testSeed, windows.Test.From
-			runOpts.To = windows.Test.To
-			p, err := prepareWindow(context.Background(), runOpts, windows.Test)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "backtest: sample-out preparation: %v\n", err)
-				return 1
-			}
-			out, err := p.RunPrepared(context.Background(), runOpts)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "backtest: sample-out evaluation: %v\n", err)
-				return 1
-			}
-			tc.outcomes = append(tc.outcomes, out)
-			tc.metrics = append(tc.metrics, trainMetrics(out.Result, opts.Cash))
+			candidateParams, seed, p := candidate.Params, testSeed, prepared[windows.Test]
+			sampleTasks = append(sampleTasks, func(ctx context.Context) (sampleEvaluation, error) {
+				runOpts := opts
+				runOpts.Params, runOpts.Seed, runOpts.From = candidateParams, seed, windows.Test.From
+				runOpts.To = windows.Test.To
+				out, err := p.RunPrepared(ctx, runOpts)
+				if err != nil {
+					return sampleEvaluation{}, err
+				}
+				return sampleEvaluation{outcome: out, metrics: trainMetrics(out.Result, opts.Cash)}, nil
+			})
+		}
+	}
+	sampleResults, err := backtestes.ParallelMap(context.Background(), sampleTasks)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: sample-out evaluation: %v\n", err)
+		return 1
+	}
+	tested := make([]testedCandidate, 0, candidateCount)
+	for candidateIndex, candidate := range search.Candidates[:candidateCount] {
+		tc := testedCandidate{candidate: candidate}
+		start := candidateIndex * testSeedCount
+		for _, sample := range sampleResults[start : start+testSeedCount] {
+			tc.outcomes = append(tc.outcomes, sample.outcome)
+			tc.metrics = append(tc.metrics, sample.metrics)
 		}
 		scores := make([]float64, len(tc.metrics))
 		for i, m := range tc.metrics {

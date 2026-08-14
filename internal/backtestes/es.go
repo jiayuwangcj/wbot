@@ -222,6 +222,10 @@ func EstimatedEvaluations(c Config) int {
 }
 
 func Search(parent context.Context, space Space, windows Windows, cfg Config, eval Evaluator) (Result, error) {
+	return search(parent, space, windows, cfg, eval, EvaluationWorkers)
+}
+
+func search(parent context.Context, space Space, windows Windows, cfg Config, eval Evaluator, workers int) (Result, error) {
 	if eval == nil {
 		return Result{}, errors.New("es: nil evaluator")
 	}
@@ -260,12 +264,16 @@ func Search(parent context.Context, space Space, windows Windows, cfg Config, ev
 		pop := make([]Candidate, 0, cfg.Population)
 		scores := make([]float64, 0, cfg.Population)
 		returns := make([]float64, 0, cfg.Population)
-		for _, gene := range genes {
-			params := space.decode(names, gene)
-			m, err := eval(ctx, params, windows.Train, trainSeed)
-			if err != nil {
-				return result, fmt.Errorf("es: train evaluation: %w", err)
-			}
+		requests := make([]EvaluationRequest, cfg.Population)
+		for i, gene := range genes {
+			requests[i] = EvaluationRequest{Params: space.decode(names, gene), Window: windows.Train, Seed: trainSeed}
+		}
+		metrics, err := evaluateWithWorkers(ctx, eval, requests, workers)
+		if err != nil {
+			return result, fmt.Errorf("es: train evaluation: %w", err)
+		}
+		for i, m := range metrics {
+			params := requests[i].Params
 			c := Candidate{Params: params, Train: m, Score: m.Score(cfg.Weights)}
 			pop, all, scores = append(pop, c), append(all, c), append(scores, c.Score)
 			returns = append(returns, m.NetReturn)
@@ -273,10 +281,11 @@ func Search(parent context.Context, space Space, windows Windows, cfg Config, ev
 		}
 		sort.SliceStable(pop, func(i, j int) bool { return pop[i].Score > pop[j].Score })
 		champ := pop[0]
-		vm, err := eval(ctx, champ.Params, windows.Valid, validSeed)
+		validMetrics, err := evaluateWithWorkers(ctx, eval, []EvaluationRequest{{Params: champ.Params, Window: windows.Valid, Seed: validSeed}}, workers)
 		if err != nil {
 			return result, fmt.Errorf("es: validation evaluation: %w", err)
 		}
+		vm := validMetrics[0]
 		result.EvaluationCount++
 		champ.Valid, champ.ValidScore = vm, vm.Score(cfg.Weights)
 		all[len(all)-cfg.Population].Valid, all[len(all)-cfg.Population].ValidScore = vm, champ.ValidScore

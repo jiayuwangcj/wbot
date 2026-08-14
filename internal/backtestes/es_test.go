@@ -1,6 +1,7 @@
 package backtestes
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -103,6 +104,39 @@ func TestSearchDeterminismBestAtLeastPopulationMeanAndDistinctSeeds(t *testing.T
 	}
 	if a.TrainSeed == a.ValidSeed || a.TrainSeed == a.TestSeed || a.ValidSeed == a.TestSeed {
 		t.Fatalf("derived seeds are not distinct: %+v", a)
+	}
+}
+
+func TestSearchParallelMatchesSerialBitForBit(t *testing.T) {
+	s, err := ParseSpace(`{"move_interval_pct":[0,1],"trade_gap":[0,20],"min_dte":[5,9],"max_dte":[5,10]}`, baseParams())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, _ := SplitWindows(time.Unix(0, 0).UTC(), time.Unix(1000, 0).UTC())
+	cfg := DefaultConfig(91)
+	cfg.Population, cfg.MaxGenerations, cfg.Budget, cfg.Patience = 16, 5, 85, 3
+	eval := func(_ context.Context, p map[string]any, _ Window, seed int64) (Metrics, error) {
+		x := number(p["move_interval_pct"])
+		return Metrics{NetReturn: 1 - (x-.37)*(x-.37), MaxDrawdown: number(p["trade_gap"]) / 1000, TailLoss: float64(seed%7) / 1000, CostPct: number(p["min_dte"]) / 1000}, nil
+	}
+	parallel, err := Search(context.Background(), s, w, cfg, eval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := search(context.Background(), s, w, cfg, eval, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parallelJSON, err := json.Marshal(parallel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serialJSON, err := json.Marshal(serial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(parallelJSON, serialJSON) {
+		t.Fatalf("parallel and serial ES results differ:\nparallel=%s\nserial=%s", parallelJSON, serialJSON)
 	}
 }
 
