@@ -91,8 +91,10 @@ type Runner struct {
 	closeOnce      sync.Once
 
 	// lastAlert is the per-symbol suppression baseline for repeat ALERTs of
-	// the same contract (see suppressRepeatAlert). Owned by the pass loop;
-	// the review workers never touch it.
+	// the same contract (see suppressRepeatAlert/commitAlertBaseline). The
+	// pass loop writes it on successful ALERTs; review workers clear it when
+	// an audit fails on the infrastructure side (clearSuppression), so all
+	// access is serialized by reviewMu.
 	lastAlert map[string]lastAlertInfo
 }
 

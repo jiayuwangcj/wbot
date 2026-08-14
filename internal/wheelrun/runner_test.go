@@ -343,7 +343,9 @@ func testRunner(t *testing.T, deps Dependencies) *Runner {
 // and their persisted actions must poll instead of reading synchronously.
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// 8s covers the gate retry path (3s sleep + audit) in
+	// TestReviewFailureClearsSuppression, which waits across both attempts.
+	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
@@ -813,7 +815,7 @@ func TestRepeatAlertSuppression(t *testing.T) {
 		t.Fatalf("signals after pass 3 = %+v; want ALERT (different contract)", store.signals)
 	}
 	// window expired: the original contract alerts again (and is re-audited).
-	r.lastAlert[symbol] = lastAlertInfo{at: time.Now().Add(-repeatAlertWindow - time.Minute), contract: contract.Symbol}
+	r.commitAlertBaseline(symbol, wheel.Signal{Quote: &wheel.OptionQuote{Symbol: contract.Symbol}}, time.Now().Add(-repeatAlertWindow-time.Minute))
 	r.deps.Chain = fakeChain{contracts: []futu.OptionContract{contract}}
 	r.deps.Quoter = quoter
 	if err := run(); err != nil {
@@ -822,6 +824,58 @@ func TestRepeatAlertSuppression(t *testing.T) {
 	if store.signalCount() != 4 || store.signals[3].Action != "ALERT" {
 		t.Fatalf("signals after pass 4 = %+v; want ALERT (window expired)", store.signals)
 	}
+}
+
+// TestReviewFailureClearsSuppression: an audit that fails on the
+// infrastructure side (reviewer error) must not leave the repeat-candidate
+// baseline in place — the next pass re-alerts the same contract and
+// re-audits instead of being muted for repeatAlertWindow (reviewer P1-1,
+// 2026-08-14: async reviews turned the pre-async implicit per-pass retry
+// into a 30-minute lock-out).
+func TestReviewFailureClearsSuppression(t *testing.T) {
+	const symbol = "HK.00700"
+	now := time.Now()
+	contract := callContract("HK.TCH260901C335000", symbol, 335, now.AddDate(0, 0, 7))
+	quoter := &fakeQuoter{
+		prices: map[string]float64{symbol: 600},
+		opts:   map[string]futu.OptionQuoteEx{contract.Symbol: fullCallQuote(contract.Symbol, 335, contract.Expiry, now)},
+	}
+	store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: configRecord(symbol)}}
+	reviewer := &fakeReviewer{errors: map[string]error{symbol: errors.New("llm unreachable")}}
+	r := testRunner(t, Dependencies{
+		Quoter:      quoter,
+		Positions:   fakePositions{{Symbol: symbol, Code: "00700", Qty: 500, Side: SideLong}},
+		Chain:       fakeChain{contracts: []futu.OptionContract{contract}},
+		Store:       store,
+		Watchlist:   &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}},
+		LLMReviewer: reviewer,
+		LLMModel:    "test-model",
+	})
+	defer r.Close()
+	run := func() error { return r.RunOnce(context.Background()) }
+
+	if err := run(); err != nil {
+		t.Fatalf("pass 1: %v", err)
+	}
+	if store.signalCount() != 1 || store.signals[0].Action != "ALERT" {
+		t.Fatalf("signals after pass 1 = %+v; want one ALERT", store.signals)
+	}
+	// the failed audit lands as LLM_REVIEW_FAILED actions: first attempt +
+	// one retry (2026-08-13 gate retry). Wait for both before pass 2 — the
+	// baseline is cleared only after the retry settles.
+	waitFor(t, func() bool { return reviewer.requestCount() == 2 }, "review retry never ran")
+	waitFor(t, func() bool { return store.actionCount() == 2 }, "failure actions never persisted")
+
+	if err := run(); err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	// same contract, inside the window: not suppressed — the failed audit
+	// cleared the baseline, so the candidate re-alerts and re-audits.
+	if store.signalCount() != 2 || store.signals[1].Action != "ALERT" {
+		t.Fatalf("signals after pass 2 = %+v; want a second ALERT (baseline cleared by failure)", store.signals)
+	}
+	waitFor(t, func() bool { return reviewer.requestCount() == 4 }, "pass 2 audit was not retried")
+	waitFor(t, func() bool { return store.actionCount() == 4 }, "second failure actions never persisted")
 }
 
 // TestRunOnceNoPricePersistsDataBlocked: a symbol without a current price

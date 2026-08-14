@@ -104,6 +104,10 @@ inventory_gap       = target_inventory - effective_inventory
 
 完整快照产生 `ALERT` 后，runner 使用 `$LLM_BASE_URL`、`$LLM_API_KEY`、`$LLM_MODEL` 调用 OpenAI-compatible 审核器；审核结果以 `LLM_REVIEW` action 保存，只有 `APPROVE` 才进入 Telegram 推送，`REJECT` 或调用失败保持 fail-closed。缺少任一 env 时 serve 启动告警，ALERT 不会静默地伪装成已推送。
 
+**异步审核（2026-08-14）**：审核在 runner 的 pass 循环外执行（有界队列 + 2 个 worker），单次审核耗时分钟级也不再阻塞其他标的的评估。同一标的已有审核在途时，后续 ALERT 不再重复入队（去重），推送闸门等待的审核已经在跑。
+
+**重复候选抑制（2026-08-14）**：同一标的、同一合约在 `repeatAlertWindow`（30 分钟）内重复 ALERT 会降为 `HOLD`，不落 ALERT、不触发审核，窗口不滚动，期满后候选重新 ALERT 并重新审核。抑制基线只在 ALERT 落库成功后写入；**审核未产生业务结论时（LLM 调用失败、异常返回值、worker 异常、队列满丢弃）清除该标的基线**，下一 pass 重新审核——异步化前审核失败后下一 pass 的重复 ALERT 是隐式重试，现在由基线清除显式恢复，避免该标的通知静默最长 30 分钟。
+
 `serve -telegram-run` 读取配置的 token/chat ID，向允许的 chat 推送带 `yes`、`no`、`今日不再提醒` 的按钮。`yes` 由人工触发且只允许 sim 环境，失败或 real 环境写 `REJECTED`；`no` 写 `NO`；dismiss 写入当日静默表并抑制同一 symbol 当日后续提醒。Telegram loop 与 Wheel runner 独立启停。
 
 ## 6. 回测与验收
