@@ -147,6 +147,38 @@ func TestRunDataQualityZeroAndMissingSnapshots(t *testing.T) {
 	}
 }
 
+func TestRunDataQualityRecordsUnderlyingAndOptionSources(t *testing.T) {
+	bars := mkBars(100, 101, 102)
+	bars[0].Source, bars[0].Adjusted = "futu", "fwd"
+	for i := 1; i < len(bars); i++ {
+		bars[i].Source, bars[i].Adjusted = "tencent", "qfq"
+	}
+	blocked := signalStubStrategy{signal: wheel.Signal{
+		Action: wheel.ActionHold, Direction: wheel.DirectionHold,
+		CapabilityStatus: wheel.CapabilityDataBlocked, BlockedBy: []string{"historical_option_snapshots"},
+	}}
+	opts := &OptionsData{QuoteBatches: []QuoteSnapshotBatch{{Quotes: []wheel.OptionQuote{
+		{Source: "futu"}, {Source: "futu"},
+	}}}}
+	res, err := RunOptions(context.Background(), bars, 10000, 0, blocked, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := res.DataQuality
+	wantBars := []BarProvenance{{Source: "futu", Adjusted: "fwd", BarCount: 1}, {Source: "tencent", Adjusted: "qfq", BarCount: 2}}
+	if len(got.UnderlyingBars) != len(wantBars) {
+		t.Fatalf("underlying bars = %+v; want %+v", got.UnderlyingBars, wantBars)
+	}
+	for i := range wantBars {
+		if got.UnderlyingBars[i] != wantBars[i] {
+			t.Fatalf("underlying bars = %+v; want %+v", got.UnderlyingBars, wantBars)
+		}
+	}
+	if len(got.OptionSnapshotSources) != 1 || got.OptionSnapshotSources[0] != "futu" {
+		t.Fatalf("option snapshot sources = %v; want [futu]", got.OptionSnapshotSources)
+	}
+}
+
 func TestRunMaxDrawdown(t *testing.T) {
 	// V-shaped closes 100/50/100/90: equity 10000->5000->10000->9000, drawdown 0.5.
 	bars := mkBars(100, 50, 100, 90)

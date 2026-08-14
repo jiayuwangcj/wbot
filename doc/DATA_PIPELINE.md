@@ -9,6 +9,7 @@
 | `wbot ingest mock` | 插入一条 mock 拉取 + 3 条示例 bars（demo 源） |
 | `wbot ingest file -file <path>` | 从 JSON 文件拉取 bars（每元素 `{"ts":RFC3339,"open","high","low","close","volume"}`） |
 | `wbot ingest url -url <url>` | 从 HTTP(S) URL 拉取同格式 JSON bars |
+| `wbot ingest tencent -symbol HK.00700 -count 1000` | 腾讯免费 qfq 日 K 回填；写 `adjust=fwd,source=tencent`，请求间隔 ≥1s，瞬时失败指数退避；美股当前仅单日并显式提示 |
 | `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust fwd\|none` 默认 fwd） |
 | `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §10、[[DATA_STANDARD]]） |
 | `wbot ingest account` | 经 OpenD protobuf（只读 funds 查询）把账户资金快照写入 `account_snapshots`（资产曲线数据层；见下文 §账户资产快照、[[FUTU]] §9） |
@@ -16,13 +17,14 @@
 | `wbot ingest freshness` | 数据新鲜度检查：各 symbol×timeframe 的 max_ts 年龄与三态状态 + 期权区块（underlying×source）；**任一 stale → exit 1**（可接 cron 门禁） |
 | `wbot datacheck` | 检查 watchlist 每个标的的完整 bars 矩阵与最新期权链；缺失/过期 → exit 1，`-json` 输出完整报告，`-repair` 经富途网关补拉后复查 |
 
-通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-every`（间隔重复）、`-from`/`-to`（RFC3339 时间范围，零值=不限）。
+通用 flags：`-dsn`（默认 `$WBOT_PG_DSN`）、`-source`（来源标签，写 `ingestion_runs.source`）、`-symbol`、`-timeframe`、`-from`/`-to`（RFC3339 时间范围，零值=不限）；常驻型命令另带 `-every`。腾讯回填是一次性命令，由 cron/systemd 控制每日积累。
 
 ## 行为保证
 
 - **校验**：落库前 `ValidateBars` 拒绝非法 OHLC/时间序数据（见 `internal/ingest`）。
 - **数据标准**：bars/option_quotes 带 `adjust`（none/fwd/back）与 `source`（平台）列，PK 含二者，不同复权/平台数据共存可对比（[[DATA_STANDARD]]）。
 - **可重复**：bars 以 `(symbol, timeframe, ts, adjust, source)` 唯一，重复写入 `ON CONFLICT DO NOTHING`；`ingest futu-option` 二次运行命中 DB 缓存直接跳过拉取。
+- **回测择源**：相同 `symbol/timeframe/adjust/ts` 的多平台行只消费一条，固定优先 `futu` → `tencent` → 其他 source 字典序；腾讯用于补齐 Futu 缺失日期，不制造重复回测 bar。
 - **失败容忍**：`-every` 模式下单轮失败打日志继续，不终止整个调度；单次模式（无 `-every`）失败即退出非零。
 - **事务**：一次拉取 = 一条 `ingestion_runs`（running → succeeded/failed）+ 全部 bars，同一事务。
 
@@ -41,7 +43,7 @@ export WBOT_PG_DSN='postgres://postgres:postgres@localhost:5432/wbot_test?sslmod
 
 - **CLI**：`wbot ingest mock|file|url` 各支持 `-provider <name>`，默认按子命令推断（mock→mock、file→file、url→url）；未注册的 provider 名 → 报错退出 2。
 - **配置承载**：`Config` 为 `map[string]string`，只透传非敏感选项（如 `path`、`url`）；**凭证/token 不放入 Config、不入 `ingestion_runs`**——provider 自行从环境变量（或 `~/.wbot/config.yaml` 渲染出的 env）读取（[[PRIVACY]]）。
-- **接新数据源**：实现 `Source` 并 `Register` 一个 provider 即可被 CLI 选用；真实行情源接入为后续 Issue（见 `doc/issues/draft-2026-07-31-ingest-provider-abstraction.md`）。
+- **接新数据源**：通用 file/url 型 provider 实现 `Source` 并注册；需要独立协议/限频的真实源可像 `TencentSource` / `FutuSource` 一样使用专用子命令，仍复用 `RunIngestion` 的校验、事务和幂等落库。
 
 ## 调度方式选择
 

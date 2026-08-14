@@ -11,12 +11,14 @@ import (
 
 // Bar is one OHLCV row aligned with the bars table.
 type Bar struct {
-	Ts     time.Time
-	Open   float64
-	High   float64
-	Low    float64
-	Close  float64
-	Volume int64
+	Ts       time.Time
+	Open     float64
+	High     float64
+	Low      float64
+	Close    float64
+	Volume   int64
+	Source   string `json:"source,omitempty"`
+	Adjusted string `json:"adjusted,omitempty"`
 }
 
 // Source yields OHLCV bars in the closed interval [from, to]; zero from/to are unbounded.

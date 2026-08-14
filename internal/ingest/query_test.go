@@ -39,3 +39,20 @@ func TestQueryBars_validation(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderAdjustment(t *testing.T) {
+	tests := []struct {
+		source, adjust, want string
+	}{
+		{"tencent", "fwd", "qfq"},
+		{"TENCENT", "back", "hfq"},
+		{"tencent", "none", "none"},
+		{"futu", "fwd", "fwd"},
+		{"file", "none", "none"},
+	}
+	for _, tt := range tests {
+		if got := providerAdjustment(tt.source, tt.adjust); got != tt.want {
+			t.Errorf("providerAdjustment(%q, %q) = %q; want %q", tt.source, tt.adjust, got, tt.want)
+		}
+	}
+}

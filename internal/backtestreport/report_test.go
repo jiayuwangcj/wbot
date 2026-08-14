@@ -40,7 +40,9 @@ func testInput(attempts, fills, unfilled int64) Input {
 			Terminal: backtest.TerminalSummary{ValuationStatus: backtest.ValuationComplete, SettlementStatus: backtest.SettlementOpenOptionLegs, CashAmount: 10000,
 				OptionMarketValueAmount: &optionValue, HoldingsMarketValueAmount: &holdings, FinalEquityAmount: &finalEquity, OpenOptionLegCount: 1,
 				RealizedPnLAmount: &realized, UnrealizedPnLAmount: &unrealized, EventBasis: "mechanical_backtest", PnLStatus: backtest.ValuationComplete},
-			DataQuality: backtest.DataQualitySummary{Status: "DATA_BLOCKED", OptionDataRequired: true, TotalBarCount: 2, BlockedBarCount: 2,
+			DataQuality: backtest.DataQualitySummary{Status: "DATA_BLOCKED", OptionDataRequired: true,
+				UnderlyingBars: []backtest.BarProvenance{{Source: "tencent", Adjusted: "qfq", BarCount: 2}}, OptionSnapshotSources: []string{"futu"},
+				TotalBarCount: 2, BlockedBarCount: 2,
 				ValidCoverageRatio: &coverage, MissingRequiredFieldCounts: map[string]int64{"bid": 0}, HistoricalOptionCycleComplete: &cycleComplete, BlockedBy: []string{"option_quote_snapshots"}}},
 	}
 }
@@ -93,6 +95,12 @@ func TestBuildSingleRunStructureAndNullRatio(t *testing.T) {
 	quality := raw["data_quality"].(map[string]any)
 	if quality["status"] != "DATA_BLOCKED" || quality["blocked_bar_count"] != 2.0 || quality["valid_coverage_ratio"] != 0.0 || quality["historical_option_cycle_complete"] != false {
 		t.Fatalf("data_quality = %#v; want explicit blocked coverage", quality)
+	}
+	underlying := quality["underlying_bars"].([]any)
+	barSource := underlying[0].(map[string]any)
+	optionSources := quality["option_snapshot_sources"].([]any)
+	if barSource["source"] != "tencent" || barSource["adjusted"] != "qfq" || barSource["bar_count"] != 2.0 || len(optionSources) != 1 || optionSources[0] != "futu" {
+		t.Fatalf("data provenance = %#v / %#v", underlying, optionSources)
 	}
 }
 
@@ -154,7 +162,7 @@ func TestBuildAttemptRatioAndDeterministicRendering(t *testing.T) {
 	if !bytes.Equal(ha, hb) {
 		t.Fatal("same report rendered different HTML bytes")
 	}
-	for _, want := range []string{"og:title", "og:description", "theme-color", "窗口末估值变动", "数据有效覆盖率", "窗口末未平仓腿", "已实现 P&amp;L", "最大回撤", "未成交率", "停止原因", "总费用", "期权费用", "40.00%", "overflow-x:hidden", "@media(max-width:430px)"} {
+	for _, want := range []string{"og:title", "og:description", "theme-color", "窗口末估值变动", "数据有效覆盖率", "窗口末未平仓腿", "已实现 P&amp;L", "最大回撤", "未成交率", "停止原因", "总费用", "期权费用", "tencent/qfq", "40.00%", "overflow-x:hidden", "@media(max-width:430px)"} {
 		if !bytes.Contains(ha, []byte(want)) {
 			t.Fatalf("HTML missing %q", want)
 		}

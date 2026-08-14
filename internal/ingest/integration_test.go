@@ -361,6 +361,56 @@ func TestQueryBarsIntegration(t *testing.T) {
 	}
 }
 
+func TestQueryBarsSelectsOneProviderAndCarriesProvenanceIntegration(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if err := db.MigrateUp(database); err != nil {
+		t.Fatal(err)
+	}
+	const symbol = "QUERY-SOURCE.US"
+	if _, err := database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = database.Exec(`DELETE FROM bars WHERE symbol = $1`, symbol) }()
+	ts1 := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	ts2 := ts1.Add(24 * time.Hour)
+	for _, row := range []struct {
+		ts     time.Time
+		close  float64
+		source string
+	}{
+		{ts1, 100, "tencent"},
+		{ts1, 101, "futu"},
+		{ts2, 102, "tencent"},
+	} {
+		if _, err := database.Exec(`
+INSERT INTO bars (symbol, timeframe, ts, open, high, low, close, volume, adjust, source)
+VALUES ($1, '1d', $2, $3, $3, $3, $3, 100, 'fwd', $4)`, symbol, row.ts, row.close, row.source); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bars, err := QueryBars(context.Background(), database, symbol, "1d", "fwd", time.Time{}, time.Time{}, 10, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bars) != 2 {
+		t.Fatalf("bars = %+v; want one row per timestamp", bars)
+	}
+	if bars[0].Source != "futu" || bars[0].Adjusted != "fwd" || bars[0].Close != 101 {
+		t.Fatalf("overlap selection = %+v; want preferred futu row", bars[0])
+	}
+	if bars[1].Source != "tencent" || bars[1].Adjusted != "qfq" || bars[1].Close != 102 {
+		t.Fatalf("backfill provenance = %+v; want tencent/qfq", bars[1])
+	}
+}
+
 // TestQueryFreshnessIntegration: QueryFreshness reports max_ts ages per
 // symbol×timeframe, and JudgeFreshness with the per-timeframe default
 // threshold classifies fresh (2h old, 1d) and stale (100h old, 1d).

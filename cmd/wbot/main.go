@@ -1206,6 +1206,8 @@ func runIngest(prog string, argv []string) int {
 		return runIngestFile(prog, argv[1:])
 	case "url":
 		return runIngestURL(prog, argv[1:])
+	case "tencent":
+		return runIngestTencent(prog, argv[1:])
 	case "futu":
 		return runIngestFutu(prog, argv[1:])
 	case "futu-option":
@@ -1898,6 +1900,7 @@ func usageIngest(prog string) {
 	fmt.Fprintf(os.Stderr, "Subcommands:\n  mock   Insert a mock ingestion run and sample OHLCV bars (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  file   Load bars from a JSON file (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  url    Load bars from a JSON URL (-h for flags)\n")
+	fmt.Fprintf(os.Stderr, "  tencent  Backfill free qfq daily K-lines into bars (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu   Fetch K-lines from the futu-opend-rs gateway (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  futu-option  Fetch option-chain K-lines + underlying bars, cache-first (-h for flags)\n")
 	fmt.Fprintf(os.Stderr, "  account  Snapshot account funds into account_snapshots (资产曲线数据层) (-h for flags)\n")

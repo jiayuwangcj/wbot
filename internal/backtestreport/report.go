@@ -378,6 +378,12 @@ func normalizeDataQuality(strategyName string, q backtest.DataQualitySummary, si
 	if q.MissingRequiredFieldCounts == nil {
 		q.MissingRequiredFieldCounts = map[string]int64{}
 	}
+	if q.UnderlyingBars == nil {
+		q.UnderlyingBars = []backtest.BarProvenance{}
+	}
+	if q.OptionSnapshotSources == nil {
+		q.OptionSnapshotSources = []string{}
+	}
 	if q.TotalBarCount == 0 && len(signals) > 0 {
 		q.TotalBarCount = len(signals)
 		for _, signal := range signals {

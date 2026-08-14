@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/wheel"
 )
 
@@ -51,6 +52,8 @@ type TerminalSummary struct {
 type DataQualitySummary struct {
 	Status                        string           `json:"status"`
 	OptionDataRequired            bool             `json:"option_data_required"`
+	UnderlyingBars                []BarProvenance  `json:"underlying_bars"`
+	OptionSnapshotSources         []string         `json:"option_snapshot_sources"`
 	TotalBarCount                 int              `json:"total_bar_count"`
 	ReadyBarCount                 int              `json:"ready_bar_count"`
 	BlockedBarCount               int              `json:"blocked_bar_count"`
@@ -60,6 +63,15 @@ type DataQualitySummary struct {
 	MissingRequiredFieldCounts    map[string]int64 `json:"missing_required_field_counts"`
 	HistoricalOptionCycleComplete *bool            `json:"historical_option_cycle_complete"`
 	BlockedBy                     []string         `json:"blocked_by"`
+}
+
+// BarProvenance records the actual underlying rows consumed by a run. Adjusted
+// uses provider vocabulary (Tencent qfq) while bars.adjust remains the
+// repository's canonical fwd value.
+type BarProvenance struct {
+	Source   string `json:"source"`
+	Adjusted string `json:"adjusted"`
+	BarCount int    `json:"bar_count"`
 }
 
 var requiredSnapshotFields = []string{
@@ -129,7 +141,7 @@ func terminalSummary(st *State, initialCash, finalPrice float64) TerminalSummary
 	return t
 }
 
-func summarizeDataQuality(opts *OptionsData, signals []SignalTrace) DataQualitySummary {
+func summarizeDataQuality(bars []ingest.Bar, opts *OptionsData, signals []SignalTrace) DataQualitySummary {
 	counts := make(map[string]int64, len(requiredSnapshotFields))
 	for _, field := range requiredSnapshotFields {
 		counts[field] = 0
@@ -137,6 +149,8 @@ func summarizeDataQuality(opts *OptionsData, signals []SignalTrace) DataQualityS
 	q := DataQualitySummary{
 		Status:                     "NOT_APPLICABLE",
 		OptionDataRequired:         opts != nil,
+		UnderlyingBars:             summarizeBarProvenance(bars),
+		OptionSnapshotSources:      []string{},
 		TotalBarCount:              len(signals),
 		MissingRequiredFieldCounts: counts,
 	}
@@ -166,9 +180,13 @@ func summarizeDataQuality(opts *OptionsData, signals []SignalTrace) DataQualityS
 	for _, batch := range batches {
 		q.SnapshotContractRowCount += len(batch.Quotes)
 		for _, quote := range batch.Quotes {
+			if source := strings.TrimSpace(quote.Source); source != "" {
+				q.OptionSnapshotSources = append(q.OptionSnapshotSources, source)
+			}
 			countMissingSnapshotFields(counts, batch, quote)
 		}
 	}
+	q.OptionSnapshotSources = sortedUnique(q.OptionSnapshotSources)
 	for _, signal := range signals {
 		for _, reason := range signal.BlockedBy {
 			if reason != "" {
@@ -183,6 +201,48 @@ func summarizeDataQuality(opts *OptionsData, signals []SignalTrace) DataQualityS
 	}
 	q.BlockedBy = sortedKeys(blocked)
 	return q
+}
+
+func summarizeBarProvenance(bars []ingest.Bar) []BarProvenance {
+	type key struct{ source, adjusted string }
+	counts := make(map[key]int)
+	for _, bar := range bars {
+		source := strings.TrimSpace(bar.Source)
+		if source == "" {
+			continue
+		}
+		adjusted := strings.TrimSpace(bar.Adjusted)
+		if adjusted == "" {
+			adjusted = "unspecified"
+		}
+		counts[key{source: source, adjusted: adjusted}]++
+	}
+	out := make([]BarProvenance, 0, len(counts))
+	for k, count := range counts {
+		out = append(out, BarProvenance{Source: k.source, Adjusted: k.adjusted, BarCount: count})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		return out[i].Adjusted < out[j].Adjusted
+	})
+	return out
+}
+
+func sortedUnique(values []string) []string {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func optionQuoteBatches(opts *OptionsData) []QuoteSnapshotBatch {
