@@ -55,6 +55,7 @@
 - rebase 合并细节:main 的 funds/pending_orders/AsOf/gate 重试(735/736/741 修复)与 filterPositions/MarketOpen/异步快照 recorder 已并入;异步 worker 保留 gate 重试语义(失败=LLM_REVIEW_FAILED ×2,推送器跳过);P1-1 清基线接在重试后仍失败分支
 - signalFreshWindow 10m→15m;llmReviewRetryWindow 6m 保留(推送器游标保持);discord 过期用例改 -16m
 - PR #339 已开;CI 通过后合并 + 部署(serve 重启)
+- **⚠ 重大发现(2026-08-14 晚)**:远端 main 停在 8-11 #337(7c14386),8-12 以来 #39–#82 共 177 commits/300 文件(+71473/-1399)只在本地 main(a9d0d7e),从未推送;main strict 保护不能直推 → PR #339 实际 100 commits/300 文件(含全部未推送内容)。合并 #339 = 远端 main 一次同步到本地基线 + #83 修复;随后 #338 残留 11 commits rebase 到新 main 再合。已停旧 CI 监视(无效 run),新 run 31809326082 监控中
 
 ## State
 
