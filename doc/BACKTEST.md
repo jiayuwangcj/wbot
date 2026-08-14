@@ -47,7 +47,7 @@ wbot backtest \
 | `-limit` | 10000 | DB 输入最大 bars 数 |
 | `-cash` | 10000 | 初始现金（>0） |
 | `-strategy` | `hold` | CLI 实际默认是内部 `hold` 基准；显式 `-strategy wheel` 才运行 Wheel。产品 API/watchlist 只接受 `wheel` |
-| `-params` | — | 手工/ad-hoc Wheel 参数；可提供完整 `price_position_curve` + `max_inventory`，或两端点 + `max_inventory`；百分比用小数；内部 `hold`/`buy-hold` 不接参数 |
+| `-params` | — | 手工/ad-hoc Wheel 参数；可提供完整 `price_position_curve` + `max_inventory`，或两端点 + `max_inventory`；百分比用小数；可重复传入多个 JSON，或传 JSON 对象数组做固定参数敏感性分析；内部 `hold`/`buy-hold` 不接参数 |
 | `-from-watchlist` | false | 按 `-symbol` 从数据库只读加载生产 Wheel 参数和真实 `config_version`；与 `-params`、`-file`、`-symbols` 互斥。生产绑定报告必须使用此开关，手工参数报告的版本显式为 `null` |
 | `-fee` | 0 | 每笔实际成交的固定费用；正股与期权 fill 均从现金扣除，未成交/HOLD/机械到期不收费 |
 | `-seed` | 42 | 未成交启发式抽样种子；同输入同 seed 产生同一成交 trace，`0` 等价于默认 42 |
@@ -128,6 +128,16 @@ wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00883 -strategy wheel \
 ```
 
 数据严格按时间切为 train/valid/test（60%/20%/20%，不随机打散）；三个阶段使用用途派生且互不相同的 seed，最终候选再以 5 个封存测试 seed 评估。只有样本外 P10 仍超过 buy-hold 基线的候选才进入报告，否则输出“无可推荐参数”。训练报告固定为 `RESEARCH_ONLY`，不会写 watchlist 或 Wheel 配置。
+
+固定参数敏感性分析可在不训练 ES 的情况下复用一次输入快照：
+
+```bash
+wbot backtest -dsn "$WBOT_PG_DSN" -symbol HK.00883 -strategy wheel \
+  -params '{"full_position_price":48,"zero_position_price":55,"max_inventory":22000,"min_option_quality":0.5}' \
+  -params '{"full_position_price":48,"zero_position_price":55,"max_inventory":22000,"min_option_quality":0.8}'
+```
+
+也可把两组写成一个 JSON 数组：`-params '[{...},{...}]'`。三种写法的结果均按参数输入顺序输出，DB 行情只 Prepare 一次，评估使用固定 8-worker pool；单组 `-params` 的原有输出与行为不变。
 
 ES 启动搜索前先跑一次全窗口数据探针；有效覆盖率为 0 或有效成交数为 0 时，以 `ErrNoOptionData` 语义立即退出，不消耗种群评估预算。候选只有在每个封存测试 seed 都至少有一笔有效成交且全部收益超过基线时才可推荐，负收益基线不能让零成交/零收益候选进入推荐列表。
 

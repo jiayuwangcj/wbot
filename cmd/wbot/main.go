@@ -453,7 +453,8 @@ func runBacktest(prog string, argv []string) int {
 	fee := fs.Float64("fee", 0, "fixed fee deducted from every filled stock/option trade")
 	seed := fs.Int64("seed", 42, "seed for the unfilled-attempt draw (same seed, same trace; 0 = default 42)")
 	strat := fs.String("strategy", "hold", "strategy to run: wheel (hold/buy-hold are internal benchmarks)")
-	params := fs.String("params", "", `Wheel configuration as JSON; see doc/WHEEL_STRATEGY.md`)
+	var params repeatedStringFlag
+	fs.Var(&params, "params", `Wheel configuration as JSON; repeat for fixed-parameter sensitivity runs, or pass a JSON array`)
 	fromWatchlist := fs.Bool("from-watchlist", false, "load exact Wheel params and config_version for -symbol from the database watchlist")
 	train := fs.String("train", "", `ES tactical search ranges as JSON, for example {"move_interval_pct":["0.005","0.03"]}`)
 	population := fs.Int("population", 20, "ES population size (16..24; with -train)")
@@ -479,6 +480,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "With -max-drawdown (0..1), exits 1 when the run's max drawdown exceeds the limit.\n")
 		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
 		fmt.Fprintf(os.Stderr, "With -train JSON, runs deterministic ES over tactical Wheel parameters only; strategic parameters remain fixed from -params.\n")
+		fmt.Fprintf(os.Stderr, "Repeat -params for one fixed-parameter sensitivity run, or pass -params '[{...},{...}]'; results share one prepared snapshot and use 8 workers.\n")
 		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
 		fmt.Fprintf(os.Stderr, "With -push, explicitly sends the generated report as a Discord embed using bot_token/channel_id from ~/.wbot/wbot.conf; successful report IDs are not sent twice.\n")
 		fmt.Fprintf(os.Stderr, "With -cache, explicitly upserts the generated report into strategy_cache as RESEARCH_CANDIDATE; it never publishes watchlist/Wheel config.\n")
@@ -572,16 +574,22 @@ func runBacktest(prog string, argv []string) int {
 		btSym = symList[0]
 	}
 	stratName := strings.TrimSpace(*strat)
-	paramsMap := map[string]any{}
-	if ps := strings.TrimSpace(*params); ps != "" {
-		if err := json.Unmarshal([]byte(ps), &paramsMap); err != nil {
-			fmt.Fprintf(os.Stderr, "backtest: -params: %v\n", err)
-			return 2
+	paramsGroups, err := parseBacktestParamGroups(params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: -params: %v\n", err)
+		return 2
+	}
+	paramsMap := paramsGroups[0]
+	paramsPresent := false
+	for _, raw := range params {
+		if strings.TrimSpace(raw) != "" {
+			paramsPresent = true
+			break
 		}
 	}
 	var configVersion *int
 	if *fromWatchlist {
-		if fp != "" || multi || stratName != "wheel" || strings.TrimSpace(*params) != "" {
+		if fp != "" || multi || stratName != "wheel" || paramsPresent {
 			fmt.Fprintf(os.Stderr, "backtest: -from-watchlist requires one -dsn symbol, -strategy wheel, and no -params\n")
 			return 2
 		}
@@ -614,6 +622,12 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 		return 2
 	}
+	for i, group := range paramsGroups[1:] {
+		if _, _, err := backtestexec.Build(stratName, group); err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: -params group %d: %v\n", i+2, err)
+			return 2
+		}
+	}
 	if templ != nil && templ.NeedsOptions && fp != "" {
 		fmt.Fprintf(os.Stderr, "backtest: strategy %s reads atomic option_quote_snapshots; -file input has no option snapshot data (use -dsn)\n", stratName)
 		return 2
@@ -639,7 +653,15 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -report produces report_kind=single_run and is not supported for multi-symbol runs\n")
 		return 2
 	}
+	if multi && len(paramsGroups) > 1 {
+		fmt.Fprintln(os.Stderr, "backtest: multiple -params groups require one symbol")
+		return 2
+	}
 	if strings.TrimSpace(*train) != "" {
+		if len(paramsGroups) > 1 {
+			fmt.Fprintf(os.Stderr, "backtest: -train accepts one fixed -params group; use repeated -params without -train for sensitivity analysis\n")
+			return 2
+		}
 		if fp != "" || multi || stratName != "wheel" || *save {
 			fmt.Fprintf(os.Stderr, "backtest: -train requires one -dsn symbol, -strategy wheel, and does not support -file/-symbols/-save\n")
 			return 2
@@ -666,6 +688,12 @@ func runBacktest(prog string, argv []string) int {
 	}
 	if strings.TrimSpace(*train) != "" {
 		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Push: *push, Cache: *cache})
+	}
+	if len(paramsGroups) > 1 {
+		return runBacktestBatch(d, fp, btSym, stratName, paramsGroups, btOpts, backtestBatchFlags{
+			Save: *save, Report: *report, ReportDir: *reportDir, Push: *push, MaxDrawdown: *maxDrawdown,
+			Symbol: btSym, Strategy: stratName, ConfigVersion: configVersion, Options: btOpts,
+		})
 	}
 
 	var (

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/backtestes"
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/wheel"
@@ -168,6 +169,55 @@ func TestRunPreparedIsDeterministicAndDoesNotShareRunSeed(t *testing.T) {
 	}
 	if first.Result.Unfilled.AttemptCount != 1 {
 		t.Fatalf("attempt count = %d; want one seed-controlled attempt", first.Result.Unfilled.AttemptCount)
+	}
+}
+
+func TestRunPreparedConcurrentEvaluationsMatchSerial(t *testing.T) {
+	ts := time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC)
+	theta := -0.1
+	prepared := &Prepared{
+		bars: []ingest.Bar{{Ts: ts, Open: 100, High: 100, Low: 100, Close: 100, Volume: 1}},
+		options: &backtest.OptionsData{RunSeed: 999, Bars: backtest.OptionBars{"P95": {{Ts: ts, Open: 2, High: 2, Low: 2, Close: 2, Volume: 1}}}, QuoteBatches: []backtest.QuoteSnapshotBatch{{
+			ObservedAt: ts, SnapshotKey: "batch", Underlying: "TEST.US", UnderlyingPrice: 100,
+			Quotes: []wheel.OptionQuote{{Symbol: "P95", Code: "P95", Underlying: "TEST.US", Source: "test", OptionType: wheel.Put,
+				Expiry: ts.AddDate(0, 0, 7), Strike: 95, Delta: -0.3, Bid: 2, Ask: 2.1, ImpliedVol: 0.2,
+				Theta: &theta, Volume: 1, OpenInterest: 1, LotSize: 100, QuoteTime: ts}}, ExpiryOrder: []int{0},
+		}}},
+		sourceHash: "sha256-concurrent-test",
+	}
+	opts := Options{Symbol: "TEST.US", Strategy: "wheel", Params: map[string]any{
+		"full_position_price": 90.0, "zero_position_price": 110.0, "max_inventory": 1000.0,
+		"min_option_quality": 0.0, "trade_gap": 0.0,
+	}, Cash: 20000, Seed: 777}
+	tasks := make([]func(context.Context) (*Outcome, error), 16)
+	for i := range tasks {
+		tasks[i] = func(ctx context.Context) (*Outcome, error) {
+			return prepared.RunPrepared(ctx, opts)
+		}
+	}
+	parallel, err := backtestes.ParallelMap(context.Background(), tasks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := prepared.RunPrepared(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := json.Marshal(serial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range parallel {
+		encoded, err := json.Marshal(got)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(encoded) != string(want) {
+			t.Fatalf("parallel result[%d] differs from serial:\nparallel=%s\nserial=%s", i, encoded, want)
+		}
+	}
+	if prepared.options.RunSeed != 999 {
+		t.Fatalf("prepared RunSeed mutated to %d; want immutable seed 999", prepared.options.RunSeed)
 	}
 }
 
