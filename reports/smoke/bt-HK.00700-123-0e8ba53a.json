@@ -1,0 +1,235 @@
+{
+  "schema_version": "1.5",
+  "report_id": "bt-HK.00700-123-0e8ba53a",
+  "report_kind": "single_run",
+  "initial_cash": 1000000,
+  "identity": {
+    "symbol": "HK.00700",
+    "market": "HK",
+    "currency": "HKD",
+    "config_version": null,
+    "code_version": "0.0.0-dev",
+    "data_window": {
+      "from": "2026-04-26T16:00:00Z",
+      "to": "2026-08-12T16:00:00Z"
+    },
+    "capability_status": "RESEARCH_ONLY",
+    "blocked_by": null,
+    "run_seed": 123,
+    "config": {
+      "params": {
+        "covered_call_pct": 0.05,
+        "full_position_price": 400,
+        "max_dte": 45,
+        "max_inventory": 1200,
+        "max_quote_age_seconds": 86400,
+        "min_dte": 13,
+        "min_option_profit": 200,
+        "min_option_quality": 0.5318450198523592,
+        "min_premium_per_share": 1.5258919439616279,
+        "move_interval_pct": 0.005,
+        "profit_take_pct": 0.5,
+        "stock_switch_pct": 0.14451573668691084,
+        "strategic_state": "NORMAL",
+        "trade_gap": 76,
+        "zero_position_price": 600
+      }
+    }
+  },
+  "result": {
+    "return_status": "research_only",
+    "net_return_pct": 0.021041,
+    "net_return_amount": 21041,
+    "premium_net_return_pct": 0.021041,
+    "premium_net_return_amount": 21041,
+    "realized_return_pct": 0.022295880000000007,
+    "realized_return_amount": 22295.88000000001,
+    "final_equity_amount": 1004843.0800000001,
+    "annualized_return_pct": 0.07290829850452196,
+    "premium_annualized_return_pct": 0.07290829850452196,
+    "realized_annualized_return_pct": 0.07737128626326473,
+    "gross_return_pct": 0.021041,
+    "gross_return_amount": 21041,
+    "stock_market_value_pct": 0.3206951999999999,
+    "option_market_value_pct": 0,
+    "holdings_market_value_pct": 0.3206951999999999,
+    "final_equity_pct": 1.00484308,
+    "max_stock_market_value_pct": 0.4788,
+    "max_position_pct": 0.5292,
+    "window_mark_to_market_return_pct": 0.004843080000000074,
+    "window_mark_to_market_amount": 4843.0800000000745,
+    "baseline_return_pct": -0.06824424255229244,
+    "baseline_name": "buy-hold",
+    "excess_return_pct": 0.08928524255229245,
+    "max_drawdown_pct": 0.05910610143233714,
+    "tail_loss_pct": null,
+    "attempt_count": 20,
+    "fill_count": 20,
+    "unfilled_count": 0,
+    "unfilled_ratio": 0,
+    "unfilled_model": {
+      "model_kind": "heuristic",
+      "model_version": "heuristic-1.0",
+      "order_assumption": "卖出期权,按 Bid 价尝试成交,有效时长=bar 内",
+      "components": {
+        "spread_weight": 0.55,
+        "volume_weight": 0.3,
+        "oi_weight": 0.15
+      }
+    },
+    "cost_model": {
+      "fees_included": true,
+      "legacy": true,
+      "fee_per_trade": 0,
+      "option_fee_per_contract": 0,
+      "stock_fee_per_lot": 0,
+      "lot_size": 100,
+      "total_fees_amount": 0,
+      "stock_fees_amount": 0,
+      "option_fees_amount": 0,
+      "exercise_delivery_fees_amount": 0,
+      "option_contracts": 30,
+      "stock_lots": 3,
+      "exercise_delivery_lots": 10,
+      "option_trade_count": 30,
+      "stock_trade_count": 1,
+      "exercise_delivery_trade_count": 3,
+      "charged_trade_count": 34,
+      "option": {
+        "fee_per_contract": 0,
+        "contracts": 30,
+        "amount": 0,
+        "trade_count": 30
+      },
+      "stock": {
+        "fee_per_lot": 0,
+        "lot_size": 100,
+        "lots": 3,
+        "amount": 0,
+        "trade_count": 1
+      },
+      "exercise_delivery": {
+        "fee_per_lot": 0,
+        "lot_size": 100,
+        "lots": 10,
+        "amount": 0,
+        "trade_count": 3
+      },
+      "slippage_included": false,
+      "taxes_included": false,
+      "assignment_included": false,
+      "description": "兼容固定费用已从每笔主动成交扣除;未成交/HOLD/机械到期事件不收费;滑点/税费/行权交割费未接入"
+    },
+    "cost_drag": {
+      "total_fees_amount": 0,
+      "cost_drag_pct": 0,
+      "cost_drag_return_pct": 0,
+      "gross_return_pct": 0.021041,
+      "gross_return_amount": 21041
+    },
+    "cost_drag_pct": 0,
+    "cost_drag_return_pct": 0,
+    "attribution": {
+      "premium_income_amount": 25484,
+      "option_close_cost_amount": 4443,
+      "stock_realized_pnl_amount": 1254.880000000007,
+      "fees_amount": 0,
+      "realized_pnl_amount": 22295.88000000001,
+      "premium_net_amount": 21041,
+      "unfilled_attempt_premium_amount": 0,
+      "unfilled_attempt_count": 0
+    },
+    "manual_not_executed_count": 0,
+    "hard_violations": 0,
+    "stock_assignment_rate": null
+  },
+  "terminal": {
+    "valuation_status": "COMPLETE",
+    "settlement_status": "ALL_OPTION_LEGS_SETTLED",
+    "cash_amount": 684147.8800000001,
+    "underlying_price": 441,
+    "stock_shares": 727.1999999999998,
+    "stock_average_cost": 465,
+    "stock_market_value_amount": 320695.1999999999,
+    "option_market_value_amount": 0,
+    "holdings_market_value_amount": 320695.1999999999,
+    "final_equity_amount": 1004843.0800000001,
+    "open_option_leg_count": 0,
+    "gross_open_option_contract_count": 0,
+    "pnl_status": "COMPLETE",
+    "realized_pnl_amount": 22295.88000000007,
+    "unrealized_pnl_amount": -17452.799999999996,
+    "expiry_count": 3,
+    "short_expiry_count": 3,
+    "assignment_count": 3,
+    "assignment_rate": 1,
+    "event_basis": "mechanical_backtest",
+    "broker_expiry_count": null,
+    "broker_assignment_count": null
+  },
+  "data_quality": {
+    "status": "RESEARCH_ONLY",
+    "option_data_required": true,
+    "underlying_bars": [
+      {
+        "source": "futu",
+        "adjusted": "fwd",
+        "bar_count": 75
+      }
+    ],
+    "option_snapshot_sources": [
+      "futu",
+      "hkex"
+    ],
+    "total_bar_count": 75,
+    "ready_bar_count": 66,
+    "blocked_bar_count": 9,
+    "valid_coverage_ratio": 0.88,
+    "snapshot_batch_count": 75,
+    "snapshot_contract_row_count": 29010,
+    "missing_required_field_counts": {
+      "ask": 0,
+      "bid": 0,
+      "delta": 1,
+      "expiry": 0,
+      "implied_vol": 1,
+      "lot_size": 0,
+      "observed_at": 0,
+      "open_interest": 2,
+      "option_type": 0,
+      "snapshot_key": 0,
+      "source": 0,
+      "strike": 0,
+      "symbol": 0,
+      "theta": 1,
+      "underlying": 0,
+      "underlying_price": 0,
+      "volume": 2
+    },
+    "historical_option_cycle_complete": true,
+    "blocked_by": [
+      "missing_delta",
+      "missing_implied_vol",
+      "missing_open_interest",
+      "missing_theta",
+      "missing_volume",
+      "option_quote_snapshot"
+    ]
+  },
+  "candidates": null,
+  "audit": {
+    "input_snapshot_hash": "sha256-0e8ba53a5676add2f7e44b3514b70b4dd9cacf17d85d56d391100aaa0ad15462",
+    "params_dictionary_version": "params-1.0",
+    "strategy_params_snapshot": {
+      "migration_lossy": false,
+      "original_json": null
+    }
+  },
+  "risk": [
+    "RESEARCH_ONLY:历史事件数据未解锁,本结果只用于研究,不驱动提醒",
+    "HKEX EOD:日终结算价投影不是可执行 bid/ask,Delta/Theta 为模型派生",
+    "DATA_BLOCKED:成交/指派/人工处置事实缺失,未成交率为启发式估算",
+    "窗口末估值变动仅为机械账面 mark,不是可执行收益;真实券商到期/指派字段为 null",
+    "bar-time replay:非事件级回放,不含逐 quote 成交时序"
+  ]
+}
