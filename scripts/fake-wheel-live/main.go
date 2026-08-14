@@ -23,6 +23,7 @@ import (
 const (
 	packetHeaderSize = 44
 	protoInit        = 1001
+	protoFunds       = 2101
 	protoPositions   = 2102
 )
 
@@ -97,11 +98,22 @@ func (s *fakeState) handleFutu(w http.ResponseWriter, r *http.Request) {
 			if !strings.Contains(security.Code, "C") && !strings.Contains(security.Code, "P") {
 				price = 100.0
 			}
+			// update_time is a zone-less wall clock the wbot side parses in the
+			// market's local zone (US → America/New_York, otherwise +08). Format
+			// "now" in the same zone so the parsed instant is ~now regardless of
+			// the server's clock (a fixed UTC+8 here would parse 8h in the
+			// future on a UTC server and the candidate is rejected as stale).
+			loc := time.Local
+			if security.Market == 11 {
+				if ny, err := time.LoadLocation("America/New_York"); err == nil {
+					loc = ny
+				}
+			}
 			items = append(items, map[string]any{
 				"security":    map[string]any{"market": security.Market, "code": security.Code},
 				"cur_price":   price,
 				"volume":      1000,
-				"update_time": time.Now().Add(-30 * time.Second).In(time.FixedZone("UTC+8", 8*60*60)).Format("2006-01-02 15:04:05"),
+				"update_time": time.Now().Add(-30 * time.Second).In(loc).Format("2006-01-02 15:04:05"),
 			})
 		}
 		writeFutu(w, map[string]any{"basic_qot_list": items})
@@ -239,10 +251,29 @@ func protoResponse(protoID int32) []byte {
 	if protoID == protoInit {
 		return fakegw.InitBody(42)
 	}
+	if protoID == protoFunds {
+		return fakegw.FundsBody(0, 1, fakeFunds())
+	}
 	if protoID == protoPositions {
 		return fakegw.PositionsBody(0, 1, []*trdcommon.Position{fakePosition()})
 	}
 	return fakegw.AccountsBody([]*trdcommon.TrdAcc{fakegw.Acc(0, 1, 2)})
+}
+
+func fakeFunds() *trdcommon.Funds {
+	// The wbot side fails unmarshal when any required proto field is absent
+	// ("required field Trd_Common.Funds.xxx not set"); set all seven.
+	power, totalAssets, cash, marketVal := 100000.0, 100000.0, 100000.0, 0.0
+	frozen, debt, avl := 0.0, 0.0, 0.0
+	return &trdcommon.Funds{
+		Power:             &power,
+		TotalAssets:       &totalAssets,
+		Cash:              &cash,
+		MarketVal:         &marketVal,
+		FrozenCash:        &frozen,
+		DebtCash:          &debt,
+		AvlWithdrawalCash: &avl,
+	}
 }
 
 func fakePosition() *trdcommon.Position {

@@ -29,7 +29,7 @@ func startWheelRunner(ctx context.Context, database *sql.DB, env futu.Env, inter
 		fmt.Fprintln(os.Stderr, "wheel: WARN LLM reviewer disabled; set LLM_BASE_URL, LLM_API_KEY and LLM_MODEL; ALERT signals cannot be pushed")
 	}
 	store := wheelstore.New(database)
-	runner := wheelrun.NewRunner(wheelrun.Dependencies{
+	deps := wheelrun.Dependencies{
 		Quoter:           futuQuoter{client: client},
 		Positions:        futuPositions{addr: futuProtoAddr(), env: env},
 		Funds:            futuPositions{addr: futuProtoAddr(), env: env}.Funds,
@@ -39,7 +39,16 @@ func startWheelRunner(ctx context.Context, database *sql.DB, env futu.Env, inter
 		Watchlist:        watchlistStore{db: database},
 		LLMReviewer:      reviewer,
 		LLMModel:         model,
-	})
+	}
+	// Acceptance-only escape hatch (accept-wheel-live.sh): the live runner
+	// gates evaluation on the exchange wall clock, so a CI run during a
+	// closed session would skip every symbol and produce no signals.
+	// Production never sets WBOT_WHEEL_FORCE_MARKET_OPEN; the acceptance
+	// harness pins the session open for deterministic signal generation.
+	if os.Getenv("WBOT_WHEEL_FORCE_MARKET_OPEN") == "1" {
+		deps.MarketOpen = func(string, time.Time) bool { return true }
+	}
+	runner := wheelrun.NewRunner(deps)
 	if err := runner.Run(ctx, interval); err != nil && !errors.Is(err, context.Canceled) {
 		fmt.Fprintf(os.Stderr, "wheel: runner: %v\n", err)
 	}

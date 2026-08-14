@@ -134,6 +134,7 @@ watchlist_status() {
 
 echo "accept-wheel-live: scenario A dead gateway"
 start_serve "$tmp/serve-a.log" \
+  "WBOT_WHEEL_FORCE_MARKET_OPEN=1" \
   "FUTU_GATEWAY_URL=http://127.0.0.1:1" \
   "FUTU_PROTO_ADDR=127.0.0.1:1" \
   "LLM_BASE_URL=" "LLM_API_KEY=" "LLM_MODEL=" \
@@ -153,8 +154,10 @@ check "场景 A 产生 DATA_BLOCKED 信号" 1 "$(count "$signals_a" '"capability
 check "场景 A capability 只落 DATA_BLOCKED/READY" 1 "$(signal_capabilities_valid "$signals_a")"
 watchlist_a="$(curl -s -m 5 "$serve_base/v1/watchlist")"
 check "场景 A watchlist status 同步 DATA_BLOCKED" DATA_BLOCKED "$(watchlist_status "$watchlist_a" "$sym_a")"
-check "场景 A stderr 有 per-symbol 失败" 1 "$(grep -c "wheelrun: $sym_a:" "$tmp/serve-a.log" 2>/dev/null || true)"
-check "场景 A LLM env 缺失时有启动 warning" 1 "$(grep -c 'wheel: WARN LLM reviewer disabled' "$tmp/serve-a.log" 2>/dev/null || true)"
+a_fail="$(grep -c "wheelrun: $sym_a:" "$tmp/serve-a.log" 2>/dev/null || true)"
+check "场景 A stderr 有 per-symbol 失败" 1 "$([[ "${a_fail:-0}" -ge 1 ]] && echo 1 || echo 0)"
+a_warn="$(grep -c 'wheel: WARN LLM reviewer disabled' "$tmp/serve-a.log" 2>/dev/null || true)"
+check "场景 A LLM env 缺失时有启动 warning" 1 "$([[ "${a_warn:-0}" -ge 1 ]] && echo 1 || echo 0)"
 id_a="$(signal_id "$signals_a")"
 actions_a='[]'
 if [[ -n "$id_a" ]]; then
@@ -193,6 +196,7 @@ printf '%s\n' '{"credentials.telegram.token":{"value":"test-token","updated_at":
 chmod 600 "$config_dir/wbot.conf"
 start_serve "$tmp/serve-b.log" \
   --telegram-run \
+  "WBOT_WHEEL_FORCE_MARKET_OPEN=1" \
   "FUTU_GATEWAY_URL=$fake_base" \
   "FUTU_PROTO_ADDR=$proto_addr" \
   "LLM_BASE_URL=$fake_base/v1" "LLM_API_KEY=accept-key" "LLM_MODEL=accept-model" \
@@ -200,12 +204,15 @@ start_serve "$tmp/serve-b.log" \
 health_code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$serve_base/v1/health")"
 check "场景 B /v1/health 仍为 200" 200 "$health_code"
 
-out_b="$(FUTU_GATEWAY_URL="$fake_base" "$bin" watchlist add -dsn "$dsn" -symbol "$sym_b" -strategy wheel 2>&1)"
+# trade_gap is explicit so the default-inventory gap (50 at P=100) exceeds
+# the no-trade band and the runner produces an ALERT; full_position_price/
+# zero_position_price/max_inventory still come from the default fill path.
+out_b="$(FUTU_GATEWAY_URL="$fake_base" "$bin" watchlist add -dsn "$dsn" -symbol "$sym_b" -strategy wheel -params '{"trade_gap":0}' 2>&1)"
 add_b_rc=$?
-check "CLI wheel 默认档 add 成功" 0 "$add_b_rc"
-check "默认 max_inventory=100" 1 "$(printf '%s\n' "$out_b" | grep -c '"max_inventory":100')"
-check "默认曲线包含 0.8×P 与目标库存 100" 1 "$(printf '%s\n' "$out_b" | grep -c '"price":80,"target_inventory":100')"
-check "默认曲线包含 1.2×P 与目标库存 0" 1 "$(printf '%s\n' "$out_b" | grep -c '"price":120,"target_inventory":0')"
+check "CLI wheel add 默认补齐成功" 0 "$add_b_rc"
+check "默认补齐 max_inventory=100" 1 "$(printf '%s\n' "$out_b" | grep -c '"max_inventory":100')"
+check "默认补齐 full_position_price=0.8×P (P=100)" 1 "$(printf '%s\n' "$out_b" | grep -c '"full_position_price":80')"
+check "默认补齐 zero_position_price=1.2×P (P=100)" 1 "$(printf '%s\n' "$out_b" | grep -c '"zero_position_price":120')"
 
 signals_b="$(wait_for_signal "$sym_b" 90)"
 check "场景 B wheel_signals 有 ALERT" 1 "$(count "$signals_b" '"action":"ALERT"')"

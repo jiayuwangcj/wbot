@@ -60,8 +60,13 @@
 
 - [x] 诊断(快照覆盖/轨迹/归因/OnBar 价格源)
 - [x] A 实施 + 单测/verify 全绿(verify.sh 全绿 2026-08-14)
-- [ ] reviewer 评审
-- [ ] 合入 main
+- [x] reviewer 评审(2026-08-14 结论:feature,有条件合入)
+- [x] P1-1 修复(HTML 标签随口径条件渲染)+ P2-1(premium-net 恒等式断言)+ P3-3(单测覆盖)
+- [x] CI 修复(c5fee77):env WBOT_PG_DSN 与 -file 互斥误伤(main 预存红)+ main_test.go 三处 total_return 断言同步 realized/mark 口径(main 预存红);本地全套 + race + 真实 PG 全绿
+- [x] CI 修复 2(b9c4bc5):TestBacktestExecuteIntegration restore 丢 NULL。根因:ingest futu_option_test.go 插 HK.00700 无 execution_status(NULL,4633c48 引入,main 预存)→ 完整 CI 命令(-p 1 ingest 先于 httpapi)必复现;restore 用 st.String 把 NULL 转 "" 违反 watchlist_execution_status_check(SQLSTATE 23514)。修:wlBinding 保留 sql.NullString 原样传参,NULL 恢复为 NULL。本地全新库(wbot_ci_probe)+ 长期库完整命令全绿
+- [x] CI 修复 3(3d1640d):验收步骤 3/21 失败。① from_watchlist 503:ingest 测试残留 HK.00700(参数残缺无 full_position_price,b9c4bc5 restore 修复后原样恢复)→ from_watchlist 遍历失败 503。修:ingest 测试结尾自清理 DELETE。② CLI summary 形状:检查名已同步 reward-3.0 但 grep 模式仍 total_return + 漏 fees= 尾段。修:grep 改新字段 + 任意尾段。本地探测库全套 go test + 验收 21/21 全绿
+- [x] CI 修复 4(本地,未推送):accept-wheel-live 13/24 → 24/24。均为预存验收脚本问题(CI 从未跑过它:accept-backtest 此前提前失败):① 市场时段门:wheelrun 按交易所墙钟跳过非交易时段评估,CI 20:58(美股盘前)全 symbol 跳过零信号 → 加验收专用逃生开关 WBOT_WHEEL_FORCE_MARKET_OPEN=1(wheel_scheduler.go 注入 deps.MarketOpen,生产永不设置)② 默认档检查过期:S1 重构后默认输出 full_position_price/zero_position_price,脚本仍 grep 旧 price/target_inventory → 改新格式 + trade_gap 显式 0(默认 gap 50 ≤ trade_gap 50 恒 HOLD 不出 ALERT)③ count==1 语义:LLM warning 打印 2 行/符号行 20s 窗口 2 次 → 改 ≥1。④ 修复后回归(6/24):fake option-quote 缺候选必需字段 bid/ask/vol/strike 与 quote 时间戳超时区(固定 UTC+8 格式化 vs 服务器 UTC 解析 → "quote is from the future")、funds 缺 required 字段 totalAssets/frozenCash 等 → 修 fake:update_time 按市场时区(NY/+08)格式化 + Funds 补全 7 个 required 字段。本地全绿 24/24
+- [ ] PR #338 合入(CI 绿后;frontend dashboard hover 测试偶发 flaky,重跑后 pass)
 - [ ] B 重训 + 推送报告
 
 ## Next
