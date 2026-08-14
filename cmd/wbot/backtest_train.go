@@ -23,6 +23,7 @@ type backtestTrainFlags struct {
 	Timeout                                      time.Duration
 	Report                                       bool
 	ReportDir                                    string
+	Push                                         bool
 	Cache                                        bool
 }
 
@@ -62,6 +63,10 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 	}
 	baseOutcome, err := backtestexec.Run(context.Background(), database, opts)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: train data probe: %v\n", err)
+		return 1
+	}
+	if err := requireTrainCoverage(baseOutcome, opts.Symbol, opts.Cash); err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: train data probe: %v\n", err)
 		return 1
 	}
@@ -147,9 +152,10 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 				ratios = append(ratios, *m.UnfilledRatio)
 			}
 		}
-		// A candidate is recommendable only when all five held-out seeds beat
-		// buy-hold. Otherwise the report explicitly carries no recommendation.
-		if quantile(returns, 0) <= baseline {
+		// A candidate is recommendable only when every held-out seed has an
+		// effective fill and all five returns beat buy-hold. Otherwise a zero
+		// return cannot masquerade as improvement in a negative-baseline window.
+		if !recommendableCandidate(tc.metrics, baseline) {
 			continue
 		}
 		params := tacticalParams(tc.candidate.Params)
@@ -207,6 +213,7 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 		return 1
 	}
+	fmt.Printf("report_id=%s json=%s html=%s\n", rep.ReportID, jsonPath, htmlPath)
 	if flags.Cache {
 		if err := cacheBacktestReport(context.Background(), database, rep, jsonPath, false); err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
@@ -214,8 +221,46 @@ func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags bac
 		}
 		fmt.Printf("cache_symbol=%s approved_state=%s\n", rep.Identity.Symbol, wheelstore.StrategyCacheResearchCandidate)
 	}
-	fmt.Printf("report_id=%s json=%s html=%s\n", rep.ReportID, jsonPath, htmlPath)
+	if flags.Push {
+		status, err := pushBacktestReport(context.Background(), rep)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "backtest: push: %v\n", err)
+			return 1
+		}
+		fmt.Printf("push_status=%s report_id=%s\n", status, rep.ReportID)
+	}
 	return 0
+}
+
+func requireTrainCoverage(outcome *backtestexec.Outcome, symbol string, initialCash float64) error {
+	if outcome == nil || outcome.Result == nil {
+		return fmt.Errorf("%w: %s (empty training probe)", backtestexec.ErrNoOptionData, symbol)
+	}
+	quality := outcome.Result.DataQuality
+	coverage := 0.0
+	if quality.ValidCoverageRatio != nil {
+		coverage = *quality.ValidCoverageRatio
+	}
+	effectiveTrades := trainMetrics(outcome.Result, initialCash).EffectiveTrades
+	if coverage <= 0 || effectiveTrades == 0 {
+		return fmt.Errorf("%w: %s (valid_coverage=%.2f%% effective_trades=%d; ES requires positive coverage and at least one effective fill)",
+			backtestexec.ErrNoOptionData, symbol, coverage*100, effectiveTrades)
+	}
+	return nil
+}
+
+func recommendableCandidate(metrics []backtestes.Metrics, baseline float64) bool {
+	if len(metrics) == 0 {
+		return false
+	}
+	returns := make([]float64, len(metrics))
+	for i, metric := range metrics {
+		if metric.EffectiveTrades == 0 {
+			return false
+		}
+		returns[i] = metric.NetReturn
+	}
+	return quantile(returns, 0) > baseline
 }
 
 func trainMetrics(r *backtest.Result, initialCash float64) backtestes.Metrics {

@@ -348,7 +348,7 @@
 ## 9. HTML/Discord 投影约束
 
 - HTML 由 Go `html/template` 渲染本 JSON(或内存同构结构),禁止大模型生成 HTML;首屏 = 状态/样本外收益/回撤/未成交率/停止原因,明细折叠卡片;iPhone 16 Pro Max 430px 验收,同时覆盖 390px,正文不得横向滚动。
-- Discord embed 只推 5–7 核心字段 + 状态 + 报告链接;字段超限时**不截断关键风险状态**。
+- Discord embed 只推 5–7 核心字段 + 状态 + `report_id` 引用（存在可访问报告 URL 时再附链接）；字段超限时**不截断关键风险状态**，而是让推送失败并保留报告供重试。
 - 同一 JSON 重复渲染必须一致;关键汇总可由明细复算(验收脚本对账)。
 
 ## 10. 版本与演进
@@ -361,3 +361,4 @@ S5 在不改动 `single_run` 字段的前提下启用顶层 `train`、`generatio
 
 - `schema_version` 变更 = 破坏性契约变更,走评审 + 双版本兼容期(读旧写新)。
 - 所有报告产物带 `report_id`;`-push`/`-cache` 为显式动作,重复执行同 ID 幂等。
+- `-push` 仅在 Discord 成功响应后落 sent 标记；失败保留 JSON/HTML 且同 ID 可重试。Discord 请求同时携带由 `report_id` 派生的固定 enforced nonce，缩小“服务端已收、客户端未收响应”窗口的重复风险。

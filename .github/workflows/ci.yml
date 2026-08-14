@@ -226,6 +226,7 @@ jobs:
           scripts/accept-paper.sh
           scripts/accept-agent-federation.sh
           scripts/accept-backtest-report.sh
+          scripts/accept-backtest-push.sh
           scripts/accept-backtest-train.sh
           scripts/accept-cache-llm.sh
 
@@ -291,7 +292,7 @@ jobs:
       # uses BTEXEC.US, watchlist accept uses its own ACCEPT.US and cleans
       # up, freshness scripts use ACCOPT*/ACCCLUS* and clean up.
       # 2026-08-03: "submit-time acceptance" remote gate for PG-dependent
-      # scripts (the zero-dependency pair runs in the test job instead).
+      # scripts (the self-contained scripts run in the test job instead).
       - name: Install postgresql-client (acceptance seeding)
         if: needs.check-skip.outputs.skip != 'true'
         run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends postgresql-client

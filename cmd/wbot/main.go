@@ -467,6 +467,7 @@ func runBacktest(prog string, argv []string) int {
 	format := fs.String("format", "csv", "export format with -export: csv or json (same output as GET /v1/backtests/{id}/export)")
 	report := fs.Bool("report", false, "write a deterministic schema 1.1 JSON report and HTML projection")
 	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
+	push := fs.Bool("push", false, "push the generated report to the configured Discord channel exactly once per report ID (requires -report)")
 	cache := fs.Bool("cache", false, "upsert report evidence into strategy_cache (requires -dsn -strategy wheel -from-watchlist -report)")
 
 	fs.Usage = func() {
@@ -479,6 +480,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "With -seed N, sell-attempt fills are drawn from seed N (0 = default 42): same seed reproduces the exact trace.\n")
 		fmt.Fprintf(os.Stderr, "With -train JSON, runs deterministic ES over tactical Wheel parameters only; strategic parameters remain fixed from -params.\n")
 		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
+		fmt.Fprintf(os.Stderr, "With -push, explicitly sends the generated report as a Discord embed using bot_token/channel_id from ~/.wbot/wbot.conf; successful report IDs are not sent twice.\n")
 		fmt.Fprintf(os.Stderr, "With -cache, explicitly upserts the generated report into strategy_cache as RESEARCH_CANDIDATE; it never publishes watchlist/Wheel config.\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
@@ -529,10 +531,18 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "backtest: -file and -dsn are mutually exclusive\n")
 		return 2
 	}
+	if *push && !*report {
+		fmt.Fprintf(os.Stderr, "backtest: -push requires -report\n")
+		return 2
+	}
 
 	if *exportID != 0 {
 		if *cache {
 			fmt.Fprintf(os.Stderr, "backtest: -cache cannot be combined with -export\n")
+			return 2
+		}
+		if *push {
+			fmt.Fprintf(os.Stderr, "backtest: -push cannot be combined with -export\n")
 			return 2
 		}
 		if fp != "" {
@@ -655,7 +665,7 @@ func runBacktest(prog string, argv []string) int {
 		Seed:          *seed,
 	}
 	if strings.TrimSpace(*train) != "" {
-		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Cache: *cache})
+		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Push: *push, Cache: *cache})
 	}
 
 	var (
@@ -751,6 +761,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Printf("final_equity=%v total_return=%v max_drawdown=%v bars=%d fees=%v 未成交 %d/%d (%.2f%%)\n",
 			res.Equity, res.TotalReturn, res.MaxDrawdown, res.Bars, res.Fees.TotalAmount, res.Unfilled.UnfilledCount, res.Unfilled.AttemptCount, *res.Unfilled.UnfilledRatio*100)
 	}
+	var pushErr error
 	if *report {
 		reportParams := paramsMap
 		if stratName == "wheel" {
@@ -793,6 +804,7 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
+		fmt.Printf("report_id=%s json=%s html=%s\n", rep.ReportID, jsonPath, htmlPath)
 		if *cache {
 			if err := cacheBacktestReport(context.Background(), database, rep, jsonPath, false); err != nil {
 				fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
@@ -800,7 +812,15 @@ func runBacktest(prog string, argv []string) int {
 			}
 			fmt.Printf("cache_symbol=%s approved_state=%s\n", rep.Identity.Symbol, wheelstore.StrategyCacheResearchCandidate)
 		}
-		fmt.Printf("report_id=%s json=%s html=%s\n", rep.ReportID, jsonPath, htmlPath)
+		if *push {
+			var status string
+			status, pushErr = pushBacktestReport(context.Background(), rep)
+			if pushErr != nil {
+				fmt.Fprintf(os.Stderr, "backtest: push: %v\n", pushErr)
+			} else {
+				fmt.Printf("push_status=%s report_id=%s\n", status, rep.ReportID)
+			}
+		}
 	}
 	if *save {
 		id, err := backtest.SaveResult(context.Background(), database,
@@ -817,6 +837,9 @@ func runBacktest(prog string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
 		}
+	}
+	if pushErr != nil {
+		return 1
 	}
 	return 0
 }
