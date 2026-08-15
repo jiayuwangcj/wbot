@@ -1228,3 +1228,71 @@ func TestRunOnceLLMReviewVisibleToLatestLLMReview(t *testing.T) {
 		t.Fatalf("review = %+v; want persisted APPROVE audit", review)
 	}
 }
+
+// recordingChain captures the begin/end window passed to the gateway, so
+// tests can assert the futu 30-day option-chain span clamp.
+type recordingChain struct {
+	mu         sync.Mutex
+	calls      int
+	begin, end time.Time
+}
+
+func (r *recordingChain) OptionChain(ctx context.Context, symbol string, begin, end time.Time) ([]futu.OptionContract, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	r.begin, r.end = begin, end
+	return nil, nil
+}
+
+func TestRunOnceOptionChainWindowClamped(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		name     string
+		minDTE   float64
+		maxDTE   float64
+		wantSpan time.Duration
+	}{
+		{name: "wide window clamped to 30d", minDTE: 13, maxDTE: 45, wantSpan: 30 * 24 * time.Hour},
+		{name: "narrow window untouched", minDTE: 5, maxDTE: 30, wantSpan: 25 * 24 * time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const symbol = "US.JD"
+			chain := &recordingChain{}
+			store := &fakeStore{configs: map[string]*wheelstore.ConfigRecord{symbol: {
+				Symbol: symbol, Version: 4,
+				Config: map[string]any{
+					"strategy": "wheel",
+					"params": map[string]any{
+						"full_position_price": 400.0, "zero_position_price": 550.0,
+						"max_inventory": 1200.0, "min_option_quality": 0.0,
+						"min_dte": tc.minDTE, "max_dte": tc.maxDTE,
+					},
+				},
+			}}}
+			wl := &fakeWatchlist{items: []watchlist.Item{wheelItem(symbol)}}
+			r := testRunner(t, Dependencies{
+				Quoter:    &fakeQuoter{prices: map[string]float64{symbol: 600}},
+				Positions: fakePositions{{Symbol: symbol, Code: "JD", Qty: 500, Side: SideLong}},
+				Chain:     chain,
+				Store:     store,
+				Watchlist: wl,
+			})
+			if err := r.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce() error: %v", err)
+			}
+			chain.mu.Lock()
+			defer chain.mu.Unlock()
+			if chain.calls != 1 {
+				t.Fatalf("chain calls = %d; want 1", chain.calls)
+			}
+			minDTE := time.Duration(tc.minDTE)
+			if d := chain.begin.Sub(now); d < minDTE*24*time.Hour || d >= (minDTE+1)*24*time.Hour {
+				t.Errorf("begin DTE = %v; want ~%v days", d, tc.minDTE)
+			}
+			if got := chain.end.Sub(chain.begin); got != tc.wantSpan {
+				t.Errorf("window span = %v; want %v", got, tc.wantSpan)
+			}
+		})
+	}
+}
