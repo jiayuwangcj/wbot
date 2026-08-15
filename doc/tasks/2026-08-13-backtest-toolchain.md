@@ -41,8 +41,8 @@
 | S2 | 参数消费端中文化 | DONE(2026-08-13,merge b6a7ab5) | watchlist 配置入口/CLI 帮助/LLM 审核文本/文档一致 |
 | S3 | 未成交模拟与基础指标 | DONE(2026-08-13,merge 3f5f781) | 订单假设/模型版本/稳定派生 seed/计数口径/多流动性等级测试 |
 | S4 | 报告数据面 + 基础 CLI | DONE(2026-08-13,merge 3631710) | 单次回测输出版本化 JSON/HTML(430/390px),尚不接 Discord |
-| S5 | ES 参数寻优 | pending | 搜索/约束/walk-forward/多 seed/早停/轨迹严格复用 S4 schema |
-| S6 | 缓存与 LLM 上下文 | pending | 带版本/状态缓存;过期不合格不注入 |
+| S5 | ES 参数寻优 | DONE(2026-08-13,merge 1e6d4d9) | 搜索/约束/walk-forward/多 seed/早停/轨迹严格复用 S4 schema |
+| S6 | 缓存与 LLM 上下文 | DONE(2026-08-14,merge 64f6554) | 带版本/状态缓存;过期不合格不注入 |
 | S7 | Discord 推送 + Web 退役 | pending | 幂等推送/失败可重试/真实 channel smoke;CLI+报告链路验收后删 results |
 | S8 | 行为克隆预研(并轨,RESEARCH_ONLY) | backlog | 规则+多组 ES 稳健候选做 teacher → HOLD+候选排序小模型;不提供收益证据 |
 
