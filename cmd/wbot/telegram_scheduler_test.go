@@ -1578,7 +1578,9 @@ func TestCallbackYesMarketClosedRejected(t *testing.T) {
 	if act.Action != "REJECTED" || act.Note != "market closed" {
 		t.Fatalf("action = %+v; want REJECTED market closed", act)
 	}
-	text, _ := fake.lastSend(t)["text"].(string)
+	// The rejection push is async (toast sync, sendToChats in a goroutine);
+	// waitSend blocks until it lands instead of racing it (flake 2026-08-15).
+	text, _ := fake.waitSend(t)["text"].(string)
 	if !strings.Contains(text, "市场已收盘") {
 		t.Fatalf("push = %q; want 市场已收盘", text)
 	}

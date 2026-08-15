@@ -28,8 +28,12 @@ func TestLimiterSpacing(t *testing.T) {
 				t.Errorf("Wait() error: %v", err)
 				return
 			}
+			// Capture the pass time immediately after Wait returns — inside the
+			// lock would include preemption between Wait and capture, fabricating
+			// sub-gap intervals on loaded CI runners (2026-08-15).
+			t0 := time.Now()
 			mu.Lock()
-			starts = append(starts, time.Now())
+			starts = append(starts, t0)
 			mu.Unlock()
 		}()
 	}
@@ -118,11 +122,15 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 				t.Errorf("Wait() error: %v", err)
 				return
 			}
+			// Capture the pass time immediately after Wait returns — inside the
+			// lock would include preemption between Wait and capture, fabricating
+			// sub-gap intervals on loaded CI runners (2026-08-15).
+			t0 := time.Now()
 			mu.Lock()
 			starts = append(starts, struct {
 				t time.Time
 				l int
-			}{time.Now(), i % 2})
+			}{t0, i % 2})
 			mu.Unlock()
 		}(i)
 	}
