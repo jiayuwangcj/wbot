@@ -86,7 +86,15 @@
 
 Stage 2（滚动切块）价值重估：Stage 1 已达成内存目标（<2GB），Stage 2 提供更长窗口/多符号的峰值压降与「滚动」机制（用户明确要的形态）。
 
+## Reviewer 评审（2026-08-15）
+
+- **结论**：有条件合入。**功能类型判定：feature**（含 bugfix 成分）——新增 `-trace-candidates`/`-chunk` flag、`WheelStrategy.TraceCandidates`/`KeepCandidateDetails`/`backtest.Session`/`RunChunked` 导出 API，且默认 `signals[].candidate_details` 由常驻改默认空。与任务记录此前「bugfix」预期不符，发布按 feature 合批。
+- **P1（阻断 → 已修复验证）**：`-chunk` 块边界 bar 被重复处理——`QueryBars` 两端闭区间 + `RunChunked` 块推进 `cur=next` 后下一块 `ts >= next`，块边界恰为 bar 时间戳时该 bar 重复入 Process/hash。主会话独立复现：`-from 2015-04-16T01:30:00Z`（=首根 bar）+ `-chunk 3d`，单遍 bars=3641 vs 切块 3643。reviewer DB 核验全窗 138 边界中 91 个命中 bar。**修复 `24f6e57`**：`ingest.QueryBarsExclusiveEnd`（`ts < to` 独占上界），`RunChunked` 非末块 `[cur,next)` / 末块 `[cur,to]` 闭区间；单遍路径 `QueryBars` 调用不变。回归：`chunkEnd` 分块算术单测（边界 bar 恰被一块覆盖）+ DB 集成 `TestRunChunkedBoundaryBarNotDuplicated`。**主会话独立复核**：边界窗口单遍 vs `-chunk 3d` bars=3641=3641、`-report` JSON md5 逐位一致。
+- **P2**：`Session.Process` 当前已 `ValidateBars`（75-77）在 `applyOptions`（78）之前，无需改动。
+- **P3（排期，不入本次收口）**：`-chunk 1ns` 最小块时长校验、`RunChunked` 逐块进度日志、`-chunk`+`-export` 组合提示、`-save` 持久化 trace 开关、DB 集成 `accept-backtest-chunk.sh`、`-chunk`+`-trace-candidates` 内存警告。另有既有 flake `TestCallbackYesDoubleConfirmRejected`（非本改动引入）。
+- 通过项：API/CLI 契约（flag 组合校验、help 文本）、实时路径零污染、密钥安全、CI skip 合法性、提交粒度（提交分层清晰）。
+
 ## Next
 
-- [ ] reviewer 评审（功能类型判定 bugfix）：Stage 1（候选明细不驻留）+ Stage 2（`-chunk` 滚动执行）两个提交
-- [ ] 合入 main：`da4051a`（Stage 1）+ Stage 2 提交；任务记录收口
+- [ ] 主会话 verify 全绿后合入 main：`da4051a`（Stage 1）+ `d5376a0`（Stage 2）+ `82ea710`（docs）+ `24f6e57`（P1 修复）
+- [ ] 任务记录收口（feature 判定已记，发布按合批）
