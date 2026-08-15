@@ -471,3 +471,77 @@ func TestSourceHashStreamMatchesSourceHash(t *testing.T) {
 
 func floatPtr(v float64) *float64 { return &v }
 func int64Ptr(v int64) *int64     { return &v }
+
+// TestChunkEndPartitionsBarsExactlyOnce proves the chunk boundary arithmetic
+// never double-processes a bar: bars at timestamps that fall exactly on a
+// non-final chunk's upper bound must be owned by the next chunk (exclusive
+// upper), and the final chunk reads [cur, to] closed. This is the invariant
+// behind -chunk determinism; a regression to inclusive non-final bounds would
+// count a boundary bar in both adjacent chunks. (The DB-backed RunChunked path
+// additionally proves this end-to-end in backtestexec_integration_test.go.)
+func TestChunkEndPartitionsBarsExactlyOnce(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	var bars []time.Time
+	for i := 0; i <= 10; i++ { // daily bars day 0..10; 3d chunk bounds hit day 3,6,9
+		bars = append(bars, start.Add(time.Duration(i)*24*time.Hour))
+	}
+	from, to := bars[0], bars[len(bars)-1]
+	seen := map[time.Time]int{}
+	cur := from
+	for {
+		next, final := chunkEnd(cur, to, 3*24*time.Hour)
+		for _, ts := range bars {
+			if ts.Before(cur) || ts.After(next) {
+				continue
+			}
+			if !final && ts.Equal(next) {
+				continue // exclusive upper bound: this bar is the next chunk's start
+			}
+			seen[ts]++
+		}
+		cur = next
+		if final {
+			break
+		}
+	}
+	if len(seen) != len(bars) {
+		t.Fatalf("covered %d/%d bars", len(seen), len(bars))
+	}
+	for _, ts := range bars {
+		if seen[ts] != 1 {
+			t.Fatalf("bar %s processed %d times; want exactly once", ts, seen[ts])
+		}
+	}
+}
+
+// TestChunkEndFinalIsClosed ensures the last chunk keeps the inclusive upper
+// bound, so a bar exactly at the window end (a chunk bound that hits `to`) is
+// still included exactly once.
+func TestChunkEndFinalIsClosed(t *testing.T) {
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(4 * 24 * time.Hour) // 3d chunks: first bound at +3d (non-final), final at +4d
+	bars := []time.Time{from, to}
+	seen := map[time.Time]int{}
+	cur := from
+	for {
+		next, final := chunkEnd(cur, to, 3*24*time.Hour)
+		for _, ts := range bars {
+			if ts.Before(cur) || ts.After(next) {
+				continue
+			}
+			if !final && ts.Equal(next) {
+				continue // exclusive upper bound: this bar is the next chunk's start
+			}
+			seen[ts]++
+		}
+		cur = next
+		if final {
+			break
+		}
+	}
+	for _, ts := range bars {
+		if seen[ts] != 1 {
+			t.Fatalf("bar %s processed %d times; want exactly once", ts, seen[ts])
+		}
+	}
+}

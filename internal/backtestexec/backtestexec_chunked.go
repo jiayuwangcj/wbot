@@ -75,11 +75,18 @@ func RunChunked(ctx context.Context, db *sql.DB, o Options, chunkSize time.Durat
 	cur := from
 	remaining := o.Limit
 	for remaining > 0 {
-		next := cur.Add(chunkSize)
-		if next.After(to) {
-			next = to
+		next, final := chunkEnd(cur, to, chunkSize)
+		var bars []ingest.Bar
+		var err error
+		if final {
+			bars, err = ingest.QueryBars(ctx, db, o.Symbol, o.Timeframe, o.Adjust, cur, next, remaining, false)
+		} else {
+			// Non-final chunks read [cur, next) so a bar exactly at the chunk
+			// boundary belongs to the next chunk only; an inclusive upper bound
+			// would double-process it across the two adjacent chunks and break
+			// the single-run determinism contract (doc/BACKTEST.md).
+			bars, err = ingest.QueryBarsExclusiveEnd(ctx, db, o.Symbol, o.Timeframe, o.Adjust, cur, next, remaining, false)
 		}
-		bars, err := ingest.QueryBars(ctx, db, o.Symbol, o.Timeframe, o.Adjust, cur, next, remaining, false)
 		if err != nil {
 			return nil, err
 		}
@@ -103,7 +110,7 @@ func RunChunked(ctx context.Context, db *sql.DB, o Options, chunkSize time.Durat
 			}
 		}
 		cur = next
-		if cur.Equal(to) {
+		if final {
 			break
 		}
 	}
@@ -125,6 +132,20 @@ func RunChunked(ctx context.Context, db *sql.DB, o Options, chunkSize time.Durat
 		BaselineReturnPct: sess.Close()/firstClose - 1,
 		SourceHash:        hashStr,
 	}, nil
+}
+
+// chunkEnd returns the next chunk's upper bound and whether it is the final
+// chunk. Non-final chunks read [cur, next) — the upper bound is exclusive so a
+// bar exactly at next is not read until the following chunk (whose lower bound
+// is inclusive), avoiding a double-process of the boundary bar. The final chunk
+// reads [cur, to] closed, matching the single-call QueryBars window.
+func chunkEnd(cur, to time.Time, size time.Duration) (next time.Time, final bool) {
+	next = cur.Add(size)
+	final = !next.Before(to) // next >= to → clamp to to, this is the last chunk
+	if next.After(to) {
+		next = to
+	}
+	return next, final
 }
 
 // probeBarRange fills zero From/To with the symbol's first/last bar so the
