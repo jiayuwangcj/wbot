@@ -21,6 +21,10 @@ type Limiter struct {
 	gap         time.Duration
 	next        time.Time
 	persistPath string
+	// onPass, when set, is invoked with the pass decision time (tests only):
+	// wall-clock capture after Wait returns includes scheduler preemption of
+	// the caller, which fabricates sub-gap intervals on loaded CI runners.
+	onPass func(time.Time)
 }
 
 // NewLimiter returns a limiter that allows one request per gap.
@@ -40,6 +44,9 @@ func (l *Limiter) Wait(ctx context.Context) error {
 		if !now.Before(next) {
 			l.next = now.Add(l.gap)
 			l.mu.Unlock()
+			if l.onPass != nil {
+				l.onPass(now)
+			}
 			return nil
 		}
 		wait := next.Sub(now)
