@@ -766,7 +766,7 @@ func rejectedExpiryQuoteReason(q wheel.OptionQuote, asOf time.Time, cfg wheel.Co
 	if !asOf.IsZero() && quoteTime.After(asOf) {
 		return "wheel: quote is from the future"
 	}
-	if !asOf.IsZero() && asOf.Sub(quoteTime) > cfg.QuoteMaxAge() {
+	if !asOf.IsZero() && !cfg.QuoteFresh(name, quoteTime, asOf) {
 		return "wheel: quote is stale"
 	}
 	if !asOf.IsZero() && !q.Expiry.After(asOf) {

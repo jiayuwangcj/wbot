@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/datacheck"
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/wheelstore"
@@ -103,6 +104,19 @@ type Prepared struct {
 	sourceHash string
 }
 
+// tradingDayCalendar adapts the offline datacheck calendar to wheel's minimal
+// TradingCalendar interface. The backtest exec layer injects it so a daily-close
+// snapshot stays fresh for the next trading day's intraday bar (Friday 16:00
+// HKEX snapshot → Monday bar), while the realtime wheelrun path leaves the
+// calendar nil and keeps strict wall-clock freshness.
+type tradingDayCalendar struct {
+	cal datacheck.Calendar
+}
+
+func (c tradingDayCalendar) IsTradingDay(symbol string, date time.Time) bool {
+	return c.cal.Session(symbol, date).TradingDay
+}
+
 // Build validates a strategy name + params against the CLI/API contract and
 // returns the ready strategy; templ is nil for hold/buy-hold. It is the shared
 // validation surface: unknown strategy, params on hold/buy-hold, unknown
@@ -123,6 +137,9 @@ func Build(name string, params map[string]any) (backtest.Strategy, *strategy.Tem
 	s, err := strategy.Factory(name, params)
 	if err != nil {
 		return nil, nil, err
+	}
+	if ws, ok := s.(*strategy.WheelStrategy); ok {
+		ws.Config.Calendar = tradingDayCalendar{cal: datacheck.NewExchangeCalendar()}
 	}
 	templ, _ := strategy.Lookup(name)
 	return s, templ, nil

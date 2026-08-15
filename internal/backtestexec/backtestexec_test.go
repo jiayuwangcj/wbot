@@ -16,6 +16,7 @@ import (
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/wheel"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 func TestBuild(t *testing.T) {
@@ -76,6 +77,83 @@ func TestBuild(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildWheelInjectsTradingDayCalendar(t *testing.T) {
+	s, _, err := Build("wheel", map[string]any{
+		"full_position_price": 100.0,
+		"zero_position_price": 200.0,
+		"max_inventory":       1000.0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, ok := s.(*strategy.WheelStrategy)
+	if !ok {
+		t.Fatalf("Build(wheel) type = %T; want *strategy.WheelStrategy", s)
+	}
+	if ws.Config.Calendar == nil {
+		t.Fatal("backtest Build must inject a trading-day calendar so a daily-close snapshot stays fresh on the next trading day")
+	}
+	if ws.Config.Calendar.IsTradingDay("HK.00700", time.Date(2026, 8, 8, 4, 0, 0, 0, time.UTC)) {
+		t.Fatal("Saturday must not be a trading day")
+	}
+	if !ws.Config.Calendar.IsTradingDay("HK.00700", time.Date(2026, 8, 10, 4, 0, 0, 0, time.UTC)) {
+		t.Fatal("Monday must be a trading day")
+	}
+}
+
+func TestWheelBuildMondayBarAcrossWeekend(t *testing.T) {
+	// Friday 2026-08-07 16:00 HKT daily-close snapshot (UTC 08:00); Monday
+	// 2026-08-10 09:30 HKT bar (UTC 01:30). 65.5h exceeds the 24h wall-clock
+	// max, but the trading-day exemption keeps the close fresh for Monday.
+	fridayClose := time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)
+	mondayBar := time.Date(2026, 8, 10, 1, 30, 0, 0, time.UTC)
+
+	bid := 2.0
+	delta, ask, iv, theta, underlying := -0.30, 2.10, 0.20, -0.10, 100.0
+	volume, oi, lot := int64(1000), int64(2000), int64(100)
+	row := wheelstore.QuoteSnapshotRecord{
+		Symbol: "HK.00700-P95", Underlying: "HK.00700", OptionType: "PUT", Strike: 95,
+		Expiry: mondayBar.AddDate(0, 0, 30), Source: "test", SnapshotKey: "batch-1",
+		UnderlyingPrice: &underlying, Delta: &delta, Bid: &bid, Ask: &ask, IV: &iv, Theta: &theta,
+		Volume: &volume, OpenInterest: &oi, LotSize: &lot, ObservedAt: fridayClose,
+	}
+	data, err := backtest.OptionsDataFromQuoteSnapshots([]wheelstore.QuoteSnapshotRecord{row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bars := []ingest.Bar{{Ts: mondayBar, Open: 100, High: 100, Low: 100, Close: 100, Volume: 1}}
+	params := map[string]any{
+		"full_position_price": 90.0,
+		"zero_position_price": 110.0,
+		"max_inventory":       1000.0,
+		"max_dte":             45.0,
+	}
+	s, _, err := Build("wheel", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := backtest.RunOptions(context.Background(), bars, 20000, 0, s, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Signals) != 1 || res.Signals[0].CapabilityStatus != wheel.CapabilityReady || res.Signals[0].Action != wheel.ActionAlert {
+		t.Fatalf("Monday bar with Friday close snapshot: signals=%+v; want ALERT CapabilityReady (trading-day fresh)", res.Signals)
+	}
+	// Negative control: the same run built without the injected calendar keeps
+	// the strict wall-clock rule, so the Friday close is stale on Monday.
+	raw, err := strategy.Factory("wheel", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := backtest.RunOptions(context.Background(), bars, 20000, 0, raw, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked.Signals) != 1 || blocked.Signals[0].CapabilityStatus != wheel.CapabilityDataBlocked {
+		t.Fatalf("Monday bar without calendar: signals=%+v; want DATA_BLOCKED (wall-clock stale)", blocked.Signals)
 	}
 }
 

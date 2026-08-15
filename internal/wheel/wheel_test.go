@@ -156,6 +156,43 @@ func TestQuoteValidationUsesDTESentinels(t *testing.T) {
 	}
 }
 
+type testTradingCalendar func(string, time.Time) bool
+
+func (f testTradingCalendar) IsTradingDay(symbol string, date time.Time) bool { return f(symbol, date) }
+
+func TestQuoteFreshAcrossTradingDays(t *testing.T) {
+	weekday := testTradingCalendar(func(_ string, date time.Time) bool {
+		return date.Weekday() != time.Saturday && date.Weekday() != time.Sunday
+	})
+	// Daily-close snapshots are 16:00 HKT (UTC 08:00); bars are 09:30 HKT (UTC
+	// 01:30). 2026-08-07 is a Friday, 2026-08-10 a Monday, 2026-08-12 a Wednesday.
+	fridayClose := time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)
+	mondayBar := time.Date(2026, 8, 10, 1, 30, 0, 0, time.UTC)
+	mondayClose := time.Date(2026, 8, 10, 8, 0, 0, 0, time.UTC)
+	wednesdayBar := time.Date(2026, 8, 12, 1, 30, 0, 0, time.UTC)
+
+	cfg := testConfig(StateNormal)
+	cfg.MaxDTE = MaxWheelDTE
+	cfg.Calendar = weekday
+
+	q := testQuote(string(Put), 400, wednesdayBar.AddDate(0, 0, 30))
+	q.QuoteTime = fridayClose
+	if err := q.Validate(mondayBar, cfg); err != nil {
+		t.Fatalf("Monday bar with Friday close snapshot: Validate = %v; want trading-day fresh", err)
+	}
+	q.QuoteTime = mondayClose
+	if err := q.Validate(wednesdayBar, cfg); err == nil {
+		t.Fatal("Wednesday bar with Monday snapshot: Validate = nil; want stale (trading day elapsed)")
+	}
+	// Without an injected calendar the wall-clock rule is unchanged: the same
+	// Friday snapshot at the Monday bar exceeds QuoteMaxAge and stays stale.
+	cfg.Calendar = nil
+	q.QuoteTime = fridayClose
+	if err := q.Validate(mondayBar, cfg); err == nil {
+		t.Fatal("Monday bar without calendar: Validate = nil; want stale")
+	}
+}
+
 func TestEvaluateStateAndDirectionTable(t *testing.T) {
 	asOf := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	put := testQuote(string(Put), 390, asOf.AddDate(0, 0, 7))
