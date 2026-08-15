@@ -477,6 +477,7 @@ func runBacktest(prog string, argv []string) int {
 	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
 	push := fs.Bool("push", false, "push the generated report to the configured Discord channel exactly once per report ID (requires -report)")
 	cache := fs.Bool("cache", false, "upsert report evidence into strategy_cache (requires -dsn -strategy wheel -from-watchlist -report)")
+	traceCandidates := fs.Bool("trace-candidates", false, "materialize the full expiry-rejected candidate list per signal (wheel audit trail; default off keeps candidate details out of memory, re-run with the flag to re-fetch deterministically)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
@@ -492,6 +493,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
 		fmt.Fprintf(os.Stderr, "With -push, explicitly sends the generated report as a Discord embed using bot_token/channel_id from ~/.wbot/wbot.conf; successful report IDs are not sent twice.\n")
 		fmt.Fprintf(os.Stderr, "With -cache, explicitly upserts the generated report into strategy_cache as RESEARCH_CANDIDATE; it never publishes watchlist/Wheel config.\n")
+		fmt.Fprintf(os.Stderr, "With -trace-candidates, the wheel audit trail keeps the full expiry-rejected candidate list per signal; default off keeps candidate details out of memory for long windows (re-run with the flag to re-fetch deterministically).\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
 		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
@@ -730,20 +732,24 @@ func runBacktest(prog string, argv []string) int {
 	}
 
 	btOpts := backtestexec.Options{
-		Symbol:        btSym,
-		Strategy:      stratName,
-		Params:        paramsMap,
-		ConfigVersion: configVersion,
-		Timeframe:     strings.TrimSpace(*timeframe),
-		Adjust:        strings.TrimSpace(*adjust),
-		From:          fromT,
-		To:            toT,
-		Limit:         *limit,
-		Cash:          *cash,
-		Fee:           *fee,
-		FeeModel:      feeModel,
-		Seed:          *seed,
+		Symbol:          btSym,
+		Strategy:        stratName,
+		Params:          paramsMap,
+		ConfigVersion:   configVersion,
+		Timeframe:       strings.TrimSpace(*timeframe),
+		Adjust:          strings.TrimSpace(*adjust),
+		From:            fromT,
+		To:              toT,
+		Limit:           *limit,
+		Cash:            *cash,
+		Fee:             *fee,
+		FeeModel:        feeModel,
+		Seed:            *seed,
+		TraceCandidates: *traceCandidates,
 	}
+	// -file path runs the strategy built above (before btOpts existed); carry
+	// the trace setting over so -trace-candidates works there too.
+	backtestexec.ApplyTrace(s, btOpts)
 	if strings.TrimSpace(*train) != "" {
 		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Push: *push, Cache: *cache})
 	}

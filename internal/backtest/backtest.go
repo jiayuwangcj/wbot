@@ -369,6 +369,16 @@ func quoteBatchSourceRank(source string) int {
 
 type signalProvider interface{ Signal() wheel.Signal }
 
+// candidateDetailTracer is implemented by strategies that can suppress the
+// per-bar candidate audit materialization. When a strategy opts out, each
+// signal keeps only its small decision metadata (action/reason/inventory/
+// chosen candidate) instead of one CandidateEvaluation per chain contract —
+// the full candidate list is deterministically re-fetchable by re-running with
+// tracing enabled (doc/BACKTEST.md).
+type candidateDetailTracer interface {
+	KeepCandidateDetails() bool
+}
+
 func makeSignalTrace(ts time.Time, s Strategy, st *State, act Action, size, cashBefore float64) SignalTrace {
 	t := SignalTrace{Ts: ts, Action: act.String(), Direction: wheel.DirectionHold, CapabilityStatus: wheel.CapabilityReady, BlockedBy: []string{}, Quantity: size, ActualInventory: st.Position, EffectiveInventory: st.Position, Inventory: st.Position, SnapshotKey: st.SnapshotKey, UnderlyingPrice: st.Price, CashBefore: cashBefore, CashAfter: st.Cash}
 	if !st.ObservedAt.IsZero() {
@@ -384,7 +394,9 @@ func makeSignalTrace(ts time.Time, s Strategy, st *State, act Action, size, cash
 		t.BlockedBy = append([]string{}, sig.BlockedBy...)
 		t.ActualInventory, t.EffectiveInventory, t.OptionDeltaStock = sig.ActualInventory, sig.EffectiveInventory, sig.OptionDeltaStock
 		t.TargetInventory, t.InventoryGap = sig.TargetInventory, sig.InventoryGap
-		t.CandidateDetails = append([]wheel.CandidateEvaluation(nil), sig.Candidates...)
+		if keep, ok := s.(candidateDetailTracer); !ok || keep.KeepCandidateDetails() {
+			t.CandidateDetails = append([]wheel.CandidateEvaluation(nil), sig.Candidates...)
+		}
 		t.Inventory = sig.EffectiveInventory
 		t.Quantity = float64(sig.Quantity)
 		for _, c := range sig.Candidates {

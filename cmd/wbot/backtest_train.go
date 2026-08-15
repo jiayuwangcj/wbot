@@ -28,6 +28,9 @@ type backtestTrainFlags struct {
 }
 
 func runBacktestTrain(dsn, rawSpace string, opts backtestexec.Options, flags backtestTrainFlags) int {
+	// buildTrajectory consumes CandidateDetails for the RL trajectory; ES
+	// windows are short, so materializing candidates here costs little.
+	opts.TraceCandidates = true
 	canonical, err := strategy.CanonicalParams(opts.Params)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: train params: %v\n", err)
