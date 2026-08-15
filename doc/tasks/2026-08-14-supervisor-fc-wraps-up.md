@@ -26,6 +26,13 @@
 - #66 P2:cron 调度器落地时固化「收盘后运行」约束(美股积累 04:00–21:30 北京时间,避开 00:00–04:00 US 盘中盲区);真实 PG 中 2026-08-14 tencent partial 行(close=444.2/vol=8.39M)可运维随手清理
 - #66 P3:accept-tencent-datafill dry-run 段 CI 化评估;腾讯 volume float64→int64 >2^53 精度观察项
 
+## 遗留问题:期权链窗口超限 — 已由主会话修复并部署(闭环)
+
+- **触发(08-14 北京 23:07)**:#84 训练参数实装写入 `HK.00700`(v2)/`US.JD`(v3),max_dte 10→45;US.JD 随即每轮 `GetOptionChain: requested period exceeds 30 days + 1 hour` 失败(JD 40d / 00700 32d 窗口,静默跳过无 ALERT/HOLD)
+- **修复(主会话,23:20)**:`979fa05 fix(wheelrun): option chain 窗口跨 futu 30 天上限 clamp`,分支 `worktree-wheel-review-async`——窗口跨度 >30 天时裁远端到 `begin+30d`(低 DTE 优先),带日志 + 单测(40d→clamp/25d 不 clamp),verify 全绿;00700 实盘窗口 [13,43],JD [5,35],JD 唯一到期日 DTE=7 不受影响
+- **部署验证(23:2x)**:serve 日志出现 `clamped to 2026-09-18`,US.JD 恢复产出 **ALERT signal=889 capability=READY**;00700 明早开盘窗口 [13,43] 由 clamp 兜底
+- **根因备忘**:`internal/wheelrun/runner.go:203`(修复后为 begin/end 变量 + clamp 分支)构造 `[now+MinDTE, now+MaxDTE]` 链窗口,futu 网关强制 period ≤ 30 天+1h
+
 ## 状态备注
 
 - serve 信号流正常(806–815 ALERT/HOLD 持续,LLM gate 瞬时失败重试机制按预期工作,300s 超时生效)
