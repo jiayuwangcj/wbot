@@ -62,4 +62,11 @@
 - [x] 实施 + 单测
 - [x] verify.sh 全绿
 - [x] reviewer 评审(条件① rebase+CI 已满足,② P1-1 已折叠)
-- [ ] 合入 main + 部署(serve 重启)
+- [x] 合入 main + 部署(2026-08-14 22:50,PR #339 合并 e9026b1 + serve 重启完成)
+
+## 收口补充(2026-08-14 22:50 部署完成)
+
+- PR #339 合并(admin 合并 e9026b1,CI 6/6 全绿:check-skip/test/governance/frontend/db-integration/ci-summary),本地 main 快进同步 = 远端 main
+- 部署:worktree 内 `docker compose --env-file ~/.wbot/serve.env -f configs/docker-compose.serve.yml up -d --build`(build context 解析为 worktree 根 = 合并后代码);镜像 configs-serve:d8cb83b7,容器 configs-serve-1 重建,healthcheck healthy,容器内 /v1/health {"status":"ok"}
+- 日志验证新代码生效:wheelrun filterPositions 增强在跑(US.JD skipping unassigned option position TCH* 非 JD 合约)
+- 注意:compose project 下 configs-postgres-1/configs-futu-opend-1 为 orphan 容器(旧 compose 遗留),未动,serve 实际用 ~/.wbot/serve.env 指向 192.168.215.2 PG

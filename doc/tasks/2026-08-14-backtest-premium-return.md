@@ -68,7 +68,18 @@
 - [x] CI 修复 4(本地,未推送):accept-wheel-live 13/24 → 24/24。均为预存验收脚本问题(CI 从未跑过它:accept-backtest 此前提前失败):① 市场时段门:wheelrun 按交易所墙钟跳过非交易时段评估,CI 20:58(美股盘前)全 symbol 跳过零信号 → 加验收专用逃生开关 WBOT_WHEEL_FORCE_MARKET_OPEN=1(wheel_scheduler.go 注入 deps.MarketOpen,生产永不设置)② 默认档检查过期:S1 重构后默认输出 full_position_price/zero_position_price,脚本仍 grep 旧 price/target_inventory → 改新格式 + trade_gap 显式 0(默认 gap 50 ≤ trade_gap 50 恒 HOLD 不出 ALERT)③ count==1 语义:LLM warning 打印 2 行/符号行 20s 窗口 2 次 → 改 ≥1。④ 修复后回归(6/24):fake option-quote 缺候选必需字段 bid/ask/vol/strike 与 quote 时间戳超时区(固定 UTC+8 格式化 vs 服务器 UTC 解析 → "quote is from the future")、funds 缺 required 字段 totalAssets/frozenCash 等 → 修 fake:update_time 按市场时区(NY/+08)格式化 + Funds 补全 7 个 required 字段。本地全绿 24/24
 - [x] CI 修复 5(b01ed3d,已推送):6879130 的 waitFor 修时序但引入 data race——cond 直接读 len(fake.sends) vs ServeHTTP 另一 goroutine 写,CI race 必红(13:45 run 实锤,TestCallbackNoConfirmedCancelsOrder/TestCallbackNoCancelFailureTellsManual)。修:fakeTGServer 加锁内 sendCount(),两处 waitFor cond 改用;其余 len(fake.sends) 是 HTTP 同步调用返回后断言,无并发。本地 -race -count=5 全过
 - [ ] PR #338 合入(CI 绿后;frontend dashboard hover 测试偶发 flaky,重跑后 pass)
-- [ ] B 重训 + 推送报告
+- [x] B 重训 + 推送报告(2026-08-14 晚,报告 bt-HK.00700-123-7ecf5509,已推 Discord)
+
+## 收口(2026-08-14 晚 B 重训完成)
+
+- **踩坑记录 -cash 必须 1000000**:首次重训探针 0 成交拒绝训练(`valid_coverage=84.37% effective_trades=0`)。排查:默认 -cash 10000 撑不起 00700 卖 put 资金约束,候选全灭。对照 #80 报告(state_before.cash=1,000,000)确认 #80 用了 -cash 1000000(任务记录当时漏记,本次已补)。-cash 1000000 后探针 102 次成交 ✓。**命令固化:重训必带 -cash 1000000**。
+- **数据异常发现(排期)**:bars(1d,fwd)窗口内 2026-07-30 起 close 突变为 2500-2800,与期权快照底层价(438-481)矛盾(~5.8 倍,疑似后复权/拆股因子污染);2025-02..2026-06 正常(411-677)。wheel 决策用 CurrentPrice=快照底层价不受影响(轨迹 px=441-481 全正常),且权利金口径不评估浮盈 → 本次报告可信;但 bars 本身需修(#66 回填链复权问题),排期。
+- **B 重训结果**(窗 2025-02-10..2026-08-13,6 维搜索,population 20,budget 840,seed 123,费用 21/70):
+  - ES 10 代 early_stop(225/840 评估),样本外窗口 2026-04-26..08-12(75 交易日)
+  - rank1 候选:权利金净收益 **22.59%**(p10 20.4%/p90 24.1%),年化 99%,最大回撤 4.56%,未成交率 8.7%(候选多 seed 统计 28%)
+  - 参数:move_interval_pct 0.5%(**撞搜索下界**,最优可能更低)、min_premium 1.53、stock_switch 14.5%、trade_gap 76、quality 0.53、min_dte 13、max_dte 45
+  - 归因:权利金 227,572 − 正股已实现 −105,750(16 次行权接股,700 股持仓)− 费用 1,631 → 净 225,941
+  - push_status=sent(已推 Discord);硬违规 0
 
 ## 评审结论(2026-08-14)
 
@@ -78,4 +89,4 @@
 
 ## Next
 
-CI 绿 → 合入 PR #338 → B 重训(命令要素见上)→ 推送结果报告(任务 #81)。
+报告已推。遗留:① PR #338 合入(残留 docs/CI 修复 cherry-pick 后 rebase)② bars 复权异常修复排期 ③ move_interval 下界 0.005 撞边,可考虑扩展搜索下界重训。
