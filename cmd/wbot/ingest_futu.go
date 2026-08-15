@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -15,29 +14,49 @@ import (
 	"github.com/jiayu/wbot/internal/ingest"
 )
 
-// runIngestFutu implements `wbot ingest futu`: REST K-lines from the
-// futu-opend-rs gateway into the bars table (see doc/FUTU.md §8).
+const (
+	futuSource    = "futu"
+	futuSymbol    = "HK.00700"
+	futuTimeframe = "30m"
+)
+
+type prefetchedFutuBars struct {
+	bars []ingest.Bar
+}
+
+func (s prefetchedFutuBars) Bars(ctx context.Context, _ domain.Symbol, _ string, _, _ time.Time) ([]ingest.Bar, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return append([]ingest.Bar(nil), s.bars...), nil
+}
+
+// runIngestFutu implements `wbot ingest futu`: one-shot K-line backfill from the
+// futu-opend-rs gateway REST /api/history-kline (paged via next_req_key) into the
+// bars table as adjust=none/source=futu, the same raw-price basis as option snapshots.
 func runIngestFutu(prog string, argv []string) int {
 	fs := flag.NewFlagSet("ingest futu", flag.ContinueOnError)
 	var showHelp bool
 	fs.BoolVar(&showHelp, "h", false, "")
 	fs.BoolVar(&showHelp, "help", false, "")
-	addr := fs.String("addr", futu.DefaultAddr, "gateway REST base URL")
+	endpoint := fs.String("endpoint", "", "Futu gateway REST base URL (default: $FUTU_GATEWAY_URL or built-in default)")
 	dsn := fs.String("dsn", "", "PostgreSQL DSN (default: $WBOT_PG_DSN)")
-	source := fs.String("source", "cli-futu", "ingestion source label")
-	symbol := fs.String("symbol", "", "market-qualified symbol (e.g. HK.00700)")
-	timeframe := fs.String("timeframe", "", "futu K-line name: K_1M K_5M K_15M K_30M K_60M K_DAY K_WEEK K_MONTH (ingest names 1m..1mo also accepted)")
-	adjust := fs.String("adjust", futu.AdjustFwd, "adjustment: fwd (前复权, default) or none; maps to futu rehab_type (doc/DATA_STANDARD.md)")
-	from := fs.String("from", "", "start of bar range, RFC3339 (e.g. 2024-06-01T00:00:00Z); empty = full history")
-	to := fs.String("to", "", "end of bar range, RFC3339; empty = now (includes the forming bar)")
-	every := fs.Duration("every", 0, "if >0, repeat ingestion at this interval until SIGINT")
+	runSource := fs.String("source", futuSource, "ingestion run label")
+	symbol := fs.String("symbol", futuSymbol, "market-qualified symbol (HK.00700 or US.JD)")
+	timeframe := fs.String("timeframe", futuTimeframe, "bar timeframe: K_1M K_5M K_15M K_30M K_60M K_DAY K_WEEK K_MONTH (ingest names 1m..1mo also accepted)")
+	adjust := fs.String("adjust", futu.AdjustNone, "adjustment: none (raw prices, default), fwd or back; maps to futu rehab_type (doc/DATA_STANDARD.md)")
+	from := fs.String("from", "", "start of bar range, RFC3339; empty = earliest available (HK.00700 30m/60m depth: 2015-04-16)")
+	to := fs.String("to", "", "end of bar range, RFC3339; empty = latest available bar")
 	dryRun := fs.Bool("dry-run", false, "fetch bars and print a summary without touching the database")
 
 	fs.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: %s ingest futu -symbol HK.00700 -timeframe K_DAY [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Fetches OHLCV K-lines from the futu-opend-rs gateway (REST 22222, /api/history-kline) and writes one ingestion run.\n")
-		fmt.Fprintf(os.Stderr, "With -every, repeats at that interval (duplicate bars are skipped via ON CONFLICT; requests share the global futu rate pool).\n")
-		fmt.Fprintf(os.Stderr, "Intraday timeframes over a long range produce many bars: prefer explicit -from/-to (e.g. the last 7 days).\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s ingest futu -symbol HK.00700 -timeframe 30m [flags]\n\n", prog)
+		fmt.Fprintf(os.Stderr, "Backfills K-lines from the futu-opend-rs gateway REST /api/history-kline (POST, up to 1000 bars per request)\n")
+		fmt.Fprintf(os.Stderr, "into bars as adjust=none (raw prices, same basis as option snapshots), source=futu.\n")
+		fmt.Fprintf(os.Stderr, "Paging follows the next_req_key cursor until no further pages; requests share the global futu rate pool.\n")
+		fmt.Fprintf(os.Stderr, "Measured depth: HK.00700 30m/60m history reaches back to 2015-04-16, so the full window can be fetched.\n")
+		fmt.Fprintf(os.Stderr, "Writes are idempotent through the bars primary key; repeated runs do not duplicate a bar.\n")
+		fmt.Fprintf(os.Stderr, "This command never changes the Futu live path.\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -52,15 +71,11 @@ func runIngestFutu(prog string, argv []string) int {
 	}
 
 	sym := strings.TrimSpace(*symbol)
-	if sym == "" {
-		fmt.Fprintf(os.Stderr, "ingest futu: -symbol is required (e.g. HK.00700)\n")
-		return 2
-	}
 	if _, _, err := futu.ParseSymbol(sym); err != nil {
 		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
 		return 2
 	}
-	_, ingestTF, err := futu.ParseTimeframe(*timeframe)
+	_, ingestTF, err := futu.ParseTimeframe(strings.TrimSpace(*timeframe))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
 		return 2
@@ -68,6 +83,11 @@ func runIngestFutu(prog string, argv []string) int {
 	_, adjustName, err := futu.ParseAdjust(*adjust)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
+		return 2
+	}
+	label := strings.TrimSpace(*runSource)
+	if label == "" {
+		fmt.Fprintln(os.Stderr, "ingest futu: -source must not be empty")
 		return 2
 	}
 	fromT, err := parseRangeTime("-from", strings.TrimSpace(*from))
@@ -80,21 +100,35 @@ func runIngestFutu(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
 		return 2
 	}
+	if !fromT.IsZero() && !toT.IsZero() && fromT.After(toT) {
+		fmt.Fprintln(os.Stderr, "ingest futu: -from must not be after -to")
+		return 2
+	}
 
-	src := ingest.FutuSource{Client: futu.NewClient(*addr), Adjust: adjustName}
-	s := domain.Symbol(sym)
+	src := ingest.FutuSource{
+		Client: futu.NewClient(resolveFutuGateway(strings.TrimSpace(*endpoint))),
+		Adjust: adjustName,
+	}
+	ctx := context.Background()
+	fetch := func() ([]ingest.Bar, error) {
+		bars, err := src.Bars(ctx, domain.Symbol(sym), ingestTF, fromT, toT)
+		if err != nil {
+			return nil, err
+		}
+		if err := ingest.ValidateBars(bars); err != nil {
+			return nil, err
+		}
+		return bars, nil
+	}
+
 	if *dryRun {
-		bars, err := src.Bars(context.Background(), s, ingestTF, fromT, toT)
+		bars, err := fetch()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
 			return 1
 		}
-		if len(bars) == 0 {
-			fmt.Fprintf(os.Stderr, "ingest futu: dry-run: no bars (symbol=%s timeframe=%s)\n", sym, ingestTF)
-			return 1
-		}
-		fmt.Printf("ingest futu: dry-run: %d bars, %s .. %s (symbol=%s timeframe=%s adjust=%s)\n",
-			len(bars), bars[0].Ts.Format(time.RFC3339), bars[len(bars)-1].Ts.Format(time.RFC3339), sym, ingestTF, adjustName)
+		fmt.Printf("ingest futu: dry-run: %d bars, %s .. %s (symbol=%s timeframe=%s source=%s adjust=%s)\n",
+			len(bars), bars[0].Ts.Format(time.RFC3339), bars[len(bars)-1].Ts.Format(time.RFC3339), sym, ingestTF, label, adjustName)
 		return 0
 	}
 
@@ -103,7 +137,7 @@ func runIngestFutu(prog string, argv []string) int {
 		d = strings.TrimSpace(os.Getenv("WBOT_PG_DSN"))
 	}
 	if d == "" {
-		fmt.Fprintf(os.Stderr, "ingest futu: set -dsn or WBOT_PG_DSN\n")
+		fmt.Fprintln(os.Stderr, "ingest futu: set -dsn or WBOT_PG_DSN")
 		return 2
 	}
 	database, err := db.Open(d)
@@ -116,25 +150,15 @@ func runIngestFutu(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "ingest futu: migrate: %v\n", err)
 		return 1
 	}
-
-	ctx, cancel := ingestRepeatCtx(*every)
-	defer cancel()
-	err = ingest.RunEveryResilient(ctx, *every, func(ctx context.Context) error {
-		if err := ingest.RunIngestion(ctx, database, strings.TrimSpace(*source), s, ingestTF, adjustName, "futu", fromT, toT, src); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "ingest futu: ok (source=%s symbol=%s timeframe=%s adjust=%s)\n",
-			strings.TrimSpace(*source), sym, ingestTF, adjustName)
-		return nil
-	}, func(err error) {
-		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
-	})
+	bars, err := fetch()
 	if err != nil {
-		if errors.Is(err, context.Canceled) {
-			return 0
-		}
 		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
 		return 1
 	}
+	if err := ingest.RunIngestion(ctx, database, label, domain.Symbol(sym), ingestTF, adjustName, futuSource, fromT, toT, prefetchedFutuBars{bars: bars}); err != nil {
+		fmt.Fprintf(os.Stderr, "ingest futu: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(os.Stderr, "ingest futu: ok (source=%s symbol=%s timeframe=%s bars=%d adjust=%s)\n", label, sym, ingestTF, len(bars), adjustName)
 	return 0
 }
