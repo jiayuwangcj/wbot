@@ -218,7 +218,7 @@ func (h *backtestExecuteHandler) writeExecError(w http.ResponseWriter, ctx conte
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 		writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{Code: "timeout", Message: "the run exceeded the execution timeout", Action: "retry later or with a narrower bar range"})
 	case errors.Is(err, backtestexec.ErrNoBars):
-		writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{Code: "no_data", Message: fmt.Sprintf("no bars data for %s", symbol), Action: fmt.Sprintf("ingest first: `wbot ingest futu -symbol %s -timeframe 1d`", symbol)})
+		writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{Code: "no_data", Message: fmt.Sprintf("no bars data for %s", symbol), Action: fmt.Sprintf("ingest first: `wbot ingest futu -symbol %s -timeframe 1d -adjust fwd`", symbol)})
 	case errors.Is(err, backtestexec.ErrNoOptionData):
 		writeErrorBody(w, http.StatusServiceUnavailable, errorJSON{
 			Code:             "no_data",
