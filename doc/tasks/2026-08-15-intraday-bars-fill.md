@@ -57,12 +57,12 @@
 | --- | --- | --- |
 | 日 K(fwd) | 373 | 2.4s(实测) |
 | 30m(none) | 4,085 | 2.6s(实测) |
-| 5m(none) | 36,300 | ~7-8s(1 万 bar 实测 2.2s 外推) |
-| 1m(none) | 181,500 | ~35-45s(外推,候选校验 ~0.4μs/合约×bar) |
+| 5m(none) | 36,300 | ~16s(按 1m 每 bar ~0.45ms 外推) |
+| 1m(none) | 122,923 | 55s(实测,2026-08-15) |
 
-- 耗时结构:DB 一次加载 ~0.3s 固定 + 每 bar 全量候选校验线性;ES 训练 Prepare 一次、评估复用(B1/B2),评估间无 DB 重复
-- ES 训练(-train 默认 population=20/max-generations=40/budget=840 评估上限,EvaluationWorkers=8 并行):5m ≈ 15 分钟墙钟,1m ≈ 1-1.5 小时
-- 提示:5m/1m 全窗口需 -limit 大于 bar 数(默认 10000 会截断 5m=36k/1m=181k)
+- 耗时结构:DB 一次加载 ~0.3s 固定 + 每 bar 全量候选校验线性(每 bar ~0.4-0.45ms,含 300-570 合约/批校验);ES 训练 Prepare 一次、评估复用(B1/B2),评估间无 DB 重复
+- ES 训练(-train 默认 population=20/max-generations=40/budget=840 评估上限,EvaluationWorkers=8 并行):30m ≈ 5 分钟、5m ≈ 30 分钟、1m ≈ 1.5-2 小时(早停 8 代会再减)
+- 提示:5m/1m 全窗口需 -limit 大于 bar 数(默认 10000 会截断 5m=36k/1m=123k)
 
 **数据链路缺口(日内回测前置,当前 00700 回测全部 HOLD 空转,零成交)**:
 1. **周末 stale**:hkex 日终快照 16:00 HKT + max_quote_age_seconds 默认 86400(24h)→ 周一 bar 用上周五日终批(70h)> 新鲜度 → 每周一全 DATA_BLOCKED,决策窗口丢 ~20%(实测 6/8、6/15、6/22、6/29 全部 stale:351-378 合约全拒)
