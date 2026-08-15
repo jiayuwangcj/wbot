@@ -66,9 +66,16 @@
 - [x] CI 修复 2(b9c4bc5):TestBacktestExecuteIntegration restore 丢 NULL。根因:ingest futu_option_test.go 插 HK.00700 无 execution_status(NULL,4633c48 引入,main 预存)→ 完整 CI 命令(-p 1 ingest 先于 httpapi)必复现;restore 用 st.String 把 NULL 转 "" 违反 watchlist_execution_status_check(SQLSTATE 23514)。修:wlBinding 保留 sql.NullString 原样传参,NULL 恢复为 NULL。本地全新库(wbot_ci_probe)+ 长期库完整命令全绿
 - [x] CI 修复 3(3d1640d):验收步骤 3/21 失败。① from_watchlist 503:ingest 测试残留 HK.00700(参数残缺无 full_position_price,b9c4bc5 restore 修复后原样恢复)→ from_watchlist 遍历失败 503。修:ingest 测试结尾自清理 DELETE。② CLI summary 形状:检查名已同步 reward-3.0 但 grep 模式仍 total_return + 漏 fees= 尾段。修:grep 改新字段 + 任意尾段。本地探测库全套 go test + 验收 21/21 全绿
 - [x] CI 修复 4(本地,未推送):accept-wheel-live 13/24 → 24/24。均为预存验收脚本问题(CI 从未跑过它:accept-backtest 此前提前失败):① 市场时段门:wheelrun 按交易所墙钟跳过非交易时段评估,CI 20:58(美股盘前)全 symbol 跳过零信号 → 加验收专用逃生开关 WBOT_WHEEL_FORCE_MARKET_OPEN=1(wheel_scheduler.go 注入 deps.MarketOpen,生产永不设置)② 默认档检查过期:S1 重构后默认输出 full_position_price/zero_position_price,脚本仍 grep 旧 price/target_inventory → 改新格式 + trade_gap 显式 0(默认 gap 50 ≤ trade_gap 50 恒 HOLD 不出 ALERT)③ count==1 语义:LLM warning 打印 2 行/符号行 20s 窗口 2 次 → 改 ≥1。④ 修复后回归(6/24):fake option-quote 缺候选必需字段 bid/ask/vol/strike 与 quote 时间戳超时区(固定 UTC+8 格式化 vs 服务器 UTC 解析 → "quote is from the future")、funds 缺 required 字段 totalAssets/frozenCash 等 → 修 fake:update_time 按市场时区(NY/+08)格式化 + Funds 补全 7 个 required 字段。本地全绿 24/24
+- [x] CI 修复 5(b01ed3d,已推送):6879130 的 waitFor 修时序但引入 data race——cond 直接读 len(fake.sends) vs ServeHTTP 另一 goroutine 写,CI race 必红(13:45 run 实锤,TestCallbackNoConfirmedCancelsOrder/TestCallbackNoCancelFailureTellsManual)。修:fakeTGServer 加锁内 sendCount(),两处 waitFor cond 改用;其余 len(fake.sends) 是 HTTP 同步调用返回后断言,无并发。本地 -race -count=5 全过
 - [ ] PR #338 合入(CI 绿后;frontend dashboard hover 测试偶发 flaky,重跑后 pass)
 - [ ] B 重训 + 推送报告
 
+## 评审结论(2026-08-14)
+
+- reviewer:功能类型 feature;有条件合入。条件 P1-1:HTML「已实现盈利」标签与值(权利金口径)不符,须在重训推送前修复 → 已修复并合入
+- P2 排期:① doc/BACKTEST_REPORT.md 补档 schema 1.4(net_return/premium_net 语义 + gross 随动)② strategy_cache payload 版本判别或 schema_version 入缓存 ③ 候选比较 vs_baseline 语义(权利金 vs buy-hold)文档注明
+- P3 记录:main.go:768 多 symbol summary 行缺 premium_net_return;-cash 0 → NaN(默认 10000 无实害)
+
 ## Next
 
-提交分支 feat/backtest-premium-return → reviewer 评审 → 合入 → 重训推送。
+CI 绿 → 合入 PR #338 → B 重训(命令要素见上)→ 推送结果报告(任务 #81)。
