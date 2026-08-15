@@ -17,8 +17,16 @@ func TestLimiterSpacing(t *testing.T) {
 	l := NewLimiter(gap)
 	ctx := context.Background()
 
+	// Record the limiter's own decision times via onPass: wall-clock capture
+	// after Wait returns includes the caller's scheduler preemption, which
+	// fabricated sub-gap intervals on loaded CI runners (2026-08-15).
 	var mu sync.Mutex
 	starts := make([]time.Time, 0, 8)
+	l.onPass = func(now time.Time) {
+		mu.Lock()
+		starts = append(starts, now)
+		mu.Unlock()
+	}
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
 		wg.Add(1)
@@ -28,13 +36,6 @@ func TestLimiterSpacing(t *testing.T) {
 				t.Errorf("Wait() error: %v", err)
 				return
 			}
-			// Capture the pass time immediately after Wait returns — inside the
-			// lock would include preemption between Wait and capture, fabricating
-			// sub-gap intervals on loaded CI runners (2026-08-15).
-			t0 := time.Now()
-			mu.Lock()
-			starts = append(starts, t0)
-			mu.Unlock()
 		}()
 	}
 	wg.Wait()
@@ -112,6 +113,21 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 		t time.Time
 		l int
 	}, 0, 8)
+	// Record each instance's own decision times via onPass — wall-clock capture
+	// after Wait returns includes scheduler preemption of the caller, which
+	// fabricated sub-gap intervals on loaded CI runners (2026-08-15, two scenes:
+	// capture lags 0-623ms all with non-negative solutions for a perfect 30ms
+	// rhythm; the limiter logic was correct in both).
+	for i, l := range []*Limiter{l1, l2} {
+		l.onPass = func(now time.Time) {
+			mu.Lock()
+			starts = append(starts, struct {
+				t time.Time
+				l int
+			}{now, i})
+			mu.Unlock()
+		}
+	}
 	limiters := []*Limiter{l1, l2}
 	var wg sync.WaitGroup
 	for i := 0; i < 8; i++ {
@@ -122,16 +138,6 @@ func TestLimiterCrossProcessShared(t *testing.T) {
 				t.Errorf("Wait() error: %v", err)
 				return
 			}
-			// Capture the pass time immediately after Wait returns — inside the
-			// lock would include preemption between Wait and capture, fabricating
-			// sub-gap intervals on loaded CI runners (2026-08-15).
-			t0 := time.Now()
-			mu.Lock()
-			starts = append(starts, struct {
-				t time.Time
-				l int
-			}{t0, i % 2})
-			mu.Unlock()
 		}(i)
 	}
 	wg.Wait()
