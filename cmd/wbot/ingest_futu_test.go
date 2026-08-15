@@ -4,10 +4,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/jiayu/wbot/internal/db"
 	"github.com/jiayu/wbot/internal/futu"
 )
 
@@ -31,6 +33,14 @@ const ingestFutuPage1 = `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{"kl
 ],"next_req_key":["0"]}}`
 
 const ingestFutuPage2 = `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{"kl_list":[
+	{"time":"2026-07-30 03:00:00","is_blank":false,"high_price":480.0,"open_price":475.0,"low_price":474.0,"close_price":479.0,"volume":12000000,"timestamp":1785351600.0}
+],"next_req_key":null}}`
+
+// ingestFutuDirtyPage has one dirty 1m-derived bar (high 186.9 < open 188.0,
+// like the 2016-07-22 gateway data bug) between two valid bars.
+const ingestFutuDirtyPage = `{"ret_type":0,"ret_msg":null,"err_code":null,"s2c":{"kl_list":[
+	{"time":"2026-07-30 02:00:00","is_blank":false,"high_price":475.0,"open_price":466.4,"low_price":462.8,"close_price":471.8,"volume":31791979,"timestamp":1785348000.0},
+	{"time":"2026-07-30 02:30:00","is_blank":false,"high_price":186.9,"open_price":188.0,"low_price":184.0,"close_price":187.0,"volume":1000,"timestamp":1785349800.0},
 	{"time":"2026-07-30 03:00:00","is_blank":false,"high_price":480.0,"open_price":475.0,"low_price":474.0,"close_price":479.0,"volume":12000000,"timestamp":1785351600.0}
 ],"next_req_key":null}}`
 
@@ -112,12 +122,105 @@ func TestIngestFutuDryRunGatewayDown(t *testing.T) {
 	}
 }
 
+func TestIngestFutuSkipInvalid(t *testing.T) {
+	fastFutuLimits(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/history-kline" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, ingestFutuDirtyPage)
+	}))
+	defer srv.Close()
+
+	stdout, stderr, code := captureRun(t, []string{"wbot", "ingest", "futu",
+		"-symbol", "HK.00700", "-timeframe", "30m", "-adjust", "none", "-dry-run", "-skip-invalid", "-endpoint", srv.URL})
+	if code != 0 {
+		t.Fatalf("run(-skip-invalid) = %d; want 0 (stderr: %s)", code, stderr)
+	}
+	if !strings.Contains(stderr, "ingest futu: skipped 1 invalid bar(s), first at 2026-07-29T18:30:00Z") {
+		t.Fatalf("stderr missing skip report: %s", stderr)
+	}
+	if !strings.Contains(stdout, "ingest futu: dry-run: 2 bars") {
+		t.Fatalf("stdout = %q; want dry-run with 2 bars", stdout)
+	}
+
+	_, stderr, code = captureRun(t, []string{"wbot", "ingest", "futu",
+		"-symbol", "HK.00700", "-timeframe", "30m", "-adjust", "none", "-dry-run", "-endpoint", srv.URL})
+	if code != 1 {
+		t.Fatalf("run(no flag) = %d; want 1", code)
+	}
+	if !strings.Contains(stderr, "186.9") || !strings.Contains(stderr, "< open") {
+		t.Fatalf("stderr = %q; want high < open error naming the dirty bar", stderr)
+	}
+}
+
+func TestIngestFutuSkipInvalidWritesToDB(t *testing.T) {
+	dsn := os.Getenv("WBOT_PG_DSN")
+	if dsn == "" {
+		t.Skip("WBOT_PG_DSN not set")
+	}
+	fastFutuLimits(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/history-kline" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, ingestFutuDirtyPage)
+	}))
+	defer srv.Close()
+
+	_, stderr, code := captureRun(t, []string{"wbot", "ingest", "futu",
+		"-symbol", "HK.00700", "-timeframe", "30m", "-adjust", "none", "-skip-invalid", "-dsn", dsn, "-endpoint", srv.URL})
+	if code != 0 {
+		t.Fatalf("run(-skip-invalid) = %d; want 0 (stderr: %s)", code, stderr)
+	}
+	if !strings.Contains(stderr, "ingest futu: skipped 1 invalid bar(s), first at 2026-07-29T18:30:00Z") {
+		t.Fatalf("stderr missing skip report: %s", stderr)
+	}
+	if !strings.Contains(stderr, "bars=2") {
+		t.Fatalf("stderr missing ok line: %s", stderr)
+	}
+
+	database, err := db.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	const from, to = "2026-07-29T18:00:00Z", "2026-07-29T19:00:00Z"
+	var n int
+	err = database.QueryRow(`
+SELECT COUNT(*) FROM bars WHERE symbol = 'HK.00700' AND timeframe = '30m' AND source = 'futu'
+AND ts >= $1 AND ts <= $2`, from, to).Scan(&n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("bars written: got %d want 2 (dirty bar must be skipped)", n)
+	}
+	var dirty int
+	err = database.QueryRow(`
+SELECT COUNT(*) FROM bars WHERE symbol = 'HK.00700' AND timeframe = '30m' AND source = 'futu'
+AND ts = '2026-07-29T18:30:00Z'`).Scan(&dirty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dirty != 0 {
+		t.Fatalf("dirty bar persisted: got %d want 0", dirty)
+	}
+	if _, err := database.Exec(`
+DELETE FROM bars WHERE symbol = 'HK.00700' AND timeframe = '30m' AND source = 'futu'
+AND ts >= $1 AND ts <= $2`, from, to); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIngestFutuUsageDocumentsContract(t *testing.T) {
 	_, stderr, code := captureRun(t, []string{"wbot", "ingest", "futu", "-h"})
 	if code != 0 {
 		t.Fatalf("run() = %d; want 0", code)
 	}
-	for _, want := range []string{"HK.00700", "30m", "K_1M", "K_DAY", "K_MONTH", "next_req_key", "1000", "2015-04-16", "-endpoint", "-dry-run", "none", "rehab_type"} {
+	for _, want := range []string{"HK.00700", "30m", "K_1M", "K_DAY", "K_MONTH", "next_req_key", "1000", "2015-04-16", "-endpoint", "-dry-run", "-skip-invalid", "none", "rehab_type"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("ingest futu usage missing %q: %s", want, stderr)
 		}
