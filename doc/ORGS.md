@@ -80,6 +80,7 @@
 
 - **并行单元 = git worktree**：每个进行中任务一个独立 worktree（`.claude/worktrees/<task-slug>`）+ 独立分支（`<type>/<task-slug>`）；编码 agent 只在自己的 worktree 工作，互不覆盖
 - **本地 worktree 分支不推远端（2026-08-15 用户指令）**：worktree 分支只存在本地；合并入 master（main）或正式分支时才需要远端（push/PR），不产生「每任务一个远端分支」的远端噪音
+- **任务完成即合入（2026-08-15 用户指令）**：worktree 任务完成后按流程走 CI 并合入当前主开发分支（main）并 push——**要么立即合入，要么废弃功能**，不残留已完成的分支/worktree（历史教训：296 个远端分支、46 个 worktree 堆积，收尾清理成本高）
 - 主会话管理 worktree 生命周期（创建/回收/冲突协调）；同一仓库可同时存在多个进行中任务的 worktree
 - **串行点**：合入（CI + 评审 + merge 逐 PR 进行）；同一文件的并发修改须协调（任务规划时避免重叠文件）
 - 进度贴/分诊等 GitHub 协作由 robot 执行，可与编码并行
