@@ -204,6 +204,27 @@ type Config struct {
 	Seed                                           int64
 	Timeout                                        time.Duration
 	Weights                                        RewardWeights
+	// PruneCheck is invoked after each generation. Returning false ends the
+	// search with StopReason "pruned". It observes only this search's own
+	// progress; racing state across searches lives in the caller, so group
+	// order plus this synchronous hook keeps tune runs bit-for-bit
+	// deterministic.
+	PruneCheck PruneCheck
+}
+
+// PruneCheck is the per-generation racing hook; see Config.PruneCheck.
+type PruneCheck func(progress *PruneProgress) bool
+
+// PruneProgress is the per-generation racing input. HistoryBestScore is the
+// best train reward score observed so far; the tune orchestrator compares it
+// with its own baseline and global-best state. PrunedReason is filled by the
+// hook when pruning and copied into StopDetail.
+type PruneProgress struct {
+	Generation       int
+	HistoryBestScore float64
+	BestScore        float64
+	EvaluationCount  int
+	PrunedReason     string
 }
 
 func DefaultConfig(seed int64) Config {
@@ -273,6 +294,7 @@ func search(parent context.Context, space Space, windows Windows, cfg Config, ev
 	}
 	sigma, stale := cfg.Sigma, 0
 	bestValid := math.Inf(-1)
+	historyBestScore := math.Inf(-1)
 	var global Candidate
 	all := make([]Candidate, 0, cfg.Population*cfg.MaxGenerations)
 	for generation := 0; generation < cfg.MaxGenerations; generation++ {
@@ -303,6 +325,9 @@ func search(parent context.Context, space Space, windows Windows, cfg Config, ev
 			result.EvaluationCount++
 		}
 		sort.SliceStable(pop, func(i, j int) bool { return pop[i].Score > pop[j].Score })
+		if pop[0].Score > historyBestScore {
+			historyBestScore = pop[0].Score
+		}
 		champ := pop[0]
 		validMetrics, err := evaluateWithWorkers(ctx, eval, []EvaluationRequest{{Params: champ.Params, Window: windows.Valid, Seed: validSeed}}, workers)
 		if err != nil {
@@ -333,6 +358,16 @@ func search(parent context.Context, space Space, windows Windows, cfg Config, ev
 			ValidBestScore: bestValid, BestReturn: bestReturn, MeanReturn: meanReturn, MedianReturn: medianReturn, StdReturn: stdReturn,
 			HistoryBestReturn: global.Train.NetReturn, ValidBestReturn: global.Valid.NetReturn,
 			Best: pop[0].Train, Dispersion: geneDispersion(genes), MutationScale: sigma})
+		if cfg.PruneCheck != nil {
+			progress := &PruneProgress{Generation: generation, HistoryBestScore: historyBestScore, BestScore: pop[0].Score, EvaluationCount: result.EvaluationCount}
+			if !cfg.PruneCheck(progress) {
+				if progress.PrunedReason == "" {
+					progress.PrunedReason = "orchestrator 主动终止"
+				}
+				result.StopReason, result.StopDetail = "pruned", progress.PrunedReason
+				break
+			}
+		}
 		if stale >= cfg.Patience {
 			result.StopReason, result.StopDetail = "early_stop", fmt.Sprintf("验证集连续 %d 代未达到绝对 %.6g 或相对 %.4g 改善", cfg.Patience, cfg.MinAbsoluteImprovement, cfg.MinRelativeImprovement)
 			break
