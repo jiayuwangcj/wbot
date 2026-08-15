@@ -190,18 +190,19 @@ $ wbot futu quote -symbol HK.00700
 
 account/orders 走 OpenD protobuf（11111，与 CLI `wbot futu funds|position` 同客户端同安全策略），quote/options 走 REST（22222）；契约见 [[API]]（quote/account/orders/options 各节）。
 
-## 8. `wbot ingest futu`：K 线落库（⑪-c，2026-08-01 实测）
+## 8. `wbot ingest futu`：K 线落库（⑪-c，2026-08-01 实测；2026-08-15 对齐日内回填）
 
-`wbot ingest futu` 经 REST 22222 拉取 K 线写入 bars 表，复用 `RunIngestion` / `RunEveryResilient` 管道（ON CONFLICT 幂等、-every 调度韧性，见 [[DATA_PIPELINE]]）：
+`wbot ingest futu` 经 REST 22222 拉取 K 线写入 bars 表，复用 `RunIngestion` 管道（ON CONFLICT DO NOTHING 幂等、ingestion_runs 记录，见 [[DATA_PIPELINE]]）；`-adjust` 默认 `none`（真实成交价，与期权快照底层价同口径）：
 
 ```bash
-wbot ingest futu -symbol HK.00700 -timeframe K_DAY [-addr http://127.0.0.1:22222] [-from -to] [-every] [-dry-run]
+wbot ingest futu -symbol HK.00700 -timeframe 30m [-adjust none] [-endpoint http://127.0.0.1:22222] [-from -to] [-dry-run]
 wbot ingest futu -symbol HK.00700 -timeframe K_1M -from 2026-07-30T00:00:00Z -to 2026-07-31T23:59:59Z   # 分钟线建议显式范围
 ```
 
-- `-timeframe` 用 futu 名称：`K_1M K_5M K_15M K_30M K_60M K_DAY K_WEEK K_MONTH`（ingest 名称 `1m 5m 15m 30m 60m 1d 1w 1mo` 亦可），落库用 ingest 约定（`bars.timeframe`）
-- `-from`/`-to` RFC3339（空 from = 2004 级全量历史，空 to = now+24h 含当日未收盘 bar）；`-dry-run` 只拉取并打印条数与首末时间，不碰数据库
-- `-every` 重复执行计入同一限频池；未收盘 bar 为部分数据，重拉因 ON CONFLICT 不覆盖（intraday 滚动更新时注意）
+- `-timeframe` 用 futu 名称：`K_1M K_5M K_15M K_30M K_60M K_DAY K_WEEK K_MONTH`（ingest 名称 `1m 5m 15m 30m 60m 1d 1w 1mo` 亦可，默认 30m），落库用 ingest 约定（`bars.timeframe`）
+- `-from`/`-to` RFC3339（空 from = 全量历史，实测 HK.00700 30m/60m 深至 2015-04-16 起可拉全量；空 to = now+24h 含当日未收盘 bar）；`-dry-run` 只拉取并打印条数与首末时间，不碰数据库
+- 分页：1000 根/页，`next_req_key` 游标翻页至末页；请求计入全局 futu 限频池（见下节档位）
+- 未收盘 bar 为部分数据，重拉因 ON CONFLICT DO NOTHING 不覆盖（intraday 滚动更新时注意）
 
 ### K 线 REST 契约（实测路径）
 
@@ -225,7 +226,7 @@ wbot ingest futu -symbol HK.00700 -timeframe K_1M -from 2026-07-30T00:00:00Z -to
 - **快照 `/api/quote`**：叠加 `SnapshotLimit` **1 次/3s**（=10 次/30s，官方 3203 下限档；脚本化循环拉快照触发限权属红线）
 - **K 线请求**：叠加 `KlineLimit` 5 req/s（200ms/请求）
 - **history-kline 第 1 页**：叠加 `HistoryPageLimit` 3s/次（官方 10 次/30s 的均匀化）
-- **分页批间**：强制 ≥1s/批（`BatchGap`，含 -every 循环）
+- **分页批间**：强制 ≥1s/批（`BatchGap`）
 - **超限响应**：HTTP 429 → 1s/2s 指数退避重试至多 3 次后报错停止，不硬拉
 - **生效范围**：限频池**进程内**共享(默认)；设置环境变量 `FUTU_RATELIMIT_DIR=<目录>` 后**跨进程**共享(2026-08-03 落地)——各档位在该目录下各一个 flock 时间戳文件，单 flock 会话内完成读-决策-标记，无竞态；文件不可写自动降级纯内存。shell 循环反复启动 wbot / 多进程并发的场景应设置（如 `export FUTU_RATELIMIT_DIR=~/.wbot/ratelimit`）
 

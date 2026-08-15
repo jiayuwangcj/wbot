@@ -13,7 +13,7 @@
 | `back` | 后复权 | 2 |
 
 - **PK 含 adjust**：同一 symbol/timeframe/ts 不同复权是不同数据，各自成行
-- 拉取指定复权：`wbot ingest futu -adjust fwd|none`（默认 `fwd`，回测用）；migration 003 之前的存量行 `adjust='none'`（列默认值）
+- 拉取指定复权：`wbot ingest futu -adjust none|fwd|back`（默认 `none` 真实成交价；回测默认 `fwd`，no-data 补救命令需显式 `-adjust fwd`）；migration 003 之前的存量行 `adjust='none'`（列默认值）
 - 腾讯接口参数 `qfq` 表示前复权，落库映射为 canonical `adjust='fwd'`；报告保留 provider 语义 `adjusted='qfq'`，避免把腾讯参数名误写成 Futu rehab 名。
 
 ## 来源（source）

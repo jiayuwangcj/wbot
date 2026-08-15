@@ -11,7 +11,7 @@
 | `wbot ingest url -url <url>` | 从 HTTP(S) URL 拉取同格式 JSON bars |
 | `wbot ingest tencent -symbol HK.00700 -count 1000` | 腾讯免费 qfq 日 K 回填；写 `adjust=fwd,source=tencent`，默认剔除北京时间今日的形成 K（`-include-forming` 可保留），请求间隔 ≥1s，瞬时失败指数退避；美股当前仅单日并显式提示 |
 | `wbot ingest hkex -symbol HK.00700 -class TCH -lot-size 100 -from YYYY-MM-DD -to YYYY-MM-DD` | HKEX 官方 DTOP + RP006 港股期权日终回填；写官方结算价/IV/成交/OI及研究态 snapshot，官方站请求间隔 ≥1s、失败退避、逐日提交、整段可幂等重跑；默认回看 550 日，最长 730 日 |
-| `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust fwd\|none` 默认 fwd） |
+| `wbot ingest futu` | 从 futu-opend-rs 网关拉 K 线（见 [[FUTU]] §8；`-adjust none\|fwd\|back` 默认 none，与期权快照底层价同口径） |
 | `wbot ingest futu-option` | 期权链日 K + 正股日 K，缓存优先（见 [[FUTU]] §10、[[DATA_STANDARD]]） |
 | `wbot ingest account` | 经 OpenD protobuf（只读 funds 查询）把账户资金快照写入 `account_snapshots`（资产曲线数据层；见下文 §账户资产快照、[[FUTU]] §9） |
 | `wbot ingest status` | 只读列出最近 `ingestion_runs`（`-limit` 可调） |
