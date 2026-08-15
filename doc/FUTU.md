@@ -195,9 +195,11 @@ account/orders 走 OpenD protobuf（11111，与 CLI `wbot futu funds|position` �
 `wbot ingest futu` 经 REST 22222 拉取 K 线写入 bars 表，复用 `RunIngestion` 管道（ON CONFLICT DO NOTHING 幂等、ingestion_runs 记录，见 [[DATA_PIPELINE]]）；`-adjust` 默认 `none`（真实成交价，与期权快照底层价同口径）：
 
 ```bash
-wbot ingest futu -symbol HK.00700 -timeframe 30m [-adjust none] [-endpoint http://127.0.0.1:22222] [-from -to] [-dry-run]
+wbot ingest futu -symbol HK.00700 -timeframe 30m [-adjust none] [-endpoint http://127.0.0.1:22222] [-from -to] [-dry-run] [-skip-invalid]
 wbot ingest futu -symbol HK.00700 -timeframe K_1M -from 2026-07-30T00:00:00Z -to 2026-07-31T23:59:59Z   # 分钟线建议显式范围
 ```
+
+- `-skip-invalid`：跳过源侧单根非法 bar（如 2016-07-22 实测 `high 186.9 < open 188`，网关脏数据）并打印跳过数与首根时间，继续写入；不置位时整批校验失败（默认严格）。全量历史回填（2015-04-16 起）实测需置位
 
 - `-timeframe` 用 futu 名称：`K_1M K_5M K_15M K_30M K_60M K_DAY K_WEEK K_MONTH`（ingest 名称 `1m 5m 15m 30m 60m 1d 1w 1mo` 亦可，默认 30m），落库用 ingest 约定（`bars.timeframe`）
 - `-from`/`-to` RFC3339（空 from = 全量历史，实测 HK.00700 30m/60m 深至 2015-04-16 起可拉全量；空 to = now+24h 含当日未收盘 bar）；`-dry-run` 只拉取并打印条数与首末时间，不碰数据库

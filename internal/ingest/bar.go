@@ -41,26 +41,34 @@ func filterRange(bars []Bar, from, to time.Time) []Bar {
 	return out
 }
 
+// ValidateBar checks OHLCV sanity of one bar (ts non-zero, high/low bounds);
+// the first failing condition is returned.
+func ValidateBar(b Bar) error {
+	switch {
+	case b.Ts.IsZero():
+		return errors.New("ingest: validate bar: zero timestamp")
+	case b.High < b.Low:
+		return fmt.Errorf("ingest: validate bar: high %v < low %v", b.High, b.Low)
+	case b.High < b.Open:
+		return fmt.Errorf("ingest: validate bar: high %v < open %v", b.High, b.Open)
+	case b.High < b.Close:
+		return fmt.Errorf("ingest: validate bar: high %v < close %v", b.High, b.Close)
+	case b.Low > b.Open:
+		return fmt.Errorf("ingest: validate bar: low %v > open %v", b.Low, b.Open)
+	case b.Low > b.Close:
+		return fmt.Errorf("ingest: validate bar: low %v > close %v", b.Low, b.Close)
+	}
+	return nil
+}
+
 // ValidateBars checks OHLCV sanity and strictly increasing ts; errors name the first offending bar.
 func ValidateBars(bars []Bar) error {
 	if len(bars) == 0 {
 		return errors.New("ingest: validate bars: empty bar slice")
 	}
 	for i, b := range bars {
-		if b.Ts.IsZero() {
-			return fmt.Errorf("ingest: validate bars: bar %d: zero timestamp", i)
-		}
-		switch {
-		case b.High < b.Low:
-			return fmt.Errorf("ingest: validate bars: bar %d: high %v < low %v", i, b.High, b.Low)
-		case b.High < b.Open:
-			return fmt.Errorf("ingest: validate bars: bar %d: high %v < open %v", i, b.High, b.Open)
-		case b.High < b.Close:
-			return fmt.Errorf("ingest: validate bars: bar %d: high %v < close %v", i, b.High, b.Close)
-		case b.Low > b.Open:
-			return fmt.Errorf("ingest: validate bars: bar %d: low %v > open %v", i, b.Low, b.Open)
-		case b.Low > b.Close:
-			return fmt.Errorf("ingest: validate bars: bar %d: low %v > close %v", i, b.Low, b.Close)
+		if err := ValidateBar(b); err != nil {
+			return fmt.Errorf("ingest: validate bars: bar %d: %w", i, err)
 		}
 		if i > 0 && !b.Ts.After(bars[i-1].Ts) {
 			return fmt.Errorf("ingest: validate bars: bar %d: ts %v not after previous %v", i, b.Ts, bars[i-1].Ts)

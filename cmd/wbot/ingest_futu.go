@@ -31,6 +31,27 @@ func (s prefetchedFutuBars) Bars(ctx context.Context, _ domain.Symbol, _ string,
 	return append([]ingest.Bar(nil), s.bars...), nil
 }
 
+// filterInvalidBars drops bars failing per-bar OHLC sanity checks, returning the
+// filtered slice, the count skipped and the ts of the first dropped bar.
+func filterInvalidBars(bars []ingest.Bar) ([]ingest.Bar, int, time.Time) {
+	out := make([]ingest.Bar, 0, len(bars))
+	var skipped int
+	var first time.Time
+	haveFirst := false
+	for _, b := range bars {
+		if err := ingest.ValidateBar(b); err != nil {
+			skipped++
+			if !haveFirst {
+				first = b.Ts
+				haveFirst = true
+			}
+			continue
+		}
+		out = append(out, b)
+	}
+	return out, skipped, first
+}
+
 // runIngestFutu implements `wbot ingest futu`: one-shot K-line backfill from the
 // futu-opend-rs gateway REST /api/history-kline (paged via next_req_key) into the
 // bars table as adjust=none/source=futu, the same raw-price basis as option snapshots.
@@ -48,6 +69,7 @@ func runIngestFutu(prog string, argv []string) int {
 	from := fs.String("from", "", "start of bar range, RFC3339; empty = earliest available (HK.00700 30m/60m depth: 2015-04-16)")
 	to := fs.String("to", "", "end of bar range, RFC3339; empty = latest available bar")
 	dryRun := fs.Bool("dry-run", false, "fetch bars and print a summary without touching the database")
+	skipInvalid := fs.Bool("skip-invalid", false, "skip individual invalid bars from the source instead of failing the whole batch")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s ingest futu -symbol HK.00700 -timeframe 30m [flags]\n\n", prog)
@@ -114,6 +136,13 @@ func runIngestFutu(prog string, argv []string) int {
 		bars, err := src.Bars(ctx, domain.Symbol(sym), ingestTF, fromT, toT)
 		if err != nil {
 			return nil, err
+		}
+		if *skipInvalid {
+			filtered, skipped, first := filterInvalidBars(bars)
+			if skipped > 0 {
+				fmt.Fprintf(os.Stderr, "ingest futu: skipped %d invalid bar(s), first at %s\n", skipped, first.Format(time.RFC3339))
+			}
+			bars = filtered
 		}
 		if err := ingest.ValidateBars(bars); err != nil {
 			return nil, err
