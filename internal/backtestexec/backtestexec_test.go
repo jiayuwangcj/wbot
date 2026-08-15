@@ -361,3 +361,113 @@ func TestRunMultiRejects(t *testing.T) {
 		})
 	}
 }
+
+// TestSourceHashStreamMatchesSourceHash proves the streaming digest the chunked
+// path feeds is byte-identical to the single-call sourceHash, both in one pass
+// and when bars/batches are split into chunks with overlapping lookback regions.
+func TestSourceHashStreamMatchesSourceHash(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	expiry := start.AddDate(0, 0, 30)
+	theta := -0.1
+	var bars []ingest.Bar
+	var rows []wheelstore.QuoteSnapshotRecord
+	for day := 0; day < 12; day++ {
+		ts := start.AddDate(0, 0, day)
+		bars = append(bars, ingest.Bar{Ts: ts, Open: 100, High: 100, Low: 100, Close: 100, Volume: 1, Source: "test", Adjusted: "none"})
+		for _, p := range []struct {
+			sym    string
+			strike float64
+			kind   wheel.OptionType
+		}{
+			{"P95", 95, wheel.Put}, {"C105", 105, wheel.Call},
+		} {
+			bid, delta := 2.0, -0.30
+			if p.kind == wheel.Call {
+				delta = 0.30
+			}
+			rows = append(rows, wheelstore.QuoteSnapshotRecord{
+				Symbol: p.sym, Underlying: "U.US", OptionType: string(p.kind), Strike: p.strike, Expiry: expiry,
+				Source: "test", SnapshotKey: "batch-1", UnderlyingPrice: floatPtr(100), Delta: &delta,
+				Bid: &bid, Ask: floatPtr(2.1), IV: floatPtr(0.2), Theta: &theta,
+				Volume: int64Ptr(1000), OpenInterest: int64Ptr(2000), LotSize: int64Ptr(100), ObservedAt: ts,
+			})
+		}
+	}
+	opts, err := backtest.OptionsDataFromQuoteSnapshots(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := sourceHash(bars, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("single pass", func(t *testing.T) {
+		h := newSourceHashStream()
+		h.addBars(bars)
+		h.addOwnedBatches(opts, time.Time{}, map[batchKey]struct{}{})
+		got, err := h.digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("stream digest = %s; want %s", got, want)
+		}
+	})
+
+	t.Run("chunked with overlap", func(t *testing.T) {
+		h := newSourceHashStream()
+		seen := map[batchKey]struct{}{}
+		for startIdx := 0; startIdx < len(bars); startIdx += 5 {
+			end := startIdx + 5
+			if end > len(bars) {
+				end = len(bars)
+			}
+			chunkBars := bars[startIdx:end]
+			chunkFrom := chunkBars[0].Ts.Add(-24 * time.Hour)
+			chunkTo := chunkBars[len(chunkBars)-1].Ts
+			var chunkRows []wheelstore.QuoteSnapshotRecord
+			for _, r := range rows {
+				if !r.ObservedAt.Before(chunkFrom) && !r.ObservedAt.After(chunkTo) {
+					chunkRows = append(chunkRows, r)
+				}
+			}
+			chunkOpts, err := backtest.OptionsDataFromQuoteSnapshots(chunkRows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ownedFrom := chunkBars[0].Ts
+			if startIdx == 0 {
+				ownedFrom = time.Time{}
+			}
+			h.addBars(chunkBars)
+			h.addOwnedBatches(chunkOpts, ownedFrom, seen)
+		}
+		got, err := h.digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("chunked stream digest = %s; want %s", got, want)
+		}
+	})
+
+	t.Run("no option data", func(t *testing.T) {
+		want, err := sourceHash(bars, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := newSourceHashStream()
+		h.addBars(bars)
+		got, err := h.digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("no-option stream digest = %s; want %s", got, want)
+		}
+	})
+}
+
+func floatPtr(v float64) *float64 { return &v }
+func int64Ptr(v int64) *int64     { return &v }
