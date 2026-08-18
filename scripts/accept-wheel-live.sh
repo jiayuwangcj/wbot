@@ -142,12 +142,16 @@ watchlist_status() {
 }
 
 echo "accept-wheel-live: scenario A dead gateway"
+# Scene A must never touch a real Telegram token: an empty config dir makes
+# marketOpenNotifierFromConfig see no credentials and skip the startup push.
+config_dir_empty="$tmp/wbot-config-empty"
+mkdir -p "$config_dir_empty"
 start_serve "$tmp/serve-a.log" \
   "WBOT_WHEEL_FORCE_MARKET_OPEN=1" \
   "FUTU_GATEWAY_URL=http://127.0.0.1:1" \
   "FUTU_PROTO_ADDR=127.0.0.1:1" \
   "LLM_BASE_URL=" "LLM_API_KEY=" "LLM_MODEL=" \
-  "TELEGRAM_API_BASE_URL=" "WBOT_CONFIG_DIR="
+  "TELEGRAM_API_BASE_URL=" "WBOT_CONFIG_DIR=$config_dir_empty"
 health_code="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "$serve_base/v1/health")"
 check "场景 A /v1/health 仍为 200" 200 "$health_code"
 
@@ -245,7 +249,11 @@ for _ in $(seq 1 240); do
   sleep 1
 done
 check "场景 B Telegram dismiss 当日静默生效" 1 "$([[ "$dismissed" == "1" ]] && echo 1 || echo 0)"
-check "场景 B fake Telegram 至少收到提醒" 1 "$(grep -c 'fake-telegram: sendMessage=1' "$tmp/fake.log" 2>/dev/null || true)"
+# Content markers (fake-telegram logs market-open-prep=/wheel-alert=/sendMessage=)
+# are robust where the cumulative sendMessage=N counter is not: the market-open
+# prep report and the wheel ALERT card each must have arrived.
+check "场景 B fake Telegram 收到开盘准备推送" 1 "$([[ "$(grep -c 'fake-telegram: market-open-prep=' "$tmp/fake.log" 2>/dev/null || true)" -ge 1 ]] && echo 1 || echo 0)"
+check "场景 B fake Telegram 收到 wheel ALERT" 1 "$([[ "$(grep -c 'fake-telegram: wheel-alert=' "$tmp/fake.log" 2>/dev/null || true)" -ge 1 ]] && echo 1 || echo 0)"
 stop_serve
 remove_b_rc=0
 "$bin" watchlist remove -dsn "$dsn" -symbol "$sym_b" >/dev/null 2>&1 || remove_b_rc=$?

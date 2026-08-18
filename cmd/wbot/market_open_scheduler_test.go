@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jiayu/wbot/internal/config"
+	"github.com/jiayu/wbot/internal/httpapi"
+	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/notify"
 )
 
@@ -199,5 +203,71 @@ func TestServeHelpMentionsMarketOpen(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("serve help missing %s: %q", want, out)
 		}
+	}
+}
+
+// marketOpenClusterStoreStub injects per-method failures so the cluster view's
+// OK/Err semantics are testable without a DB (P1-1: a failing sub-query must
+// surface as a failure, never a silent all-zero view).
+type marketOpenClusterStoreStub struct {
+	pingErr   error
+	countsErr error
+	barsErr   error
+	optsErr   error
+	counts    ingest.RunCounts
+	bars      []ingest.BarCoverage
+	opts      []ingest.OptionFreshness
+}
+
+func (m marketOpenClusterStoreStub) Ping(context.Context) error { return m.pingErr }
+func (m marketOpenClusterStoreStub) RunStatusCounts(context.Context) (ingest.RunCounts, error) {
+	return m.counts, m.countsErr
+}
+func (m marketOpenClusterStoreStub) BarCoverage(context.Context) ([]ingest.BarCoverage, error) {
+	return m.bars, m.barsErr
+}
+func (m marketOpenClusterStoreStub) OptionFreshness(context.Context) ([]ingest.OptionFreshness, error) {
+	return m.opts, m.optsErr
+}
+
+// TestCollectMarketOpenClusterSubQueryFailureNotSilent: P1-1 回归——子查询
+// (RunStatusCounts) 失败必须 OK=false 让渲染走「查询失败」分支,boss 绝不看
+// 到「运行 0/成功 0/失败 0」的全零假象。
+func TestCollectMarketOpenClusterSubQueryFailureNotSilent(t *testing.T) {
+	store := marketOpenClusterStoreStub{countsErr: errors.New("boom")}
+	c := collectMarketOpenCluster(context.Background(), store, httpapi.ProcessMeta{Version: "1.2.3", StartedAt: time.Now()})
+	if c.OK {
+		t.Fatal("cluster OK=true; want false when a sub-query fails")
+	}
+	if !strings.Contains(c.Err, "pipeline counts") {
+		t.Fatalf("Err = %q; want pipeline counts error", c.Err)
+	}
+	text := formatMarketOpenReport(marketOpenReportData{GeneratedAt: time.Now(), Cluster: c})
+	if !strings.Contains(text, "查询失败") || !strings.Contains(text, "pipeline counts") {
+		t.Fatalf("report hides sub-query failure:\n%s", text)
+	}
+	if strings.Contains(text, "数据管道") {
+		t.Fatalf("report shows all-zero pipeline when sub-query failed:\n%s", text)
+	}
+}
+
+// TestCollectMarketOpenClusterAllQueriesSucceed: OK=true 仅在全部子查询成功时
+// 置位(与 P1-1 语义互锁,防止过早 OK=true 回归)。
+func TestCollectMarketOpenClusterAllQueriesSucceed(t *testing.T) {
+	store := marketOpenClusterStoreStub{
+		counts: ingest.RunCounts{Running: 1, Succeeded: 42, Failed: 2},
+		bars: []ingest.BarCoverage{
+			{Symbol: "HK.00700", Timeframe: "1d", MaxTs: time.Now()},
+		},
+		opts: []ingest.OptionFreshness{
+			{Underlying: "HK.00700", Source: "futu", MaxTs: time.Now()},
+		},
+	}
+	c := collectMarketOpenCluster(context.Background(), store, httpapi.ProcessMeta{Version: "1.2.3", StartedAt: time.Now().Add(-time.Hour)})
+	if !c.OK {
+		t.Fatalf("cluster OK=false; want true when all queries succeed: Err=%q", c.Err)
+	}
+	if c.PipelineSucceeded != 42 || c.BarsSymbols != 1 || c.OptionsFresh != 1 {
+		t.Fatalf("cluster = %+v", c)
 	}
 }

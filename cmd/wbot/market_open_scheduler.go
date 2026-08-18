@@ -182,7 +182,11 @@ func collectMarketOpenReport(ctx context.Context, database *sql.DB, meta httpapi
 	}
 
 	d.Account = collectMarketOpenAccount(ctx, env)
-	d.Cluster = collectMarketOpenCluster(ctx, database, meta)
+	var clusterStore marketOpenClusterStore
+	if database != nil {
+		clusterStore = httpapi.NewDBStore(database)
+	}
+	d.Cluster = collectMarketOpenCluster(ctx, clusterStore, meta)
 	return d
 }
 
@@ -252,13 +256,22 @@ func collectMarketOpenAccount(ctx context.Context, env futu.Env) marketOpenAccou
 	return out
 }
 
-func collectMarketOpenCluster(ctx context.Context, database *sql.DB, meta httpapi.ProcessMeta) marketOpenCluster {
+// marketOpenClusterStore is the narrow DB surface the cluster view needs
+// (subset of httpapi.Store; a mock is injected in tests so a failing
+// sub-query is provably surfaced instead of a silent all-zero view).
+type marketOpenClusterStore interface {
+	Ping(ctx context.Context) error
+	RunStatusCounts(ctx context.Context) (ingest.RunCounts, error)
+	BarCoverage(ctx context.Context) ([]ingest.BarCoverage, error)
+	OptionFreshness(ctx context.Context) ([]ingest.OptionFreshness, error)
+}
+
+func collectMarketOpenCluster(ctx context.Context, store marketOpenClusterStore, meta httpapi.ProcessMeta) marketOpenCluster {
 	out := marketOpenCluster{Version: meta.Version, UptimeSeconds: time.Since(meta.StartedAt).Seconds()}
-	if database == nil {
+	if store == nil {
 		out.Err = "db ping: nil db"
 		return out
 	}
-	store := httpapi.NewDBStore(database)
 	pctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	start := time.Now()
@@ -266,7 +279,6 @@ func collectMarketOpenCluster(ctx context.Context, database *sql.DB, meta httpap
 		out.Err = "db ping: " + err.Error()
 		return out
 	}
-	out.OK = true
 	out.DBLatencyMS = time.Since(start).Seconds() * 1000
 	counts, err := store.RunStatusCounts(ctx)
 	if err != nil {
@@ -300,6 +312,7 @@ func collectMarketOpenCluster(ctx context.Context, database *sql.DB, meta httpap
 			out.OptionsFresh++
 		}
 	}
+	out.OK = true
 	return out
 }
 
