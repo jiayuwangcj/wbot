@@ -254,10 +254,12 @@ func runServe(prog string, argv []string) int {
 	llmInterval := fs.Duration("llm-interval", 5*time.Minute, "LLM strategy evaluation interval")
 	wheelEnv := fs.String("wheel-env", "sim", "wheel account env: sim (simulate) or real (read-only evaluation)")
 	telegramRun := fs.Bool("telegram-run", false, "run the wheel Telegram/Discord alert/confirm loop (default off; tokens/chat_ids from ~/.wbot/wbot.conf)")
+	prepAtHK := fs.String("prep-at-hk", "09:15", "market-open prep status push time in local HH:MM (Asia/Shanghai; before HK open)")
+	prepAtUS := fs.String("prep-at-us", "21:15", "market-open prep status push time in local HH:MM (Asia/Shanghai; before US pre-market)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status. With -telegram-run, ALERT signals approved by the LLM gate are pushed to Telegram with yes/no/dismiss buttons (token/chat_ids from ~/.wbot/wbot.conf; yes places a sim-env market order). With Discord credentials set in wbot.conf, the same signals are pushed as embed cards to the configured Discord channel and button confirmations arrive at POST /v1/discord/interactions (Ed25519-verified; the only public-facing path).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status. With -telegram-run, ALERT signals approved by the LLM gate are pushed to Telegram with yes/no/dismiss buttons (token/chat_ids from ~/.wbot/wbot.conf; yes places a sim-env market order). With Discord credentials set in wbot.conf, the same signals are pushed as embed cards to the configured Discord channel and button confirmations arrive at POST /v1/discord/interactions (Ed25519-verified; the only public-facing path). With -prep-at-hk/-prep-at-us, serve pushes a market-open preparation status report to Telegram at startup and before HK/US open (read-only status report; token/chat_ids from ~/.wbot/wbot.conf).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -379,6 +381,9 @@ func runServe(prog string, argv []string) int {
 		}
 		go startTelegramScheduler(runCtx, database, wheelEnvVal)
 	}
+	// 开盘准备状态推送(2026-08-18):serve 启动后立即 + HK/US 开盘前各推一次
+	// Telegram 状态报告;凭据复用 wbot.conf,未配置时静默跳过(尽力而为)。
+	go startMarketOpenScheduler(runCtx, database, meta, wheelEnvVal, *prepAtHK, *prepAtUS)
 
 	<-runCtx.Done()
 
