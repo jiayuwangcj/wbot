@@ -422,11 +422,14 @@ func TestFilterByDTE(t *testing.T) {
 }
 
 func TestSnapshotOptionChainFiltersExpiredByDTE(t *testing.T) {
+	// 到期日相对当前时间计算:固定日期会随时间漂移而失效(2026-08-18 实测
+	// 08-21 合约 DTE 缩到 3,被 min=5 过滤,链条变空)。
+	now := time.Now()
 	s := Snapshot{
 		Symbol: "HK.00700",
 		Options: []Option{
-			{Contract: "HK.TCH260812P450000", Expiry: "2026-08-12T00:00:00Z"}, // 已过期
-			{Contract: "HK.TCH260821P450000", Expiry: "2026-08-21T00:00:00Z"}, // DTE 9
+			{Contract: "HK.TCH260812P450000", Expiry: now.Add(-24 * time.Hour).Format(time.RFC3339)},    // 已过期
+			{Contract: "HK.TCH260821P450000", Expiry: now.Add(8 * 24 * time.Hour).Format(time.RFC3339)}, // DTE 9
 		},
 	}
 	got, err := (snapshotToolExecutor{}).OptionChain(context.Background(), "HK.00700", 5, 10, 0, s)
