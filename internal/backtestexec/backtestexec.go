@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/jiayu/wbot/internal/backtest"
+	"github.com/jiayu/wbot/internal/datacheck"
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/wheelstore"
@@ -56,6 +57,11 @@ type Options struct {
 	// training windows use it to widen history when the search space tunes
 	// min_iv_rank, which needs a 1-year IV window (backtest.IVRankWindow).
 	QuoteFrom time.Time
+	// TraceCandidates materializes the full expiry-rejected candidate list into
+	// every signal's CandidateDetails (wheel audit trail). Default false keeps
+	// candidate details out of memory for long windows; re-run with the flag to
+	// deterministically re-fetch them (doc/BACKTEST.md).
+	TraceCandidates bool
 }
 
 // SaveParams returns the run inputs persisted by `wbot backtest -save` and
@@ -103,6 +109,19 @@ type Prepared struct {
 	sourceHash string
 }
 
+// tradingDayCalendar adapts the offline datacheck calendar to wheel's minimal
+// TradingCalendar interface. The backtest exec layer injects it so a daily-close
+// snapshot stays fresh for the next trading day's intraday bar (Friday 16:00
+// HKEX snapshot → Monday bar), while the realtime wheelrun path leaves the
+// calendar nil and keeps strict wall-clock freshness.
+type tradingDayCalendar struct {
+	cal datacheck.Calendar
+}
+
+func (c tradingDayCalendar) IsTradingDay(symbol string, date time.Time) bool {
+	return c.cal.Session(symbol, date).TradingDay
+}
+
 // Build validates a strategy name + params against the CLI/API contract and
 // returns the ready strategy; templ is nil for hold/buy-hold. It is the shared
 // validation surface: unknown strategy, params on hold/buy-hold, unknown
@@ -124,8 +143,23 @@ func Build(name string, params map[string]any) (backtest.Strategy, *strategy.Tem
 	if err != nil {
 		return nil, nil, err
 	}
+	if ws, ok := s.(*strategy.WheelStrategy); ok {
+		ws.Config.Calendar = tradingDayCalendar{cal: datacheck.NewExchangeCalendar()}
+	}
 	templ, _ := strategy.Lookup(name)
 	return s, templ, nil
+}
+
+// ApplyTrace applies Options-level trace settings to a freshly built strategy.
+// Callers that carry an Options (Prepare/RunPrepared, batch runner) call this
+// so -trace-candidates reaches the wheel adapter after Build.
+func ApplyTrace(s backtest.Strategy, o Options) {
+	if !o.TraceCandidates {
+		return
+	}
+	if ws, ok := s.(*strategy.WheelStrategy); ok {
+		ws.TraceCandidates = true
+	}
 }
 
 // Prepare loads bars (and option quotes when the strategy needs them) from the
@@ -140,6 +174,7 @@ func Prepare(ctx context.Context, db *sql.DB, o Options) (*Prepared, error) {
 	if err != nil {
 		return nil, err
 	}
+	ApplyTrace(s, o)
 	bars, err := ingest.QueryBars(ctx, db, o.Symbol, o.Timeframe, o.Adjust, o.From, o.To, o.Limit, false)
 	if err != nil {
 		return nil, err
@@ -186,6 +221,7 @@ func (p *Prepared) RunPrepared(ctx context.Context, o Options) (*Outcome, error)
 	if err != nil {
 		return nil, err
 	}
+	ApplyTrace(s, o)
 	opts := p.options
 	if opts != nil {
 		// RunSeed is per evaluation. Copy the small wrapper instead of mutating

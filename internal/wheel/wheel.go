@@ -95,6 +95,47 @@ func (c Config) QuoteMaxAge() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
+// TradingCalendar reports whether a symbol trades on a given date. It is the
+// minimal calendar the freshness rule needs: the offline datacheck calendar
+// satisfies it through a thin adapter without wheel importing datacheck.
+type TradingCalendar interface {
+	IsTradingDay(symbol string, date time.Time) bool
+}
+
+// QuoteFresh reports whether a quote for symbol observed at qt is still fresh
+// at asOf. The wall-clock QuoteMaxAge window applies; beyond it a configured
+// TradingCalendar keeps a daily-close snapshot fresh on the immediately
+// following trading day (a Friday close stays valid for a Monday bar).
+func (c Config) QuoteFresh(symbol string, qt, asOf time.Time) bool {
+	if qt.IsZero() || asOf.IsZero() {
+		return false
+	}
+	if asOf.Sub(qt) <= c.QuoteMaxAge() {
+		return true
+	}
+	if c.Calendar == nil {
+		return false
+	}
+	next := nextTradingDay(c.Calendar, symbol, qt)
+	return !next.IsZero() && next.Equal(calendarDate(asOf))
+}
+
+// nextTradingDay returns the first trading day strictly after date for symbol,
+// or the zero time when the calendar is nil or finds none within a bounded
+// holiday horizon.
+func nextTradingDay(cal TradingCalendar, symbol string, after time.Time) time.Time {
+	if cal == nil {
+		return time.Time{}
+	}
+	for d := 1; d <= 14; d++ {
+		candidate := after.AddDate(0, 0, d)
+		if cal.IsTradingDay(symbol, candidate) {
+			return calendarDate(candidate)
+		}
+	}
+	return time.Time{}
+}
+
 // The aliases intentionally remain aliases of string. This makes JSON/YAML
 // configuration pleasant and does not require callers to cast string values.
 type State = string
@@ -157,6 +198,12 @@ type Config struct {
 	// MaxQuoteAgeSeconds is required freshness in seconds. Zero uses the
 	// conservative one-day default so a quote can never be timeless.
 	MaxQuoteAgeSeconds int `json:"max_quote_age_seconds,omitempty" yaml:"max_quote_age_seconds,omitempty"`
+
+	// Calendar optionally supplies a trading-day calendar for the freshness
+	// rule. Nil keeps strict wall-clock QuoteMaxAge (the realtime wheelrun
+	// path). The backtest adapter injects an offline exchange calendar so a
+	// daily-close snapshot stays fresh for the next trading day's bar.
+	Calendar TradingCalendar `json:"-" yaml:"-"`
 }
 
 func (c Config) Validate() error {
@@ -481,7 +528,7 @@ func (q OptionQuote) validate(asOf time.Time, cfg Config, asOfDate, minExpiryDat
 	if !asOf.IsZero() && qt.After(asOf) {
 		return errors.New("wheel: quote is from the future")
 	}
-	if !asOf.IsZero() && asOf.Sub(qt) > cfg.QuoteMaxAge() {
+	if !asOf.IsZero() && !cfg.QuoteFresh(q.name(), qt, asOf) {
 		return errors.New("wheel: quote is stale")
 	}
 	if !asOf.IsZero() && !q.Expiry.After(asOf) {

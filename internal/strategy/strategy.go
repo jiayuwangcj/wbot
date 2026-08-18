@@ -353,12 +353,24 @@ func ContractTemplates() []ContractTemplate {
 type WheelStrategy struct {
 	Config     wheel.Config
 	LastSignal wheel.Signal
+	// TraceCandidates materializes the full expiry-rejected candidate list into
+	// every signal's CandidateDetails. Default off: a full-window backtest keeps
+	// one CandidateEvaluation per chain contract per bar (~400B each), which
+	// exceeds memory for long 1m windows. The backtest runner re-runs with
+	// TraceCandidates=true to re-fetch the audit trail deterministically.
+	TraceCandidates bool
 	// Live trade gates need the last effective fill price; the adapter tracks
 	// it from FillCount increments (settlement only counts option fills).
 	seenFillCount int64
 	prevBarClose  float64
 	lastFillPrice float64
 }
+
+// KeepCandidateDetails reports whether the wheel audit trail should materialize
+// the per-bar candidate list into signal traces. It lets the backtest runner
+// skip the copy when tracing is off (TraceCandidates=false), keeping each
+// signal small for long windows (doc/BACKTEST.md).
+func (s *WheelStrategy) KeepCandidateDetails() bool { return s.TraceCandidates }
 
 // Wheel is retained as a concise exported type name for callers that want to
 // type assert the Factory result.
@@ -480,8 +492,11 @@ func (s *WheelStrategy) OnBar(ctx context.Context, bar ingest.Bar, st *backtest.
 	}
 	// A close (profit_take_pct) signal is an exit decision on a held leg, not
 	// a candidate selection; restoring expiry-rejected candidates would
-	// misattribute unrelated diagnostics to it.
-	if !signal.ClosePosition {
+	// misattribute unrelated diagnostics to it. The restore is also gated on
+	// TraceCandidates: the full-chain candidate audit is re-fetchable by
+	// re-running with the flag, and materializing ~300 contracts per bar
+	// otherwise dominates backtest memory for long windows.
+	if s.TraceCandidates && !signal.ClosePosition {
 		restoreExpiryRejectedCandidates(&signal, batch.Quotes, quotes, bar.Ts, s.Config)
 	}
 	s.LastSignal = signal
@@ -766,7 +781,7 @@ func rejectedExpiryQuoteReason(q wheel.OptionQuote, asOf time.Time, cfg wheel.Co
 	if !asOf.IsZero() && quoteTime.After(asOf) {
 		return "wheel: quote is from the future"
 	}
-	if !asOf.IsZero() && asOf.Sub(quoteTime) > cfg.QuoteMaxAge() {
+	if !asOf.IsZero() && !cfg.QuoteFresh(name, quoteTime, asOf) {
 		return "wheel: quote is stale"
 	}
 	if !asOf.IsZero() && !q.Expiry.After(asOf) {

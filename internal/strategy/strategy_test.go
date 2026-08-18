@@ -345,7 +345,8 @@ func TestWheelAdapterFiltersExpiryBeforeEvaluation(t *testing.T) {
 			Volume: 1000, OpenInterest: 2000, LotSize: 100, QuoteTime: ts}
 	}
 	ws := &WheelStrategy{Config: wheel.Config{Strategy: "wheel", FullPositionPrice: 90, ZeroPositionPrice: 110,
-		MaxInventory: 1000, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, TradeGap: 0, StrategicState: wheel.StateNormal}}
+		MaxInventory: 1000, MinDTE: 5, MaxDTE: 10, MinOptionQuality: 0, TradeGap: 0, StrategicState: wheel.StateNormal},
+		TraceCandidates: true}
 	st := &backtest.State{Cash: 20000, Options: map[string]backtest.OptionPosition{}, QuoteBatch: &backtest.QuoteSnapshotBatch{
 		ObservedAt: ts, SnapshotKey: "batch", UnderlyingPrice: 100,
 		Quotes:      []wheel.OptionQuote{quote("late", ts.AddDate(0, 0, 11)), quote("valid", ts.AddDate(0, 0, 7))},

@@ -16,6 +16,7 @@ import (
 	"github.com/jiayu/wbot/internal/ingest"
 	"github.com/jiayu/wbot/internal/strategy"
 	"github.com/jiayu/wbot/internal/wheel"
+	"github.com/jiayu/wbot/internal/wheelstore"
 )
 
 func TestBuild(t *testing.T) {
@@ -76,6 +77,83 @@ func TestBuild(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestBuildWheelInjectsTradingDayCalendar(t *testing.T) {
+	s, _, err := Build("wheel", map[string]any{
+		"full_position_price": 100.0,
+		"zero_position_price": 200.0,
+		"max_inventory":       1000.0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ws, ok := s.(*strategy.WheelStrategy)
+	if !ok {
+		t.Fatalf("Build(wheel) type = %T; want *strategy.WheelStrategy", s)
+	}
+	if ws.Config.Calendar == nil {
+		t.Fatal("backtest Build must inject a trading-day calendar so a daily-close snapshot stays fresh on the next trading day")
+	}
+	if ws.Config.Calendar.IsTradingDay("HK.00700", time.Date(2026, 8, 8, 4, 0, 0, 0, time.UTC)) {
+		t.Fatal("Saturday must not be a trading day")
+	}
+	if !ws.Config.Calendar.IsTradingDay("HK.00700", time.Date(2026, 8, 10, 4, 0, 0, 0, time.UTC)) {
+		t.Fatal("Monday must be a trading day")
+	}
+}
+
+func TestWheelBuildMondayBarAcrossWeekend(t *testing.T) {
+	// Friday 2026-08-07 16:00 HKT daily-close snapshot (UTC 08:00); Monday
+	// 2026-08-10 09:30 HKT bar (UTC 01:30). 65.5h exceeds the 24h wall-clock
+	// max, but the trading-day exemption keeps the close fresh for Monday.
+	fridayClose := time.Date(2026, 8, 7, 8, 0, 0, 0, time.UTC)
+	mondayBar := time.Date(2026, 8, 10, 1, 30, 0, 0, time.UTC)
+
+	bid := 2.0
+	delta, ask, iv, theta, underlying := -0.30, 2.10, 0.20, -0.10, 100.0
+	volume, oi, lot := int64(1000), int64(2000), int64(100)
+	row := wheelstore.QuoteSnapshotRecord{
+		Symbol: "HK.00700-P95", Underlying: "HK.00700", OptionType: "PUT", Strike: 95,
+		Expiry: mondayBar.AddDate(0, 0, 30), Source: "test", SnapshotKey: "batch-1",
+		UnderlyingPrice: &underlying, Delta: &delta, Bid: &bid, Ask: &ask, IV: &iv, Theta: &theta,
+		Volume: &volume, OpenInterest: &oi, LotSize: &lot, ObservedAt: fridayClose,
+	}
+	data, err := backtest.OptionsDataFromQuoteSnapshots([]wheelstore.QuoteSnapshotRecord{row})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bars := []ingest.Bar{{Ts: mondayBar, Open: 100, High: 100, Low: 100, Close: 100, Volume: 1}}
+	params := map[string]any{
+		"full_position_price": 90.0,
+		"zero_position_price": 110.0,
+		"max_inventory":       1000.0,
+		"max_dte":             45.0,
+	}
+	s, _, err := Build("wheel", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := backtest.RunOptions(context.Background(), bars, 20000, 0, s, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Signals) != 1 || res.Signals[0].CapabilityStatus != wheel.CapabilityReady || res.Signals[0].Action != wheel.ActionAlert {
+		t.Fatalf("Monday bar with Friday close snapshot: signals=%+v; want ALERT CapabilityReady (trading-day fresh)", res.Signals)
+	}
+	// Negative control: the same run built without the injected calendar keeps
+	// the strict wall-clock rule, so the Friday close is stale on Monday.
+	raw, err := strategy.Factory("wheel", params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, err := backtest.RunOptions(context.Background(), bars, 20000, 0, raw, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blocked.Signals) != 1 || blocked.Signals[0].CapabilityStatus != wheel.CapabilityDataBlocked {
+		t.Fatalf("Monday bar without calendar: signals=%+v; want DATA_BLOCKED (wall-clock stale)", blocked.Signals)
 	}
 }
 
@@ -281,5 +359,189 @@ func TestRunMultiRejects(t *testing.T) {
 				t.Fatalf("RunMulti(%+v, %v) err = %v; want containing %q", tt.o, tt.symbols, err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestSourceHashStreamMatchesSourceHash proves the streaming digest the chunked
+// path feeds is byte-identical to the single-call sourceHash, both in one pass
+// and when bars/batches are split into chunks with overlapping lookback regions.
+func TestSourceHashStreamMatchesSourceHash(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	expiry := start.AddDate(0, 0, 30)
+	theta := -0.1
+	var bars []ingest.Bar
+	var rows []wheelstore.QuoteSnapshotRecord
+	for day := 0; day < 12; day++ {
+		ts := start.AddDate(0, 0, day)
+		bars = append(bars, ingest.Bar{Ts: ts, Open: 100, High: 100, Low: 100, Close: 100, Volume: 1, Source: "test", Adjusted: "none"})
+		for _, p := range []struct {
+			sym    string
+			strike float64
+			kind   wheel.OptionType
+		}{
+			{"P95", 95, wheel.Put}, {"C105", 105, wheel.Call},
+		} {
+			bid, delta := 2.0, -0.30
+			if p.kind == wheel.Call {
+				delta = 0.30
+			}
+			rows = append(rows, wheelstore.QuoteSnapshotRecord{
+				Symbol: p.sym, Underlying: "U.US", OptionType: string(p.kind), Strike: p.strike, Expiry: expiry,
+				Source: "test", SnapshotKey: "batch-1", UnderlyingPrice: floatPtr(100), Delta: &delta,
+				Bid: &bid, Ask: floatPtr(2.1), IV: floatPtr(0.2), Theta: &theta,
+				Volume: int64Ptr(1000), OpenInterest: int64Ptr(2000), LotSize: int64Ptr(100), ObservedAt: ts,
+			})
+		}
+	}
+	opts, err := backtest.OptionsDataFromQuoteSnapshots(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := sourceHash(bars, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("single pass", func(t *testing.T) {
+		h := newSourceHashStream()
+		h.addBars(bars)
+		h.addOwnedBatches(opts, time.Time{}, map[batchKey]struct{}{})
+		got, err := h.digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("stream digest = %s; want %s", got, want)
+		}
+	})
+
+	t.Run("chunked with overlap", func(t *testing.T) {
+		h := newSourceHashStream()
+		seen := map[batchKey]struct{}{}
+		for startIdx := 0; startIdx < len(bars); startIdx += 5 {
+			end := startIdx + 5
+			if end > len(bars) {
+				end = len(bars)
+			}
+			chunkBars := bars[startIdx:end]
+			chunkFrom := chunkBars[0].Ts.Add(-24 * time.Hour)
+			chunkTo := chunkBars[len(chunkBars)-1].Ts
+			var chunkRows []wheelstore.QuoteSnapshotRecord
+			for _, r := range rows {
+				if !r.ObservedAt.Before(chunkFrom) && !r.ObservedAt.After(chunkTo) {
+					chunkRows = append(chunkRows, r)
+				}
+			}
+			chunkOpts, err := backtest.OptionsDataFromQuoteSnapshots(chunkRows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ownedFrom := chunkBars[0].Ts
+			if startIdx == 0 {
+				ownedFrom = time.Time{}
+			}
+			h.addBars(chunkBars)
+			h.addOwnedBatches(chunkOpts, ownedFrom, seen)
+		}
+		got, err := h.digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("chunked stream digest = %s; want %s", got, want)
+		}
+	})
+
+	t.Run("no option data", func(t *testing.T) {
+		want, err := sourceHash(bars, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := newSourceHashStream()
+		h.addBars(bars)
+		got, err := h.digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("no-option stream digest = %s; want %s", got, want)
+		}
+	})
+}
+
+func floatPtr(v float64) *float64 { return &v }
+func int64Ptr(v int64) *int64     { return &v }
+
+// TestChunkEndPartitionsBarsExactlyOnce proves the chunk boundary arithmetic
+// never double-processes a bar: bars at timestamps that fall exactly on a
+// non-final chunk's upper bound must be owned by the next chunk (exclusive
+// upper), and the final chunk reads [cur, to] closed. This is the invariant
+// behind -chunk determinism; a regression to inclusive non-final bounds would
+// count a boundary bar in both adjacent chunks. (The DB-backed RunChunked path
+// additionally proves this end-to-end in backtestexec_integration_test.go.)
+func TestChunkEndPartitionsBarsExactlyOnce(t *testing.T) {
+	start := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	var bars []time.Time
+	for i := 0; i <= 10; i++ { // daily bars day 0..10; 3d chunk bounds hit day 3,6,9
+		bars = append(bars, start.Add(time.Duration(i)*24*time.Hour))
+	}
+	from, to := bars[0], bars[len(bars)-1]
+	seen := map[time.Time]int{}
+	cur := from
+	for {
+		next, final := chunkEnd(cur, to, 3*24*time.Hour)
+		for _, ts := range bars {
+			if ts.Before(cur) || ts.After(next) {
+				continue
+			}
+			if !final && ts.Equal(next) {
+				continue // exclusive upper bound: this bar is the next chunk's start
+			}
+			seen[ts]++
+		}
+		cur = next
+		if final {
+			break
+		}
+	}
+	if len(seen) != len(bars) {
+		t.Fatalf("covered %d/%d bars", len(seen), len(bars))
+	}
+	for _, ts := range bars {
+		if seen[ts] != 1 {
+			t.Fatalf("bar %s processed %d times; want exactly once", ts, seen[ts])
+		}
+	}
+}
+
+// TestChunkEndFinalIsClosed ensures the last chunk keeps the inclusive upper
+// bound, so a bar exactly at the window end (a chunk bound that hits `to`) is
+// still included exactly once.
+func TestChunkEndFinalIsClosed(t *testing.T) {
+	from := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := from.Add(4 * 24 * time.Hour) // 3d chunks: first bound at +3d (non-final), final at +4d
+	bars := []time.Time{from, to}
+	seen := map[time.Time]int{}
+	cur := from
+	for {
+		next, final := chunkEnd(cur, to, 3*24*time.Hour)
+		for _, ts := range bars {
+			if ts.Before(cur) || ts.After(next) {
+				continue
+			}
+			if !final && ts.Equal(next) {
+				continue // exclusive upper bound: this bar is the next chunk's start
+			}
+			seen[ts]++
+		}
+		cur = next
+		if final {
+			break
+		}
+	}
+	for _, ts := range bars {
+		if seen[ts] != 1 {
+			t.Fatalf("bar %s processed %d times; want exactly once", ts, seen[ts])
+		}
 	}
 }

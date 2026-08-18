@@ -126,6 +126,9 @@ func tunePruneCheck(window int, factor, baseline float64, globalBest *float64) b
 }
 
 func runBacktestTune(dsn, rawSpec string, opts backtestexec.Options, flags backtestTuneFlags) int {
+	// The final report's Trajectory consumes CandidateDetails; tune reruns the
+	// best params over the full window with tracing on (buildTrajectory).
+	opts.TraceCandidates = true
 	canonical, err := strategy.CanonicalParams(opts.Params)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: tune params: %v\n", err)

@@ -7,3 +7,5 @@
 secrets*
 *token*
 /wbot
+# 回测报告产物（wbot backtest -report 输出，同 report_id 幂等覆盖写，可复算）
+/reports/

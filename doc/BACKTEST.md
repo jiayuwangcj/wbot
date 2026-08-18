@@ -68,8 +68,19 @@ wbot backtest \
 | `-budget` / `-train-timeout` | 840 / 10m | 每组的回测评估预算（含样本外测试）与墙钟超时；启动连接数据源前打印预计评估次数 |
 | `-early-stop-patience` | 8 | 验证集连续未达绝对及相对改善阈值后的早停代数 |
 | `-export` / `-format` | 0 / `csv` | 导出已保存结果，格式为 `csv` 或 `json` |
+| `-chunk` | 空 | 按时间块滚动执行 DB 回测（如 `30d`、`720h`；`Nd` 为天简写）；要求单标的 `-dsn`，不与 `-file`/`-symbols`/`-train`/`-tune`/重复 `-params` 同用。默认关 = 单遍载入，行为不变 |
+| `-trace-candidates` | false | 把每根 bar 的完整 expiry-rejected 候选链物化进 `Signals[].CandidateDetails`（Wheel 审计轨迹）。默认关 = 候选明细不驻留内存，长窗口显著降峰值；需要审计时重跑本开关确定性再取（见「内存有界执行」） |
 
 `hold`/`buy-hold` 由 CLI 底层运行器保留为内部 benchmark；CLI 默认就是 `hold`，但它们不是 Wheel 策略，不出现在 `/v1/strategies` 或 `/v1/watchlist`，产品 API 也拒绝它们。旧策略名称只在迁移审计中保留，不得作为新配置或新 watchlist 请求。
+
+## 内存有界执行（2026-08-15）
+
+全窗口 1m 回测（如 HK.00700 2015→2026，~92 万 bars）把整窗 bars、期权链与候选明细同时驻留会 OOM（实测峰值 ~9.7GB anon-rss）。两个正交手段让长窗口也能跑：
+
+1. **候选明细默认不驻留（`-trace-candidates`）**：`WheelStrategy.OnBar` 的 expiry-rejected 候选恢复与 `makeSignalTrace` 的 `CandidateDetails` 拷贝都经 `KeepCandidateDetails()` 门控。默认关时信号只保留小决策元数据（action/reason/capability/inventory/选中合约），不复制整条候选链（每 bar 每合约 ~400B）；报告/审计需要时用 `-trace-candidates` 重跑确定性再取。`-train`/`-tune` 最终轨迹路径显式开 trace。
+2. **滚动切块执行（`-chunk 30d`）**：把逐 bar 主循环抽成可复用 `backtest.Session`（`Process(bars, opts)`，State/策略/累计器跨块延续）。DB 路径按时间块滚动：每块只 `QueryBars` 本块 bars，块的期权快照集则**一次载入**（与单遍 `Prepare` 相同的 `[quoteRangeStart, to]` 窗口）——快照集远小于 bars，且必须用同一窗口计算 IV rank，否则逐块截断窗口会让批次 IVRank/`sourceHash` 与单遍不一致。`sourceHash` 流式：bars 边到边写 hash，quote batches 缓冲到 `digest()` 统一输出，保证与单遍 `json.Marshal({bars, quote_batches})` 逐位同摘要。
+
+**确定性铁律**：同 seed 同 params 同数据，单遍与 `-chunk` 输出（含 `sourceHash`）逐位一致。`-chunk` 只压 bars 峰值内存，不改逐 bar 语义；`-save`/`-report` 对同一窗口两种路径产出同一 `report_id`。
 
 ## Wheel 配置和事件
 
