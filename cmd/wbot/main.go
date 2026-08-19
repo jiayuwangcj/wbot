@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -253,10 +254,12 @@ func runServe(prog string, argv []string) int {
 	llmInterval := fs.Duration("llm-interval", 5*time.Minute, "LLM strategy evaluation interval")
 	wheelEnv := fs.String("wheel-env", "sim", "wheel account env: sim (simulate) or real (read-only evaluation)")
 	telegramRun := fs.Bool("telegram-run", false, "run the wheel Telegram/Discord alert/confirm loop (default off; tokens/chat_ids from ~/.wbot/wbot.conf)")
+	prepAtHK := fs.String("prep-at-hk", "09:15", "market-open prep status push time in local HH:MM (Asia/Shanghai; before HK open)")
+	prepAtUS := fs.String("prep-at-us", "21:15", "market-open prep status push time in local HH:MM (Asia/Shanghai; before US pre-market)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s serve [flags]\n\n", prog)
-		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status. With -telegram-run, ALERT signals approved by the LLM gate are pushed to Telegram with yes/no/dismiss buttons (token/chat_ids from ~/.wbot/wbot.conf; yes places a sim-env market order). With Discord credentials set in wbot.conf, the same signals are pushed as embed cards to the configured Discord channel and button confirmations arrive at POST /v1/discord/interactions (Ed25519-verified; the only public-facing path).\n\n")
+		fmt.Fprintf(os.Stderr, "Serves the HTTP data API (GET /v1/bars, GET /v1/runs, GET /v1/health, GET /v1/datacheck, GET /v1/admin/status, GET /v1/admin/cluster, GET /v1/admin/config, PUT /v1/admin/config/{key}), the Wheel audit API (GET /v1/wheel/configs, GET /v1/wheel/signals, GET /v1/wheel/signals/{id}/actions; read-only), the watchlist API (GET /v1/strategies, GET /v1/watchlist, PUT/DELETE /v1/watchlist/{symbol}), the backtest API (GET /v1/backtests, GET /v1/backtests/{id}, GET /v1/backtests/{id}/export, POST /v1/backtests), the ingestion API (POST /v1/ingest), the Futu proxies (GET /v1/futu/quote live quotes, GET /v1/futu/account funds/positions read-only with simulate env by default, GET /v1/futu/orders order list read-only, GET /v1/futu/options option chain; proto gateway via $FUTU_PROTO_ADDR, REST gateway via $FUTU_GATEWAY_URL), the account snapshot series (GET /v1/account/snapshots 资产曲线; DB-local) and the embedded Web UI (GET / redirects to /ui/). With -wheel-run, the wheel live loop evaluates every watchlist binding on -wheel-interval against the -wheel-env account (sim by default; real stays read-only), persists signals to wheel_signals and syncs each binding's execution status. With -telegram-run, ALERT signals approved by the LLM gate are pushed to Telegram with yes/no/dismiss buttons (token/chat_ids from ~/.wbot/wbot.conf; yes places a sim-env market order). With Discord credentials set in wbot.conf, the same signals are pushed as embed cards to the configured Discord channel and button confirmations arrive at POST /v1/discord/interactions (Ed25519-verified; the only public-facing path). With -prep-at-hk/-prep-at-us, serve pushes a market-open preparation status report to Telegram at startup and before HK/US open (read-only status report; token/chat_ids from ~/.wbot/wbot.conf).\n\n")
 		fs.SetOutput(os.Stderr)
 		fs.PrintDefaults()
 	}
@@ -378,6 +381,9 @@ func runServe(prog string, argv []string) int {
 		}
 		go startTelegramScheduler(runCtx, database, wheelEnvVal)
 	}
+	// 开盘准备状态推送(2026-08-18):serve 启动后立即 + HK/US 开盘前各推一次
+	// Telegram 状态报告;凭据复用 wbot.conf,未配置时静默跳过(尽力而为)。
+	go startMarketOpenScheduler(runCtx, database, meta, wheelEnvVal, *prepAtHK, *prepAtUS)
 
 	<-runCtx.Done()
 
@@ -477,6 +483,8 @@ func runBacktest(prog string, argv []string) int {
 	reportDir := fs.String("report-dir", "./reports", "directory for -report output (created when missing)")
 	push := fs.Bool("push", false, "push the generated report to the configured Discord channel exactly once per report ID (requires -report)")
 	cache := fs.Bool("cache", false, "upsert report evidence into strategy_cache (requires -dsn -strategy wheel -from-watchlist -report)")
+	traceCandidates := fs.Bool("trace-candidates", false, "materialize the full expiry-rejected candidate list per signal (wheel audit trail; default off keeps candidate details out of memory, re-run with the flag to re-fetch deterministically)")
+	chunk := fs.String("chunk", "", "process the window in time chunks of this size (e.g. 30d, 720h; requires -dsn single symbol; default off = single-call run)")
 
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s backtest [flags]\n\n", prog)
@@ -492,6 +500,7 @@ func runBacktest(prog string, argv []string) int {
 		fmt.Fprintf(os.Stderr, "With -report, writes {report_id}.json and {report_id}.html under -report-dir (default ./reports); identical inputs overwrite identical bytes.\n")
 		fmt.Fprintf(os.Stderr, "With -push, explicitly sends the generated report as a Discord embed using bot_token/channel_id from ~/.wbot/wbot.conf; successful report IDs are not sent twice.\n")
 		fmt.Fprintf(os.Stderr, "With -cache, explicitly upserts the generated report into strategy_cache as RESEARCH_CANDIDATE; it never publishes watchlist/Wheel config.\n")
+		fmt.Fprintf(os.Stderr, "With -trace-candidates, the wheel audit trail keeps the full expiry-rejected candidate list per signal; default off keeps candidate details out of memory for long windows (re-run with the flag to re-fetch deterministically).\n")
 		fmt.Fprintf(os.Stderr, "With -save, the run (params+metrics+equity_curve/trades/signals trace) is stored in backtest_results (migrations 003/004/006).\n")
 		fmt.Fprintf(os.Stderr, "With -export <id>, a saved result is written to stdout instead (csv by default, -format csv|json),\n")
 		fmt.Fprintf(os.Stderr, "byte-identical to GET /v1/backtests/{id}/export (roundtrip contract, doc/API.md).\n")
@@ -519,6 +528,11 @@ func runBacktest(prog string, argv []string) int {
 		return 2
 	}
 	toT, err := parseRangeTime("-to", strings.TrimSpace(*to))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
+		return 2
+	}
+	chunkDur, err := parseChunkSize(strings.TrimSpace(*chunk))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 		return 2
@@ -728,22 +742,32 @@ func runBacktest(prog string, argv []string) int {
 			return 2
 		}
 	}
+	if chunkDur > 0 {
+		if fp != "" || multi || strings.TrimSpace(*train) != "" || strings.TrimSpace(*tune) != "" || len(paramsGroups) > 1 {
+			fmt.Fprintln(os.Stderr, "backtest: -chunk requires one -dsn symbol and is not supported with -file/-symbols/-train/-tune/repeated -params")
+			return 2
+		}
+	}
 
 	btOpts := backtestexec.Options{
-		Symbol:        btSym,
-		Strategy:      stratName,
-		Params:        paramsMap,
-		ConfigVersion: configVersion,
-		Timeframe:     strings.TrimSpace(*timeframe),
-		Adjust:        strings.TrimSpace(*adjust),
-		From:          fromT,
-		To:            toT,
-		Limit:         *limit,
-		Cash:          *cash,
-		Fee:           *fee,
-		FeeModel:      feeModel,
-		Seed:          *seed,
+		Symbol:          btSym,
+		Strategy:        stratName,
+		Params:          paramsMap,
+		ConfigVersion:   configVersion,
+		Timeframe:       strings.TrimSpace(*timeframe),
+		Adjust:          strings.TrimSpace(*adjust),
+		From:            fromT,
+		To:              toT,
+		Limit:           *limit,
+		Cash:            *cash,
+		Fee:             *fee,
+		FeeModel:        feeModel,
+		Seed:            *seed,
+		TraceCandidates: *traceCandidates,
 	}
+	// -file path runs the strategy built above (before btOpts existed); carry
+	// the trace setting over so -trace-candidates works there too.
+	backtestexec.ApplyTrace(s, btOpts)
 	if strings.TrimSpace(*train) != "" {
 		return runBacktestTrain(d, strings.TrimSpace(*train), btOpts, backtestTrainFlags{Population: *population, MaxGenerations: *maxGenerations, Budget: *budget, Patience: *earlyStopPatience, Timeout: *trainTimeout, Report: *report, ReportDir: *reportDir, Push: *push, Cache: *cache})
 	}
@@ -833,8 +857,15 @@ func runBacktest(prog string, argv []string) int {
 		}
 
 		// The -dsn run path is the API's execution path (POST /v1/backtests):
-		// same runner, same persisted params, same output (doc/API.md).
-		outcome, err := backtestexec.Run(context.Background(), database, btOpts)
+		// same runner, same persisted params, same output (doc/API.md). -chunk
+		// switches to the memory-bounded chunked executor, which shares the
+		// single-call result contract (determinism, doc/BACKTEST.md).
+		var outcome *backtestexec.Outcome
+		if chunkDur > 0 {
+			outcome, err = backtestexec.RunChunked(context.Background(), database, btOpts, chunkDur)
+		} else {
+			outcome, err = backtestexec.Run(context.Background(), database, btOpts)
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "backtest: %v\n", err)
 			return 1
@@ -1972,6 +2003,26 @@ func parseRangeTime(flagName, s string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("%s: invalid RFC3339 time %q", flagName, s)
 	}
 	return t, nil
+}
+
+// parseChunkSize parses -chunk: empty means off; accepts a Go duration or an
+// Nd day shorthand (time.ParseDuration has no day unit).
+func parseChunkSize(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	if strings.HasSuffix(raw, "d") {
+		days, err := strconv.Atoi(strings.TrimSpace(strings.TrimSuffix(raw, "d")))
+		if err != nil || days <= 0 {
+			return 0, fmt.Errorf("-chunk: invalid day size %q (want e.g. 30d or a Go duration)", raw)
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("-chunk: invalid size %q (want e.g. 30d or a Go duration)", raw)
+	}
+	return d, nil
 }
 
 func flagWasSet(fs *flag.FlagSet, name string) bool {

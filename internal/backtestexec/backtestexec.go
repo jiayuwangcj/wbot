@@ -57,6 +57,11 @@ type Options struct {
 	// training windows use it to widen history when the search space tunes
 	// min_iv_rank, which needs a 1-year IV window (backtest.IVRankWindow).
 	QuoteFrom time.Time
+	// TraceCandidates materializes the full expiry-rejected candidate list into
+	// every signal's CandidateDetails (wheel audit trail). Default false keeps
+	// candidate details out of memory for long windows; re-run with the flag to
+	// deterministically re-fetch them (doc/BACKTEST.md).
+	TraceCandidates bool
 }
 
 // SaveParams returns the run inputs persisted by `wbot backtest -save` and
@@ -145,6 +150,18 @@ func Build(name string, params map[string]any) (backtest.Strategy, *strategy.Tem
 	return s, templ, nil
 }
 
+// ApplyTrace applies Options-level trace settings to a freshly built strategy.
+// Callers that carry an Options (Prepare/RunPrepared, batch runner) call this
+// so -trace-candidates reaches the wheel adapter after Build.
+func ApplyTrace(s backtest.Strategy, o Options) {
+	if !o.TraceCandidates {
+		return
+	}
+	if ws, ok := s.(*strategy.WheelStrategy); ok {
+		ws.TraceCandidates = true
+	}
+}
+
 // Prepare loads bars (and option quotes when the strategy needs them) from the
 // database once for one window. The returned value can be reused for many
 // parameter/seed evaluations without repeating the database queries or
@@ -157,6 +174,7 @@ func Prepare(ctx context.Context, db *sql.DB, o Options) (*Prepared, error) {
 	if err != nil {
 		return nil, err
 	}
+	ApplyTrace(s, o)
 	bars, err := ingest.QueryBars(ctx, db, o.Symbol, o.Timeframe, o.Adjust, o.From, o.To, o.Limit, false)
 	if err != nil {
 		return nil, err
@@ -203,6 +221,7 @@ func (p *Prepared) RunPrepared(ctx context.Context, o Options) (*Outcome, error)
 	if err != nil {
 		return nil, err
 	}
+	ApplyTrace(s, o)
 	opts := p.options
 	if opts != nil {
 		// RunSeed is per evaluation. Copy the small wrapper instead of mutating

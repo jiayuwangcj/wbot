@@ -114,7 +114,7 @@ func TestWheelBacktestDeltaCapFiltersCandidates(t *testing.T) {
 			}
 			cfg := wheelBacktestConfig()
 			cfg.PutDeltaMax = tc.putDelta
-			res, err := backtest.RunOptions(context.Background(), []ingest.Bar{testBar(ts)}, 20000, 0, &WheelStrategy{Config: cfg}, data)
+			res, err := backtest.RunOptions(context.Background(), []ingest.Bar{testBar(ts)}, 20000, 0, &WheelStrategy{Config: cfg, TraceCandidates: true}, data)
 			if err != nil {
 				t.Fatal(err)
 			}

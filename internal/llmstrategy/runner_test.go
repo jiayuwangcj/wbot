@@ -422,6 +422,8 @@ func TestFilterByDTE(t *testing.T) {
 }
 
 func TestSnapshotOptionChainFiltersExpiredByDTE(t *testing.T) {
+	// 到期日相对当前时间计算:固定日期会随时间漂移而失效(2026-08-18 实测
+	// 08-21 合约 DTE 缩到 3,被 min=5 过滤,链条变空)。
 	now := time.Now()
 	s := Snapshot{
 		Symbol: "HK.00700",

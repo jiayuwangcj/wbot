@@ -173,100 +173,18 @@ func RunOptionsWithFeeModel(ctx context.Context, bars []ingest.Bar, initialCash 
 	if err := ingest.ValidateBars(bars); err != nil {
 		return nil, err
 	}
-
-	st := &State{
-		Cash:     initialCash,
-		Options:  map[string]OptionPosition{},
-		OptPrice: map[string]float64{},
-	}
-	seed := int64(defaultRunSeed)
+	var seed int64
 	if opts != nil {
-		st.Chain = opts.Chain
-		st.OptBars = opts.Bars
-		if opts.RunSeed != 0 {
-			seed = opts.RunSeed
-		}
+		seed = opts.RunSeed
 	}
-	var (
-		peak, maxDD, maxStockMarketValue float64
-		curve                            []EquityPoint
-		trades                           []Trade
-		signals                          []SignalTrace
-	)
-	for i, b := range bars {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		st.Pending = nil
-		st.Price = b.Close
-		// DATA_BLOCKED: this remains bar-time replay with the latest atomic
-		// snapshot at or before the bar. Without a trusted event timeline we do
-		// not claim event-driven historical execution semantics.
-		st.QuoteBatch = latestQuoteBatch(opts, b.Ts)
-		st.Quotes, st.ObservedAt, st.SnapshotKey = nil, time.Time{}, ""
-		if st.QuoteBatch != nil {
-			st.Quotes = st.QuoteBatch.Quotes
-			st.ObservedAt, st.SnapshotKey = st.QuoteBatch.ObservedAt, st.QuoteBatch.SnapshotKey
-		}
-		markOptions(st, b.Ts)
-		cashBefore := st.Cash
-		act, size, err := s.OnBar(ctx, b, st)
-		if err != nil {
-			return nil, fmt.Errorf("backtest: bar %d: strategy: %w", i, err)
-		}
-		if err := settleAction(st, act, size, b, feeModel, seed, &trades); err != nil {
-			return nil, fmt.Errorf("backtest: bar %d: %w", i, err)
-		}
-		signals = append(signals, makeSignalTrace(b.Ts, s, st, act, size, cashBefore))
-		settleExpired(st, b.Ts, feeModel, &trades)
-		eq := st.Equity(b.Close)
-		if stockMarketValue := math.Abs(st.Position * b.Close); stockMarketValue > maxStockMarketValue {
-			maxStockMarketValue = stockMarketValue
-		}
-		curve = append(curve, EquityPoint{Ts: b.Ts, Equity: eq})
-		if eq > peak {
-			peak = eq
-		}
-		if peak > 0 && (peak-eq)/peak > maxDD {
-			maxDD = (peak - eq) / peak
-		}
+	sess, err := NewSession(initialCash, feeModel, seed, s)
+	if err != nil {
+		return nil, err
 	}
-
-	terminal := terminalSummary(st, initialCash, bars[len(bars)-1].Close)
-	final := st.Equity(bars[len(bars)-1].Close)
-	if terminal.FinalEquityAmount != nil {
-		final = *terminal.FinalEquityAmount
+	if err := sess.Process(ctx, bars, opts, time.Time{}); err != nil {
+		return nil, err
 	}
-	unfilled := UnfilledStats{
-		AttemptCount:  st.AttemptCount,
-		FillCount:     st.FillCount,
-		UnfilledCount: st.UnfilledCount,
-		ModelKind:     modelKind,
-		ModelVersion:  modelVersion,
-	}
-	fees := summarizeFees(trades, feeModel)
-	if st.AttemptCount > 0 {
-		ratio := float64(st.UnfilledCount) / float64(st.AttemptCount)
-		unfilled.UnfilledRatio = &ratio
-	}
-	attr := attributionOf(st, fees, unfilled)
-	return &Result{
-		Equity:                    final,
-		TotalReturn:               (final - initialCash) / initialCash,
-		RealizedReturnAmount:      attr.RealizedPnLAmount,
-		RealizedReturnPct:         attr.RealizedPnLAmount / initialCash,
-		MaxDrawdown:               maxDD,
-		MaxStockMarketValueAmount: maxStockMarketValue,
-		Bars:                      len(bars),
-		EquityCurve:               curve,
-		Trades:                    trades,
-		Signals:                   signals,
-		Unfilled:                  unfilled,
-		Fees:                      fees,
-		Attribution:               attr,
-		Terminal:                  terminal,
-		DataQuality:               summarizeDataQuality(bars, opts, signals),
-	}, nil
+	return sess.Result(initialCash, bars, opts)
 }
 
 func summarizeFees(trades []Trade, feeModel FeeModel) FeeSummary {
@@ -369,6 +287,16 @@ func quoteBatchSourceRank(source string) int {
 
 type signalProvider interface{ Signal() wheel.Signal }
 
+// candidateDetailTracer is implemented by strategies that can suppress the
+// per-bar candidate audit materialization. When a strategy opts out, each
+// signal keeps only its small decision metadata (action/reason/inventory/
+// chosen candidate) instead of one CandidateEvaluation per chain contract —
+// the full candidate list is deterministically re-fetchable by re-running with
+// tracing enabled (doc/BACKTEST.md).
+type candidateDetailTracer interface {
+	KeepCandidateDetails() bool
+}
+
 func makeSignalTrace(ts time.Time, s Strategy, st *State, act Action, size, cashBefore float64) SignalTrace {
 	t := SignalTrace{Ts: ts, Action: act.String(), Direction: wheel.DirectionHold, CapabilityStatus: wheel.CapabilityReady, BlockedBy: []string{}, Quantity: size, ActualInventory: st.Position, EffectiveInventory: st.Position, Inventory: st.Position, SnapshotKey: st.SnapshotKey, UnderlyingPrice: st.Price, CashBefore: cashBefore, CashAfter: st.Cash}
 	if !st.ObservedAt.IsZero() {
@@ -384,7 +312,9 @@ func makeSignalTrace(ts time.Time, s Strategy, st *State, act Action, size, cash
 		t.BlockedBy = append([]string{}, sig.BlockedBy...)
 		t.ActualInventory, t.EffectiveInventory, t.OptionDeltaStock = sig.ActualInventory, sig.EffectiveInventory, sig.OptionDeltaStock
 		t.TargetInventory, t.InventoryGap = sig.TargetInventory, sig.InventoryGap
-		t.CandidateDetails = append([]wheel.CandidateEvaluation(nil), sig.Candidates...)
+		if keep, ok := s.(candidateDetailTracer); !ok || keep.KeepCandidateDetails() {
+			t.CandidateDetails = append([]wheel.CandidateEvaluation(nil), sig.Candidates...)
+		}
 		t.Inventory = sig.EffectiveInventory
 		t.Quantity = float64(sig.Quantity)
 		for _, c := range sig.Candidates {

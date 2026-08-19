@@ -182,6 +182,7 @@ func (s *fakeState) handleFutu(w http.ResponseWriter, r *http.Request) {
 
 func (s *fakeState) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	var req struct {
+		Text        string `json:"text"`
 		ReplyMarkup struct {
 			InlineKeyboard [][]struct {
 				CallbackData string `json:"callback_data"`
@@ -205,7 +206,18 @@ func (s *fakeState) handleSendMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	sent := s.sent
 	s.mu.Unlock()
-	fmt.Printf("fake-telegram: sendMessage=%d\n", sent)
+	// Content-based markers keep the accept assertion robust: the wheel ALERT
+	// card carries a 3-button inline keyboard, the market-open prep report
+	// carries none (so the cumulative sendMessage=N counter alone cannot tell
+	// which message actually arrived).
+	switch {
+	case strings.Contains(req.Text, "开盘准备状态"):
+		fmt.Printf("fake-telegram: market-open-prep=%d\n", sent)
+	case len(req.ReplyMarkup.InlineKeyboard) > 0 && len(req.ReplyMarkup.InlineKeyboard[0]) >= 3:
+		fmt.Printf("fake-telegram: wheel-alert=%d\n", sent)
+	default:
+		fmt.Printf("fake-telegram: sendMessage=%d\n", sent)
+	}
 	writeJSON(w, map[string]any{"ok": true})
 }
 

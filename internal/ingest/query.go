@@ -53,6 +53,19 @@ GROUP BY symbol, timeframe, adjust ORDER BY symbol, timeframe, adjust`)
 // duplicate timestamps in a backtest. Source/Adjusted retain the selected row's
 // provider provenance; Tencent's canonical adjust=fwd is reported as qfq.
 func QueryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string, adjust string, from, to time.Time, limit int, desc bool) ([]Bar, error) {
+	return queryBars(ctx, db, symbol, timeframe, adjust, from, to, limit, desc, false)
+}
+
+// QueryBarsExclusiveEnd is QueryBars with an exclusive upper bound: bars in
+// [from, to) instead of [from, to]. Chunked readers advance the cursor to the
+// previous chunk's end and must not re-read a bar exactly at that boundary, so
+// every non-final chunk reads [cur, next) and only the final chunk reads
+// [cur, to] closed (RunChunked determinism, doc/BACKTEST.md).
+func QueryBarsExclusiveEnd(ctx context.Context, db *sql.DB, symbol string, timeframe string, adjust string, from, to time.Time, limit int, desc bool) ([]Bar, error) {
+	return queryBars(ctx, db, symbol, timeframe, adjust, from, to, limit, desc, true)
+}
+
+func queryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string, adjust string, from, to time.Time, limit int, desc bool, exclusiveEnd bool) ([]Bar, error) {
 	if db == nil {
 		return nil, errors.New("ingest: query bars: nil db")
 	}
@@ -80,8 +93,12 @@ func QueryBars(ctx context.Context, db *sql.DB, symbol string, timeframe string,
 		conds = append(conds, fmt.Sprintf("ts >= $%d", len(args)))
 	}
 	if !to.IsZero() {
+		op := "<="
+		if exclusiveEnd {
+			op = "<"
+		}
 		args = append(args, to)
-		conds = append(conds, fmt.Sprintf("ts <= $%d", len(args)))
+		conds = append(conds, fmt.Sprintf("ts %s $%d", op, len(args)))
 	}
 	args = append(args, limit)
 	order := "ASC"
