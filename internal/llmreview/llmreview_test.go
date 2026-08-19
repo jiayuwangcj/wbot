@@ -209,6 +209,57 @@ func TestUserContentStablePrefix(t *testing.T) {
 	}
 }
 
+// currentDateValueEnd returns the byte offset just past the current_date value
+// (a JSON string in the indented userContent output).
+func currentDateValueEnd(t *testing.T, content string) int {
+	t.Helper()
+	marker := `"current_date": "`
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		t.Fatalf("current_date not found in:\n%s", content)
+	}
+	start := idx + len(marker)
+	j := strings.IndexByte(content[start:], '"')
+	if j < 0 {
+		t.Fatalf("unterminated current_date value in:\n%s", content)
+	}
+	return start + j + 1
+}
+
+// TestUserContentStaticPrefixStableAcrossTime: current_date 归一化为日期后,
+// 同一天不同时刻(不同动态字段)的 userContent 在 current_date 值之前的字节
+// 必须一致——秒级 RFC3339 会让前缀每轮变化,DeepSeek context caching 打不中
+// (评审 P2)。调用点归一化见 wheelrun/runner.go、llmsignal/service.go。
+func TestUserContentStaticPrefixStableAcrossTime(t *testing.T) {
+	base := ReviewRequest{
+		StrategyConfig: map[string]any{"max_inventory": 100},
+		RulesText:      "规则:库存上限 100",
+		Symbol:         "US.JD",
+		AsOf:           "2026-08-19", // 日期归一化后
+	}
+	morning := base
+	morning.Signal = map[string]any{"action": "ALERT", "direction": "SELL"}
+	morning.CurrentPrice = 25.5
+	afternoon := base
+	afternoon.Signal = map[string]any{"action": "ALERT", "direction": "BUY"}
+	afternoon.CurrentPrice = 26.1
+	afternoon.Positions = []any{map[string]any{"symbol": "US.JD", "qty": 5}}
+
+	contentAM, err := userContent(morning)
+	if err != nil {
+		t.Fatalf("userContent morning: %v", err)
+	}
+	contentPM, err := userContent(afternoon)
+	if err != nil {
+		t.Fatalf("userContent afternoon: %v", err)
+	}
+	prefixAM := contentAM[:currentDateValueEnd(t, contentAM)]
+	prefixPM := contentPM[:currentDateValueEnd(t, contentPM)]
+	if prefixAM != prefixPM {
+		t.Fatalf("static prefix through current_date differs within the same day:\nAM: %q\nPM: %q", prefixAM, prefixPM)
+	}
+}
+
 // TestUserContentDropsZeroTimes: zero time.Time encodings stay stripped after
 // the ordered rewrite (signal 454/455 教训,dropZeroTimes 语义必须保留)。
 func TestUserContentDropsZeroTimes(t *testing.T) {
@@ -252,7 +303,9 @@ func TestReviewParsesDeepSeekUsage(t *testing.T) {
 }
 
 // TestUsageFallbackOpenAICachedTokens: OpenAI-compatible providers expose only
-// prompt_tokens_details.cached_tokens; usageFrom must fall back to it.
+// prompt_tokens_details.cached_tokens (lkeap 实测 shape); usageFrom must fall
+// back to it AND derive the miss from prompt-hit, or cache_hit_rate reads 1.0
+// (评审 P1)。
 func TestUsageFallbackOpenAICachedTokens(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -269,5 +322,17 @@ func TestUsageFallbackOpenAICachedTokens(t *testing.T) {
 	}
 	if res.Usage.CacheHitTokens != 60 {
 		t.Fatalf("cache hit = %d; want 60 (fallback to prompt_tokens_details.cached_tokens)", res.Usage.CacheHitTokens)
+	}
+	if res.Usage.CacheMissTokens != 40 {
+		t.Fatalf("cache miss = %d; want 40 (derived prompt-hit; without it hit rate reads 1.0)", res.Usage.CacheMissTokens)
+	}
+}
+
+// TestUsageOpenAIOnlyNoCacheKeepsMissZero: 完全没有 cache 字段(旧式 usage)
+// 时 miss 保持 0,不误推导(cache_hit_rate 在 gate 层为 null)。
+func TestUsageOpenAIOnlyNoCacheKeepsMissZero(t *testing.T) {
+	got := usageFrom(usageInfo{PromptTokens: 100, CompletionTokens: 20})
+	if got.CacheHitTokens != 0 || got.CacheMissTokens != 0 {
+		t.Fatalf("no-cache usage = %+v; want hit=0 miss=0", got)
 	}
 }

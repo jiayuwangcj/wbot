@@ -783,6 +783,43 @@ func TestDiscordPushGateAlertDifferentCategoryFires(t *testing.T) {
 	}
 }
 
+// TestDiscordPushGateAlertSendFailureDoesNotThrottle: 首次告警发送失败
+// (Discord 瞬时故障)不占冷却窗口——稍后同类错误重试仍可触发(评审 P2,否则
+// 首次失败也静默冷却 30min 不再重发)。
+func TestDiscordPushGateAlertSendFailureDoesNotThrottle(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	fake.failCreate = 1 // first alert create fails
+	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(36, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 36, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 402 Payment Required: Insufficient Balance"},
+	})
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("stale FAILED must skip permanently even when alert send fails")
+	}
+	if fake.sendCount() != 0 {
+		t.Fatalf("failed alert sends = %d; want 0 (create failed)", fake.sendCount())
+	}
+	// 同类错误再触发:上次失败不占冷却,这次发送成功。
+	sig2 := signalFixture(37, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 37, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 402 Payment Required: Insufficient Balance"},
+	})
+	if retry := s.pushSignalDiscord(context.Background(), *sig2); retry {
+		t.Fatal("second FAILED must skip permanently")
+	}
+	if fake.sendCount() != 1 {
+		t.Fatalf("sends = %d; want 1 (send failure must not consume cooldown)", fake.sendCount())
+	}
+}
+
 func TestClassifyLLMError(t *testing.T) {
 	cases := []struct {
 		reason string

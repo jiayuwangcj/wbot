@@ -541,10 +541,6 @@ func (s *discordScheduler) alertLLMGate(ctx context.Context, sig wheelstore.Sign
 		s.logf("alert: %s signal=%d: %s alert throttled", sig.Symbol, sig.ID, category)
 		return
 	}
-	if s.lastAlert == nil {
-		s.lastAlert = make(map[string]time.Time)
-	}
-	s.lastAlert[category] = s.now()
 	s.alertMu.Unlock()
 
 	reason := ""
@@ -572,7 +568,16 @@ func (s *discordScheduler) alertLLMGate(ctx context.Context, sig wheelstore.Sign
 	}
 	if err := s.pushEmbedDiscord(ctx, discord.Message{Embeds: []discord.Embed{embed}}); err != nil {
 		s.logf("alert: %s signal=%d: %v", sig.Symbol, sig.ID, err)
+		return
 	}
+	// 发送成功才记录冷却:失败(Discord 瞬时故障)不占窗口,稍后重试仍可触发
+	// (评审 P2——之前先记后发,首次失败也静默冷却 30min)。
+	s.alertMu.Lock()
+	if s.lastAlert == nil {
+		s.lastAlert = make(map[string]time.Time)
+	}
+	s.lastAlert[category] = s.now()
+	s.alertMu.Unlock()
 }
 
 func (s *discordScheduler) alertCooldown() time.Duration {

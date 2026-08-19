@@ -103,16 +103,20 @@ func RecordLLMGate(ctx context.Context, repo wheelstore.SignalRepository, review
 
 // usageDetailMap renders Usage as the JSONB details["usage"] object.
 // cache_hit_rate = hit/(hit+miss); hit+miss==0 (无 cache 报告) 时为 null。
+// miss 缺失时按 prompt-hit 兜底(OpenAI-shape 只报 cached_tokens,推导防
+// cache_hit_rate 恒 1.0 虚报,评审 P1)。
 func usageDetailMap(u Usage) map[string]any {
+	hit := u.CacheHitTokens
+	miss := deriveCacheMiss(hit, u.CacheMissTokens, u.PromptTokens)
 	var rate any
-	if hit, miss := u.CacheHitTokens, u.CacheMissTokens; hit+miss > 0 {
+	if hit+miss > 0 {
 		rate = float64(hit) / float64(hit+miss)
 	}
 	return map[string]any{
 		"prompt_tokens":     u.PromptTokens,
 		"completion_tokens": u.CompletionTokens,
-		"cache_hit_tokens":  u.CacheHitTokens,
-		"cache_miss_tokens": u.CacheMissTokens,
+		"cache_hit_tokens":  hit,
+		"cache_miss_tokens": miss,
 		"cache_hit_rate":    rate,
 	}
 }

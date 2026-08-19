@@ -206,3 +206,30 @@ func TestRecordLLMGateUsageHitRateNullWhenNoCache(t *testing.T) {
 		t.Fatalf("cache_hit_rate = %v; want null when hit+miss=0", usage["cache_hit_rate"])
 	}
 }
+
+// TestRecordLLMGateUsageHitRateOpenAIOnly: OpenAI-shape(只有 cached_tokens、
+// 无 miss 字段)时 usageDetailMap 必须按 prompt-hit 推导 miss,命中率 0.6 而非
+// 虚报 1.0(评审 P1——lkeap 实测只回 cached_tokens)。
+func TestRecordLLMGateUsageHitRateOpenAIOnly(t *testing.T) {
+	repo := &fakeGateRepo{}
+	_, _, err := RecordLLMGate(context.Background(), repo,
+		fakeGateReviewer{result: ReviewResult{
+			Verdict: "APPROVE", Reasons: []string{"ok"},
+			Usage: Usage{PromptTokens: 100, CompletionTokens: 20, CacheHitTokens: 60}, // miss 缺失
+		}},
+		"test-model", GateInput{SignalID: 7, Request: ReviewRequest{Symbol: "HK.TCH"}})
+	if err != nil {
+		t.Fatalf("RecordLLMGate: %v", err)
+	}
+	usage, ok := repo.action.Details["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("details missing usage: %v", repo.action.Details)
+	}
+	if usage["cache_miss_tokens"] != 40 {
+		t.Fatalf("cache_miss_tokens = %v; want 40 (derived prompt-hit)", usage["cache_miss_tokens"])
+	}
+	rate, ok := usage["cache_hit_rate"].(float64)
+	if !ok || rate != 0.6 {
+		t.Fatalf("cache_hit_rate = %v (%T); want 0.6 not 1.0", usage["cache_hit_rate"], usage["cache_hit_rate"])
+	}
+}

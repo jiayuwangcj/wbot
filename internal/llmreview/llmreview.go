@@ -182,7 +182,9 @@ func (c *Client) Review(ctx context.Context, req ReviewRequest) (ReviewResult, e
 
 // usageFrom maps the provider's usage block onto Usage, falling back to
 // prompt_tokens_details.cached_tokens (OpenAI) when the DeepSeek top-level
-// prompt_cache_hit_tokens field is absent.
+// prompt_cache_hit_tokens field is absent, and deriving a missing miss count
+// from the prompt total (OpenAI-shape providers report cached_tokens only;
+// without the derivation cache_hit_rate would read 1.0).
 func usageFrom(u usageInfo) Usage {
 	hit := u.PromptCacheHitTokens
 	if hit == 0 && u.PromptTokensDetails != nil {
@@ -193,8 +195,20 @@ func usageFrom(u usageInfo) Usage {
 		CompletionTokens: u.CompletionTokens,
 		TotalTokens:      u.TotalTokens,
 		CacheHitTokens:   hit,
-		CacheMissTokens:  u.PromptCacheMissTokens,
+		CacheMissTokens:  deriveCacheMiss(hit, u.PromptCacheMissTokens, u.PromptTokens),
 	}
+}
+
+// deriveCacheMiss fills a missing/zero miss count from the prompt total when
+// the provider reported a real hit count (hit > 0). DeepSeek reports
+// prompt_tokens = hit+miss; OpenAI reports prompt_tokens including cached, so
+// prompt-hit is the miss in both shapes. hit=0 (无 cache 报告) 时不推导——
+// miss 保持 0,gate 层 cache_hit_rate=null,不误报 0% 命中。
+func deriveCacheMiss(hit, miss, prompt int) int {
+	if miss == 0 && hit > 0 && prompt > hit {
+		return prompt - hit
+	}
+	return miss
 }
 
 type chatCompletion struct {
