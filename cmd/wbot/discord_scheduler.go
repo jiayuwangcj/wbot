@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,14 @@ import (
 
 // discordPushInterval is the wheel ALERT poll cadence (same as telegram).
 const discordPushInterval = 30 * time.Second
+
+// llmAlertCooldown is the minimum gap between two LLM-gate alerts of the same
+// error category (欠费/5xx 是全局性问题,每个失败信号都触发;冷却避免刷屏)。
+const llmAlertCooldown = 30 * time.Minute
+
+// llmStatus5xxRE matches the llmreview error prefix for 5xx HTTP statuses
+// ("llmreview: status 502 Bad Gateway: ...").
+var llmStatus5xxRE = regexp.MustCompile(`status 5\d\d`)
 
 // discordScheduler pushes wheel ALERT signals to the configured Discord
 // channel and disposes button interactions. It mirrors the Telegram confirm
@@ -52,6 +61,11 @@ type discordScheduler struct {
 	// missingWarnAfter 与 telegram 侧同语义:订单在券商端连续查询不到
 	// missingWarnAfter 轮 → 警示 + 尝试撤单(2026-08-14 美股期权 stub 教训)。
 	missingWarnAfter int
+	// alertMu/lastAlert 节流 LLM 审核门故障告警:欠费/5xx 是全局性问题,每个
+	// 失败信号都触发,同类错误(llmAlertCooldown 内)最多推一条,防告警风暴。
+	alertMu          sync.Mutex
+	lastAlert        map[string]time.Time
+	llmAlertCooldown time.Duration // 0 = 用默认常量(测试可注入缩短)
 }
 
 // askRequest is one queued assistant question. 所有 /ask 都 append 进队列,
@@ -274,6 +288,10 @@ func (s *discordScheduler) pushSignalDiscord(ctx context.Context, sig wheelstore
 				return true
 			}
 			s.logf("push: %s signal=%d: LLM review failed beyond retry window; skip push", sig.Symbol, sig.ID)
+			// 超窗永久跳过前发运营告警:卡片不推(语义不变),但人工处置链路
+			// 中断必须让运营可见(08-18 欠费 132 次 LLM_REVIEW_FAILED 静默吞掉
+			// 的教训)。告警尽力而为,失败只打日志不影响 skip 语义。
+			s.alertLLMGate(ctx, sig, failedAt)
 			return false
 		}
 		if s.now().Sub(sig.CreatedAt) > signalFreshWindow {
@@ -509,6 +527,85 @@ func (s *discordScheduler) pushEmbedDiscord(ctx context.Context, msg discord.Mes
 		return errors.New("channel not configured")
 	}
 	return s.dc.CreateMessage(ctx, s.channelID, msg)
+}
+
+// alertLLMGate pushes an ops alert embed when a signal is permanently skipped
+// because the LLM review gate failed beyond the retry window. Same error
+// category is throttled for llmAlertCooldown (欠费/5xx 全局性问题,每个失败信号
+// 都会触发;防告警风暴)。发送失败只打日志,不影响调用方跳过语义。
+func (s *discordScheduler) alertLLMGate(ctx context.Context, sig wheelstore.SignalRecord, failed *wheelstore.ActionRecord) {
+	category := llmErrorCategory(failed)
+	s.alertMu.Lock()
+	if last, ok := s.lastAlert[category]; ok && s.now().Sub(last) < s.alertCooldown() {
+		s.alertMu.Unlock()
+		s.logf("alert: %s signal=%d: %s alert throttled", sig.Symbol, sig.ID, category)
+		return
+	}
+	if s.lastAlert == nil {
+		s.lastAlert = make(map[string]time.Time)
+	}
+	s.lastAlert[category] = s.now()
+	s.alertMu.Unlock()
+
+	reason := ""
+	failedAt := ""
+	if failed != nil {
+		reason, _ = failed.Details["error"].(string)
+		failedAt = failed.CreatedAt.Format("2006-01-02 15:04:05")
+	}
+	if failedAt == "" {
+		failedAt = s.now().Format("2006-01-02 15:04:05")
+	}
+	embed := discord.Embed{
+		Title:       "⚠️ LLM 审核门故障",
+		Color:       discord.ColorAlert,
+		Timestamp:   s.now().UTC().Format(time.RFC3339),
+		Description: "信号推送被跳过,人工处置链路中断",
+		Fields: []discord.EmbedField{
+			{Name: "标的", Value: sig.Symbol, Inline: true},
+			{Name: "信号", Value: fmt.Sprintf("#%d", sig.ID), Inline: true},
+			{Name: "错误类别", Value: category, Inline: true},
+			{Name: "错误原因", Value: valueOrDash(reason)},
+			{Name: "失败时间", Value: failedAt},
+			{Name: "影响", Value: "信号推送被跳过,人工处置链路中断"},
+		},
+	}
+	if err := s.pushEmbedDiscord(ctx, discord.Message{Embeds: []discord.Embed{embed}}); err != nil {
+		s.logf("alert: %s signal=%d: %v", sig.Symbol, sig.ID, err)
+	}
+}
+
+func (s *discordScheduler) alertCooldown() time.Duration {
+	if s.llmAlertCooldown > 0 {
+		return s.llmAlertCooldown
+	}
+	return llmAlertCooldown
+}
+
+// llmErrorCategory buckets a LLM_REVIEW_FAILED reason into a stable alert
+// category so global outages (欠费/5xx) throttle as one alert instead of one
+// per failed signal.
+func llmErrorCategory(failed *wheelstore.ActionRecord) string {
+	reason := ""
+	if failed != nil {
+		reason, _ = failed.Details["error"].(string)
+	}
+	return classifyLLMError(reason)
+}
+
+func classifyLLMError(reason string) string {
+	switch {
+	case strings.Contains(reason, "status 402"):
+		return "402"
+	case llmStatus5xxRE.MatchString(reason):
+		return "5xx"
+	case strings.Contains(reason, "timeout") || strings.Contains(reason, "deadline exceeded"):
+		return "timeout"
+	case strings.Contains(reason, "unexpected") && strings.Contains(reason, "verdict"):
+		return "verdict"
+	default:
+		return "other"
+	}
 }
 
 // clearDiscordButtons strips the confirm buttons off the card that hosted the

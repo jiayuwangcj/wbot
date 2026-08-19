@@ -117,6 +117,18 @@ type ReviewResult struct {
 	Verdict string
 	Reasons []string
 	Notes   string
+	// Usage is the provider's token accounting for the review call (context
+	// cache hit tracking; see chatCompletion.usageInfo).
+	Usage Usage
+}
+
+// Usage is the token/context-cache accounting of one review call.
+type Usage struct {
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	CacheHitTokens   int
+	CacheMissTokens  int
 }
 
 // Review asks the model to audit the decision and parses its JSON reply.
@@ -160,7 +172,29 @@ func (c *Client) Review(ctx context.Context, req ReviewRequest) (ReviewResult, e
 	if len(chat.Choices) == 0 {
 		return ReviewResult{}, errors.New("llmreview: response has no choices")
 	}
-	return parseResult(chat.Choices[0].Message.Content)
+	result, err := parseResult(chat.Choices[0].Message.Content)
+	if err != nil {
+		return ReviewResult{}, err
+	}
+	result.Usage = usageFrom(chat.Usage)
+	return result, nil
+}
+
+// usageFrom maps the provider's usage block onto Usage, falling back to
+// prompt_tokens_details.cached_tokens (OpenAI) when the DeepSeek top-level
+// prompt_cache_hit_tokens field is absent.
+func usageFrom(u usageInfo) Usage {
+	hit := u.PromptCacheHitTokens
+	if hit == 0 && u.PromptTokensDetails != nil {
+		hit = u.PromptTokensDetails.CachedTokens
+	}
+	return Usage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+		CacheHitTokens:   hit,
+		CacheMissTokens:  u.PromptCacheMissTokens,
+	}
 }
 
 type chatCompletion struct {
@@ -169,46 +203,102 @@ type chatCompletion struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
+	Usage usageInfo `json:"usage"`
+}
+
+// usageInfo is the OpenAI-compatible usage block. DeepSeek context caching
+// reports prompt_cache_hit_tokens/prompt_cache_miss_tokens top-level; OpenAI
+// exposes only prompt_tokens_details.cached_tokens (see usageFrom fallback).
+type usageInfo struct {
+	PromptTokens          int `json:"prompt_tokens"`
+	CompletionTokens      int `json:"completion_tokens"`
+	TotalTokens           int `json:"total_tokens"`
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+	PromptTokensDetails   *struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// orderedObject preserves field order through json.MarshalIndent (a map
+// marshals sorted by key, which would interleave static/dynamic fields and
+// defeat DeepSeek context caching's prefix match).
+type orderedObject []orderedField
+
+type orderedField struct {
+	Key   string
+	Value any
+}
+
+func (o orderedObject) MarshalJSON() ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for i, f := range o {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		key, err := json.Marshal(f.Key)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(key)
+		buf.WriteByte(':')
+		val, err := json.Marshal(f.Value)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(val)
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
 }
 
 func userContent(req ReviewRequest) (string, error) {
-	data := map[string]any{
-		"symbol":           req.Symbol,
-		"strategy_config":  req.StrategyConfig,
-		"signal":           req.Signal,
-		"positions":        req.Positions,
-		"cash_available":   req.CashAvailable,
-		"current_price":    req.CurrentPrice,
-		"rules":            req.RulesText,
-		"inventory":        req.Inventory,
-		"observed_options": req.ObservedOptions,
-		"pending_orders":   req.PendingOrders,
-		"current_date":     req.AsOf,
+	// 静态字段在前、动态字段在后:DeepSeek context caching 以 user 消息前缀为
+	// 缓存键,rules/strategy_config/symbol/current_date 在决策窗口内稳定,提前
+	// 可命中;signal/positions/pending_orders 每次变化放后缀。
+	fields := orderedObject{
+		{Key: "rules", Value: req.RulesText},
+		{Key: "strategy_config", Value: req.StrategyConfig},
+		{Key: "symbol", Value: req.Symbol},
+		{Key: "current_date", Value: req.AsOf},
+		{Key: "current_price", Value: req.CurrentPrice},
+		{Key: "cash_available", Value: req.CashAvailable},
+		{Key: "inventory", Value: req.Inventory},
+		{Key: "positions", Value: req.Positions},
+		{Key: "pending_orders", Value: req.PendingOrders},
+		{Key: "observed_options", Value: req.ObservedOptions},
+		{Key: "signal", Value: req.Signal},
 	}
-	// Marshal first so structs (Signal, Config, …) become plain maps, then
-	// strip zero-valued time.Time encodings: Go marshals a zero time.Time as
-	// "0001-01-01T00:00:00Z" even under omitempty (struct values are never
-	// empty for encoding/json), and wheel.OptionQuote's legacy
-	// ts/timestamp/captured_at fields stay zero on the futu path, which a
-	// review model reads as missing/stale data (2026-08-13: signal 454/455
-	// REJECTED with "captured_at/timestamp/ts are zero").
-	raw, err := json.Marshal(data)
-	if err != nil {
-		return "", fmt.Errorf("llmreview: marshal review data: %w", err)
+	// 每个字段单独清洗 zero time(见 dropZeroTimes:Go 把零值 time.Time 编成
+	// "0001-01-01T00:00:00Z" 即使 omitempty,review 模型读成缺失/过期数据,
+	// signal 454/455 教训),再按序拼装,保持旧 map 实现的清洗语义。
+	for i := range fields {
+		cleaned, err := cleanValue(fields[i].Value)
+		if err != nil {
+			return "", fmt.Errorf("llmreview: marshal review data: %w", err)
+		}
+		fields[i].Value = cleaned
 	}
-	var tree map[string]any
-	if err := json.Unmarshal(raw, &tree); err != nil {
-		return "", fmt.Errorf("llmreview: unmarshal review data: %w", err)
-	}
-	cleaned, ok := dropZeroTimes(tree).(map[string]any)
-	if !ok {
-		return "", fmt.Errorf("llmreview: sanitize review data: unexpected shape")
-	}
-	b, err := json.MarshalIndent(cleaned, "", "  ")
+	b, err := json.MarshalIndent(fields, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("llmreview: marshal review data: %w", err)
 	}
 	return string(b), nil
+}
+
+// cleanValue round-trips v through JSON so structs (Signal, Config, …) become
+// plain maps, then strips zero-valued time.Time encodings (see dropZeroTimes).
+func cleanValue(v any) (any, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		return nil, err
+	}
+	return dropZeroTimes(tree), nil
 }
 
 // dropZeroTimes removes zero-valued time.Time encodings from a JSON tree.

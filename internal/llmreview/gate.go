@@ -63,6 +63,9 @@ func RecordLLMGate(ctx context.Context, repo wheelstore.SignalRepository, review
 			if result.Notes != "" && (verdict == "APPROVE" || verdict == "REJECT" || !input.UnexpectedVerdictIsFailure) {
 				details["notes"] = result.Notes
 			}
+			// 成功审核(含 REJECT/意外裁决)把 token/cache 用量落库,命中率可
+			// SQL 聚合(402/5xx 失败分支不返回 usage)。
+			details["usage"] = usageDetailMap(result.Usage)
 			if verdict != "APPROVE" && verdict != "REJECT" {
 				message := fmt.Sprintf("unexpected LLM verdict %s", result.Verdict)
 				if input.UnexpectedVerdictIsFailure {
@@ -96,4 +99,20 @@ func RecordLLMGate(ctx context.Context, repo wheelstore.SignalRepository, review
 		return verdict, disposition, err
 	}
 	return verdict, disposition, nil
+}
+
+// usageDetailMap renders Usage as the JSONB details["usage"] object.
+// cache_hit_rate = hit/(hit+miss); hit+miss==0 (无 cache 报告) 时为 null。
+func usageDetailMap(u Usage) map[string]any {
+	var rate any
+	if hit, miss := u.CacheHitTokens, u.CacheMissTokens; hit+miss > 0 {
+		rate = float64(hit) / float64(hit+miss)
+	}
+	return map[string]any{
+		"prompt_tokens":     u.PromptTokens,
+		"completion_tokens": u.CompletionTokens,
+		"cache_hit_tokens":  u.CacheHitTokens,
+		"cache_miss_tokens": u.CacheMissTokens,
+		"cache_hit_rate":    rate,
+	}
 }
