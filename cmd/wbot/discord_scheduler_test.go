@@ -651,10 +651,208 @@ func TestDiscordPushGateRetryWindowExpiredSkips(t *testing.T) {
 	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
 
 	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
-		t.Fatal("stale FAILED beyond the gate retry window must skip permanently")
+		t.Fatal("stale FAILED beyond the gate retry window must skip permanently (cursor advances)")
+	}
+	// 超窗跳过不再静默:发运营告警 embed(无按钮卡片)。
+	if fake.sendCount() != 1 {
+		t.Fatalf("sends = %d; want 1 ops alert", fake.sendCount())
+	}
+	payload := fake.lastSend(t)
+	if _, ok := payload["components"]; ok {
+		t.Fatalf("alert must not carry confirm buttons: %#v", payload)
+	}
+	if title := lastEmbed(t, fake)["title"]; title != "⚠️ LLM 审核门故障" {
+		t.Fatalf("alert title = %#v; want ⚠️ LLM 审核门故障", title)
+	}
+}
+
+// TestDiscordPushGateAlertFiresWithFields: 超窗永久跳过的 FAILED 必须发运营告警
+// embed,字段完整(标的/信号/错误原因/失败时间/影响)——08-18 欠费 132 次失败静默
+// 吞掉,人工处置链路断了也无感知。
+func TestDiscordPushGateAlertFiresWithFields(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(31, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 31, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 402 Payment Required: Insufficient Balance"},
+	})
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("stale FAILED must skip permanently")
+	}
+	embed := lastEmbed(t, fake)
+	if embed["title"] != "⚠️ LLM 审核门故障" {
+		t.Fatalf("title = %#v", embed["title"])
+	}
+	if color := embed["color"]; color != float64(discord.ColorAlert) {
+		t.Fatalf("color = %v; want alert red", color)
+	}
+	fields, _ := embed["fields"].([]any)
+	byName := map[string]string{}
+	for _, f := range fields {
+		field, _ := f.(map[string]any)
+		name, _ := field["name"].(string)
+		value, _ := field["value"].(string)
+		byName[name] = value
+	}
+	for name, want := range map[string]string{
+		"标的":   "US.AAPL",
+		"信号":   "#31",
+		"错误类别": "402",
+		"错误原因": "llmreview: status 402 Payment Required: Insufficient Balance",
+		"失败时间": "2026-08-19 09:53:00",
+		"影响":   "信号推送被跳过,人工处置链路中断",
+	} {
+		if byName[name] != want {
+			t.Fatalf("field %q = %q; want %q", name, byName[name], want)
+		}
+	}
+}
+
+// TestDiscordPushGateAlertThrottled: 同类错误冷却窗口内不重复推(欠费/5xx 是
+// 全局性问题,每个失败信号都触发;节流防告警风暴)。
+func TestDiscordPushGateAlertThrottled(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(32, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 32, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 402 Payment Required: Insufficient Balance"},
+	})
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+	logs := &discordLogRecorder{}
+	s.logf = logs.logf
+
+	// 第一次:触发告警。
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("first FAILED must skip permanently")
+	}
+	if fake.sendCount() != 1 {
+		t.Fatalf("first alert sends = %d; want 1", fake.sendCount())
+	}
+	// 第二次(另一信号,同类错误,冷却窗口内):跳过卡片但不再发告警。
+	sig2 := signalFixture(33, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 33, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 402 Payment Required: Insufficient Balance"},
+	})
+	if retry := s.pushSignalDiscord(context.Background(), *sig2); retry {
+		t.Fatal("second FAILED must skip permanently")
+	}
+	if fake.sendCount() != 1 {
+		t.Fatalf("throttled sends = %d; want 1 (same category within cooldown)", fake.sendCount())
+	}
+	if !logs.contains("402 alert throttled") {
+		t.Fatalf("missing throttle log:\n%s", logs.joined())
+	}
+}
+
+// TestDiscordPushGateAlertDifferentCategoryFires: 冷却只按同类错误分组,不同
+// 类别(如 402 → 5xx)仍应立即告警。
+func TestDiscordPushGateAlertDifferentCategoryFires(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(34, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 34, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 402 Payment Required"},
+	})
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+	s.pushSignalDiscord(context.Background(), *sig)
+	if fake.sendCount() != 1 {
+		t.Fatalf("402 alert sends = %d; want 1", fake.sendCount())
+	}
+	sig2 := signalFixture(35, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 35, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 502 Bad Gateway: upstream down"},
+	})
+	s.pushSignalDiscord(context.Background(), *sig2)
+	if fake.sendCount() != 2 {
+		t.Fatalf("5xx alert sends = %d; want 2 (different category not throttled)", fake.sendCount())
+	}
+}
+
+// TestDiscordPushGateAlertSendFailureDoesNotThrottle: 首次告警发送失败
+// (Discord 瞬时故障)不占冷却窗口——稍后同类错误重试仍可触发(评审 P2,否则
+// 首次失败也静默冷却 30min 不再重发)。
+func TestDiscordPushGateAlertSendFailureDoesNotThrottle(t *testing.T) {
+	fake, _ := startFakeDC(t)
+	fake.failCreate = 1 // first alert create fails
+	now := time.Date(2026, 8, 19, 10, 0, 0, 0, time.UTC)
+	store := newFakeTGStore()
+	sig := signalFixture(36, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 36, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 402 Payment Required: Insufficient Balance"},
+	})
+	s, _ := newTestDiscordScheduler(t, fake, store, &fakePlacer{}, now)
+
+	if retry := s.pushSignalDiscord(context.Background(), *sig); retry {
+		t.Fatal("stale FAILED must skip permanently even when alert send fails")
 	}
 	if fake.sendCount() != 0 {
-		t.Fatalf("stale FAILED signal pushed; sends = %d", fake.sendCount())
+		t.Fatalf("failed alert sends = %d; want 0 (create failed)", fake.sendCount())
+	}
+	// 同类错误再触发:上次失败不占冷却,这次发送成功。
+	sig2 := signalFixture(37, "US.AAPL", now.Add(-time.Minute))
+	store.appended = append(store.appended, wheelstore.ActionRecord{
+		SignalID: 37, Action: "LLM_REVIEW_FAILED", Actor: "llm:deepseek",
+		CreatedAt: now.Add(-7 * time.Minute),
+		Details:   map[string]any{"error": "llmreview: status 402 Payment Required: Insufficient Balance"},
+	})
+	if retry := s.pushSignalDiscord(context.Background(), *sig2); retry {
+		t.Fatal("second FAILED must skip permanently")
+	}
+	if fake.sendCount() != 1 {
+		t.Fatalf("sends = %d; want 1 (send failure must not consume cooldown)", fake.sendCount())
+	}
+}
+
+func TestClassifyLLMError(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   string
+	}{
+		{"llmreview: status 402 Payment Required: Insufficient Balance", "402"},
+		{"llmreview: status 500 Internal Server Error: boom", "5xx"},
+		{"llmreview: status 502 Bad Gateway: upstream", "5xx"},
+		{"llmreview: status 503 Service Unavailable: overload", "5xx"},
+		{"llmreview: request: Post \"https://api.deepseek.com/chat/completions\": context deadline exceeded", "timeout"},
+		{"llmreview: request: Post \"https://api.deepseek.com\": dial tcp: lookup api.deepseek.com: i/o timeout", "timeout"},
+		{"llmreview: unexpected verdict \"MAYBE\"", "verdict"},
+		{"dial tcp: connection refused", "other"},
+		{"", "other"},
+	}
+	for _, tc := range cases {
+		if got := classifyLLMError(tc.reason); got != tc.want {
+			t.Errorf("classifyLLMError(%q) = %q; want %q", tc.reason, got, tc.want)
+		}
+	}
+}
+
+// TestLLMErrorCategoryFromAction: llmErrorCategory 从 FAILED 动作的 Details 提取
+// error,缺失时归 other(不 panic)。
+func TestLLMErrorCategoryFromAction(t *testing.T) {
+	if got := llmErrorCategory(&wheelstore.ActionRecord{Details: map[string]any{"error": "llmreview: status 402 Payment Required"}}); got != "402" {
+		t.Fatalf("category = %q; want 402", got)
+	}
+	if got := llmErrorCategory(&wheelstore.ActionRecord{}); got != "other" {
+		t.Fatalf("empty action category = %q; want other", got)
+	}
+	if got := llmErrorCategory(nil); got != "other" {
+		t.Fatalf("nil action category = %q; want other", got)
 	}
 }
 

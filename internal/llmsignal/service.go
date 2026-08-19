@@ -141,7 +141,7 @@ func (s *Service) Submit(ctx context.Context, d Decision, account Context, polic
 			Signal:         decision, Positions: account.Positions, CashAvailable: account.CashAvailable,
 			CurrentPrice: normalized.CurrentPrice, RulesText: rules, Symbol: normalized.Symbol,
 			Inventory: account.Inventory, ObservedOptions: account.ObservedOptions,
-			PendingOrders: account.PendingOrders, AsOf: s.now().UTC().Format(time.RFC3339),
+			PendingOrders: account.PendingOrders, AsOf: s.now().UTC().Format("2006-01-02"),
 		},
 		Summary: map[string]any{"signal_id": id, "decision": decision},
 	})

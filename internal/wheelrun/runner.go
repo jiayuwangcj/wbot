@@ -679,7 +679,9 @@ func (r *Runner) reviewAlert(ctx context.Context, symbol string, signalID int64,
 				PendingOrders:  pending,
 				// 审核模型需要当前日期验证 DTE/报价时效(signal 736:
 				// "current_date 为空,无法验证 max_quote_age_seconds=3600")。
-				AsOf: r.now().UTC().Format(time.RFC3339),
+				// 归一化为日期(非秒级 RFC3339):current_date 是 userContent 的静态
+				// 前缀之一,秒级变化会打散 DeepSeek context caching 前缀命中(评审 P2)。
+				AsOf: r.now().UTC().Format("2006-01-02"),
 			},
 			Summary: summary,
 		})

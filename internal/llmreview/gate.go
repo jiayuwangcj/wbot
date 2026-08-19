@@ -63,6 +63,9 @@ func RecordLLMGate(ctx context.Context, repo wheelstore.SignalRepository, review
 			if result.Notes != "" && (verdict == "APPROVE" || verdict == "REJECT" || !input.UnexpectedVerdictIsFailure) {
 				details["notes"] = result.Notes
 			}
+			// 成功审核(含 REJECT/意外裁决)把 token/cache 用量落库,命中率可
+			// SQL 聚合(402/5xx 失败分支不返回 usage)。
+			details["usage"] = usageDetailMap(result.Usage)
 			if verdict != "APPROVE" && verdict != "REJECT" {
 				message := fmt.Sprintf("unexpected LLM verdict %s", result.Verdict)
 				if input.UnexpectedVerdictIsFailure {
@@ -96,4 +99,24 @@ func RecordLLMGate(ctx context.Context, repo wheelstore.SignalRepository, review
 		return verdict, disposition, err
 	}
 	return verdict, disposition, nil
+}
+
+// usageDetailMap renders Usage as the JSONB details["usage"] object.
+// cache_hit_rate = hit/(hit+miss); hit+miss==0 (无 cache 报告) 时为 null。
+// miss 缺失时按 prompt-hit 兜底(OpenAI-shape 只报 cached_tokens,推导防
+// cache_hit_rate 恒 1.0 虚报,评审 P1)。
+func usageDetailMap(u Usage) map[string]any {
+	hit := u.CacheHitTokens
+	miss := deriveCacheMiss(hit, u.CacheMissTokens, u.PromptTokens)
+	var rate any
+	if hit+miss > 0 {
+		rate = float64(hit) / float64(hit+miss)
+	}
+	return map[string]any{
+		"prompt_tokens":     u.PromptTokens,
+		"completion_tokens": u.CompletionTokens,
+		"cache_hit_tokens":  hit,
+		"cache_miss_tokens": miss,
+		"cache_hit_rate":    rate,
+	}
 }

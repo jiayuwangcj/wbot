@@ -150,3 +150,189 @@ func TestReviewMarshalDataFailure(t *testing.T) {
 		t.Fatalf("err=%v; want marshal failure", err)
 	}
 }
+
+// topLevelKeyOffset returns the byte offset of a top-level key in the indented
+// userContent JSON (json.MarshalIndent puts top-level keys on "\n  \"key\":").
+func topLevelKeyOffset(t *testing.T, content, key string) int {
+	t.Helper()
+	needle := "\n  \"" + key + "\":"
+	idx := strings.Index(content, needle)
+	if idx < 0 {
+		t.Fatalf("top-level key %q not found in:\n%s", key, content)
+	}
+	return idx
+}
+
+// TestUserContentStablePrefix: DeepSeek context caching keys on the user-message
+// prefix; rules/strategy_config/symbol/current_date must be byte-identical
+// across decisions of the same symbol and always precede the dynamic fields
+// (signal/positions/pending_orders change every round).
+func TestUserContentStablePrefix(t *testing.T) {
+	base := ReviewRequest{
+		StrategyConfig: map[string]any{"max_inventory": 100, "min_dte": 14},
+		RulesText:      "规则:库存上限 100,卖 Put 必须 OTM",
+		Symbol:         "HK.TCH",
+		AsOf:           "2026-08-19T00:00:00Z",
+	}
+	reqA := base
+	reqA.Signal = map[string]any{"action": "ALERT", "direction": "SELL"}
+	reqA.Positions = []any{map[string]any{"symbol": "HK.TCH", "qty": 1}}
+	reqA.PendingOrders = []any{map[string]any{"contract": "HK.TCH2608C100", "qty": 1}}
+	reqB := base
+	reqB.Signal = map[string]any{"action": "ALERT", "direction": "BUY"}
+	reqB.Positions = []any{map[string]any{"symbol": "HK.TCH", "qty": 9}}
+	reqB.PendingOrders = []any{}
+
+	contentA, err := userContent(reqA)
+	if err != nil {
+		t.Fatalf("userContent A: %v", err)
+	}
+	contentB, err := userContent(reqB)
+	if err != nil {
+		t.Fatalf("userContent B: %v", err)
+	}
+	// 前缀(静态字段)两次调用字节一致。
+	prefixA := contentA[:topLevelKeyOffset(t, contentA, "current_price")]
+	prefixB := contentB[:topLevelKeyOffset(t, contentB, "current_price")]
+	if prefixA != prefixB {
+		t.Fatalf("static prefix differs between calls:\nA: %q\nB: %q", prefixA, prefixB)
+	}
+	// 静态字段全部在动态字段之前。
+	static := []string{"rules", "strategy_config", "symbol", "current_date"}
+	dyn := []string{"current_price", "cash_available", "inventory", "positions", "pending_orders", "observed_options", "signal"}
+	for _, s := range static {
+		for _, d := range dyn {
+			if topLevelKeyOffset(t, contentA, s) >= topLevelKeyOffset(t, contentA, d) {
+				t.Fatalf("static key %q not before dynamic %q in:\n%s", s, d, contentA)
+			}
+		}
+	}
+}
+
+// currentDateValueEnd returns the byte offset just past the current_date value
+// (a JSON string in the indented userContent output).
+func currentDateValueEnd(t *testing.T, content string) int {
+	t.Helper()
+	marker := `"current_date": "`
+	idx := strings.Index(content, marker)
+	if idx < 0 {
+		t.Fatalf("current_date not found in:\n%s", content)
+	}
+	start := idx + len(marker)
+	j := strings.IndexByte(content[start:], '"')
+	if j < 0 {
+		t.Fatalf("unterminated current_date value in:\n%s", content)
+	}
+	return start + j + 1
+}
+
+// TestUserContentStaticPrefixStableAcrossTime: current_date 归一化为日期后,
+// 同一天不同时刻(不同动态字段)的 userContent 在 current_date 值之前的字节
+// 必须一致——秒级 RFC3339 会让前缀每轮变化,DeepSeek context caching 打不中
+// (评审 P2)。调用点归一化见 wheelrun/runner.go、llmsignal/service.go。
+func TestUserContentStaticPrefixStableAcrossTime(t *testing.T) {
+	base := ReviewRequest{
+		StrategyConfig: map[string]any{"max_inventory": 100},
+		RulesText:      "规则:库存上限 100",
+		Symbol:         "US.JD",
+		AsOf:           "2026-08-19", // 日期归一化后
+	}
+	morning := base
+	morning.Signal = map[string]any{"action": "ALERT", "direction": "SELL"}
+	morning.CurrentPrice = 25.5
+	afternoon := base
+	afternoon.Signal = map[string]any{"action": "ALERT", "direction": "BUY"}
+	afternoon.CurrentPrice = 26.1
+	afternoon.Positions = []any{map[string]any{"symbol": "US.JD", "qty": 5}}
+
+	contentAM, err := userContent(morning)
+	if err != nil {
+		t.Fatalf("userContent morning: %v", err)
+	}
+	contentPM, err := userContent(afternoon)
+	if err != nil {
+		t.Fatalf("userContent afternoon: %v", err)
+	}
+	prefixAM := contentAM[:currentDateValueEnd(t, contentAM)]
+	prefixPM := contentPM[:currentDateValueEnd(t, contentPM)]
+	if prefixAM != prefixPM {
+		t.Fatalf("static prefix through current_date differs within the same day:\nAM: %q\nPM: %q", prefixAM, prefixPM)
+	}
+}
+
+// TestUserContentDropsZeroTimes: zero time.Time encodings stay stripped after
+// the ordered rewrite (signal 454/455 教训,dropZeroTimes 语义必须保留)。
+func TestUserContentDropsZeroTimes(t *testing.T) {
+	content, err := userContent(ReviewRequest{
+		StrategyConfig: map[string]any{"max_inventory": 100},
+		Symbol:         "HK.TCH",
+		Positions: []any{map[string]any{
+			"symbol": "HK.TCH", "qty": 1,
+			"captured_at": "0001-01-01T00:00:00Z", "ts": "0001-01-01T00:00:00Z",
+		}},
+		RulesText: "规则",
+	})
+	if err != nil {
+		t.Fatalf("userContent: %v", err)
+	}
+	if strings.Contains(content, "0001-01-01T00:00:00Z") {
+		t.Fatalf("zero time retained after cleanValue:\n%s", content)
+	}
+}
+
+// TestReviewParsesDeepSeekUsage: DeepSeek context caching reports
+// prompt_cache_hit_tokens/miss top-level; ReviewResult must carry them.
+func TestReviewParsesDeepSeekUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"verdict\":\"APPROVE\",\"reasons\":[\"ok\"]}"}}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_cache_hit_tokens":80,"prompt_cache_miss_tokens":20}}`))
+	}))
+	defer server.Close()
+	c, err := New(server.URL, "key", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Review(context.Background(), ReviewRequest{Symbol: "HK.TCH"})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	want := Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, CacheHitTokens: 80, CacheMissTokens: 20}
+	if res.Usage != want {
+		t.Fatalf("usage = %+v; want %+v", res.Usage, want)
+	}
+}
+
+// TestUsageFallbackOpenAICachedTokens: OpenAI-compatible providers expose only
+// prompt_tokens_details.cached_tokens (lkeap 实测 shape); usageFrom must fall
+// back to it AND derive the miss from prompt-hit, or cache_hit_rate reads 1.0
+// (评审 P1)。
+func TestUsageFallbackOpenAICachedTokens(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"verdict\":\"APPROVE\",\"reasons\":[\"ok\"]}"}}],"usage":{"prompt_tokens":100,"prompt_tokens_details":{"cached_tokens":60}}}`))
+	}))
+	defer server.Close()
+	c, err := New(server.URL, "key", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := c.Review(context.Background(), ReviewRequest{Symbol: "HK.TCH"})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if res.Usage.CacheHitTokens != 60 {
+		t.Fatalf("cache hit = %d; want 60 (fallback to prompt_tokens_details.cached_tokens)", res.Usage.CacheHitTokens)
+	}
+	if res.Usage.CacheMissTokens != 40 {
+		t.Fatalf("cache miss = %d; want 40 (derived prompt-hit; without it hit rate reads 1.0)", res.Usage.CacheMissTokens)
+	}
+}
+
+// TestUsageOpenAIOnlyNoCacheKeepsMissZero: 完全没有 cache 字段(旧式 usage)
+// 时 miss 保持 0,不误推导(cache_hit_rate 在 gate 层为 null)。
+func TestUsageOpenAIOnlyNoCacheKeepsMissZero(t *testing.T) {
+	got := usageFrom(usageInfo{PromptTokens: 100, CompletionTokens: 20})
+	if got.CacheHitTokens != 0 || got.CacheMissTokens != 0 {
+		t.Fatalf("no-cache usage = %+v; want hit=0 miss=0", got)
+	}
+}

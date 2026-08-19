@@ -149,4 +149,87 @@ func TestRecordLLMGateReviewErrorFailsFailedDisposition(t *testing.T) {
 	if repo.action.Details["error"] == nil {
 		t.Fatalf("details must carry the request error: %v", repo.action.Details)
 	}
+	// 失败分支(402/5xx/超时)不返回 usage,不得落库。
+	if _, ok := repo.action.Details["usage"]; ok {
+		t.Fatalf("failed review must not store usage: %v", repo.action.Details)
+	}
+}
+
+// TestRecordLLMGateStoresUsage: 成功审核(含 REJECT)把 usage/cache_hit_rate 写入
+// details,命中率按 hit/(hit+miss) 计算,可 SQL 聚合。
+func TestRecordLLMGateStoresUsage(t *testing.T) {
+	repo := &fakeGateRepo{}
+	_, disposition, err := RecordLLMGate(context.Background(), repo,
+		fakeGateReviewer{result: ReviewResult{
+			Verdict: "APPROVE", Reasons: []string{"ok"},
+			Usage: Usage{PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, CacheHitTokens: 80, CacheMissTokens: 20},
+		}},
+		"test-model", GateInput{SignalID: 7, Request: ReviewRequest{Symbol: "HK.TCH"}})
+	if err != nil {
+		t.Fatalf("RecordLLMGate: %v", err)
+	}
+	if disposition != "LLM_REVIEW" {
+		t.Fatalf("disposition = %q; want LLM_REVIEW", disposition)
+	}
+	usage, ok := repo.action.Details["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("details missing usage: %v", repo.action.Details)
+	}
+	if usage["prompt_tokens"] != 100 || usage["completion_tokens"] != 20 ||
+		usage["cache_hit_tokens"] != 80 || usage["cache_miss_tokens"] != 20 {
+		t.Fatalf("usage = %v", usage)
+	}
+	rate, ok := usage["cache_hit_rate"].(float64)
+	if !ok || rate != 0.8 {
+		t.Fatalf("cache_hit_rate = %v (%T); want 0.8", usage["cache_hit_rate"], usage["cache_hit_rate"])
+	}
+}
+
+// TestRecordLLMGateUsageHitRateNullWhenNoCache: 无 cache 报告(hit+miss=0)时
+// cache_hit_rate 必须为 null,不能是 0(0 会被误读成 0% 命中)。
+func TestRecordLLMGateUsageHitRateNullWhenNoCache(t *testing.T) {
+	repo := &fakeGateRepo{}
+	_, _, err := RecordLLMGate(context.Background(), repo,
+		fakeGateReviewer{result: ReviewResult{
+			Verdict: "APPROVE", Reasons: []string{"ok"},
+			Usage: Usage{PromptTokens: 100, CompletionTokens: 20},
+		}},
+		"test-model", GateInput{SignalID: 7, Request: ReviewRequest{Symbol: "HK.TCH"}})
+	if err != nil {
+		t.Fatalf("RecordLLMGate: %v", err)
+	}
+	usage, ok := repo.action.Details["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("details missing usage: %v", repo.action.Details)
+	}
+	if usage["cache_hit_rate"] != nil {
+		t.Fatalf("cache_hit_rate = %v; want null when hit+miss=0", usage["cache_hit_rate"])
+	}
+}
+
+// TestRecordLLMGateUsageHitRateOpenAIOnly: OpenAI-shape(只有 cached_tokens、
+// 无 miss 字段)时 usageDetailMap 必须按 prompt-hit 推导 miss,命中率 0.6 而非
+// 虚报 1.0(评审 P1——lkeap 实测只回 cached_tokens)。
+func TestRecordLLMGateUsageHitRateOpenAIOnly(t *testing.T) {
+	repo := &fakeGateRepo{}
+	_, _, err := RecordLLMGate(context.Background(), repo,
+		fakeGateReviewer{result: ReviewResult{
+			Verdict: "APPROVE", Reasons: []string{"ok"},
+			Usage: Usage{PromptTokens: 100, CompletionTokens: 20, CacheHitTokens: 60}, // miss 缺失
+		}},
+		"test-model", GateInput{SignalID: 7, Request: ReviewRequest{Symbol: "HK.TCH"}})
+	if err != nil {
+		t.Fatalf("RecordLLMGate: %v", err)
+	}
+	usage, ok := repo.action.Details["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("details missing usage: %v", repo.action.Details)
+	}
+	if usage["cache_miss_tokens"] != 40 {
+		t.Fatalf("cache_miss_tokens = %v; want 40 (derived prompt-hit)", usage["cache_miss_tokens"])
+	}
+	rate, ok := usage["cache_hit_rate"].(float64)
+	if !ok || rate != 0.6 {
+		t.Fatalf("cache_hit_rate = %v (%T); want 0.6 not 1.0", usage["cache_hit_rate"], usage["cache_hit_rate"])
+	}
 }
